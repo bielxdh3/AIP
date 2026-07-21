@@ -474,5 +474,6 @@ The failed first hotfix used full sprite rectangles and cursor-polled whole-wind
 toggling. The second correction rasterizes sprite alpha into compact logical regions, adds
 opaque label and thought rectangles, and installs one native Win32 window region per overlay.
 Native drag begins only after pointer movement crosses a small threshold, preserving click
-and thought triggering. The native mechanism and gesture still require the second manual
-Windows checklist before approval.
+and thought triggering. Runtime commit `a6ccb1badf6aa8a1f317ea1818c247d87f311fe6`
+passed the Phase 0 manual Windows 11 checklist at 100% display scaling. The visible thought
+indicator is draggable but has no separate Phase 0 button action.

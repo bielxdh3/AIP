@@ -8,7 +8,7 @@ integration. The visual product name is **A.I.P.**
 
 ## Status
 
-Phase 0 now has a repository implementation for the Windows desktop foundation:
+Phase 0 is approved and complete for the Windows desktop foundation:
 
 - pnpm workspace;
 - React and TypeScript main panel in Portuguese;
@@ -19,9 +19,11 @@ Phase 0 now has a repository implementation for the Windows desktop foundation:
   deterministic placeholder animation states, and best-effort full-screen detection;
 - automated TypeScript, Python, Rust, secret-scan, and CI definitions.
 
-Native Rust checks and interactive Windows overlay behavior still require the Windows
-toolchain described in [Windows setup](docs/WINDOWS_SETUP.md). No model, Ollama adapter,
-real chat, memory, automation, Android client, or BielOS integration exists yet.
+Runtime commit `a6ccb1badf6aa8a1f317ea1818c247d87f311fe6` passed the recorded Windows 11
+manual test at 100% display scaling and its exact-SHA GitHub Actions run. Windows 10,
+non-100% real display scaling, multiple monitors, and installer behavior remain manual
+validation limitations. Phase 1 is next but has not started. No model, Ollama adapter, real
+chat, memory, automation, Android client, or BielOS integration exists yet.
 
 ## Supported platform
 

@@ -10,13 +10,14 @@
 - Avoid implementing later features merely because an abstraction could support them.
 - Stabilize contracts before Android or remote access.
 
-## Phase 0: repository bootstrap and visual shell
+## Phase 0: repository bootstrap and visual shell `[DONE]`
 
 Goal: produce the first executable Windows shell with two provisional agents and resilient runtime boundaries.
 
-Implementation state: repository foundation implemented. The first click-through hotfix
-failed manual Windows validation; a second native window-region correction is awaiting its
-manual Windows retest. Phase 0 remains unapproved.
+Implementation state: approved and complete. The preserved first click-through hotfix failed
+manual Windows validation; runtime commit
+`a6ccb1badf6aa8a1f317ea1818c247d87f311fe6` passed the corrected manual Windows 11
+test at 100% display scaling and its exact-SHA GitHub Actions run.
 
 Deliverables:
 
@@ -47,7 +48,7 @@ Excluded:
 
 Expected commit: `chore: bootstrap AIP desktop workspace`
 
-## Phase 1: local conversation vertical slice
+## Phase 1: local conversation vertical slice `[NEXT]`
 
 Goal: prove one complete model conversation path without coupling agent identity to the model.
 

@@ -71,10 +71,11 @@ Perform these checks on a disposable Phase 0 database:
 Click-through and full-screen detection are best-effort Phase 0 proofs. Record Windows
 version, scaling, and multi-monitor limitations without including personal machine data.
 
-### Second click-through hotfix retest
+### Recorded Phase 0 click-through evidence
 
-The first hotfix failed real Windows validation. Phase 0 remains pending until the second
-native-region hotfix passes these checks against an unrelated ordinary application:
+The first hotfix failed real Windows validation. The second native-region hotfix passed the
+following checks against an unrelated ordinary application at runtime commit
+`a6ccb1badf6aa8a1f317ea1818c247d87f311fe6`:
 
 1. Test outer transparency above, below, left, and right of Astra and Luma.
 2. Test transparent corners inside each 128x128 sprite box.
@@ -87,6 +88,7 @@ native-region hotfix passes these checks against an unrelated ordinary applicati
 8. Cross interactive boundaries repeatedly and check for an obvious idle CPU regression.
 9. Confirm Git remains clean.
 
-Record the exact SHA, Windows version, actual Windows scaling percentage, resolution, and
-monitor count. Resolution is not a substitute for scaling. If available, repeat the boundary
-checks at 100%, 125%, 150%, 175%, and 200%.
+The recorded environment was Windows 11, 100% display scaling, 1920 x 1080 resolution, and
+one active monitor. The visible thought indicator participates in the draggable interactive
+region but has no separate Phase 0 button action. Windows 10, non-100% real display scaling,
+multiple monitors, and installer behavior remain unvalidated manual configurations.

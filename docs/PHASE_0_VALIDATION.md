@@ -20,6 +20,18 @@ The repository defines checks for:
 CI runs the complete non-interactive set on a Windows runner with Node 22, Python 3.11,
 pnpm, stable Rust, rustfmt, and Clippy. It does not publish installers or use secrets.
 
+The final local gate for runtime commit
+`a6ccb1badf6aa8a1f317ea1818c247d87f311fe6` passed the secret scan, ESLint,
+TypeScript checks, 2 contract tests, 9 frontend tests, the frontend production build,
+Python formatting/linting/type checking and 4 tests, Rust formatting/checking/Clippy and
+13 tests, and the native Tauri `--no-bundle` build. The repository-wide Prettier command
+continues to report four generated Tauri schema files that are unchanged from the Phase 0
+baseline; every file changed by the hotfixes passed its formatter check, and CI does not run
+the repository-wide Prettier command.
+
+GitHub Actions CI run `29876962257` completed successfully for the exact tested runtime SHA
+on the `main` push.
+
 ## Interactive scope
 
 Automated checks do not prove:
@@ -42,8 +54,17 @@ The second hotfix derives compact regions from painted sprite alpha, adds the vi
 and thought rectangles, converts CSS logical coordinates to physical window coordinates
 exactly once, and installs the resulting shape with the Win32 window-region API. A small
 click-versus-drag state machine delays native drag until movement crosses its threshold.
-Automated tests cover this contract, but real unrelated-application pass-through remains
-pending. The tested machine's resolution was 1920 x 1080; its Windows scaling was not recorded.
+
+Runtime commit `a6ccb1badf6aa8a1f317ea1818c247d87f311fe6` passed the complete Phase 0
+manual retest on Windows 11 at 100% display scaling, 1920 x 1080 resolution, and one active
+monitor. Astra and Luma passed outer and inner transparent-pixel click-through, painted-pixel
+and label interaction, dragging, position persistence, full-screen recovery, safe-mode
+recovery, and the observed idle-CPU check. The thought trigger and visible thought region
+also passed; the indicator supports dragging while visible and has no separate Phase 0
+button action. Its former region became click-through after disappearance, and Git remained
+clean.
+
+Phase 0 is approved and complete. Phase 1 is next but has not started.
 
 ## Phase boundary
 
