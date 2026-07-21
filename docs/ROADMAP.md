@@ -14,8 +14,9 @@
 
 Goal: produce the first executable Windows shell with two provisional agents and resilient runtime boundaries.
 
-Implementation state: repository foundation implemented. Approval remains pending until
-native Rust checks and the manual Windows overlay checklist are confirmed.
+Implementation state: repository foundation and deterministic interactive-region hotfix
+implemented. Approval remains pending until the focused manual Windows click-through retest
+is confirmed.
 
 Deliverables:
 

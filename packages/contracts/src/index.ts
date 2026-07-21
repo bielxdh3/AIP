@@ -16,6 +16,13 @@ export type AgentPosition = {
   y: number;
 };
 
+export type OverlayInteractiveRegion = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 export type ProvisionalAgent = {
   id: string;
   name: string;

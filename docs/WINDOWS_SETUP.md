@@ -70,3 +70,17 @@ Perform these checks on a disposable Phase 0 database:
 
 Click-through and full-screen detection are best-effort Phase 0 proofs. Record Windows
 version, scaling, and multi-monitor limitations without including personal machine data.
+
+### Click-through hotfix retest
+
+Phase 0 remains pending until these directly related checks pass after the interactive-region
+hotfix:
+
+1. Confirm transparent space around Astra passes clicks to the application below.
+2. Confirm transparent space around Luma passes clicks to the application below.
+3. Confirm both visible agents and their labels remain draggable.
+4. Restart AIP and confirm both dragged positions persist.
+5. Confirm a full-screen application still hides both overlays and they return afterward.
+6. Confirm safe mode still hides both overlays.
+7. Record the Windows display scaling used for the test. If available, repeat click-through
+   at 100%, 125%, and 150%.
