@@ -7,21 +7,33 @@ import {
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type {
-  AgentAnimationState,
-  AppSnapshot,
-  OverlayInteractiveRegion,
-} from "@aip/contracts";
+import type { AgentAnimationState, AppSnapshot } from "@aip/contracts";
 import AgentSprite from "./components/AgentSprite";
+import {
+  beginGesture,
+  cancelGesture,
+  endGesture,
+  initialOverlayGestureState,
+  moveGesture,
+  THOUGHT_DURATION_MS,
+} from "./overlay-gesture";
+import {
+  buildInteractiveRegions,
+  elementBounds,
+  readSpriteMask,
+  type SpriteMask,
+} from "./overlay-input";
 import "./App.css";
 
 export default function Overlay({ agentId }: { agentId: string }) {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [animation, setAnimation] = useState<AgentAnimationState>("idle");
-  const [spriteLoaded, setSpriteLoaded] = useState(false);
+  const [spriteMask, setSpriteMask] = useState<SpriteMask | null>(null);
   const spriteRef = useRef<HTMLImageElement>(null);
   const labelRef = useRef<HTMLSpanElement>(null);
   const thoughtRef = useRef<HTMLSpanElement>(null);
+  const gestureRef = useRef(initialOverlayGestureState);
+  const thoughtTimerRef = useRef<number | null>(null);
   const agent = useMemo(
     () =>
       snapshot?.agents.find((candidate) => candidate.id === agentId) ?? null,
@@ -41,17 +53,17 @@ export default function Overlay({ agentId }: { agentId: string }) {
 
   const reportInteractiveRegions = useCallback(() => {
     const regions = overlayActive
-      ? [spriteRef.current, labelRef.current, thoughtRef.current]
-          .map(toInteractiveRegion)
-          .filter(
-            (region): region is OverlayInteractiveRegion => region !== null,
-          )
+      ? buildInteractiveRegions(
+          spriteMask,
+          elementBounds(spriteRef.current),
+          elementBounds(labelRef.current),
+          elementBounds(thoughtRef.current),
+        )
       : [];
-
     void invoke("set_overlay_interactive_regions", { agentId, regions }).catch(
       () => null,
     );
-  }, [agentId, overlayActive, spriteLoaded, animation]);
+  }, [agentId, overlayActive, spriteMask, animation]);
 
   useLayoutEffect(() => {
     let animationFrame: number | null = null;
@@ -70,8 +82,7 @@ export default function Overlay({ agentId }: { agentId: string }) {
     const observer = new ResizeObserver(scheduleReport);
     elements.forEach((element) => observer.observe(element));
     window.addEventListener("resize", scheduleReport);
-    scheduleReport();
-
+    reportInteractiveRegions();
     return () => {
       if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
       observer.disconnect();
@@ -81,6 +92,9 @@ export default function Overlay({ agentId }: { agentId: string }) {
 
   useEffect(
     () => () => {
+      if (thoughtTimerRef.current !== null) {
+        window.clearTimeout(thoughtTimerRef.current);
+      }
       void invoke("set_overlay_interactive_regions", {
         agentId,
         regions: [],
@@ -89,18 +103,75 @@ export default function Overlay({ agentId }: { agentId: string }) {
     [agentId],
   );
 
-  async function startDrag() {
+  function showThinkingState() {
+    if (thoughtTimerRef.current !== null) {
+      window.clearTimeout(thoughtTimerRef.current);
+    }
+    setAnimation("thinking");
+    thoughtTimerRef.current = window.setTimeout(() => {
+      thoughtTimerRef.current = null;
+      setAnimation("idle");
+    }, THOUGHT_DURATION_MS);
+  }
+
+  async function startDrag(button: HTMLButtonElement, pointerId: number) {
+    if (thoughtTimerRef.current !== null) {
+      window.clearTimeout(thoughtTimerRef.current);
+      thoughtTimerRef.current = null;
+    }
+    if (button.hasPointerCapture(pointerId))
+      button.releasePointerCapture(pointerId);
     setAnimation("dragged");
     try {
       await invoke("start_overlay_drag", { agentId });
     } finally {
-      window.setTimeout(() => setAnimation("idle"), 180);
+      gestureRef.current = cancelGesture(gestureRef.current);
+      setAnimation("idle");
     }
   }
 
-  function showThinkingState() {
-    setAnimation("thinking");
-    window.setTimeout(() => setAnimation("idle"), 1200);
+  function handlePointerDown(event: React.PointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    gestureRef.current = beginGesture(
+      gestureRef.current,
+      event.pointerId,
+      event.clientX,
+      event.clientY,
+    );
+  }
+
+  function handlePointerMove(event: React.PointerEvent<HTMLButtonElement>) {
+    const result = moveGesture(
+      gestureRef.current,
+      event.pointerId,
+      event.clientX,
+      event.clientY,
+    );
+    gestureRef.current = result.state;
+    if (result.action === "start_drag") {
+      void startDrag(event.currentTarget, event.pointerId);
+    }
+  }
+
+  function handlePointerUp(event: React.PointerEvent<HTMLButtonElement>) {
+    const result = endGesture(
+      gestureRef.current,
+      event.pointerId,
+      performance.now(),
+    );
+    gestureRef.current = result.state;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (result.action === "thought") showThinkingState();
+  }
+
+  function handlePointerCancel(event: React.PointerEvent<HTMLButtonElement>) {
+    gestureRef.current = cancelGesture(gestureRef.current);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   }
 
   if (!agent || snapshot?.safeMode) return null;
@@ -111,14 +182,16 @@ export default function Overlay({ agentId }: { agentId: string }) {
         className="overlay-agent"
         type="button"
         aria-label={`${agent.name}, agente provisório. Arraste para mover.`}
-        onPointerDown={() => void startDrag()}
-        onDoubleClick={showThinkingState}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
       >
         <AgentSprite
           ref={spriteRef}
           spriteKey={agent.spriteKey}
           name={agent.name}
-          onLoad={() => setSpriteLoaded(true)}
+          onLoad={(image) => setSpriteMask(readSpriteMask(image))}
         />
         <span ref={labelRef} className="overlay-label">
           {agent.name}
@@ -135,24 +208,4 @@ export default function Overlay({ agentId }: { agentId: string }) {
       </button>
     </main>
   );
-}
-
-function toInteractiveRegion(
-  element: HTMLElement | null,
-): OverlayInteractiveRegion | null {
-  if (element === null) return null;
-  const bounds = element.getBoundingClientRect();
-  if (
-    ![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite) ||
-    bounds.width <= 0 ||
-    bounds.height <= 0
-  ) {
-    return null;
-  }
-  return {
-    x: bounds.x,
-    y: bounds.y,
-    width: bounds.width,
-    height: bounds.height,
-  };
 }

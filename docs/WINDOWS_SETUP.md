@@ -71,16 +71,22 @@ Perform these checks on a disposable Phase 0 database:
 Click-through and full-screen detection are best-effort Phase 0 proofs. Record Windows
 version, scaling, and multi-monitor limitations without including personal machine data.
 
-### Click-through hotfix retest
+### Second click-through hotfix retest
 
-Phase 0 remains pending until these directly related checks pass after the interactive-region
-hotfix:
+The first hotfix failed real Windows validation. Phase 0 remains pending until the second
+native-region hotfix passes these checks against an unrelated ordinary application:
 
-1. Confirm transparent space around Astra passes clicks to the application below.
-2. Confirm transparent space around Luma passes clicks to the application below.
-3. Confirm both visible agents and their labels remain draggable.
-4. Restart AIP and confirm both dragged positions persist.
-5. Confirm a full-screen application still hides both overlays and they return afterward.
-6. Confirm safe mode still hides both overlays.
-7. Record the Windows display scaling used for the test. If available, repeat click-through
-   at 100%, 125%, and 150%.
+1. Test outer transparency above, below, left, and right of Astra and Luma.
+2. Test transparent corners inside each 128x128 sprite box.
+3. Confirm painted sprite pixels and visible names remain interactive.
+4. Trigger the thought indicator with a double click and test the indicator itself.
+5. Confirm the area around the indicator and its former area after disappearance pass through.
+6. Confirm a normal click does not drag, movement beyond the threshold does drag, and both
+   positions persist after restart.
+7. Recheck click-through after full-screen hide/restore and safe-mode hide/restore.
+8. Cross interactive boundaries repeatedly and check for an obvious idle CPU regression.
+9. Confirm Git remains clean.
+
+Record the exact SHA, Windows version, actual Windows scaling percentage, resolution, and
+monitor count. Resolution is not a substitute for scaling. If available, repeat the boundary
+checks at 100%, 125%, 150%, 175%, and 200%.

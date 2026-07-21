@@ -7,7 +7,7 @@ const sprites = { astra: astraSprite, luma: lumaSprite } as const;
 type AgentSpriteProps = {
   spriteKey: keyof typeof sprites;
   name: string;
-  onLoad?: () => void;
+  onLoad?: (image: HTMLImageElement) => void;
 };
 
 const AgentSprite = forwardRef<HTMLImageElement, AgentSpriteProps>(
@@ -21,7 +21,7 @@ const AgentSprite = forwardRef<HTMLImageElement, AgentSpriteProps>(
         height="64"
         alt={`Visual provisório de ${name}`}
         draggable="false"
-        onLoad={onLoad}
+        onLoad={(event) => onLoad?.(event.currentTarget)}
       />
     );
   },

@@ -198,6 +198,8 @@ Configurable:
 - Opaque character pixels and active bubble regions accept input.
 - Hit testing must use deterministic geometry or alpha masks.
 - The overlay must not create a large invisible rectangle that blocks desktop interaction.
+- Phase 0 uses a 128 alpha threshold for sprite masks. Decorative shadows do not expand the
+  interactive shape.
 
 ### 5.3 Mouse actions
 
@@ -466,9 +468,11 @@ The implemented main panel exposes only home, agent, and diagnostic anchors. It 
 agents as provisional, reports runtime degradation, exposes a persisted safe-mode control,
 and does not present model, chat, or memory functionality as available.
 
-The overlay uses original 64x64 SVG pixel assets with integer scaling, native Tauri drag,
-persisted positions, transparent windows, always-on-top configuration, DOM-measured visible
-regions validated independently per overlay in Rust, and idle/dragged/thinking placeholders.
-The region contract and common display-scale conversions are covered by deterministic tests.
-Native click-through, full-screen hiding, scaling, and multi-monitor behavior still require
-the manual Windows checklist before approval.
+The overlay uses original 64x64 SVG pixel assets with integer scaling, persisted positions,
+transparent windows, always-on-top configuration, and idle/dragged/thinking placeholders.
+The failed first hotfix used full sprite rectangles and cursor-polled whole-window input
+toggling. The second correction rasterizes sprite alpha into compact logical regions, adds
+opaque label and thought rectangles, and installs one native Win32 window region per overlay.
+Native drag begins only after pointer movement crosses a small threshold, preserving click
+and thought triggering. The native mechanism and gesture still require the second manual
+Windows checklist before approval.

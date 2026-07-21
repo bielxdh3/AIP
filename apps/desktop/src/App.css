@@ -496,7 +496,6 @@ h3 {
 .overlay-agent .agent-sprite {
   width: 128px;
   height: 128px;
-  filter: drop-shadow(0 8px 4px #0008);
 }
 
 .overlay-label {
@@ -505,7 +504,7 @@ h3 {
   left: 50%;
   padding: 3px 7px;
   border: 1px solid #3c4654;
-  border-radius: 4px;
+  border-radius: 0;
   color: #dce2ea;
   background: #0e1218e8;
   font-size: 9px;
@@ -519,27 +518,27 @@ h3 {
   right: 2px;
   padding: 5px 8px;
   border: 1px solid #3d4653;
-  border-radius: 8px;
+  border-radius: 0;
   color: #a8f0df;
   background: #10161de8;
   font-size: 12px;
 }
 
 .overlay-stage[data-animation="idle"] .agent-sprite {
-  animation: idle-float 2.4s steps(2, jump-none) infinite;
+  animation: idle-pulse 2.4s steps(2, jump-none) infinite;
 }
 
 .overlay-stage[data-animation="dragged"] .agent-sprite {
-  transform: translateY(-3px) rotate(-2deg);
+  opacity: 0.96;
 }
 
 .overlay-stage[data-animation="thinking"] .agent-sprite {
-  filter: drop-shadow(0 8px 4px #0008) saturate(0.75);
+  filter: saturate(0.75);
 }
 
-@keyframes idle-float {
+@keyframes idle-pulse {
   50% {
-    transform: translateY(-2px);
+    opacity: 0.94;
   }
 }
 
