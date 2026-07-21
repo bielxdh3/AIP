@@ -1,0 +1,62 @@
+# JavaScript / TypeScript
+node_modules/
+.pnpm-store/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Tauri / Rust
+target/
+**/target/
+Cargo.lock
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local AIP data
+AIP-Data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+backups/
+exports/
+logs/
+temp/
+cache/
+
+# Models and large runtime files
+models/
+*.gguf
+*.safetensors
+*.bin
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Generated packages
+*.msi
+*.exe
+*.appx
+*.zip
