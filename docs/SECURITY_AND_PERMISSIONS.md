@@ -403,3 +403,16 @@ High-risk changes include:
 - ownership transfer.
 
 These require tests and explicit limitations in the final implementation report.
+
+## 20. Phase 0 implemented controls
+
+- Rust resolves application-local data and owns the only SQLite path.
+- The Python child receives a reduced environment, its package source path, and versioned
+  NDJSON requests; unrelated parent-process environment values are not inherited.
+- Python stdout is protocol-only; stderr is discarded in Phase 0 rather than persisted.
+- Health and shutdown are the only accepted runtime methods, with bounded messages and IDs.
+- Tauri commands validate the two fixed provisional agent identifiers.
+- Safe mode is persisted by Rust, stops the child process, and hides both overlays.
+- Runtime spawn, malformed handshake, and runtime exit produce fixed status codes without raw
+  process output or local paths.
+- No TCP listener, shell command RPC, model, secret, remote access, or BielOS boundary exists.
