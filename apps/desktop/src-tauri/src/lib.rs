@@ -1,6 +1,7 @@
 mod database;
 mod domain;
 mod fullscreen;
+mod native_overlay_region;
 mod overlays;
 mod protocol;
 mod runtime;
@@ -46,7 +47,7 @@ fn set_safe_mode(
         .map_err(|_| "operation_failed")?;
     state.safe_mode.store(enabled, Ordering::SeqCst);
     if enabled {
-        state.overlay_input.clear_all();
+        overlays::clear_native_regions(&app, &state.overlay_input);
         state.runtime.enter_safe_mode();
         overlays::set_visible(&app, false);
     } else {
@@ -86,10 +87,11 @@ fn set_overlay_interactive_regions(
     if state.safe_mode.load(Ordering::SeqCst) && !regions.is_empty() {
         return Err("operation_unavailable");
     }
-    state
-        .overlay_input
-        .set_regions(label, regions)
-        .map_err(|_| "operation_failed")
+    if overlays::install_regions(&window, label, &state.overlay_input, regions).is_err() {
+        let _ = window.hide();
+        return Err("operation_failed");
+    }
+    Ok(())
 }
 
 fn snapshot(state: &AppState) -> Result<AppSnapshot, &'static str> {
@@ -173,6 +175,9 @@ pub fn run() {
         .expect("AIP desktop initialization failed");
 
     app.run(|app_handle, event| {
+        if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+            overlays::reset_native_regions(app_handle);
+        }
         if matches!(event, tauri::RunEvent::Exit) {
             if let Some(state) = app_handle.try_state::<AppState>() {
                 state.runtime.shutdown();

@@ -13,8 +13,9 @@ The repository defines checks for:
 - Python formatting, linting, strict typing, tests, and deterministic health output;
 - Rust formatting, checking, Clippy, SQLite tests, protocol tests, state tests, and overlay
   interactive-region tests;
-- deterministic validation of region boundaries, malformed geometry, independent overlay
-  state, and logical-coordinate conversion at 100%, 125%, and 150% display scaling.
+- deterministic validation of alpha-mask geometry, malformed snapshots, independent overlay
+  state, native adapter success/failure, teardown, gesture transitions, and coordinate
+  conversion at 100%, 125%, 150%, 175%, and 200% display scaling.
 
 CI runs the complete non-interactive set on a Windows runner with Node 22, Python 3.11,
 pnpm, stable Rust, rustfmt, and Clippy. It does not publish installers or use secrets.
@@ -33,11 +34,16 @@ Automated checks do not prove:
 Use the manual checklist in `docs/WINDOWS_SETUP.md` before approving Phase 0 for the next
 phase. Do not replace missing manual evidence with mocked results.
 
-The click-through hotfix derives active regions from the rendered sprite, name label, and
-thought indicator. React reports those regions only when layout or visibility changes;
-Rust validates and stores them independently for each overlay and passes input through
-outside the active regions. This contract is covered by deterministic tests, but native
-WebView behavior still requires the focused manual retest in `docs/WINDOWS_SETUP.md`.
+The first click-through hotfix used DOM rectangles and cursor-dependent whole-window input
+toggling. Manual Windows 11 validation of commit `9540f0a` proved that transparent areas still
+intercepted clicks and that native drag prevented the thought gesture.
+
+The second hotfix derives compact regions from painted sprite alpha, adds the visible label
+and thought rectangles, converts CSS logical coordinates to physical window coordinates
+exactly once, and installs the resulting shape with the Win32 window-region API. A small
+click-versus-drag state machine delays native drag until movement crosses its threshold.
+Automated tests cover this contract, but real unrelated-application pass-through remains
+pending. The tested machine's resolution was 1920 x 1080; its Windows scaling was not recorded.
 
 ## Phase boundary
 
