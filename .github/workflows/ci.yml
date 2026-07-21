@@ -58,4 +58,15 @@ jobs:
         run: pnpm python:check
 
       - name: Validate Rust and Tauri core
-        run: pnpm tauri:check
+        shell: pwsh
+        run: |
+          $output = & pnpm tauri:check 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | ForEach-Object { Write-Output $_ }
+
+          if ($exitCode -ne 0) {
+            $tail = ($output | Select-Object -Last 80) -join "`n"
+            $annotation = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
+            Write-Output "::error title=Rust and Tauri validation failed::$annotation"
+            exit $exitCode
+          }
