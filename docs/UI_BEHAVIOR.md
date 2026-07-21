@@ -459,3 +459,14 @@ Phase 0 must not fake:
 - autonomous behavior.
 
 Placeholders must be labeled as placeholders in code or documentation, not presented as finished functionality.
+
+## 16. Phase 0 implementation evidence
+
+The implemented main panel exposes only home, agent, and diagnostic anchors. It labels both
+agents as provisional, reports runtime degradation, exposes a persisted safe-mode control,
+and does not present model, chat, or memory functionality as available.
+
+The overlay uses original 64x64 SVG pixel assets with integer scaling, native Tauri drag,
+persisted positions, transparent windows, always-on-top configuration, a bounded geometry
+hit-test loop, and idle/dragged/thinking placeholders. Click-through, full-screen hiding,
+scaling, and multi-monitor behavior require the manual Windows checklist before approval.

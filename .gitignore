@@ -1,6 +1,7 @@
 # JavaScript / TypeScript
 node_modules/
 .pnpm-store/
+.tools/
 dist/
 build/
 coverage/
@@ -9,7 +10,6 @@ coverage/
 # Tauri / Rust
 target/
 **/target/
-Cargo.lock
 
 # Python
 __pycache__/
@@ -19,6 +19,8 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+*.egg-info/
+.coverage
 
 # Local environment and secrets
 .env
@@ -34,6 +36,7 @@ AIP-Data/
 *.db
 *.db-shm
 *.db-wal
+*.db-journal
 *.sqlite
 *.sqlite3
 backups/

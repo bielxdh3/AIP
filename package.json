@@ -1,0 +1,34 @@
+{
+  "name": "aip-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AIP local-first desktop workspace",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @aip/contracts build && pnpm --filter @aip/desktop tauri dev",
+    "build": "pnpm --filter @aip/contracts build && pnpm --filter @aip/desktop build",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "format:check": "prettier --check \"apps/**/*.{ts,tsx,css,json,html}\" \"packages/**/*.{ts,json}\" \"scripts/**/*.mjs\" \".github/**/*.{yaml,yml}\" \"*.{json,yaml,yml,mjs}\"",
+    "secrets:scan": "node scripts/secrets-scan.mjs",
+    "python:format": "python -m ruff format --check services/runtime",
+    "python:lint": "python -m ruff check services/runtime",
+    "python:typecheck": "python -m mypy services/runtime/src services/runtime/tests",
+    "python:test": "python -m unittest discover -s services/runtime/tests -v",
+    "python:check": "pnpm python:format && pnpm python:lint && pnpm python:typecheck && pnpm python:test",
+    "tauri:check": "pnpm --filter @aip/desktop tauri:check",
+    "check": "pnpm secrets:scan && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm python:check && pnpm tauri:check"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.7.0",
+    "globals": "17.7.0",
+    "prettier": "3.9.6",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.65.0"
+  }
+}

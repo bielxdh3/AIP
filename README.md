@@ -2,35 +2,68 @@
 
 **Agentes Independentes Personalizáveis**
 
-AIP is a local-first, modular platform for creating customizable 2D agents with independent identities, persistent memory, interchangeable language models, and a future integration path with BielOS.
-
-The product name is **AIP**. The visual identity may use the stylized form **A.I.P.**
+AIP (Agentes Independentes Personalizáveis) is a local-first modular platform for
+creating 2D agents with identity, memory, interchangeable models, and future BielOS
+integration. The visual product name is **A.I.P.**
 
 ## Status
 
-AIP is in specification and bootstrap stage. The first implementation target is a Windows 10 64-bit desktop application tested by the project owner.
+Phase 0 now has a repository implementation for the Windows desktop foundation:
 
-## Initial technical direction
+- pnpm workspace;
+- React and TypeScript main panel in Portuguese;
+- Tauri and Rust application core;
+- Rust-owned SQLite migration and two isolated provisional agents;
+- managed Python runtime with a versioned NDJSON health handshake;
+- transparent always-on-top overlay code paths, persisted drag positions, safe mode,
+  deterministic placeholder animation states, and best-effort full-screen detection;
+- automated TypeScript, Python, Rust, secret-scan, and CI definitions.
 
-- Tauri and Rust for the Windows desktop shell and system integration
-- React and TypeScript for the interface
-- Python as a replaceable local AI runtime
-- SQLite as the authoritative local database
-- Ollama as the first model adapter
-- pnpm monorepo
-- Portuguese user interface
-- English source code, internal identifiers, documentation, and repository content
+Native Rust checks and interactive Windows overlay behavior still require the Windows
+toolchain described in [Windows setup](docs/WINDOWS_SETUP.md). No model, Ollama adapter,
+real chat, memory, automation, Android client, or BielOS integration exists yet.
 
-## Product principles
+## Supported platform
 
-- Local-first and usable without cloud services
-- Agent identity must remain independent from the selected model
-- The desktop interface must remain usable when Python, Ollama, or a model is unavailable
-- Small, phase-scoped implementation increments
-- Explicit permissions before state-changing or destructive actions
-- Maximum practical use of open-source components
-- No BielOS coupling during the standalone AIP implementation
-- Windows 10/11 and Android are the only planned platforms
+- Windows 10 64-bit minimum
+- Windows 11 64-bit
+
+Linux, macOS, iOS, and Android are not supported by Phase 0.
+
+## Stack
+
+- Tauri 2 and Rust for lifecycle, local persistence, process ownership, and overlays
+- React 19 and TypeScript for the Portuguese desktop interface
+- SQLite through bundled `rusqlite`
+- Python 3.11+ as a replaceable managed child runtime
+- pnpm workspaces
+
+## Repository layout
+
+```text
+apps/desktop/               React UI and Tauri/Rust desktop core
+packages/contracts/         Versioned TypeScript contracts and state rules
+services/runtime/           Standard-library Python runtime boundary
+scripts/                    Public-repository validation helpers
+docs/                       Product, architecture, security, and setup documents
+```
+
+## Development
+
+Install the [Windows prerequisites](docs/WINDOWS_SETUP.md), then run:
+
+```powershell
+pnpm install
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".\services\runtime[dev]"
+pnpm check
+pnpm dev
+```
+
+The application stores its database under the Tauri application-local data directory,
+never in the repository. The Python runtime does not access SQLite and opens no network
+listener.
 
 ## Documentation
 
@@ -41,7 +74,8 @@ AIP is in specification and bootstrap stage. The first implementation target is 
 - [UI behavior](docs/UI_BEHAVIOR.md)
 - [Security and permissions](docs/SECURITY_AND_PERMISSIONS.md)
 - [Roadmap](docs/ROADMAP.md)
-- [Codex Phase 0 prompt](docs/CODEX_PHASE_0_PROMPT.md)
+- [Windows setup](docs/WINDOWS_SETUP.md)
+- [Phase 0 validation](docs/PHASE_0_VALIDATION.md)
 
 ## License
 

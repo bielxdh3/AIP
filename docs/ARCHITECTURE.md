@@ -546,3 +546,17 @@ Future integration uses:
 - local model and primary data on the PC.
 
 No future integration code belongs in Phase 0 or the first vertical slice.
+
+## 16. Phase 0 implementation map
+
+The repository implements the initial boundary as follows:
+
+- `apps/desktop/src` owns the Portuguese React presentation and provisional overlay views;
+- `apps/desktop/src-tauri/src` owns SQLite, safe mode, runtime lifecycle, overlay windows,
+  position persistence, and the isolated full-screen probe;
+- `packages/contracts` owns the frontend-facing protocol and deterministic status types;
+- `services/runtime` owns the standard-library Python health/shutdown responder;
+- `apps/desktop/src-tauri/migrations` contains the explicit SQLite migration source.
+
+The Python source path is a development-time Phase 0 boundary. Production runtime bundling
+and installer packaging remain Phase 6 work. No local TCP service is created.

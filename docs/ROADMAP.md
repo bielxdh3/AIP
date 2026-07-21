@@ -14,6 +14,9 @@
 
 Goal: produce the first executable Windows shell with two provisional agents and resilient runtime boundaries.
 
+Implementation state: repository foundation implemented. Approval remains pending until
+native Rust checks and the manual Windows overlay checklist are confirmed.
+
 Deliverables:
 
 - pnpm monorepo;

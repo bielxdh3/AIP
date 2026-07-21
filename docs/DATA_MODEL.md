@@ -365,3 +365,12 @@ Recommended indexes:
 - Schema reset is a separate explicit user action.
 - Model removal never cascades into agent or conversation deletion.
 - User deletion behavior is not implemented until the multi-user phase is explicitly designed.
+
+## 13. Phase 0 implemented subset
+
+Migration `0001_phase0.sql` implements only `schema_migrations`, the implicit Owner row,
+two provisional `agents`, `agent_screen_preferences`, and bounded `app_settings`. The Rust
+data layer seeds stable provisional identifiers, persists safe mode and positions, enables
+foreign keys on every connection, and applies the migration idempotently.
+
+Conversation, message, memory, model, audit, export, and multi-user tables remain design-only.

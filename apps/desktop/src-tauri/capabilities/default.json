@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Local application capability for main and provisional overlay windows",
+  "windows": ["main", "agent-*"],
+  "permissions": ["core:default"]
+}
