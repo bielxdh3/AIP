@@ -16,13 +16,15 @@ use std::{
 
 use database::Database;
 use domain::AppSnapshot;
+use overlays::{InteractiveRegion, OverlayInputState};
 use runtime::RuntimeController;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 struct AppState {
     database: Option<Database>,
     runtime: RuntimeController,
     safe_mode: Arc<AtomicBool>,
+    overlay_input: OverlayInputState,
 }
 
 #[tauri::command]
@@ -44,6 +46,7 @@ fn set_safe_mode(
         .map_err(|_| "operation_failed")?;
     state.safe_mode.store(enabled, Ordering::SeqCst);
     if enabled {
+        state.overlay_input.clear_all();
         state.runtime.enter_safe_mode();
         overlays::set_visible(&app, false);
     } else {
@@ -67,6 +70,26 @@ fn start_overlay_drag(
         .get_webview_window(label)
         .ok_or("operation_unavailable")?;
     window.start_dragging().map_err(|_| "operation_failed")
+}
+
+#[tauri::command]
+fn set_overlay_interactive_regions(
+    window: WebviewWindow,
+    state: State<'_, AppState>,
+    agent_id: String,
+    regions: Vec<InteractiveRegion>,
+) -> Result<(), &'static str> {
+    let label = overlays::window_label(&agent_id).ok_or("operation_unavailable")?;
+    if window.label() != label {
+        return Err("operation_unavailable");
+    }
+    if state.safe_mode.load(Ordering::SeqCst) && !regions.is_empty() {
+        return Err("operation_unavailable");
+    }
+    state
+        .overlay_input
+        .set_regions(label, regions)
+        .map_err(|_| "operation_failed")
 }
 
 fn snapshot(state: &AppState) -> Result<AppSnapshot, &'static str> {
@@ -123,14 +146,16 @@ pub fn run() {
             };
             let safe_mode = Arc::new(AtomicBool::new(stored_safe_mode));
             let runtime = RuntimeController::new(runtime_source_root(), stored_safe_mode);
+            let overlay_input = OverlayInputState::default();
 
             app.manage(AppState {
                 database: database.clone(),
                 runtime: runtime.clone(),
                 safe_mode: Arc::clone(&safe_mode),
+                overlay_input: overlay_input.clone(),
             });
             if let Some(database) = database.as_ref() {
-                overlays::create_windows(app, database, stored_safe_mode)?;
+                overlays::create_windows(app, database, stored_safe_mode, overlay_input)?;
             }
             fullscreen::spawn_monitor(app.handle().clone(), safe_mode);
             if !stored_safe_mode {
@@ -141,7 +166,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_app_snapshot,
             set_safe_mode,
-            start_overlay_drag
+            start_overlay_drag,
+            set_overlay_interactive_regions
         ])
         .build(tauri::generate_context!())
         .expect("AIP desktop initialization failed");

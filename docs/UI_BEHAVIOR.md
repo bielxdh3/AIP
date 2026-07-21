@@ -467,6 +467,8 @@ agents as provisional, reports runtime degradation, exposes a persisted safe-mod
 and does not present model, chat, or memory functionality as available.
 
 The overlay uses original 64x64 SVG pixel assets with integer scaling, native Tauri drag,
-persisted positions, transparent windows, always-on-top configuration, a bounded geometry
-hit-test loop, and idle/dragged/thinking placeholders. Click-through, full-screen hiding,
-scaling, and multi-monitor behavior require the manual Windows checklist before approval.
+persisted positions, transparent windows, always-on-top configuration, DOM-measured visible
+regions validated independently per overlay in Rust, and idle/dragged/thinking placeholders.
+The region contract and common display-scale conversions are covered by deterministic tests.
+Native click-through, full-screen hiding, scaling, and multi-monitor behavior still require
+the manual Windows checklist before approval.
