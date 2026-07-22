@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from .diagnostics import emit_diagnostic
 from .protocol import encode_message, health_document
 from .server import RuntimeServer
 
@@ -23,7 +24,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.health:
         sys.stdout.write(encode_message(health_document()) + "\n")
         return 0
-    return _serve_stdio()
+    try:
+        return _serve_stdio()
+    except Exception:
+        emit_diagnostic("runtime_server_exception")
+        return 2
 
 
 if __name__ == "__main__":

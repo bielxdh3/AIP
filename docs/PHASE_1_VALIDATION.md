@@ -6,6 +6,41 @@ Phase 1 is implemented but not approved. Automated checks and a local commit do 
 real Windows and Ollama smoke test below. Record the exact commit SHA in the validation report;
 the implementation commit message is `feat: add local conversation vertical slice`.
 
+## Failed implementation evidence
+
+Manual validation of `2f41be2ae558b4e7536cbd2755349c3a688a4500` failed and that commit
+remains unchanged. The recorded environment was Windows 10, 100% display scaling, 1920 x 1080,
+one monitor, Ollama 0.13.11, and the selected `llama3.2:1b` model.
+
+Ollama discovery, initial Astra and Luma streaming, persistence, bubbles, click-through,
+fullscreen, and safe mode passed before the failure. Ollama and its API remained healthy while
+the managed AIP Python process disappeared. Active cancellation failed. FIFO, queued
+cancellation, late-token, provider-interruption, simultaneous-bubble, complete history-isolation,
+and idle-resource checks were not completed against that SHA.
+
+The deterministic reproduction found the process-termination path: an exception raised while
+closing the active streaming connection during cancellation could escape the Python server loop.
+The command dispatcher and module entry point did not contain that exception, while Rust discarded
+Python stderr, so the child could exit without a usable diagnostic cause. A second lifecycle race
+allowed Python to emit a terminal event before clearing its active generation, so Rust could
+dispatch the next FIFO job while Python still reported itself busy.
+
+## Runtime lifecycle hotfix
+
+The focused hotfix commit uses `fix: stabilize local chat runtime lifecycle`; record its exact SHA
+before the new manual test. It:
+
+- contains request-level and worker exceptions without exposing raw tracebacks or conversation
+  content;
+- cancels the HTTP stream through a one-shot socket interruption, outside the active-state lock;
+- keeps the Python server alive after completion, cancellation, and provider failure;
+- clears Python active-generation state before emitting the terminal event;
+- records one authoritative Rust cancellation request, ignores later chunks, and advances FIFO
+  once after the terminal event;
+- captures only a 16-entry bounded allowlist of stable Python stderr codes plus the child exit code;
+- reports genuine process death separately from ordinary provider failure or cancellation;
+- requires explicit runtime retry and does not add an automatic restart loop.
+
 ## Automated boundary
 
 CI and local automated tests use synthetic provider data and temporary SQLite databases. They do
@@ -21,15 +56,22 @@ not require Ollama, an installed model, or external internet. Coverage includes:
   terminal idempotence, compact preview, gesture thresholds, and bubble-region add/remove;
 - Phase 0 native-region, scale conversion, safe-mode, and overlay isolation regression tests.
 
+The lifecycle hotfix additionally covers a single persistent Python server sequence of health,
+completion, health, cancellation, health, provider failure, health, another completion, and
+explicit shutdown. Rust process-fixture coverage verifies completion/cancellation/provider-failure
+survival, sanitized bounded stderr capture, unexpected exit classification, and explicit restart.
+Queue and frontend tests cover idempotent cancellation, late/stale event rejection, FIFO
+advancement, duplicate-cancel prevention, authoritative terminal status, and per-agent isolation.
+
 ## Local implementation gate
 
 The pre-commit implementation gate completed successfully on the implementation worktree:
 
-- secret/privacy scan: 85 repository files checked;
+- secret/privacy scan: 88 repository files checked;
 - contracts: 2 tests passed;
-- desktop frontend: 17 tests passed;
-- Python runtime: 17 tests passed;
-- Rust/Tauri core: 28 tests passed;
+- desktop frontend: 18 tests passed;
+- Python runtime: 21 tests passed;
+- Rust/Tauri core: 33 tests passed;
 - ESLint, TypeScript, Ruff, mypy, Cargo fmt, Cargo check, and Clippy passed;
 - Vite production build and `tauri build --no-bundle` passed;
 - `git diff --check` passed.
@@ -37,6 +79,11 @@ The pre-commit implementation gate completed successfully on the implementation 
 The repository-wide Prettier check still reports only the four unchanged Tauri-generated JSON
 schemas already present before Phase 1. All changed frontend and contract files pass formatting.
 These automated results do not approve the phase or replace the manual checks below.
+
+A local Ollama lifecycle smoke test using the installed `llama3.2:1b` model also completed a
+response, cancelled an active streaming response with no late chunks, passed health checks after
+both terminal paths, completed a subsequent response in the same Python process, and exited cleanly
+only after explicit shutdown. Model output was suppressed and was not persisted by the test.
 
 ## Manual environment record
 

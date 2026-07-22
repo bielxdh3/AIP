@@ -10,6 +10,7 @@ import type { AppSnapshot } from "@aip/contracts";
 import {
   blockedSendCopy,
   bubblePresentation,
+  canRequestCancellation,
   providerStatusCopy,
 } from "./conversation-state";
 import { buildBubbleInteractiveRegions, elementBounds } from "./overlay-input";
@@ -21,6 +22,9 @@ export default function Bubble({ agentId }: { agentId: string }) {
   const [expanded, setExpanded] = useState(false);
   const [draft, setDraft] = useState("");
   const [safeMode, setSafeMode] = useState(false);
+  const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
+    null,
+  );
   const bubbleRef = useRef<HTMLElement>(null);
 
   const reportRegion = useCallback(() => {
@@ -100,6 +104,23 @@ export default function Bubble({ agentId }: { agentId: string }) {
     await load();
   }
 
+  async function cancelCurrentRequest() {
+    if (
+      request === null ||
+      !canRequestCancellation(request, cancellingRequestId)
+    )
+      return;
+    setCancellingRequestId(request.requestId);
+    try {
+      await invoke("cancel_phase_one_generation", {
+        requestId: request.requestId,
+      });
+      await load();
+    } finally {
+      setCancellingRequestId(null);
+    }
+  }
+
   return (
     <main
       ref={bubbleRef}
@@ -142,13 +163,13 @@ export default function Bubble({ agentId }: { agentId: string }) {
             <button
               className="bubble-cancel"
               type="button"
-              onClick={() =>
-                void invoke("cancel_phase_one_generation", {
-                  requestId: request.requestId,
-                }).then(load)
-              }
+              disabled={!canRequestCancellation(request, cancellingRequestId)}
+              onClick={() => void cancelCurrentRequest()}
             >
-              Cancelar resposta
+              {request.cancellationRequested ||
+              cancellingRequestId === request.requestId
+                ? "Cancelando resposta…"
+                : "Cancelar resposta"}
             </button>
           ) : null}
           <div className="bubble-composer">

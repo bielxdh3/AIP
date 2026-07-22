@@ -4,8 +4,10 @@ import {
   applyPhaseOneEvent,
   blockedSendCopy,
   bubblePresentation,
+  canRequestCancellation,
   compactPreview,
   createConversationViewState,
+  messageStatusCopy,
   providerStatusCopy,
   requestForAgent,
 } from "./conversation-state";
@@ -55,6 +57,7 @@ function phase(agentId = "astra"): PhaseOneState {
         assistantMessageId: "assistant",
         position: 0,
         active: true,
+        cancellationRequested: false,
       },
     ],
     canSend: true,
@@ -147,10 +150,25 @@ describe("conversation event reducer", () => {
     expect(active.preview).toBe("Gerando resposta…");
     expect(active.fullText).toBe("um\ndois\ntrês\nquatro");
     expect(active.request?.requestId).toBe("request");
+    expect(canRequestCancellation(active.request, null)).toBe(true);
+    expect(canRequestCancellation(active.request, "request")).toBe(false);
+    current.queue[0]!.cancellationRequested = true;
+    expect(bubblePresentation(current).preview).toBe("Cancelando resposta…");
+    expect(canRequestCancellation(current.queue[0]!, null)).toBe(false);
     current.queue = [];
     const complete = bubblePresentation(current);
     expect(complete.preview).toBe("um\ndois\ntrês…");
     expect(complete.request).toBeNull();
+  });
+
+  it("distinguishes provider failure from genuine runtime death", () => {
+    const current = phase();
+    const failed = current.messages[0]!;
+    failed.status = "failed";
+    failed.errorCode = "provider_interrupted";
+    expect(messageStatusCopy(failed)).toContain("Ollama");
+    failed.errorCode = "runtime_process_exit_unexpected";
+    expect(messageStatusCopy(failed)).toContain("Runtime local");
   });
 
   it("keeps simultaneous Astra and Luma bubble reducers isolated", () => {

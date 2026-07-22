@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import http.client
 import json
+import socket
 import threading
 from collections.abc import Callable, Iterable
+from contextlib import suppress
 from typing import Any, Protocol, cast
 
 from .protocol import (
@@ -65,6 +67,38 @@ ConnectionObserver = Callable[[ConnectionLike | None], None]
 ChunkEmitter = Callable[[int, str], None]
 
 
+class _InterruptibleHttpConnection:
+    """Close a streaming socket once and interrupt a concurrent blocking read."""
+
+    def __init__(self, connection: http.client.HTTPConnection) -> None:
+        self._connection = connection
+        self._close_lock = threading.Lock()
+        self._closed = False
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        body: str | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self._connection.request(method, url, body=body, headers=headers or {})
+
+    def getresponse(self) -> ResponseLike:
+        return cast(ResponseLike, self._connection.getresponse())
+
+    def close(self) -> None:
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+            sock = self._connection.sock
+            if sock is not None:
+                with suppress(OSError):
+                    sock.shutdown(socket.SHUT_RDWR)
+            self._connection.close()
+
+
 def _request_connection() -> ConnectionLike:
     # HTTPConnection does not consult proxy environment variables and never follows redirects.
     return cast(
@@ -74,9 +108,8 @@ def _request_connection() -> ConnectionLike:
 
 
 def _stream_connection() -> ConnectionLike:
-    return cast(
-        ConnectionLike,
-        http.client.HTTPConnection(OLLAMA_HOST, OLLAMA_PORT, timeout=120.0),
+    return _InterruptibleHttpConnection(
+        http.client.HTTPConnection(OLLAMA_HOST, OLLAMA_PORT, timeout=120.0)
     )
 
 
@@ -202,6 +235,8 @@ class OllamaClient:
                         total_bytes += encoded_size
                         if total_bytes > MAX_ASSISTANT_OUTPUT_BYTES:
                             raise ProviderError("provider_output_too_large")
+                        if cancel_event.is_set():
+                            raise CancelledError()
                         sequence += 1
                         emit_chunk(sequence, content)
                 done = chunk.get("done", False)

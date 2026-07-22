@@ -41,6 +41,21 @@ struct ActiveGeneration {
     job: GenerationJob,
     last_sequence: u64,
     output_bytes: usize,
+    cancellation_requested: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CancellationDecision {
+    Requested,
+    AlreadyRequested,
+    NotActive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ChunkDecision {
+    Accepted(GenerationJob),
+    Ignored,
+    OutputLimitExceeded,
 }
 
 #[derive(Debug, Default)]
@@ -70,6 +85,7 @@ impl GenerationQueue {
             job: job.clone(),
             last_sequence: 0,
             output_bytes: 0,
+            cancellation_requested: false,
         });
         Some(job)
     }
@@ -99,6 +115,54 @@ impl GenerationQueue {
             .map(|active| active.job.request_id.as_str())
     }
 
+    fn request_cancellation(&mut self, request_id: &str) -> CancellationDecision {
+        let Some(active) = self.active.as_mut() else {
+            return CancellationDecision::NotActive;
+        };
+        if active.job.request_id != request_id {
+            return CancellationDecision::NotActive;
+        }
+        if active.cancellation_requested {
+            return CancellationDecision::AlreadyRequested;
+        }
+        active.cancellation_requested = true;
+        CancellationDecision::Requested
+    }
+
+    fn matches_event(&self, event: &PhaseOneEvent) -> bool {
+        self.active.as_ref().is_some_and(|active| {
+            event.request_id.as_deref() == Some(active.job.request_id.as_str())
+                && event.agent_id.as_deref() == Some(active.job.agent_id.as_str())
+                && event.conversation_id.as_deref() == Some(active.job.conversation_id.as_str())
+                && event.assistant_message_id.as_deref()
+                    == Some(active.job.assistant_message_id.as_str())
+        })
+    }
+
+    fn accept_chunk(
+        &mut self,
+        request_id: &str,
+        sequence: u64,
+        content_bytes: usize,
+    ) -> ChunkDecision {
+        let Some(active) = self.active.as_mut() else {
+            return ChunkDecision::Ignored;
+        };
+        if active.job.request_id != request_id
+            || active.cancellation_requested
+            || sequence != active.last_sequence + 1
+        {
+            return ChunkDecision::Ignored;
+        }
+        let next_size = active.output_bytes.saturating_add(content_bytes);
+        if next_size > MAX_ASSISTANT_OUTPUT_BYTES {
+            return ChunkDecision::OutputLimitExceeded;
+        }
+        active.last_sequence = sequence;
+        active.output_bytes = next_size;
+        ChunkDecision::Accepted(active.job.clone())
+    }
+
     fn contains(&self, request_id: &str) -> bool {
         self.active_request() == Some(request_id)
             || self.pending.iter().any(|job| job.request_id == request_id)
@@ -111,13 +175,18 @@ impl GenerationQueue {
     fn snapshots(&self) -> Vec<QueueEntrySnapshot> {
         let mut snapshots = Vec::with_capacity(self.len());
         if let Some(active) = &self.active {
-            snapshots.push(snapshot(&active.job, 0, true));
+            snapshots.push(snapshot(
+                &active.job,
+                0,
+                true,
+                active.cancellation_requested,
+            ));
         }
         snapshots.extend(
             self.pending
                 .iter()
                 .enumerate()
-                .map(|(index, job)| snapshot(job, index + 1, false)),
+                .map(|(index, job)| snapshot(job, index + 1, false, false)),
         );
         snapshots
     }
@@ -132,7 +201,12 @@ impl GenerationQueue {
     }
 }
 
-fn snapshot(job: &GenerationJob, position: usize, active: bool) -> QueueEntrySnapshot {
+fn snapshot(
+    job: &GenerationJob,
+    position: usize,
+    active: bool,
+    cancellation_requested: bool,
+) -> QueueEntrySnapshot {
     QueueEntrySnapshot {
         request_id: job.request_id.clone(),
         agent_id: job.agent_id.clone(),
@@ -140,6 +214,7 @@ fn snapshot(job: &GenerationJob, position: usize, active: bool) -> QueueEntrySna
         assistant_message_id: job.assistant_message_id.clone(),
         position,
         active,
+        cancellation_requested,
     }
 }
 
@@ -368,14 +443,21 @@ impl ChatCoordinator {
             self.emit_terminal(&job, "generation.cancelled", None);
             return Ok(());
         }
-        if queue.active_request() != Some(request_id) {
-            return Err("generation_not_active");
+        match queue.request_cancellation(request_id) {
+            CancellationDecision::NotActive => return Err("generation_not_active"),
+            CancellationDecision::AlreadyRequested => return Ok(()),
+            CancellationDecision::Requested => {}
         }
         drop(queue);
+        self.emit_refresh(None);
         let cancel_id = format!("cancel-{}", uuid::Uuid::now_v7());
         let request =
             cancellation_request(&cancel_id, request_id).map_err(|_| "operation_failed")?;
-        self.inner.runtime.send(request)
+        if let Err(code) = self.inner.runtime.send(request) {
+            self.fail_active(request_id, code);
+            return Err(code);
+        }
+        Ok(())
     }
 
     pub fn cancel_all(&self, error_code: &'static str) {
@@ -488,6 +570,9 @@ impl ChatCoordinator {
     }
 
     fn handle_generation_event(&self, event: PhaseOneEvent) {
+        if !lock(&self.inner.queue).matches_event(&event) {
+            return;
+        }
         let Some(request_id) = event.request_id.clone() else {
             return;
         };
@@ -501,22 +586,16 @@ impl ChatCoordinator {
                     return;
                 };
                 let mut queue = lock(&self.inner.queue);
-                let Some(active) = queue.active.as_mut() else {
-                    return;
-                };
-                if active.job.request_id != request_id || sequence != active.last_sequence + 1 {
-                    return;
-                }
-                let next_size = active.output_bytes.saturating_add(content.len());
-                if next_size > MAX_ASSISTANT_OUTPUT_BYTES {
-                    drop(queue);
-                    self.fail_active(&request_id, "provider_output_too_large");
-                    return;
-                }
-                active.last_sequence = sequence;
-                active.output_bytes = next_size;
-                let job = active.job.clone();
+                let decision = queue.accept_chunk(&request_id, sequence, content.len());
                 drop(queue);
+                let job = match decision {
+                    ChunkDecision::Accepted(job) => job,
+                    ChunkDecision::Ignored => return,
+                    ChunkDecision::OutputLimitExceeded => {
+                        self.fail_active(&request_id, "provider_output_too_large");
+                        return;
+                    }
+                };
                 if self
                     .inner
                     .database
@@ -529,20 +608,60 @@ impl ChatCoordinator {
                 }
             }
             "generation.complete" => {
-                self.finish_active(&request_id, MessageStatus::Complete, None, event)
+                self.finish_runtime_terminal(&request_id, MessageStatus::Complete, None, event)
             }
             "generation.failed" => {
                 let error_code = event
                     .error_code
                     .clone()
                     .unwrap_or_else(|| "provider_failed".into());
-                self.finish_active(&request_id, MessageStatus::Failed, Some(&error_code), event);
+                self.finish_runtime_terminal(
+                    &request_id,
+                    MessageStatus::Failed,
+                    Some(&error_code),
+                    event,
+                );
             }
             "generation.cancelled" => {
-                self.finish_active(&request_id, MessageStatus::Cancelled, None, event)
+                self.finish_runtime_terminal(&request_id, MessageStatus::Cancelled, None, event)
             }
             _ => {}
         }
+    }
+
+    fn finish_runtime_terminal(
+        &self,
+        request_id: &str,
+        status: MessageStatus,
+        error_code: Option<&str>,
+        event: PhaseOneEvent,
+    ) {
+        let cancelling_job = {
+            let queue = lock(&self.inner.queue);
+            queue
+                .active
+                .as_ref()
+                .filter(|active| {
+                    active.job.request_id == request_id && active.cancellation_requested
+                })
+                .map(|active| active.job.clone())
+        };
+        if let Some(active) = cancelling_job {
+            let cancelled = PhaseOneEvent {
+                protocol_version: PROTOCOL_VERSION,
+                event_type: "generation.cancelled".into(),
+                request_id: Some(active.request_id),
+                agent_id: Some(active.agent_id),
+                conversation_id: Some(active.conversation_id),
+                assistant_message_id: Some(active.assistant_message_id),
+                sequence: None,
+                content: None,
+                error_code: None,
+            };
+            self.finish_active(request_id, MessageStatus::Cancelled, None, cancelled);
+            return;
+        }
+        self.finish_active(request_id, status, error_code, event);
     }
 
     fn finish_active(
@@ -831,6 +950,66 @@ mod tests {
         queue.activate_next();
         assert!(queue.finish_active("one").is_some());
         assert!(queue.finish_active("one").is_none());
+    }
+
+    #[test]
+    fn active_cancellation_is_idempotent_ignores_late_work_and_advances_fifo() {
+        let mut queue = GenerationQueue::default();
+        queue.enqueue(job("one", "astra")).unwrap();
+        queue.enqueue(job("two", "luma")).unwrap();
+        queue.activate_next();
+
+        assert_eq!(
+            queue.request_cancellation("wrong"),
+            CancellationDecision::NotActive
+        );
+        assert_eq!(
+            queue.request_cancellation("one"),
+            CancellationDecision::Requested
+        );
+        assert_eq!(
+            queue.request_cancellation("one"),
+            CancellationDecision::AlreadyRequested
+        );
+        assert!(queue.snapshots()[0].cancellation_requested);
+        assert_eq!(queue.accept_chunk("one", 1, 10), ChunkDecision::Ignored);
+        assert!(queue.finish_active("one").is_some());
+        assert_eq!(queue.activate_next().unwrap().request_id, "two");
+    }
+
+    #[test]
+    fn stale_duplicate_and_out_of_order_chunks_are_ignored() {
+        let mut queue = GenerationQueue::default();
+        queue.enqueue(job("one", "astra")).unwrap();
+        queue.activate_next();
+        assert!(matches!(
+            queue.accept_chunk("one", 1, 5),
+            ChunkDecision::Accepted(_)
+        ));
+        assert_eq!(queue.accept_chunk("one", 1, 5), ChunkDecision::Ignored);
+        assert_eq!(queue.accept_chunk("one", 3, 5), ChunkDecision::Ignored);
+        assert_eq!(queue.accept_chunk("stale", 2, 5), ChunkDecision::Ignored);
+        assert!(matches!(
+            queue.accept_chunk("one", 2, 5),
+            ChunkDecision::Accepted(_)
+        ));
+        let active = queue.active.as_ref().unwrap().job.clone();
+        let matching = PhaseOneEvent {
+            protocol_version: PROTOCOL_VERSION,
+            event_type: "generation.complete".into(),
+            request_id: Some(active.request_id.clone()),
+            agent_id: Some(active.agent_id.clone()),
+            conversation_id: Some(active.conversation_id.clone()),
+            assistant_message_id: Some(active.assistant_message_id.clone()),
+            sequence: None,
+            content: None,
+            error_code: None,
+        };
+        assert!(queue.matches_event(&matching));
+        assert!(!queue.matches_event(&PhaseOneEvent {
+            request_id: Some("stale-session".into()),
+            ..matching
+        }));
     }
 
     #[test]

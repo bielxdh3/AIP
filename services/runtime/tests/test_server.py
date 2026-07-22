@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import io
 import json
+import queue
 import threading
 import time
 import unittest
-from typing import Any
+from typing import IO, Any, cast
 
-from aip_runtime.ollama import CancelledError, ConnectionLike
+from aip_runtime.ollama import CancelledError, ConnectionLike, ProviderError
 from aip_runtime.server import RuntimeServer
 
 
@@ -26,6 +27,11 @@ class FakeConnection(ConnectionLike):
 
     def close(self) -> None:
         return
+
+
+class ExplodingCloseConnection(FakeConnection):
+    def close(self) -> None:
+        raise RuntimeError("synthetic private close detail")
 
 
 class FakeClient:
@@ -68,6 +74,80 @@ class FakeClient:
         emit_chunk(2, " reply")
 
 
+class QueueInput:
+    def __init__(self) -> None:
+        self._lines: queue.Queue[bytes] = queue.Queue()
+
+    def send(self, request: dict[str, object]) -> None:
+        self._lines.put(json.dumps(request, separators=(",", ":")).encode() + b"\n")
+
+    def readline(self, _limit: int = -1) -> bytes:
+        return self._lines.get(timeout=2.0)
+
+
+class LockedOutput:
+    def __init__(self) -> None:
+        self._lines: list[str] = []
+        self._condition = threading.Condition()
+
+    def write(self, value: str) -> int:
+        with self._condition:
+            self._lines.extend(line for line in value.splitlines() if line)
+            self._condition.notify_all()
+        return len(value)
+
+    def flush(self) -> None:
+        return
+
+    def wait_for(self, predicate: Any, timeout: float = 2.0) -> dict[str, object]:
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while True:
+                for line in self._lines:
+                    decoded = json.loads(line)
+                    if predicate(decoded):
+                        return decoded
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AssertionError("synthetic output timeout")
+                self._condition.wait(remaining)
+
+    def decoded(self) -> list[dict[str, object]]:
+        with self._condition:
+            return [json.loads(line) for line in self._lines]
+
+
+class LifecycleClient:
+    def __init__(self) -> None:
+        self.cancel_started = threading.Event()
+
+    def discover(self) -> list[dict[str, object]]:
+        return []
+
+    def show(self, model_id: str) -> dict[str, object]:
+        return {"providerModelId": model_id, "capabilities": []}
+
+    def stream_chat(
+        self,
+        *,
+        model_id: str,
+        cancel_event: threading.Event,
+        observe_connection: Any,
+        emit_chunk: Any,
+        **_kwargs: Any,
+    ) -> None:
+        if model_id == "failure:latest":
+            raise ProviderError("provider_stream_failed")
+        if model_id == "cancel:latest":
+            observe_connection(ExplodingCloseConnection())
+            self.cancel_started.set()
+            if not cancel_event.wait(timeout=2.0):
+                raise AssertionError("synthetic cancellation timeout")
+            emit_chunk(1, "late synthetic chunk")
+            raise AssertionError("late chunk must be rejected")
+        emit_chunk(1, "Synthetic reply")
+
+
 def generation_params() -> dict[str, object]:
     return {
         "agentId": "agent-astra",
@@ -79,11 +159,108 @@ def generation_params() -> dict[str, object]:
     }
 
 
+def request(request_id: str, method: str, params: dict[str, object]) -> dict[str, object]:
+    return {
+        "protocolVersion": 1,
+        "id": request_id,
+        "method": method,
+        "params": params,
+    }
+
+
 def decoded_lines(output: io.StringIO) -> list[dict[str, object]]:
     return [json.loads(line) for line in output.getvalue().splitlines()]
 
 
 class RuntimeServerTests(unittest.TestCase):
+    def test_session_survives_complete_cancel_and_provider_failure_until_shutdown(self) -> None:
+        input_stream = QueueInput()
+        output = LockedOutput()
+        diagnostics: list[object] = []
+        client = LifecycleClient()
+        server = RuntimeServer(
+            output,  # type: ignore[arg-type]
+            client,  # type: ignore[arg-type]
+            diagnostics.append,
+        )
+        result: list[int] = []
+        worker = threading.Thread(
+            target=lambda: result.append(server.serve(cast(IO[bytes], input_stream)))
+        )
+        worker.start()
+
+        input_stream.send(request("health-one", "runtime.health", {}))
+        output.wait_for(lambda line: line.get("id") == "health-one")
+
+        complete = generation_params()
+        complete["model"] = "complete:latest"
+        input_stream.send(request("complete-one", "generation.start", complete))
+        output.wait_for(
+            lambda line: (
+                line.get("event") == "generation.complete"
+                and line.get("requestId") == "complete-one"
+            )
+        )
+        input_stream.send(request("health-two", "runtime.health", {}))
+        output.wait_for(lambda line: line.get("id") == "health-two")
+
+        cancelled = generation_params()
+        cancelled["assistantMessageId"] = "assistant-cancelled"
+        cancelled["model"] = "cancel:latest"
+        input_stream.send(request("cancel-target", "generation.start", cancelled))
+        self.assertTrue(client.cancel_started.wait(timeout=1.0))
+        input_stream.send(
+            request("cancel-command", "generation.cancel", {"requestId": "cancel-target"})
+        )
+        output.wait_for(
+            lambda line: (
+                line.get("event") == "generation.cancelled"
+                and line.get("requestId") == "cancel-target"
+            )
+        )
+        input_stream.send(request("health-three", "runtime.health", {}))
+        output.wait_for(lambda line: line.get("id") == "health-three")
+
+        failed = generation_params()
+        failed["assistantMessageId"] = "assistant-failed"
+        failed["model"] = "failure:latest"
+        input_stream.send(request("failure-one", "generation.start", failed))
+        output.wait_for(
+            lambda line: (
+                line.get("event") == "generation.failed" and line.get("requestId") == "failure-one"
+            )
+        )
+        input_stream.send(request("health-four", "runtime.health", {}))
+        output.wait_for(lambda line: line.get("id") == "health-four")
+
+        final = generation_params()
+        final["assistantMessageId"] = "assistant-final"
+        final["model"] = "complete:latest"
+        input_stream.send(request("complete-two", "generation.start", final))
+        output.wait_for(
+            lambda line: (
+                line.get("event") == "generation.complete"
+                and line.get("requestId") == "complete-two"
+            )
+        )
+        input_stream.send(request("stop", "runtime.shutdown", {}))
+        output.wait_for(lambda line: line.get("id") == "stop")
+        worker.join(timeout=2.0)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [0])
+        events = [line for line in output.decoded() if line.get("event")]
+        self.assertEqual(
+            [line["event"] for line in events if line.get("requestId") == "cancel-target"],
+            ["generation.started", "generation.cancelled"],
+        )
+        self.assertEqual(sum(line.get("event") == "generation.cancelled" for line in events), 1)
+        self.assertIn("ollama_cancel_close_failed", diagnostics)
+        self.assertIn("ollama_stream_cancelled", diagnostics)
+        self.assertIn("ollama_stream_failed", diagnostics)
+        self.assertIn("runtime_shutdown_requested", diagnostics)
+        self.assertNotIn("runtime_request_exception", diagnostics)
+
     def test_provider_discovery_and_shutdown_use_versioned_envelopes(self) -> None:
         output = io.StringIO()
         server = RuntimeServer(output, FakeClient())  # type: ignore[arg-type]
