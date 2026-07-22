@@ -41,6 +41,14 @@ body {
   overflow: hidden;
 }
 
+:root[data-surface="bubble"],
+:root[data-surface="bubble"] body,
+:root[data-surface="bubble"] #root {
+  min-width: 0;
+  background: transparent;
+  overflow: hidden;
+}
+
 button,
 a {
   font: inherit;
@@ -58,6 +66,370 @@ a:focus-visible {
   min-height: 100dvh;
   grid-template-columns: 220px minmax(0, 1fr);
   background: #0b0d11;
+}
+
+.conversation-layout {
+  grid-template-columns: 232px minmax(0, 1fr);
+}
+
+.conversation-main {
+  display: grid;
+  min-width: 0;
+  min-height: 100vh;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: #0b0d11;
+}
+
+.sidebar-label {
+  margin: 4px 10px 9px;
+  color: #68717e;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-tabs {
+  display: grid;
+  gap: 5px;
+}
+
+.agent-tab {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #8d96a5;
+  background: transparent;
+  cursor: pointer;
+}
+
+.agent-tab .agent-sprite {
+  width: 36px;
+  height: 36px;
+}
+
+.agent-tab:hover,
+.agent-tab.active {
+  border-color: #293139;
+  color: #edf0f5;
+  background: #171c22;
+}
+
+.conversation-layout .mode-button {
+  width: 100%;
+  justify-content: center;
+  margin-top: 18px;
+}
+
+.runtime-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 10px 22px;
+  border-bottom: 1px solid #503a27;
+  color: #c9b58a;
+  background: #18140d;
+  font-size: 12px;
+}
+
+.runtime-banner button,
+.conversation-controls button,
+.conversation-empty button,
+.composer button,
+.bubble-cancel,
+.bubble-open-chat,
+.bubble-composer button {
+  padding: 7px 10px;
+  border: 1px solid #37404b;
+  border-radius: 5px;
+  color: #dce1e8;
+  background: #171d24;
+  cursor: pointer;
+}
+
+.conversation-surface {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: auto minmax(200px, 1fr) auto;
+}
+
+.conversation-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 22px;
+  padding: 24px 28px 18px;
+  border-bottom: 1px solid #242932;
+}
+
+.conversation-header h1 {
+  margin-bottom: 7px;
+  font-size: 27px;
+}
+
+.provider-state {
+  color: #8f98a7;
+  font-size: 11px;
+}
+
+.provider-state.available {
+  color: #74c7b4;
+}
+
+.conversation-controls {
+  display: flex;
+  max-width: 620px;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.conversation-controls label {
+  display: grid;
+  gap: 5px;
+  color: #727c8a;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.conversation-controls select {
+  max-width: 250px;
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid #303742;
+  border-radius: 5px;
+  color: #dce1e8;
+  background: #11161c;
+}
+
+.message-history {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-height: 0;
+  padding: 22px 28px;
+  overflow-y: auto;
+}
+
+.chat-message {
+  width: min(720px, 88%);
+  padding: 13px 15px;
+  border: 1px solid #29303a;
+  border-radius: 7px;
+  color: #dce1e8;
+  background: #11161c;
+}
+
+.chat-message.user {
+  justify-self: end;
+  border-color: #285147;
+  background: #10201d;
+}
+
+.chat-message p,
+.chat-message small {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chat-message p {
+  margin: 9px 0 0;
+  font-size: 13px;
+  line-height: 1.58;
+}
+
+.chat-message small {
+  display: block;
+  margin-top: 7px;
+  color: #a98d87;
+}
+
+.message-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #737d8b;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.message-heading strong {
+  color: #aeb6c2;
+}
+
+.history-placeholder,
+.conversation-empty {
+  display: grid;
+  place-content: center;
+  gap: 7px;
+  min-height: 240px;
+  color: #77818e;
+  text-align: center;
+}
+
+.history-placeholder span {
+  font-size: 12px;
+}
+
+.composer {
+  padding: 14px 28px 22px;
+  border-top: 1px solid #242932;
+  background: #0e1116;
+}
+
+.composer textarea {
+  width: 100%;
+  min-height: 76px;
+  resize: vertical;
+  padding: 12px;
+  border: 1px solid #303742;
+  border-radius: 7px;
+  color: #e4e8ee;
+  background: #11161c;
+}
+
+.composer-footer,
+.queue-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.composer-footer {
+  margin-top: 8px;
+  color: #697381;
+  font-size: 10px;
+}
+
+.queue-banner {
+  margin-bottom: 9px;
+  padding: 8px 10px;
+  border: 1px solid #3d3d2d;
+  border-radius: 5px;
+  color: #c8bb8f;
+  background: #17160f;
+  font-size: 11px;
+}
+
+.agent-bubble {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: calc(100% - 16px);
+  padding: 10px;
+  border: 2px solid #46515f;
+  border-radius: 3px;
+  color: #e7ebf1;
+  background: #10151cf2;
+  box-shadow: 5px 5px 0 #07090d99;
+}
+
+.agent-bubble.compact {
+  max-height: 108px;
+}
+
+.agent-bubble.expanded {
+  height: calc(100% - 16px);
+  overflow: hidden;
+}
+
+.bubble-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.bubble-title,
+.bubble-preview,
+.bubble-close {
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.bubble-title {
+  display: grid;
+  gap: 2px;
+  padding: 0;
+  text-align: left;
+}
+
+.bubble-title small {
+  color: #7f8997;
+  font-size: 9px;
+}
+
+.bubble-close {
+  padding: 0 4px;
+  color: #8993a1;
+  font-size: 19px;
+}
+
+.bubble-preview {
+  display: -webkit-box;
+  width: 100%;
+  margin-top: 8px;
+  padding: 0;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.bubble-message-scroll {
+  height: 92px;
+  margin: 9px 0;
+  padding: 8px;
+  overflow-y: auto;
+  border: 1px solid #2c3540;
+  color: #d9dee6;
+  background: #0b0f14;
+}
+
+.bubble-message-scroll p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.bubble-muted {
+  color: #7d8794;
+}
+
+.bubble-cancel,
+.bubble-open-chat {
+  width: 100%;
+  font-size: 10px;
+}
+
+.bubble-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  margin: 7px 0;
+}
+
+.bubble-composer textarea {
+  min-height: 42px;
+  resize: none;
+  padding: 7px;
+  border: 1px solid #333c47;
+  color: #e1e5eb;
+  background: #0b0f14;
 }
 
 .sidebar {

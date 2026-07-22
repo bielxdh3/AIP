@@ -373,4 +373,20 @@ two provisional `agents`, `agent_screen_preferences`, and bounded `app_settings`
 data layer seeds stable provisional identifiers, persists safe mode and positions, enables
 foreign keys on every connection, and applies the migration idempotently.
 
-Conversation, message, memory, model, audit, export, and multi-user tables remain design-only.
+Memory, model inventory, audit, export, and multi-user tables remain design-only.
+
+## 14. Phase 1 implemented subset
+
+Migration `0002_phase1_conversations.sql` adds `conversations` and
+`conversation_messages`. Rust creates exactly one active provisional main conversation for
+each existing agent, using a UUIDv7 identifier and the title `Conversa principal`.
+
+The message table stores explicit conversation and agent identifiers with a composite foreign
+key, plain text, the actual provider-qualified model reference, generation request correlation,
+validated lifecycle status, timestamps, and one sanitized terminal error code. Ordering uses
+`created_at` and `id`; history reads always validate the requested agent/conversation pair.
+
+The Phase 1 selected model and keep-alive remain typed `app_settings` entries. Missing models do
+not erase the saved reference or conversation history. On startup, abandoned `pending` and
+`streaming` assistant rows become `failed` with `runtime_interrupted`, preserving any valid
+partial content. The in-memory queue is not persisted; SQLite messages remain authoritative.

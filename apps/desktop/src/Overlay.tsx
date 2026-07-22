@@ -15,7 +15,6 @@ import {
   endGesture,
   initialOverlayGestureState,
   moveGesture,
-  THOUGHT_DURATION_MS,
 } from "./overlay-gesture";
 import {
   buildInteractiveRegions,
@@ -23,22 +22,31 @@ import {
   readSpriteMask,
   type SpriteMask,
 } from "./overlay-input";
+import { requestForAgent } from "./conversation-state";
+import { usePhaseOne } from "./use-phase-one";
 import "./App.css";
 
 export default function Overlay({ agentId }: { agentId: string }) {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
-  const [animation, setAnimation] = useState<AgentAnimationState>("idle");
+  const [dragging, setDragging] = useState(false);
   const [spriteMask, setSpriteMask] = useState<SpriteMask | null>(null);
+  const { phase } = usePhaseOne(agentId);
   const spriteRef = useRef<HTMLImageElement>(null);
   const labelRef = useRef<HTMLSpanElement>(null);
   const thoughtRef = useRef<HTMLSpanElement>(null);
   const gestureRef = useRef(initialOverlayGestureState);
-  const thoughtTimerRef = useRef<number | null>(null);
   const agent = useMemo(
     () =>
       snapshot?.agents.find((candidate) => candidate.id === agentId) ?? null,
     [agentId, snapshot],
   );
+  const request = phase === null ? null : requestForAgent(phase.queue, agentId);
+  const thinking = request?.active === true;
+  const animation: AgentAnimationState = dragging
+    ? "dragged"
+    : thinking
+      ? "thinking"
+      : "idle";
   const overlayActive = agent !== null && snapshot?.safeMode === false;
 
   useEffect(() => {
@@ -63,7 +71,7 @@ export default function Overlay({ agentId }: { agentId: string }) {
     void invoke("set_overlay_interactive_regions", { agentId, regions }).catch(
       () => null,
     );
-  }, [agentId, overlayActive, spriteMask, animation]);
+  }, [agentId, overlayActive, spriteMask, thinking]);
 
   useLayoutEffect(() => {
     let animationFrame: number | null = null;
@@ -92,9 +100,6 @@ export default function Overlay({ agentId }: { agentId: string }) {
 
   useEffect(
     () => () => {
-      if (thoughtTimerRef.current !== null) {
-        window.clearTimeout(thoughtTimerRef.current);
-      }
       void invoke("set_overlay_interactive_regions", {
         agentId,
         regions: [],
@@ -103,30 +108,15 @@ export default function Overlay({ agentId }: { agentId: string }) {
     [agentId],
   );
 
-  function showThinkingState() {
-    if (thoughtTimerRef.current !== null) {
-      window.clearTimeout(thoughtTimerRef.current);
-    }
-    setAnimation("thinking");
-    thoughtTimerRef.current = window.setTimeout(() => {
-      thoughtTimerRef.current = null;
-      setAnimation("idle");
-    }, THOUGHT_DURATION_MS);
-  }
-
   async function startDrag(button: HTMLButtonElement, pointerId: number) {
-    if (thoughtTimerRef.current !== null) {
-      window.clearTimeout(thoughtTimerRef.current);
-      thoughtTimerRef.current = null;
-    }
     if (button.hasPointerCapture(pointerId))
       button.releasePointerCapture(pointerId);
-    setAnimation("dragged");
+    setDragging(true);
     try {
       await invoke("start_overlay_drag", { agentId });
     } finally {
       gestureRef.current = cancelGesture(gestureRef.current);
-      setAnimation("idle");
+      setDragging(false);
     }
   }
 
@@ -149,9 +139,8 @@ export default function Overlay({ agentId }: { agentId: string }) {
       event.clientY,
     );
     gestureRef.current = result.state;
-    if (result.action === "start_drag") {
+    if (result.action === "start_drag")
       void startDrag(event.currentTarget, event.pointerId);
-    }
   }
 
   function handlePointerUp(event: React.PointerEvent<HTMLButtonElement>) {
@@ -164,7 +153,11 @@ export default function Overlay({ agentId }: { agentId: string }) {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
-    if (result.action === "thought") showThinkingState();
+    if (result.action === "click") {
+      void invoke("set_overlay_bubble_visible", { agentId, visible: true });
+    } else if (result.action === "double_click") {
+      void invoke("open_main_conversation", { agentId });
+    }
   }
 
   function handlePointerCancel(event: React.PointerEvent<HTMLButtonElement>) {
@@ -181,7 +174,7 @@ export default function Overlay({ agentId }: { agentId: string }) {
       <button
         className="overlay-agent"
         type="button"
-        aria-label={`${agent.name}, agente provisório. Arraste para mover.`}
+        aria-label={`${agent.name}. Clique para conversar ou arraste para mover.`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -196,11 +189,11 @@ export default function Overlay({ agentId }: { agentId: string }) {
         <span ref={labelRef} className="overlay-label">
           {agent.name}
         </span>
-        {animation === "thinking" ? (
+        {thinking ? (
           <span
             ref={thoughtRef}
             className="thought-indicator"
-            aria-label="Estado de pensamento provisório"
+            aria-label="Gerando resposta"
           >
             ···
           </span>

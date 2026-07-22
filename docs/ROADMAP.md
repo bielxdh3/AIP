@@ -48,7 +48,7 @@ Excluded:
 
 Expected commit: `chore: bootstrap AIP desktop workspace`
 
-## Phase 1: local conversation vertical slice `[NEXT]`
+## Phase 1: local conversation vertical slice `[PENDING VALIDATION]`
 
 Goal: prove one complete model conversation path without coupling agent identity to the model.
 
@@ -67,7 +67,12 @@ Deliverables:
 
 Expected commit: `feat: add local conversation vertical slice`
 
-## Phase 2: two-agent creation and isolation
+Implementation is present locally. Automated fake-provider, persistence, queue, protocol,
+frontend, build, and security gates are required before the local commit. The phase remains
+pending until real Windows and Ollama discovery, streaming, restart, queue, cancellation,
+provider interruption, bubble, and click-through checks pass against the exact commit.
+
+## Phase 2: two-agent creation and isolation `[BLOCKED BY PHASE 1 VALIDATION]`
 
 Goal: create and persist two independent agents under the implicit Owner.
 

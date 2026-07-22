@@ -1,7 +1,7 @@
 use std::{
     io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
-    process::{Command, Stdio},
+    process::{ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc, Arc, Mutex,
@@ -16,18 +16,37 @@ use std::os::windows::process::CommandExt;
 use crate::{
     domain::{can_transition_runtime, RuntimeState, RuntimeStatus},
     protocol::{
-        health_request, parse_health_response, shutdown_request, MAX_MESSAGE_BYTES,
-        PROTOCOL_VERSION,
+        health_request, parse_health_response, parse_runtime_output, shutdown_request,
+        RuntimeOutput, MAX_MESSAGE_BYTES, PROTOCOL_VERSION,
     },
 };
 
-const HANDSHAKE_ID: &str = "phase0-health";
+const HANDSHAKE_ID: &str = "phase1-health";
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuntimeNotice {
+    Output(RuntimeOutput),
+    Disconnected { detail_code: &'static str },
+}
+
+enum RuntimeCommand {
+    Send(String),
+    Stop,
+}
+
+enum ReaderItem {
+    Line(String),
+    Invalid,
+    Closed,
+}
 
 #[derive(Clone)]
 pub struct RuntimeController {
     status: Arc<Mutex<RuntimeStatus>>,
     stop: Arc<AtomicBool>,
     worker: Arc<Mutex<Option<JoinHandle<()>>>>,
+    command_sender: Arc<Mutex<Option<mpsc::Sender<RuntimeCommand>>>>,
+    subscribers: Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
     source_root: PathBuf,
 }
 
@@ -46,12 +65,32 @@ impl RuntimeController {
             status: Arc::new(Mutex::new(status)),
             stop: Arc::new(AtomicBool::new(false)),
             worker: Arc::new(Mutex::new(None)),
+            command_sender: Arc::new(Mutex::new(None)),
+            subscribers: Arc::new(Mutex::new(Vec::new())),
             source_root,
         }
     }
 
     pub fn snapshot(&self) -> RuntimeStatus {
         lock(&self.status).clone()
+    }
+
+    pub fn subscribe(&self) -> mpsc::Receiver<RuntimeNotice> {
+        let (sender, receiver) = mpsc::channel();
+        lock(&self.subscribers).push(sender);
+        receiver
+    }
+
+    pub fn send(&self, message: String) -> Result<(), &'static str> {
+        if message.len() > MAX_MESSAGE_BYTES {
+            return Err("protocol_encoding_failed");
+        }
+        let sender = lock(&self.command_sender)
+            .clone()
+            .ok_or("runtime_unavailable")?;
+        sender
+            .send(RuntimeCommand::Send(message))
+            .map_err(|_| "runtime_unavailable")
     }
 
     pub fn start(&self) {
@@ -70,11 +109,16 @@ impl RuntimeController {
             None,
             "runtime_starting",
         );
+        let (command_sender, command_receiver) = mpsc::channel();
+        *lock(&self.command_sender) = Some(command_sender);
         let status = Arc::clone(&self.status);
         let stop = Arc::clone(&self.stop);
         let source_root = self.source_root.clone();
+        let subscribers = Arc::clone(&self.subscribers);
+        let stored_sender = Arc::clone(&self.command_sender);
         *worker = Some(thread::spawn(move || {
-            run_runtime_process(status, stop, source_root);
+            run_runtime_process(status, stop, source_root, command_receiver, subscribers);
+            *lock(&stored_sender) = None;
         }));
     }
 
@@ -99,9 +143,13 @@ impl RuntimeController {
 
     fn stop_and_join(&self) {
         self.stop.store(true, Ordering::SeqCst);
+        if let Some(sender) = lock(&self.command_sender).clone() {
+            let _ = sender.send(RuntimeCommand::Stop);
+        }
         if let Some(handle) = lock(&self.worker).take() {
             let _ = handle.join();
         }
+        *lock(&self.command_sender) = None;
     }
 }
 
@@ -109,6 +157,8 @@ fn run_runtime_process(
     status: Arc<Mutex<RuntimeStatus>>,
     stop: Arc<AtomicBool>,
     source_root: PathBuf,
+    command_receiver: mpsc::Receiver<RuntimeCommand>,
+    subscribers: Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
 ) {
     let mut command = Command::new("python");
     let inherited_environment = ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR"]
@@ -132,108 +182,54 @@ fn run_runtime_process(
     command.creation_flags(0x0800_0000);
 
     let Ok(mut child) = command.spawn() else {
-        set_status(
-            &status,
-            RuntimeState::Unavailable,
-            None,
-            "python_unavailable",
-        );
+        unavailable(&status, &subscribers, "python_unavailable");
         return;
     };
     let Some(mut stdin) = child.stdin.take() else {
         let _ = child.kill();
-        set_status(
-            &status,
-            RuntimeState::Unavailable,
-            None,
-            "runtime_stdio_unavailable",
-        );
+        unavailable(&status, &subscribers, "runtime_stdio_unavailable");
         return;
     };
     let Some(stdout) = child.stdout.take() else {
         let _ = child.kill();
-        set_status(
-            &status,
-            RuntimeState::Unavailable,
-            None,
-            "runtime_stdio_unavailable",
-        );
+        unavailable(&status, &subscribers, "runtime_stdio_unavailable");
         return;
     };
 
+    let (line_sender, line_receiver) = mpsc::channel();
+    let reader = thread::spawn(move || read_runtime_lines(stdout, line_sender));
     let Ok(request) = health_request(HANDSHAKE_ID) else {
         let _ = child.kill();
-        set_status(
-            &status,
-            RuntimeState::Unavailable,
-            None,
-            "protocol_encoding_failed",
-        );
+        unavailable(&status, &subscribers, "protocol_encoding_failed");
+        let _ = reader.join();
         return;
     };
-    if writeln!(stdin, "{request}")
-        .and_then(|_| stdin.flush())
-        .is_err()
-    {
+    if write_message(&mut stdin, &request).is_err() {
         let _ = child.kill();
-        set_status(
-            &status,
-            RuntimeState::Unavailable,
-            None,
-            "runtime_handshake_failed",
-        );
+        unavailable(&status, &subscribers, "runtime_handshake_failed");
+        let _ = reader.join();
         return;
     }
 
-    let (sender, receiver) = mpsc::sync_channel(1);
-    thread::spawn(move || {
-        let mut reader = BufReader::new(stdout);
-        let mut line = String::new();
-        let result = reader
-            .by_ref()
-            .take((MAX_MESSAGE_BYTES + 1) as u64)
-            .read_line(&mut line)
-            .map(|read| (read, line));
-        let _ = sender.send((result, reader));
-    });
-
     let deadline = Instant::now() + Duration::from_secs(3);
-    let handshake = loop {
+    let handshake_valid = loop {
         if stop.load(Ordering::SeqCst) || Instant::now() >= deadline {
-            break None;
+            break false;
         }
-        match receiver.recv_timeout(Duration::from_millis(75)) {
-            Ok(result) => break Some(result),
+        match line_receiver.recv_timeout(Duration::from_millis(75)) {
+            Ok(ReaderItem::Line(line)) => break parse_health_response(&line, HANDSHAKE_ID).is_ok(),
+            Ok(ReaderItem::Invalid | ReaderItem::Closed)
+            | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                break false;
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break None,
         }
     };
-
-    let Some((handshake, _stdout_reader)) = handshake else {
-        let _ = child.kill();
-        let _ = child.wait();
-        set_status(
-            &status,
-            RuntimeState::Unavailable,
-            None,
-            "runtime_handshake_failed",
-        );
-        return;
-    };
-    let handshake_valid = handshake.ok().is_some_and(|(read, line)| {
-        read > 0
-            && line.len() <= MAX_MESSAGE_BYTES
-            && parse_health_response(line.trim_end(), HANDSHAKE_ID).is_ok()
-    });
     if !handshake_valid {
         let _ = child.kill();
         let _ = child.wait();
-        set_status(
-            &status,
-            RuntimeState::Unavailable,
-            None,
-            "runtime_handshake_failed",
-        );
+        let _ = reader.join();
+        unavailable(&status, &subscribers, "runtime_handshake_failed");
         return;
     }
 
@@ -243,40 +239,179 @@ fn run_runtime_process(
         Some(PROTOCOL_VERSION),
         "runtime_ready",
     );
+    broadcast(
+        &subscribers,
+        RuntimeNotice::Output(RuntimeOutput::HealthReady {
+            id: HANDSHAKE_ID.into(),
+        }),
+    );
 
     loop {
-        if stop.load(Ordering::SeqCst) {
-            if let Ok(request) = shutdown_request("phase0-shutdown") {
-                let _ = writeln!(stdin, "{request}").and_then(|_| stdin.flush());
-            }
-            let shutdown_deadline = Instant::now() + Duration::from_secs(2);
-            while Instant::now() < shutdown_deadline {
-                if child.try_wait().ok().flatten().is_some() {
-                    break;
+        while let Ok(command) = command_receiver.try_recv() {
+            match command {
+                RuntimeCommand::Send(message) => {
+                    if write_message(&mut stdin, &message).is_err() {
+                        return crashed(
+                            &mut child,
+                            reader,
+                            &status,
+                            &subscribers,
+                            "runtime_write_failed",
+                        );
+                    }
                 }
-                thread::sleep(Duration::from_millis(50));
+                RuntimeCommand::Stop => {
+                    return stop_child(&mut child, &mut stdin, reader, &status);
+                }
             }
-            if child.try_wait().ok().flatten().is_none() {
-                let _ = child.kill();
-            }
-            let _ = child.wait();
-            set_status(&status, RuntimeState::Stopped, None, "runtime_stopped");
-            return;
         }
-
-        match child.try_wait() {
-            Ok(Some(_)) | Err(_) => {
-                set_status(
+        if stop.load(Ordering::SeqCst) {
+            return stop_child(&mut child, &mut stdin, reader, &status);
+        }
+        match line_receiver.recv_timeout(Duration::from_millis(40)) {
+            Ok(ReaderItem::Line(line)) => match parse_runtime_output(&line) {
+                Ok(output) => broadcast(&subscribers, RuntimeNotice::Output(output)),
+                Err(()) => {
+                    return crashed(
+                        &mut child,
+                        reader,
+                        &status,
+                        &subscribers,
+                        "runtime_protocol_invalid",
+                    );
+                }
+            },
+            Ok(ReaderItem::Invalid) => {
+                return crashed(
+                    &mut child,
+                    reader,
                     &status,
-                    RuntimeState::Crashed,
-                    None,
+                    &subscribers,
+                    "runtime_protocol_invalid",
+                );
+            }
+            Ok(ReaderItem::Closed) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return crashed(
+                    &mut child,
+                    reader,
+                    &status,
+                    &subscribers,
                     "runtime_process_ended",
                 );
-                return;
             }
-            Ok(None) => thread::sleep(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        if child.try_wait().ok().flatten().is_some() {
+            let _ = reader.join();
+            set_status(
+                &status,
+                RuntimeState::Crashed,
+                None,
+                "runtime_process_ended",
+            );
+            broadcast(
+                &subscribers,
+                RuntimeNotice::Disconnected {
+                    detail_code: "runtime_process_ended",
+                },
+            );
+            return;
         }
     }
+}
+
+fn read_runtime_lines(stdout: ChildStdout, sender: mpsc::Sender<ReaderItem>) {
+    let mut reader = BufReader::new(stdout);
+    loop {
+        let mut raw = Vec::new();
+        let result = reader
+            .by_ref()
+            .take((MAX_MESSAGE_BYTES + 2) as u64)
+            .read_until(b'\n', &mut raw);
+        match result {
+            Ok(0) => {
+                let _ = sender.send(ReaderItem::Closed);
+                return;
+            }
+            Ok(_) if raw.len() > MAX_MESSAGE_BYTES + 1 || !raw.ends_with(b"\n") => {
+                let _ = sender.send(ReaderItem::Invalid);
+                return;
+            }
+            Ok(_) => {
+                raw.pop();
+                if raw.last() == Some(&b'\r') {
+                    raw.pop();
+                }
+                let Ok(line) = String::from_utf8(raw) else {
+                    let _ = sender.send(ReaderItem::Invalid);
+                    return;
+                };
+                if sender.send(ReaderItem::Line(line)).is_err() {
+                    return;
+                }
+            }
+            Err(_) => {
+                let _ = sender.send(ReaderItem::Closed);
+                return;
+            }
+        }
+    }
+}
+
+fn write_message(stdin: &mut impl Write, message: &str) -> std::io::Result<()> {
+    writeln!(stdin, "{message}")?;
+    stdin.flush()
+}
+
+fn stop_child(
+    child: &mut std::process::Child,
+    stdin: &mut impl Write,
+    reader: JoinHandle<()>,
+    status: &Arc<Mutex<RuntimeStatus>>,
+) {
+    if let Ok(request) = shutdown_request("phase1-shutdown") {
+        let _ = write_message(stdin, &request);
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if child.try_wait().ok().flatten().is_some() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(40));
+    }
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    let _ = reader.join();
+    set_status(status, RuntimeState::Stopped, None, "runtime_stopped");
+}
+
+fn crashed(
+    child: &mut std::process::Child,
+    reader: JoinHandle<()>,
+    status: &Arc<Mutex<RuntimeStatus>>,
+    subscribers: &Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
+    detail_code: &'static str,
+) {
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = reader.join();
+    set_status(status, RuntimeState::Crashed, None, detail_code);
+    broadcast(subscribers, RuntimeNotice::Disconnected { detail_code });
+}
+
+fn unavailable(
+    status: &Arc<Mutex<RuntimeStatus>>,
+    subscribers: &Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
+    detail_code: &'static str,
+) {
+    set_status(status, RuntimeState::Unavailable, None, detail_code);
+    broadcast(subscribers, RuntimeNotice::Disconnected { detail_code });
+}
+
+fn broadcast(subscribers: &Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>, notice: RuntimeNotice) {
+    lock(subscribers).retain(|subscriber| subscriber.send(notice.clone()).is_ok());
 }
 
 fn set_status(
@@ -315,5 +450,11 @@ mod tests {
         assert_eq!(controller.snapshot().state, RuntimeState::SafeMode);
         controller.shutdown();
         assert_eq!(controller.snapshot().state, RuntimeState::SafeMode);
+    }
+
+    #[test]
+    fn unavailable_session_rejects_commands() {
+        let controller = RuntimeController::new(PathBuf::from("unused"), false);
+        assert_eq!(controller.send("{}".into()), Err("runtime_unavailable"));
     }
 }

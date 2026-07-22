@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { alphaPixelsToRegions, buildInteractiveRegions } from "./overlay-input";
+import {
+  alphaPixelsToRegions,
+  buildBubbleInteractiveRegions,
+  buildInteractiveRegions,
+} from "./overlay-input";
 
 function rgbaMask(rows: string[]): Uint8ClampedArray {
   const rowWidth = rows[0]?.length ?? 0;
@@ -48,5 +52,12 @@ describe("sprite alpha regions", () => {
     expect(alphaPixelsToRegions(pixels, 2, 1)).toEqual([
       { x: 1, y: 0, width: 1, height: 1 },
     ]);
+  });
+
+  it("adds and removes the bubble region with visibility", () => {
+    const bounds = { x: 8, y: 8, width: 344, height: 92 };
+    expect(buildBubbleInteractiveRegions(true, bounds)).toEqual([bounds]);
+    expect(buildBubbleInteractiveRegions(false, bounds)).toEqual([]);
+    expect(buildBubbleInteractiveRegions(true, null)).toEqual([]);
   });
 });

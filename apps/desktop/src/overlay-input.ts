@@ -123,6 +123,15 @@ export function elementBounds(element: HTMLElement | null): RectLike | null {
     : normalizeBounds(element.getBoundingClientRect());
 }
 
+export function buildBubbleInteractiveRegions(
+  visible: boolean,
+  bounds: RectLike | null,
+): OverlayInteractiveRegion[] {
+  if (!visible) return [];
+  const normalized = normalizeBounds(bounds);
+  return normalized === null ? [] : [normalized];
+}
+
 function normalizeBounds(
   bounds: RectLike | null,
 ): OverlayInteractiveRegion | null {
