@@ -560,3 +560,23 @@ The repository implements the initial boundary as follows:
 
 The Python source path is a development-time Phase 0 boundary. Production runtime bundling
 and installer packaging remain Phase 6 work. No local TCP service is created.
+
+## 17. Phase 1 implementation map
+
+Phase 1 adds one bounded local conversation path without changing agent identity:
+
+- React owns Portuguese plain-text conversation rendering, event reduction, inputs, provider
+  status, and two independent bubble surfaces;
+- Rust owns migration `0002`, provisional conversations, histories, settings, recent-context
+  assembly, FIFO authorization, cancellation, terminal state, and Tauri commands/events;
+- Python owns only loopback Ollama HTTP transport, normalized discovery, NDJSON parsing, and
+  active connection cancellation;
+- one persistent child session keeps reading cancel and shutdown requests while one worker runs
+  the only active heavy generation;
+- unexpected runtime exit resolves active and queued attempts with stable failure codes, while
+  startup recovery marks abandoned `pending` or `streaming` rows as interrupted;
+- the application-level Phase 1 model setting is deliberately separate from future per-agent
+  defaults and per-conversation overrides.
+
+The production transport has no listener, does not inherit proxy configuration, does not follow
+redirects, and permits only `127.0.0.1:11434`.

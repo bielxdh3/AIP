@@ -1,0 +1,968 @@
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    thread,
+};
+
+use tauri::{AppHandle, Emitter};
+
+use crate::{
+    database::{now_millis, ContextMessage, Database, MessageAttempt},
+    domain::{
+        MessageAuthor, MessageStatus, PhaseOneEvent, PhaseOneState, ProviderSnapshot,
+        ProviderState, QueueEntrySnapshot, RuntimeState, SendMessageResult,
+        MAX_ASSISTANT_OUTPUT_BYTES, MAX_CONTEXT_BYTES, MAX_HISTORY_MESSAGES, MAX_QUEUE_LENGTH,
+        MAX_USER_MESSAGE_BYTES,
+    },
+    overlays,
+    protocol::{
+        cancellation_request, discovery_request, generation_request, show_model_request,
+        valid_provider_model_id, PromptMessage, RuntimeOutput, PROTOCOL_VERSION,
+    },
+    runtime::{RuntimeController, RuntimeNotice},
+};
+
+const EVENT_NAME: &str = "phase-one-event";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GenerationJob {
+    request_id: String,
+    agent_id: String,
+    conversation_id: String,
+    assistant_message_id: String,
+    model_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActiveGeneration {
+    job: GenerationJob,
+    last_sequence: u64,
+    output_bytes: usize,
+}
+
+#[derive(Debug, Default)]
+struct GenerationQueue {
+    pending: VecDeque<GenerationJob>,
+    active: Option<ActiveGeneration>,
+}
+
+impl GenerationQueue {
+    fn enqueue(&mut self, job: GenerationJob) -> Result<(), &'static str> {
+        if self.len() >= MAX_QUEUE_LENGTH {
+            return Err("queue_full");
+        }
+        if self.contains(&job.request_id) {
+            return Err("duplicate_request");
+        }
+        self.pending.push_back(job);
+        Ok(())
+    }
+
+    fn activate_next(&mut self) -> Option<GenerationJob> {
+        if self.active.is_some() {
+            return None;
+        }
+        let job = self.pending.pop_front()?;
+        self.active = Some(ActiveGeneration {
+            job: job.clone(),
+            last_sequence: 0,
+            output_bytes: 0,
+        });
+        Some(job)
+    }
+
+    fn cancel_queued(&mut self, request_id: &str) -> Option<GenerationJob> {
+        let index = self
+            .pending
+            .iter()
+            .position(|job| job.request_id == request_id)?;
+        self.pending.remove(index)
+    }
+
+    fn finish_active(&mut self, request_id: &str) -> Option<GenerationJob> {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.job.request_id == request_id)
+        {
+            return self.active.take().map(|active| active.job);
+        }
+        None
+    }
+
+    fn active_request(&self) -> Option<&str> {
+        self.active
+            .as_ref()
+            .map(|active| active.job.request_id.as_str())
+    }
+
+    fn contains(&self, request_id: &str) -> bool {
+        self.active_request() == Some(request_id)
+            || self.pending.iter().any(|job| job.request_id == request_id)
+    }
+
+    fn len(&self) -> usize {
+        self.pending.len() + usize::from(self.active.is_some())
+    }
+
+    fn snapshots(&self) -> Vec<QueueEntrySnapshot> {
+        let mut snapshots = Vec::with_capacity(self.len());
+        if let Some(active) = &self.active {
+            snapshots.push(snapshot(&active.job, 0, true));
+        }
+        snapshots.extend(
+            self.pending
+                .iter()
+                .enumerate()
+                .map(|(index, job)| snapshot(job, index + 1, false)),
+        );
+        snapshots
+    }
+
+    fn clear(&mut self) -> Vec<GenerationJob> {
+        let mut jobs = Vec::with_capacity(self.len());
+        if let Some(active) = self.active.take() {
+            jobs.push(active.job);
+        }
+        jobs.extend(self.pending.drain(..));
+        jobs
+    }
+}
+
+fn snapshot(job: &GenerationJob, position: usize, active: bool) -> QueueEntrySnapshot {
+    QueueEntrySnapshot {
+        request_id: job.request_id.clone(),
+        agent_id: job.agent_id.clone(),
+        conversation_id: job.conversation_id.clone(),
+        assistant_message_id: job.assistant_message_id.clone(),
+        position,
+        active,
+    }
+}
+
+struct ChatInner {
+    app: AppHandle,
+    database: Database,
+    runtime: RuntimeController,
+    safe_mode: Arc<AtomicBool>,
+    provider: Mutex<ProviderSnapshot>,
+    discovery_requests: Mutex<HashSet<String>>,
+    model_detail_requests: Mutex<HashMap<String, String>>,
+    send_lock: Mutex<()>,
+    queue: Mutex<GenerationQueue>,
+}
+
+#[derive(Clone)]
+pub struct ChatCoordinator {
+    inner: Arc<ChatInner>,
+}
+
+impl ChatCoordinator {
+    pub fn new(
+        app: AppHandle,
+        database: Database,
+        runtime: RuntimeController,
+        safe_mode: Arc<AtomicBool>,
+    ) -> Self {
+        let receiver = runtime.subscribe();
+        let coordinator = Self {
+            inner: Arc::new(ChatInner {
+                app,
+                database,
+                runtime,
+                safe_mode,
+                provider: Mutex::new(ProviderSnapshot::checking()),
+                discovery_requests: Mutex::new(HashSet::new()),
+                model_detail_requests: Mutex::new(HashMap::new()),
+                send_lock: Mutex::new(()),
+                queue: Mutex::new(GenerationQueue::default()),
+            }),
+        };
+        let listener = coordinator.clone();
+        thread::spawn(move || {
+            while let Ok(notice) = receiver.recv() {
+                listener.handle_notice(notice);
+            }
+        });
+        coordinator
+    }
+
+    pub fn state(&self, agent_id: &str) -> Result<PhaseOneState, &'static str> {
+        let agent = self
+            .inner
+            .database
+            .agent(agent_id)
+            .map_err(|_| "operation_unavailable")?;
+        let conversation = self
+            .inner
+            .database
+            .main_conversation(agent_id)
+            .map_err(|_| "operation_unavailable")?;
+        let messages = self
+            .inner
+            .database
+            .messages(agent_id, &conversation.id)
+            .map_err(|_| "operation_failed")?;
+        let settings = self
+            .inner
+            .database
+            .settings()
+            .map_err(|_| "operation_failed")?;
+        let provider = lock(&self.inner.provider).clone();
+        let selected_model_available =
+            settings
+                .selected_model_ref
+                .as_ref()
+                .is_some_and(|selected| {
+                    provider
+                        .models
+                        .iter()
+                        .any(|model| &model.model_ref == selected)
+                });
+        let queue = lock(&self.inner.queue).snapshots();
+        let blocked = self.send_blocked_code(
+            &provider,
+            settings.selected_model_ref.as_deref(),
+            selected_model_available,
+            queue.len(),
+        );
+        Ok(PhaseOneState {
+            agent,
+            conversation,
+            messages,
+            provider,
+            selected_model_ref: settings.selected_model_ref,
+            selected_model_available,
+            keep_alive_minutes: settings.keep_alive_minutes,
+            queue,
+            can_send: blocked.is_none(),
+            send_blocked_code: blocked.map(str::to_string),
+        })
+    }
+
+    pub fn refresh_models(&self) -> Result<(), &'static str> {
+        if self.inner.safe_mode.load(Ordering::SeqCst) {
+            return Err("operation_unavailable");
+        }
+        if self.inner.runtime.snapshot().state != RuntimeState::Ready {
+            *lock(&self.inner.provider) = ProviderSnapshot::unavailable("runtime_unavailable");
+            self.emit_refresh(None);
+            return Err("runtime_unavailable");
+        }
+        *lock(&self.inner.provider) = ProviderSnapshot::checking();
+        let request_id = format!("discover-{}", uuid::Uuid::now_v7());
+        lock(&self.inner.discovery_requests).insert(request_id.clone());
+        let request = discovery_request(&request_id).map_err(|_| "operation_failed")?;
+        if let Err(error) = self.inner.runtime.send(request) {
+            lock(&self.inner.discovery_requests).remove(&request_id);
+            *lock(&self.inner.provider) = ProviderSnapshot::unavailable(error);
+            self.emit_refresh(None);
+            return Err(error);
+        }
+        self.emit_refresh(None);
+        Ok(())
+    }
+
+    pub fn select_model(&self, model_ref: &str) -> Result<(), &'static str> {
+        let provider = lock(&self.inner.provider);
+        if !provider
+            .models
+            .iter()
+            .any(|model| model.model_ref == model_ref)
+        {
+            return Err("model_unavailable");
+        }
+        drop(provider);
+        self.inner
+            .database
+            .set_selected_model(model_ref)
+            .map_err(|_| "operation_failed")?;
+        if let Some(provider_model_id) = model_ref.strip_prefix("ollama:") {
+            let request_id = format!("show-{}", uuid::Uuid::now_v7());
+            if let Ok(request) = show_model_request(&request_id, provider_model_id) {
+                lock(&self.inner.model_detail_requests)
+                    .insert(request_id.clone(), model_ref.to_string());
+                if self.inner.runtime.send(request).is_err() {
+                    lock(&self.inner.model_detail_requests).remove(&request_id);
+                }
+            }
+        }
+        self.emit_refresh(None);
+        Ok(())
+    }
+
+    pub fn set_keep_alive(&self, minutes: u32) -> Result<(), &'static str> {
+        self.inner
+            .database
+            .set_keep_alive(minutes)
+            .map_err(|_| "invalid_keep_alive")?;
+        self.emit_refresh(None);
+        Ok(())
+    }
+
+    pub fn send_message(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        content: &str,
+    ) -> Result<SendMessageResult, &'static str> {
+        let _send_guard = lock(&self.inner.send_lock);
+        if content.is_empty() || content.len() > MAX_USER_MESSAGE_BYTES {
+            return Err("invalid_message");
+        }
+        let state = self.state(agent_id)?;
+        if state.conversation.id != conversation_id {
+            return Err("operation_unavailable");
+        }
+        if let Some(code) = state.send_blocked_code.as_deref() {
+            return Err(match code {
+                "queue_full" => "queue_full",
+                "safe_mode_active" => "safe_mode_active",
+                "model_not_selected" | "selected_model_unavailable" => "model_unavailable",
+                _ => "runtime_unavailable",
+            });
+        }
+        let model_ref = state.selected_model_ref.ok_or("model_unavailable")?;
+        let attempt = self
+            .inner
+            .database
+            .create_message_attempt(agent_id, conversation_id, content, &model_ref)
+            .map_err(|_| "operation_failed")?;
+        let job = job_from_attempt(agent_id, conversation_id, &model_ref, &attempt);
+        if let Err(code) = lock(&self.inner.queue).enqueue(job) {
+            let _ = self.inner.database.finish_assistant(
+                &attempt.assistant_message_id,
+                &attempt.request_id,
+                MessageStatus::Failed,
+                Some(code),
+            );
+            return Err(code);
+        }
+        let result = SendMessageResult {
+            request_id: attempt.request_id,
+            conversation_id: conversation_id.to_string(),
+            user_message_id: attempt.user_message_id,
+            assistant_message_id: attempt.assistant_message_id,
+        };
+        self.emit_refresh(Some(agent_id));
+        self.dispatch_next();
+        Ok(result)
+    }
+
+    pub fn cancel(&self, request_id: &str) -> Result<(), &'static str> {
+        let mut queue = lock(&self.inner.queue);
+        if let Some(job) = queue.cancel_queued(request_id) {
+            drop(queue);
+            self.inner
+                .database
+                .finish_assistant(
+                    &job.assistant_message_id,
+                    &job.request_id,
+                    MessageStatus::Cancelled,
+                    None,
+                )
+                .map_err(|_| "operation_failed")?;
+            self.emit_terminal(&job, "generation.cancelled", None);
+            return Ok(());
+        }
+        if queue.active_request() != Some(request_id) {
+            return Err("generation_not_active");
+        }
+        drop(queue);
+        let cancel_id = format!("cancel-{}", uuid::Uuid::now_v7());
+        let request =
+            cancellation_request(&cancel_id, request_id).map_err(|_| "operation_failed")?;
+        self.inner.runtime.send(request)
+    }
+
+    pub fn cancel_all(&self, error_code: &'static str) {
+        let mut queue = lock(&self.inner.queue);
+        if let Some(request_id) = queue.active_request().map(str::to_string) {
+            let cancel_id = format!("cancel-{}", uuid::Uuid::now_v7());
+            if let Ok(request) = cancellation_request(&cancel_id, &request_id) {
+                let _ = self.inner.runtime.send(request);
+            }
+        }
+        let jobs = queue.clear();
+        drop(queue);
+        for job in jobs {
+            let _ = self.inner.database.finish_assistant(
+                &job.assistant_message_id,
+                &job.request_id,
+                MessageStatus::Cancelled,
+                Some(error_code),
+            );
+            self.emit_terminal(&job, "generation.cancelled", Some(error_code));
+        }
+    }
+
+    pub fn retry_runtime(&self) {
+        if !self.inner.safe_mode.load(Ordering::SeqCst) {
+            self.inner.runtime.start();
+            *lock(&self.inner.provider) = ProviderSnapshot::checking();
+            self.emit_refresh(None);
+        }
+    }
+
+    fn send_blocked_code(
+        &self,
+        provider: &ProviderSnapshot,
+        selected_model: Option<&str>,
+        selected_available: bool,
+        queue_length: usize,
+    ) -> Option<&'static str> {
+        if self.inner.safe_mode.load(Ordering::SeqCst) {
+            Some("safe_mode_active")
+        } else if self.inner.runtime.snapshot().state != RuntimeState::Ready {
+            Some("runtime_unavailable")
+        } else if provider.state == ProviderState::Checking {
+            Some("provider_checking")
+        } else if provider.state == ProviderState::Empty {
+            Some("provider_empty")
+        } else if provider.state != ProviderState::Available {
+            Some("provider_unavailable")
+        } else if selected_model.is_none() {
+            Some("model_not_selected")
+        } else if !selected_available {
+            Some("selected_model_unavailable")
+        } else if queue_length >= MAX_QUEUE_LENGTH {
+            Some("queue_full")
+        } else {
+            None
+        }
+    }
+
+    fn handle_notice(&self, notice: RuntimeNotice) {
+        match notice {
+            RuntimeNotice::Output(RuntimeOutput::Provider { id, mut snapshot }) => {
+                if lock(&self.inner.discovery_requests).remove(&id) {
+                    snapshot.refreshed_at = Some(now_millis());
+                    *lock(&self.inner.provider) = snapshot;
+                    self.emit_refresh(None);
+                }
+            }
+            RuntimeNotice::Output(RuntimeOutput::Error { id, code }) => {
+                if lock(&self.inner.discovery_requests).remove(&id) {
+                    *lock(&self.inner.provider) = provider_error_snapshot(&code);
+                    self.emit_refresh(None);
+                } else if lock(&self.inner.model_detail_requests)
+                    .remove(&id)
+                    .is_none()
+                {
+                    self.fail_active(&id, &code);
+                }
+            }
+            RuntimeNotice::Output(RuntimeOutput::ModelDetails {
+                id,
+                provider_model_id,
+                capabilities,
+            }) => {
+                let Some(model_ref) = lock(&self.inner.model_detail_requests).remove(&id) else {
+                    return;
+                };
+                let mut provider = lock(&self.inner.provider);
+                if let Some(model) = provider.models.iter_mut().find(|model| {
+                    model.model_ref == model_ref && model.provider_model_id == provider_model_id
+                }) {
+                    model.capabilities = capabilities;
+                }
+                drop(provider);
+                self.emit_refresh(None);
+            }
+            RuntimeNotice::Output(RuntimeOutput::Event(event)) => {
+                self.handle_generation_event(event)
+            }
+            RuntimeNotice::Disconnected { detail_code } => {
+                *lock(&self.inner.provider) = ProviderSnapshot::unavailable(detail_code);
+                self.fail_all("runtime_interrupted");
+                self.emit_refresh(None);
+            }
+            RuntimeNotice::Output(RuntimeOutput::HealthReady { .. }) => {
+                let _ = self.refresh_models();
+            }
+            RuntimeNotice::Output(RuntimeOutput::Accepted { .. }) => {}
+        }
+    }
+
+    fn handle_generation_event(&self, event: PhaseOneEvent) {
+        let Some(request_id) = event.request_id.clone() else {
+            return;
+        };
+        match event.event_type.as_str() {
+            "generation.started" => self.emit(event),
+            "generation.chunk" => {
+                let Some(content) = event.content.as_deref() else {
+                    return;
+                };
+                let Some(sequence) = event.sequence else {
+                    return;
+                };
+                let mut queue = lock(&self.inner.queue);
+                let Some(active) = queue.active.as_mut() else {
+                    return;
+                };
+                if active.job.request_id != request_id || sequence != active.last_sequence + 1 {
+                    return;
+                }
+                let next_size = active.output_bytes.saturating_add(content.len());
+                if next_size > MAX_ASSISTANT_OUTPUT_BYTES {
+                    drop(queue);
+                    self.fail_active(&request_id, "provider_output_too_large");
+                    return;
+                }
+                active.last_sequence = sequence;
+                active.output_bytes = next_size;
+                let job = active.job.clone();
+                drop(queue);
+                if self
+                    .inner
+                    .database
+                    .append_assistant_chunk(&job.assistant_message_id, &job.request_id, content)
+                    .is_ok()
+                {
+                    self.emit(event);
+                } else {
+                    self.fail_active(&request_id, "persistence_failed");
+                }
+            }
+            "generation.complete" => {
+                self.finish_active(&request_id, MessageStatus::Complete, None, event)
+            }
+            "generation.failed" => {
+                let error_code = event
+                    .error_code
+                    .clone()
+                    .unwrap_or_else(|| "provider_failed".into());
+                self.finish_active(&request_id, MessageStatus::Failed, Some(&error_code), event);
+            }
+            "generation.cancelled" => {
+                self.finish_active(&request_id, MessageStatus::Cancelled, None, event)
+            }
+            _ => {}
+        }
+    }
+
+    fn finish_active(
+        &self,
+        request_id: &str,
+        status: MessageStatus,
+        error_code: Option<&str>,
+        event: PhaseOneEvent,
+    ) {
+        let Some(job) = lock(&self.inner.queue).finish_active(request_id) else {
+            return;
+        };
+        let persisted = self.inner.database.finish_assistant(
+            &job.assistant_message_id,
+            &job.request_id,
+            status,
+            error_code,
+        );
+        if persisted.is_ok() {
+            self.emit(event);
+        } else {
+            self.emit_terminal(&job, "generation.failed", Some("persistence_failed"));
+        }
+        self.dispatch_next();
+    }
+
+    fn fail_active(&self, request_id: &str, code: &str) {
+        let Some(job) = lock(&self.inner.queue).finish_active(request_id) else {
+            return;
+        };
+        let _ = self.inner.database.finish_assistant(
+            &job.assistant_message_id,
+            &job.request_id,
+            MessageStatus::Failed,
+            Some(code),
+        );
+        self.emit_terminal(&job, "generation.failed", Some(code));
+        self.dispatch_next();
+    }
+
+    fn fail_all(&self, code: &str) {
+        let jobs = lock(&self.inner.queue).clear();
+        for job in jobs {
+            let _ = self.inner.database.finish_assistant(
+                &job.assistant_message_id,
+                &job.request_id,
+                MessageStatus::Failed,
+                Some(code),
+            );
+            self.emit_terminal(&job, "generation.failed", Some(code));
+        }
+    }
+
+    fn dispatch_next(&self) {
+        loop {
+            if self.inner.runtime.snapshot().state != RuntimeState::Ready
+                || self.inner.safe_mode.load(Ordering::SeqCst)
+            {
+                return;
+            }
+            let Some(job) = lock(&self.inner.queue).activate_next() else {
+                return;
+            };
+            let dispatch = self.build_generation_request(&job).and_then(|request| {
+                self.inner
+                    .database
+                    .mark_streaming(&job.assistant_message_id, &job.request_id)
+                    .map_err(|_| "persistence_failed")?;
+                self.inner.runtime.send(request)
+            });
+            if let Err(code) = dispatch {
+                let _ = lock(&self.inner.queue).finish_active(&job.request_id);
+                let _ = self.inner.database.finish_assistant(
+                    &job.assistant_message_id,
+                    &job.request_id,
+                    MessageStatus::Failed,
+                    Some(code),
+                );
+                self.emit_terminal(&job, "generation.failed", Some(code));
+                continue;
+            }
+            self.emit_refresh(Some(&job.agent_id));
+            return;
+        }
+    }
+
+    fn build_generation_request(&self, job: &GenerationJob) -> Result<String, &'static str> {
+        let agent = self
+            .inner
+            .database
+            .agent(&job.agent_id)
+            .map_err(|_| "operation_unavailable")?;
+        let settings = self
+            .inner
+            .database
+            .settings()
+            .map_err(|_| "persistence_failed")?;
+        let context = self
+            .inner
+            .database
+            .context_messages(&job.agent_id, &job.conversation_id, MAX_HISTORY_MESSAGES)
+            .map_err(|_| "persistence_failed")?;
+        let messages = assemble_context(&agent.name, &agent.profile_key, context);
+        let provider_model_id = job
+            .model_ref
+            .strip_prefix("ollama:")
+            .filter(|model| valid_provider_model_id(model))
+            .ok_or("model_unavailable")?;
+        generation_request(
+            &job.request_id,
+            &job.agent_id,
+            &job.conversation_id,
+            &job.assistant_message_id,
+            provider_model_id,
+            settings.keep_alive_minutes,
+            &messages,
+        )
+        .map_err(|_| "protocol_encoding_failed")
+    }
+
+    fn emit_terminal(&self, job: &GenerationJob, event_type: &str, error_code: Option<&str>) {
+        self.emit(PhaseOneEvent {
+            protocol_version: PROTOCOL_VERSION,
+            event_type: event_type.into(),
+            request_id: Some(job.request_id.clone()),
+            agent_id: Some(job.agent_id.clone()),
+            conversation_id: Some(job.conversation_id.clone()),
+            assistant_message_id: Some(job.assistant_message_id.clone()),
+            sequence: None,
+            content: None,
+            error_code: error_code.map(str::to_string),
+        });
+    }
+
+    fn emit_refresh(&self, agent_id: Option<&str>) {
+        self.emit(PhaseOneEvent {
+            protocol_version: PROTOCOL_VERSION,
+            event_type: "state.changed".into(),
+            request_id: None,
+            agent_id: agent_id.map(str::to_string),
+            conversation_id: None,
+            assistant_message_id: None,
+            sequence: None,
+            content: None,
+            error_code: None,
+        });
+    }
+
+    fn emit(&self, event: PhaseOneEvent) {
+        if let Some(agent_id) = event.agent_id.as_deref() {
+            let _ = self.inner.app.emit_to("main", EVENT_NAME, event.clone());
+            if let Some(label) = overlays::window_label(agent_id) {
+                let _ = self.inner.app.emit_to(label, EVENT_NAME, event.clone());
+            }
+            if let Some(label) = overlays::bubble_window_label(agent_id) {
+                let _ = self.inner.app.emit_to(label, EVENT_NAME, event);
+            }
+        } else {
+            let _ = self.inner.app.emit(EVENT_NAME, event);
+        }
+    }
+}
+
+fn job_from_attempt(
+    agent_id: &str,
+    conversation_id: &str,
+    model_ref: &str,
+    attempt: &MessageAttempt,
+) -> GenerationJob {
+    GenerationJob {
+        request_id: attempt.request_id.clone(),
+        agent_id: agent_id.to_string(),
+        conversation_id: conversation_id.to_string(),
+        assistant_message_id: attempt.assistant_message_id.clone(),
+        model_ref: model_ref.to_string(),
+    }
+}
+
+fn assemble_context(
+    agent_name: &str,
+    profile_key: &str,
+    messages: Vec<ContextMessage>,
+) -> Vec<PromptMessage> {
+    let instruction = format!(
+        "Você é {agent_name}, um agente provisório local do perfil {profile_key}. Responda em português por padrão. Não afirme ter executado ações externas."
+    );
+    let mut used = instruction.len();
+    let mut selected = Vec::new();
+    for message in messages.into_iter().rev() {
+        let bytes = message.content.len();
+        if used.saturating_add(bytes) > MAX_CONTEXT_BYTES {
+            break;
+        }
+        used += bytes;
+        selected.push(message);
+    }
+    selected.reverse();
+    let mut prompt = Vec::with_capacity(selected.len() + 1);
+    prompt.push(PromptMessage {
+        role: "system",
+        content: instruction,
+    });
+    prompt.extend(selected.into_iter().map(|message| PromptMessage {
+        role: match message.author {
+            MessageAuthor::User => "user",
+            MessageAuthor::Agent => "assistant",
+            MessageAuthor::System => "system",
+        },
+        content: message.content,
+    }));
+    prompt
+}
+
+fn provider_error_snapshot(code: &str) -> ProviderSnapshot {
+    let state = match code {
+        "provider_malformed" | "provider_payload_too_large" | "provider_model_limit" => {
+            ProviderState::Malformed
+        }
+        "provider_timeout" => ProviderState::Timeout,
+        _ => ProviderState::Unavailable,
+    };
+    ProviderSnapshot {
+        state,
+        detail_code: code.to_string(),
+        models: Vec::new(),
+        refreshed_at: Some(now_millis()),
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use crate::domain::ConversationMessage;
+    use uuid::Uuid;
+
+    use super::*;
+
+    fn job(id: &str, agent: &str) -> GenerationJob {
+        GenerationJob {
+            request_id: id.into(),
+            agent_id: agent.into(),
+            conversation_id: format!("conversation-{agent}"),
+            assistant_message_id: format!("message-{id}"),
+            model_ref: "ollama:test".into(),
+        }
+    }
+
+    #[test]
+    fn queue_is_fifo_bounded_and_agent_independent() {
+        let mut queue = GenerationQueue::default();
+        queue.enqueue(job("one", "astra")).unwrap();
+        queue.enqueue(job("two", "luma")).unwrap();
+        assert_eq!(queue.activate_next().unwrap().request_id, "one");
+        assert_eq!(queue.active_request(), Some("one"));
+        assert_eq!(queue.finish_active("one").unwrap().agent_id, "astra");
+        assert_eq!(queue.activate_next().unwrap().request_id, "two");
+        assert_eq!(queue.finish_active("two").unwrap().agent_id, "luma");
+        for index in 0..MAX_QUEUE_LENGTH {
+            queue
+                .enqueue(job(&format!("bound-{index}"), "astra"))
+                .unwrap();
+        }
+        assert_eq!(queue.enqueue(job("overflow", "luma")), Err("queue_full"));
+    }
+
+    #[test]
+    fn queued_cancel_never_activates_and_duplicate_is_rejected() {
+        let mut queue = GenerationQueue::default();
+        queue.enqueue(job("one", "astra")).unwrap();
+        assert_eq!(queue.enqueue(job("one", "luma")), Err("duplicate_request"));
+        assert_eq!(queue.cancel_queued("one").unwrap().agent_id, "astra");
+        assert!(queue.activate_next().is_none());
+    }
+
+    #[test]
+    fn active_terminal_race_has_one_winner() {
+        let mut queue = GenerationQueue::default();
+        queue.enqueue(job("one", "astra")).unwrap();
+        queue.activate_next();
+        assert!(queue.finish_active("one").is_some());
+        assert!(queue.finish_active("one").is_none());
+    }
+
+    #[test]
+    fn safe_clear_resolves_active_and_queued() {
+        let mut queue = GenerationQueue::default();
+        queue.enqueue(job("one", "astra")).unwrap();
+        queue.enqueue(job("two", "luma")).unwrap();
+        queue.activate_next();
+        assert_eq!(queue.clear().len(), 2);
+        assert_eq!(queue.len(), 0);
+    }
+
+    #[test]
+    fn context_keeps_newest_complete_turns_within_byte_budget() {
+        let messages = (0..40)
+            .map(|index| ContextMessage {
+                author: if index % 2 == 0 {
+                    MessageAuthor::User
+                } else {
+                    MessageAuthor::Agent
+                },
+                content: format!("message-{index}"),
+            })
+            .collect();
+        let prompt = assemble_context("Astra", "owner", messages);
+        assert_eq!(prompt[0].role, "system");
+        assert!(prompt.last().unwrap().content.ends_with("39"));
+        assert!(
+            prompt
+                .iter()
+                .map(|message| message.content.len())
+                .sum::<usize>()
+                <= MAX_CONTEXT_BYTES
+        );
+    }
+
+    #[test]
+    fn queue_snapshots_expose_one_active_generation() {
+        let mut queue = GenerationQueue::default();
+        queue.enqueue(job("one", "astra")).unwrap();
+        queue.enqueue(job("two", "luma")).unwrap();
+        queue.activate_next();
+        let snapshots = queue.snapshots();
+        assert!(snapshots[0].active);
+        assert!(!snapshots[1].active);
+        assert_eq!(snapshots[1].position, 1);
+    }
+
+    #[test]
+    fn message_status_types_remain_serializable() {
+        let message = ConversationMessage {
+            id: "message".into(),
+            conversation_id: "conversation".into(),
+            agent_id: "agent".into(),
+            author: MessageAuthor::Agent,
+            content: String::new(),
+            model_ref: Some("ollama:test".into()),
+            status: MessageStatus::Pending,
+            created_at: 1,
+            completed_at: None,
+            error_code: None,
+        };
+        assert!(serde_json::to_string(&message).unwrap().contains("pending"));
+    }
+
+    #[test]
+    fn synthetic_persistent_generation_pipeline_survives_restart() {
+        let path = std::env::temp_dir()
+            .join(format!("aip-phase1-pipeline-{}", Uuid::now_v7()))
+            .join("aip.sqlite3");
+        let database = Database::initialize(&path).unwrap();
+        let agent = database.snapshot().unwrap().agents.remove(0);
+        let conversation = database.main_conversation(&agent.id).unwrap();
+        let attempt = database
+            .create_message_attempt(
+                &agent.id,
+                &conversation.id,
+                "Synthetic input",
+                "ollama:test",
+            )
+            .unwrap();
+        let mut queue = GenerationQueue::default();
+        queue
+            .enqueue(job_from_attempt(
+                &agent.id,
+                &conversation.id,
+                "ollama:test",
+                &attempt,
+            ))
+            .unwrap();
+        queue.activate_next();
+        database
+            .mark_streaming(&attempt.assistant_message_id, &attempt.request_id)
+            .unwrap();
+        for chunk in ["Synthetic ", "reply"] {
+            database
+                .append_assistant_chunk(&attempt.assistant_message_id, &attempt.request_id, chunk)
+                .unwrap();
+        }
+        database
+            .finish_assistant(
+                &attempt.assistant_message_id,
+                &attempt.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+        assert!(queue.finish_active(&attempt.request_id).is_some());
+        drop(database);
+
+        let reopened = Database::initialize(&path).unwrap();
+        let messages = reopened.messages(&agent.id, &conversation.id).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].content, "Synthetic reply");
+        assert_eq!(messages[1].status, MessageStatus::Complete);
+
+        let cancelled = reopened
+            .create_message_attempt(&agent.id, &conversation.id, "Cancel this", "ollama:test")
+            .unwrap();
+        reopened
+            .finish_assistant(
+                &cancelled.assistant_message_id,
+                &cancelled.request_id,
+                MessageStatus::Cancelled,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            reopened.messages(&agent.id, &conversation.id).unwrap()[3].status,
+            MessageStatus::Cancelled
+        );
+        drop(reopened);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+}

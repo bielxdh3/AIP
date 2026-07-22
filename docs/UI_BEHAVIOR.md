@@ -477,3 +477,26 @@ Native drag begins only after pointer movement crosses a small threshold, preser
 and thought triggering. Runtime commit `a6ccb1badf6aa8a1f317ea1818c247d87f311fe6`
 passed the Phase 0 manual Windows 11 checklist at 100% display scaling. The visible thought
 indicator is draggable but has no separate Phase 0 button action.
+
+## 17. Phase 1 conversation and bubble behavior
+
+The main panel now provides a Portuguese `Conversas` surface with an Astra/Luma selector,
+isolated persistent history, plain-text user and agent messages, lifecycle labels, model status
+and chooser, keep-alive selector, refresh/retry controls, send, queue status, and cancellation.
+Model output is rendered as text only; it cannot create trusted HTML, links, images, or tool
+actions.
+
+Each agent has a separate transparent speech-bubble window. A single agent click opens its
+compact bubble, while a double click focuses the matching full conversation. Compact content is
+limited to three lines by the UI. Expanding shows the latest full assistant text, reply input,
+cancel control, model status, and full-chat action. Astra and Luma bubbles retain independent UI
+state while Rust permits only one heavy generation.
+
+Bubble native regions are registered only around the visible bubble surface. Closing clears the
+region. Agent anchors and persisted positions remain owned by the original 180x192 overlay
+windows, so opening a bubble does not move either character. Full-screen and safe-mode hiding
+apply to both agent and bubble windows, with previously open bubbles restored afterward.
+
+The provisional Phase 0 thought demo is replaced by real queue/generation state. Actual Windows
+click-through, screen-edge placement, focus, full-screen restoration, simultaneous bubbles, and
+the drag/click/double-click transition remain pending the Phase 1 manual smoke test.

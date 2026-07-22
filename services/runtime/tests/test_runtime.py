@@ -13,7 +13,7 @@ from aip_runtime.protocol import encode_message
 class RuntimeProtocolTests(unittest.TestCase):
     def test_health_document_is_deterministic(self) -> None:
         expected = {
-            "capabilities": [],
+            "capabilities": ["ollama.discovery", "ollama.chat", "generation.cancel"],
             "name": "aip-runtime",
             "protocolVersion": PROTOCOL_VERSION,
             "status": "ready",
@@ -41,8 +41,16 @@ class RuntimeProtocolTests(unittest.TestCase):
         wrong_version, _ = handle_line(
             '{"protocolVersion":99,"id":"x","method":"runtime.health","params":{}}'
         )
+        unknown_field, _ = handle_line(
+            '{"protocolVersion":1,"id":"x","method":"runtime.health","params":{},"extra":true}'
+        )
+        invalid_id, _ = handle_line(
+            '{"protocolVersion":1,"id":"bad id","method":"runtime.health","params":{}}'
+        )
         self.assertEqual(malformed["error"]["code"], "malformed_json")  # type: ignore[index]
         self.assertEqual(wrong_version["error"]["code"], "unsupported_protocol")  # type: ignore[index]
+        self.assertEqual(unknown_field["error"]["code"], "invalid_envelope")  # type: ignore[index]
+        self.assertEqual(invalid_id["error"]["code"], "invalid_request_id")  # type: ignore[index]
 
     def test_health_cli_is_deterministic(self) -> None:
         source_root = Path(__file__).resolve().parents[1] / "src"

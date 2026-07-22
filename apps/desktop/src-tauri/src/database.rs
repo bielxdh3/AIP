@@ -1,25 +1,38 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use thiserror::Error;
+use uuid::Uuid;
 
-use crate::domain::{AgentPosition, ProvisionalAgent};
+use crate::domain::{
+    can_transition_message, AgentPosition, ConversationMessage, MessageAuthor, MessageStatus,
+    PhaseOneConversation, ProvisionalAgent, DEFAULT_KEEP_ALIVE_MINUTES, MAX_KEEP_ALIVE_MINUTES,
+    MAX_USER_MESSAGE_BYTES,
+};
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_phase0.sql");
-const OWNER_ID: &str = "usr_owner_local";
-const ASTRA_ID: &str = "agt_astra_provisional";
-const LUMA_ID: &str = "agt_luma_provisional";
+const MIGRATION_0002: &str = include_str!("../migrations/0002_phase1_conversations.sql");
+const MIGRATIONS: [(i64, &str); 2] = [(1, MIGRATION_0001), (2, MIGRATION_0002)];
+pub const OWNER_ID: &str = "usr_owner_local";
+pub const ASTRA_ID: &str = "agt_astra_provisional";
+pub const LUMA_ID: &str = "agt_luma_provisional";
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq, Eq)]
 pub enum DatabaseError {
     #[error("database unavailable")]
     Unavailable,
     #[error("record not found")]
     NotFound,
+    #[error("record does not belong to agent")]
+    OwnershipMismatch,
+    #[error("invalid value")]
+    InvalidValue,
+    #[error("invalid state transition")]
+    InvalidTransition,
 }
 
 impl From<rusqlite::Error> for DatabaseError {
@@ -45,6 +58,25 @@ pub struct DatabaseSnapshot {
     pub agents: Vec<ProvisionalAgent>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhaseOneSettings {
+    pub selected_model_ref: Option<String>,
+    pub keep_alive_minutes: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageAttempt {
+    pub request_id: String,
+    pub user_message_id: String,
+    pub assistant_message_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextMessage {
+    pub author: MessageAuthor,
+    pub content: String,
+}
+
 impl Database {
     pub fn initialize(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
         let path = path.as_ref().to_path_buf();
@@ -54,15 +86,45 @@ impl Database {
 
         let database = Self { path };
         let mut connection = database.open()?;
-        connection.execute_batch(MIGRATION_0001)?;
+        Self::apply_migrations(&mut connection)?;
         Self::seed_phase_zero(&mut connection)?;
+        Self::seed_phase_one(&mut connection)?;
+        Self::recover_interrupted(&connection)?;
         Ok(database)
     }
 
     fn open(&self) -> Result<Connection, DatabaseError> {
         let connection = Connection::open(&self.path)?;
+        connection.busy_timeout(Duration::from_secs(2))?;
         connection.pragma_update(None, "foreign_keys", true)?;
         Ok(connection)
+    }
+
+    fn apply_migrations(connection: &mut Connection) -> Result<(), DatabaseError> {
+        let migration_table_exists = connection.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'schema_migrations'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        let current_version = if migration_table_exists {
+            connection.query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?
+        } else {
+            0
+        };
+
+        for (version, sql) in MIGRATIONS {
+            if version > current_version {
+                connection.execute_batch(sql)?;
+            }
+        }
+        Ok(())
     }
 
     fn seed_phase_zero(connection: &mut Connection) -> Result<(), DatabaseError> {
@@ -106,6 +168,37 @@ impl Database {
         Ok(())
     }
 
+    fn seed_phase_one(connection: &mut Connection) -> Result<(), DatabaseError> {
+        let now = now_millis();
+        let transaction = connection.transaction()?;
+        for agent_id in [ASTRA_ID, LUMA_ID] {
+            transaction.execute(
+                "INSERT OR IGNORE INTO conversations
+                 (id, agent_id, owner_user_id, title, kind, is_main, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'Conversa principal', 'normal', 1, ?4, ?4)",
+                params![Uuid::now_v7().to_string(), agent_id, OWNER_ID, now],
+            )?;
+        }
+        transaction.execute(
+            "INSERT OR IGNORE INTO app_settings (key, value_json, updated_at)
+             VALUES ('phase1_keep_alive_minutes', ?1, ?2)",
+            params![DEFAULT_KEEP_ALIVE_MINUTES.to_string(), now],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn recover_interrupted(connection: &Connection) -> Result<(), DatabaseError> {
+        connection.execute(
+            "UPDATE conversation_messages
+             SET status = 'failed', completed_at = ?1,
+                 terminal_error_code = 'runtime_interrupted'
+             WHERE author_type = 'agent' AND status IN ('pending', 'streaming')",
+            params![now_millis()],
+        )?;
+        Ok(())
+    }
+
     pub fn snapshot(&self) -> Result<DatabaseSnapshot, DatabaseError> {
         let connection = self.open()?;
         let safe_mode = connection
@@ -131,18 +224,7 @@ impl Database {
              ORDER BY a.profile_key DESC",
         )?;
         let agents = statement
-            .query_map([], |row| {
-                Ok(ProvisionalAgent {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    profile_key: row.get(2)?,
-                    sprite_key: row.get(3)?,
-                    position: AgentPosition {
-                        x: row.get(4)?,
-                        y: row.get(5)?,
-                    },
-                })
-            })?
+            .query_map([], map_agent)?
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(DatabaseSnapshot {
@@ -152,22 +234,311 @@ impl Database {
         })
     }
 
-    pub fn set_safe_mode(&self, enabled: bool) -> Result<(), DatabaseError> {
+    pub fn agent(&self, agent_id: &str) -> Result<ProvisionalAgent, DatabaseError> {
+        let connection = self.open()?;
+        connection
+            .query_row(
+                "SELECT a.id, a.name, a.profile_key, a.sprite_key,
+                        p.preferred_x, p.preferred_y
+                 FROM agents a
+                 JOIN agent_screen_preferences p ON p.agent_id = a.id
+                 WHERE a.id = ?1 AND a.status = 'active'",
+                params![agent_id],
+                map_agent,
+            )
+            .optional()?
+            .ok_or(DatabaseError::NotFound)
+    }
+
+    pub fn main_conversation(&self, agent_id: &str) -> Result<PhaseOneConversation, DatabaseError> {
+        let connection = self.open()?;
+        connection
+            .query_row(
+                "SELECT id, agent_id, title FROM conversations
+                 WHERE agent_id = ?1 AND is_main = 1 AND archived_at IS NULL",
+                params![agent_id],
+                |row| {
+                    Ok(PhaseOneConversation {
+                        id: row.get(0)?,
+                        agent_id: row.get(1)?,
+                        title: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?
+            .ok_or(DatabaseError::NotFound)
+    }
+
+    pub fn messages(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+    ) -> Result<Vec<ConversationMessage>, DatabaseError> {
+        self.verify_conversation(agent_id, conversation_id)?;
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT id, conversation_id, agent_id, author_type, content,
+                    actual_model_ref, status, created_at, completed_at, terminal_error_code
+             FROM conversation_messages
+             WHERE conversation_id = ?1 AND agent_id = ?2
+             ORDER BY created_at ASC, id ASC",
+        )?;
+        let messages = statement
+            .query_map(params![conversation_id, agent_id], map_message)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DatabaseError::from)?;
+        Ok(messages)
+    }
+
+    pub fn settings(&self) -> Result<PhaseOneSettings, DatabaseError> {
+        let connection = self.open()?;
+        let selected_model_ref = connection
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = 'phase1_selected_model_ref'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .and_then(|value| serde_json::from_str::<String>(&value).ok())
+            .filter(|value| valid_model_ref(value));
+        let keep_alive_minutes = connection
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = 'phase1_keep_alive_minutes'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .and_then(|value| serde_json::from_str::<u32>(&value).ok())
+            .filter(|value| *value <= MAX_KEEP_ALIVE_MINUTES)
+            .unwrap_or(DEFAULT_KEEP_ALIVE_MINUTES);
+        Ok(PhaseOneSettings {
+            selected_model_ref,
+            keep_alive_minutes,
+        })
+    }
+
+    pub fn set_selected_model(&self, model_ref: &str) -> Result<(), DatabaseError> {
+        if !valid_model_ref(model_ref) {
+            return Err(DatabaseError::InvalidValue);
+        }
+        let value = serde_json::to_string(model_ref).map_err(|_| DatabaseError::InvalidValue)?;
+        self.set_setting("phase1_selected_model_ref", &value)
+    }
+
+    pub fn set_keep_alive(&self, minutes: u32) -> Result<(), DatabaseError> {
+        if minutes > MAX_KEEP_ALIVE_MINUTES {
+            return Err(DatabaseError::InvalidValue);
+        }
+        self.set_setting("phase1_keep_alive_minutes", &minutes.to_string())
+    }
+
+    fn set_setting(&self, key: &str, value_json: &str) -> Result<(), DatabaseError> {
         let connection = self.open()?;
         connection.execute(
             "INSERT INTO app_settings (key, value_json, updated_at)
-             VALUES ('safe_mode', ?1, ?2)
+             VALUES (?1, ?2, ?3)
              ON CONFLICT(key) DO UPDATE SET
                value_json = excluded.value_json,
                updated_at = excluded.updated_at",
-            params![if enabled { "true" } else { "false" }, now_millis()],
+            params![key, value_json, now_millis()],
         )?;
         Ok(())
     }
 
+    pub fn create_message_attempt(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        content: &str,
+        model_ref: &str,
+    ) -> Result<MessageAttempt, DatabaseError> {
+        if content.is_empty()
+            || content.len() > MAX_USER_MESSAGE_BYTES
+            || !valid_model_ref(model_ref)
+        {
+            return Err(DatabaseError::InvalidValue);
+        }
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        verify_conversation_tx(&transaction, agent_id, conversation_id)?;
+        let now = now_millis();
+        let attempt = MessageAttempt {
+            request_id: Uuid::now_v7().to_string(),
+            user_message_id: Uuid::now_v7().to_string(),
+            assistant_message_id: Uuid::now_v7().to_string(),
+        };
+        transaction.execute(
+            "INSERT INTO conversation_messages
+             (id, conversation_id, agent_id, author_type, content, status,
+              created_at, completed_at)
+             VALUES (?1, ?2, ?3, 'user', ?4, 'complete', ?5, ?5)",
+            params![
+                attempt.user_message_id,
+                conversation_id,
+                agent_id,
+                content,
+                now
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO conversation_messages
+             (id, conversation_id, agent_id, author_type, content, actual_model_ref,
+              status, generation_request_id, created_at)
+             VALUES (?1, ?2, ?3, 'agent', '', ?4, 'pending', ?5, ?6)",
+            params![
+                attempt.assistant_message_id,
+                conversation_id,
+                agent_id,
+                model_ref,
+                attempt.request_id,
+                now + 1
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![now + 1, conversation_id],
+        )?;
+        transaction.commit()?;
+        Ok(attempt)
+    }
+
+    pub fn context_messages(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ContextMessage>, DatabaseError> {
+        self.verify_conversation(agent_id, conversation_id)?;
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT author_type, content FROM (
+               SELECT author_type, content, created_at, id
+               FROM conversation_messages
+               WHERE conversation_id = ?1 AND agent_id = ?2
+                 AND status = 'complete' AND author_type IN ('user', 'agent')
+               ORDER BY created_at DESC, id DESC LIMIT ?3
+             ) ORDER BY created_at ASC, id ASC",
+        )?;
+        let messages = statement
+            .query_map(params![conversation_id, agent_id, limit as i64], |row| {
+                let author_raw: String = row.get(0)?;
+                Ok(ContextMessage {
+                    author: MessageAuthor::try_from(author_raw.as_str()).map_err(|()| {
+                        rusqlite::Error::InvalidColumnType(
+                            0,
+                            "author_type".into(),
+                            rusqlite::types::Type::Text,
+                        )
+                    })?,
+                    content: row.get(1)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DatabaseError::from)?;
+        Ok(messages)
+    }
+
+    pub fn mark_streaming(
+        &self,
+        assistant_message_id: &str,
+        request_id: &str,
+    ) -> Result<(), DatabaseError> {
+        self.transition_message(
+            assistant_message_id,
+            Some(request_id),
+            MessageStatus::Streaming,
+            None,
+        )
+    }
+
+    pub fn append_assistant_chunk(
+        &self,
+        assistant_message_id: &str,
+        request_id: &str,
+        chunk: &str,
+    ) -> Result<(), DatabaseError> {
+        if chunk.is_empty() {
+            return Ok(());
+        }
+        let connection = self.open()?;
+        let changed = connection.execute(
+            "UPDATE conversation_messages SET content = content || ?1
+             WHERE id = ?2 AND generation_request_id = ?3
+               AND author_type = 'agent' AND status = 'streaming'",
+            params![chunk, assistant_message_id, request_id],
+        )?;
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(DatabaseError::InvalidTransition)
+        }
+    }
+
+    pub fn finish_assistant(
+        &self,
+        assistant_message_id: &str,
+        request_id: &str,
+        status: MessageStatus,
+        error_code: Option<&str>,
+    ) -> Result<(), DatabaseError> {
+        if !matches!(
+            status,
+            MessageStatus::Complete | MessageStatus::Failed | MessageStatus::Cancelled
+        ) {
+            return Err(DatabaseError::InvalidTransition);
+        }
+        self.transition_message(assistant_message_id, Some(request_id), status, error_code)
+    }
+
+    fn transition_message(
+        &self,
+        message_id: &str,
+        request_id: Option<&str>,
+        next: MessageStatus,
+        error_code: Option<&str>,
+    ) -> Result<(), DatabaseError> {
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        let current_raw = transaction
+            .query_row(
+                "SELECT status FROM conversation_messages
+                 WHERE id = ?1 AND (?2 IS NULL OR generation_request_id = ?2)",
+                params![message_id, request_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or(DatabaseError::NotFound)?;
+        let current = MessageStatus::try_from(current_raw.as_str())
+            .map_err(|()| DatabaseError::InvalidValue)?;
+        if !can_transition_message(current, next) {
+            return Err(DatabaseError::InvalidTransition);
+        }
+        let terminal = matches!(
+            next,
+            MessageStatus::Complete | MessageStatus::Failed | MessageStatus::Cancelled
+        );
+        transaction.execute(
+            "UPDATE conversation_messages
+             SET status = ?1, completed_at = ?2, terminal_error_code = ?3
+             WHERE id = ?4",
+            params![
+                next.as_str(),
+                terminal.then(now_millis),
+                error_code,
+                message_id
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn set_safe_mode(&self, enabled: bool) -> Result<(), DatabaseError> {
+        self.set_setting("safe_mode", if enabled { "true" } else { "false" })
+    }
+
     pub fn update_position(&self, agent_id: &str, x: f64, y: f64) -> Result<(), DatabaseError> {
         if !x.is_finite() || !y.is_finite() {
-            return Err(DatabaseError::NotFound);
+            return Err(DatabaseError::InvalidValue);
         }
         let connection = self.open()?;
         let changed = connection.execute(
@@ -182,9 +553,95 @@ impl Database {
             Err(DatabaseError::NotFound)
         }
     }
+
+    fn verify_conversation(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+    ) -> Result<(), DatabaseError> {
+        let connection = self.open()?;
+        let exists = connection.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM conversations
+               WHERE id = ?1 AND agent_id = ?2 AND archived_at IS NULL
+             )",
+            params![conversation_id, agent_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if exists {
+            Ok(())
+        } else {
+            Err(DatabaseError::OwnershipMismatch)
+        }
+    }
 }
 
-fn now_millis() -> i64 {
+fn verify_conversation_tx(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    conversation_id: &str,
+) -> Result<(), DatabaseError> {
+    let exists = transaction.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM conversations
+           WHERE id = ?1 AND agent_id = ?2 AND archived_at IS NULL
+         )",
+        params![conversation_id, agent_id],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if exists {
+        Ok(())
+    } else {
+        Err(DatabaseError::OwnershipMismatch)
+    }
+}
+
+fn valid_model_ref(value: &str) -> bool {
+    let Some(model_id) = value.strip_prefix("ollama:") else {
+        return false;
+    };
+    !model_id.is_empty()
+        && model_id.len() <= 200
+        && model_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || ".:_/-".contains(character))
+}
+
+fn map_agent(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProvisionalAgent> {
+    Ok(ProvisionalAgent {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        profile_key: row.get(2)?,
+        sprite_key: row.get(3)?,
+        position: AgentPosition {
+            x: row.get(4)?,
+            y: row.get(5)?,
+        },
+    })
+}
+
+fn map_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationMessage> {
+    let author_raw: String = row.get(3)?;
+    let status_raw: String = row.get(6)?;
+    Ok(ConversationMessage {
+        id: row.get(0)?,
+        conversation_id: row.get(1)?,
+        agent_id: row.get(2)?,
+        author: MessageAuthor::try_from(author_raw.as_str()).map_err(|()| {
+            rusqlite::Error::InvalidColumnType(3, "author_type".into(), rusqlite::types::Type::Text)
+        })?,
+        content: row.get(4)?,
+        model_ref: row.get(5)?,
+        status: MessageStatus::try_from(status_raw.as_str()).map_err(|()| {
+            rusqlite::Error::InvalidColumnType(6, "status".into(), rusqlite::types::Type::Text)
+        })?,
+        created_at: row.get(7)?,
+        completed_at: row.get(8)?,
+        error_code: row.get(9)?,
+    })
+}
+
+pub fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis() as i64)
@@ -194,9 +651,12 @@ fn now_millis() -> i64 {
 mod tests {
     use std::fs;
 
+    use rusqlite::{params, Connection};
     use uuid::Uuid;
 
-    use super::Database;
+    use crate::domain::MessageStatus;
+
+    use super::{Database, DatabaseError, MIGRATION_0001};
 
     fn test_path() -> std::path::PathBuf {
         std::env::temp_dir()
@@ -204,51 +664,191 @@ mod tests {
             .join("aip.sqlite3")
     }
 
-    #[test]
-    fn initialization_is_idempotent_and_agents_are_separate() {
-        let path = test_path();
-        let first = Database::initialize(&path).expect("database should initialize");
-        let second = Database::initialize(&path).expect("database should reinitialize");
-        let snapshot = second.snapshot().expect("snapshot should load");
-
-        assert_eq!(snapshot.migration_version, 1);
-        assert_eq!(snapshot.agents.len(), 2);
-        assert_ne!(snapshot.agents[0].id, snapshot.agents[1].id);
-        assert_ne!(
-            snapshot.agents[0].profile_key,
-            snapshot.agents[1].profile_key
-        );
-        drop(first);
-        drop(second);
+    fn cleanup(path: &std::path::Path) {
         let _ = fs::remove_dir_all(path.parent().expect("test path should have a parent"));
     }
 
     #[test]
-    fn position_and_safe_mode_persist_across_reopen() {
+    fn fresh_database_reaches_version_two_and_reopens_idempotently() {
         let path = test_path();
-        let database = Database::initialize(&path).expect("database should initialize");
-        let agent_id = database.snapshot().expect("snapshot should load").agents[0]
-            .id
-            .clone();
+        let first = Database::initialize(&path).expect("database should initialize");
+        let second = Database::initialize(&path).expect("database should reinitialize");
+        let snapshot = second.snapshot().expect("snapshot should load");
+        assert_eq!(snapshot.migration_version, 2);
+        assert_eq!(snapshot.agents.len(), 2);
+        for agent in &snapshot.agents {
+            assert_eq!(
+                first.main_conversation(&agent.id).unwrap().title,
+                "Conversa principal"
+            );
+        }
+        drop(first);
+        drop(second);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn version_one_upgrades_without_losing_existing_data() {
+        let path = test_path();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(MIGRATION_0001).unwrap();
+        connection
+            .execute(
+                "INSERT INTO users (id, role, display_name, created_at, updated_at)
+                 VALUES ('preserved', 'owner', 'Preserved', 1, 1)",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let database = Database::initialize(&path).expect("v1 database should upgrade");
+        assert_eq!(database.snapshot().unwrap().migration_version, 2);
+        let connection = Connection::open(&path).unwrap();
+        let preserved: String = connection
+            .query_row(
+                "SELECT display_name FROM users WHERE id = 'preserved'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(preserved, "Preserved");
+        drop(connection);
+        drop(database);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn histories_are_isolated_ordered_and_transitions_are_validated() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let agents = database.snapshot().unwrap().agents;
+        let first = &agents[0];
+        let second = &agents[1];
+        let first_conversation = database.main_conversation(&first.id).unwrap();
+        let second_conversation = database.main_conversation(&second.id).unwrap();
+        let attempt = database
+            .create_message_attempt(
+                &first.id,
+                &first_conversation.id,
+                "Synthetic message",
+                "ollama:test",
+            )
+            .unwrap();
+        assert_eq!(
+            database
+                .messages(&first.id, &first_conversation.id)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(database
+            .messages(&second.id, &second_conversation.id)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            database.messages(&second.id, &first_conversation.id),
+            Err(DatabaseError::OwnershipMismatch)
+        );
         database
-            .update_position(&agent_id, 412.0, 216.0)
-            .expect("position should update");
+            .mark_streaming(&attempt.assistant_message_id, &attempt.request_id)
+            .unwrap();
         database
-            .set_safe_mode(true)
-            .expect("safe mode should update");
+            .append_assistant_chunk(
+                &attempt.assistant_message_id,
+                &attempt.request_id,
+                "Synthetic reply",
+            )
+            .unwrap();
+        database
+            .finish_assistant(
+                &attempt.assistant_message_id,
+                &attempt.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            database.finish_assistant(
+                &attempt.assistant_message_id,
+                &attempt.request_id,
+                MessageStatus::Cancelled,
+                None,
+            ),
+            Err(DatabaseError::InvalidTransition)
+        );
+        let messages = database
+            .messages(&first.id, &first_conversation.id)
+            .unwrap();
+        assert_eq!(messages[0].content, "Synthetic message");
+        assert_eq!(messages[1].content, "Synthetic reply");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn interrupted_messages_recover_and_settings_fall_back() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let agent = database.snapshot().unwrap().agents.remove(0);
+        let conversation = database.main_conversation(&agent.id).unwrap();
+        let attempt = database
+            .create_message_attempt(
+                &agent.id,
+                &conversation.id,
+                "Synthetic message",
+                "ollama:test",
+            )
+            .unwrap();
+        database
+            .mark_streaming(&attempt.assistant_message_id, &attempt.request_id)
+            .unwrap();
+        database.set_selected_model("ollama:test").unwrap();
+        database.set_keep_alive(30).unwrap();
         drop(database);
 
-        let reopened = Database::initialize(&path).expect("database should reopen");
-        let snapshot = reopened.snapshot().expect("snapshot should load");
+        let reopened = Database::initialize(&path).unwrap();
+        let messages = reopened.messages(&agent.id, &conversation.id).unwrap();
+        assert_eq!(messages[1].status, MessageStatus::Failed);
+        assert_eq!(
+            messages[1].error_code.as_deref(),
+            Some("runtime_interrupted")
+        );
+        assert_eq!(
+            reopened.settings().unwrap().selected_model_ref.as_deref(),
+            Some("ollama:test")
+        );
+        assert_eq!(reopened.settings().unwrap().keep_alive_minutes, 30);
+
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "UPDATE app_settings SET value_json = '9999'
+                 WHERE key = 'phase1_keep_alive_minutes'",
+                params![],
+            )
+            .unwrap();
+        drop(connection);
+        assert_eq!(reopened.settings().unwrap().keep_alive_minutes, 15);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn position_and_safe_mode_still_persist() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let agent_id = database.snapshot().unwrap().agents[0].id.clone();
+        database.update_position(&agent_id, 412.0, 216.0).unwrap();
+        database.set_safe_mode(true).unwrap();
+        drop(database);
+        let reopened = Database::initialize(&path).unwrap();
+        let snapshot = reopened.snapshot().unwrap();
         let updated = snapshot
             .agents
             .iter()
             .find(|agent| agent.id == agent_id)
-            .expect("agent should remain present");
+            .unwrap();
         assert_eq!(updated.position.x, 412.0);
-        assert_eq!(updated.position.y, 216.0);
         assert!(snapshot.safe_mode);
-        drop(reopened);
-        let _ = fs::remove_dir_all(path.parent().expect("test path should have a parent"));
+        cleanup(&path);
     }
 }

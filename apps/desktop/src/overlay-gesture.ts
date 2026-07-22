@@ -1,8 +1,7 @@
 export const DRAG_THRESHOLD_PX = 6;
 export const DOUBLE_CLICK_INTERVAL_MS = 450;
-export const THOUGHT_DURATION_MS = 3000;
-
-export type OverlayGestureAction = "none" | "click" | "start_drag" | "thought";
+export type OverlayGestureAction =
+  "none" | "click" | "start_drag" | "double_click";
 
 export type OverlayGestureState = {
   pointerId: number | null;
@@ -64,7 +63,7 @@ export function endGesture(
       pointerId: null,
       lastClickAt: doubleClick ? null : now,
     },
-    action: doubleClick ? "thought" : "click",
+    action: doubleClick ? "double_click" : "click",
   };
 }
 

@@ -1,7 +1,19 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSnapshot, ProvisionalAgent } from "@aip/contracts";
+import { listen } from "@tauri-apps/api/event";
+import type {
+  AppSnapshot,
+  ConversationMessage,
+  ProvisionalAgent,
+} from "@aip/contracts";
 import AgentSprite from "./components/AgentSprite";
+import {
+  blockedSendCopy,
+  providerStatusCopy,
+  requestForAgent,
+} from "./conversation-state";
+import { usePhaseOne } from "./use-phase-one";
+import { createListenerRegistration } from "./listener-lifecycle";
 import "./App.css";
 
 const runtimeLabels: Record<AppSnapshot["runtime"]["state"], string> = {
@@ -13,55 +25,246 @@ const runtimeLabels: Record<AppSnapshot["runtime"]["state"], string> = {
   safe_mode: "Runtime desativado pelo modo seguro",
 };
 
-function AgentCard({ agent }: { agent: ProvisionalAgent }) {
+const statusLabels: Record<ConversationMessage["status"], string> = {
+  pending: "Aguardando processamento…",
+  streaming: "Gerando resposta…",
+  complete: "Concluída",
+  failed: "Não foi possível gerar a resposta",
+  cancelled: "Resposta cancelada",
+};
+
+function AgentButton({
+  agent,
+  active,
+  onSelect,
+}: {
+  agent: ProvisionalAgent;
+  active: boolean;
+  onSelect: () => void;
+}) {
   return (
-    <article className="agent-card">
-      <div className="agent-portrait" aria-hidden="true">
-        <AgentSprite spriteKey={agent.spriteKey} name={agent.name} />
+    <button
+      className={active ? "agent-tab active" : "agent-tab"}
+      type="button"
+      onClick={onSelect}
+    >
+      <AgentSprite spriteKey={agent.spriteKey} name={agent.name} />
+      <span>{agent.name}</span>
+    </button>
+  );
+}
+
+function MessageItem({ message }: { message: ConversationMessage }) {
+  return (
+    <article
+      className={`chat-message ${message.author}`}
+      data-status={message.status}
+    >
+      <div className="message-heading">
+        <strong>{message.author === "user" ? "Você" : "Agente"}</strong>
+        <span>{statusLabels[message.status]}</span>
       </div>
-      <div className="agent-copy">
-        <div className="agent-heading">
-          <div>
-            <p className="eyebrow">Agente provisório</p>
-            <h3>{agent.name}</h3>
-          </div>
-          <span className="status-pill">Em espera</span>
-        </div>
-        <p className="agent-description">
-          {agent.profileKey === "owner"
-            ? "Perfil técnico inicial, separado do runtime de IA."
-            : "Perfil expressivo inicial, separado do runtime de IA."}
-        </p>
-        <dl className="agent-meta">
-          <div>
-            <dt>Posição</dt>
-            <dd>
-              {Math.round(agent.position.x)}, {Math.round(agent.position.y)}
-            </dd>
-          </div>
-          <div>
-            <dt>Animação</dt>
-            <dd>Ocioso</dd>
-          </div>
-        </dl>
-      </div>
+      {message.content ? <p>{message.content}</p> : null}
+      {message.status === "failed" ? (
+        <small>
+          O histórico local foi preservado. Tente novamente quando o runtime
+          estiver disponível.
+        </small>
+      ) : null}
     </article>
+  );
+}
+
+function ConversationSurface({ agentId }: { agentId: string }) {
+  const { phase, error, load } = usePhaseOne(agentId);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const historyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const history = historyRef.current;
+    if (history !== null) history.scrollTop = history.scrollHeight;
+  }, [phase?.messages]);
+
+  if (error) {
+    return (
+      <section className="conversation-empty" role="alert">
+        <p>Não foi possível carregar a conversa local.</p>
+        <button type="button" onClick={() => void load()}>
+          Tentar novamente
+        </button>
+      </section>
+    );
+  }
+  if (phase === null)
+    return (
+      <section className="conversation-empty">Carregando conversa…</section>
+    );
+
+  const currentPhase = phase;
+  const request = requestForAgent(phase.queue, phase.agent.id);
+  const blocked = blockedSendCopy(phase.sendBlockedCode);
+
+  async function send() {
+    const content = draft.trim();
+    if (!content || busy || !currentPhase.canSend) return;
+    setBusy(true);
+    try {
+      await invoke("send_phase_one_message", {
+        agentId: currentPhase.agent.id,
+        conversationId: currentPhase.conversation.id,
+        content,
+      });
+      setDraft("");
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshModels() {
+    await invoke("refresh_ollama_models").catch(() => null);
+    await load();
+  }
+
+  return (
+    <section
+      className="conversation-surface"
+      aria-label={`Conversa com ${phase.agent.name}`}
+    >
+      <header className="conversation-header">
+        <div>
+          <p className="eyebrow">Conversa principal</p>
+          <h1>{phase.agent.name}</h1>
+          <span className={`provider-state ${phase.provider.state}`}>
+            {providerStatusCopy(phase)}
+          </span>
+        </div>
+        <div className="conversation-controls">
+          <label>
+            <span>Modelo local</span>
+            <select
+              value={phase.selectedModelRef ?? ""}
+              onChange={(event) => {
+                if (event.target.value) {
+                  void invoke("select_phase_one_model", {
+                    modelRef: event.target.value,
+                  }).then(load);
+                }
+              }}
+            >
+              <option value="">Selecione um modelo</option>
+              {phase.provider.models.map((model) => (
+                <option value={model.ref} key={model.ref}>
+                  {model.displayName}
+                  {model.parameterSize ? ` · ${model.parameterSize}` : ""}
+                  {model.quantization ? ` · ${model.quantization}` : ""}
+                </option>
+              ))}
+              {phase.selectedModelRef !== null &&
+              !phase.selectedModelAvailable ? (
+                <option value={phase.selectedModelRef}>
+                  Modelo salvo (indisponível)
+                </option>
+              ) : null}
+            </select>
+          </label>
+          <label>
+            <span>Manter modelo carregado</span>
+            <select
+              value={phase.keepAliveMinutes}
+              onChange={(event) =>
+                void invoke("update_keep_alive", {
+                  minutes: Number(event.target.value),
+                }).then(load)
+              }
+            >
+              <option value={0}>Descarregar imediatamente</option>
+              <option value={5}>5 minutos</option>
+              <option value={15}>15 minutos</option>
+              <option value={30}>30 minutos</option>
+              <option value={60}>60 minutos</option>
+              <option value={120}>120 minutos</option>
+            </select>
+          </label>
+          <button type="button" onClick={() => void refreshModels()}>
+            Atualizar modelos
+          </button>
+        </div>
+      </header>
+
+      <div className="message-history" ref={historyRef} aria-live="polite">
+        {phase.messages.length === 0 ? (
+          <div className="history-placeholder">
+            <strong>Esta conversa ainda está vazia.</strong>
+            <span>
+              Escolha um modelo local e envie uma mensagem para começar.
+            </span>
+          </div>
+        ) : (
+          phase.messages.map((message) => (
+            <MessageItem key={message.id} message={message} />
+          ))
+        )}
+      </div>
+
+      <footer className="composer">
+        {request !== null ? (
+          <div className="queue-banner">
+            <span>
+              {request.active
+                ? "Gerando resposta…"
+                : "Aguardando processamento…"}
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                void invoke("cancel_phase_one_generation", {
+                  requestId: request.requestId,
+                }).then(load)
+              }
+            >
+              Cancelar
+            </button>
+          </div>
+        ) : null}
+        <textarea
+          value={draft}
+          maxLength={16_384}
+          placeholder={blocked ?? `Escreva para ${phase.agent.name}`}
+          disabled={!phase.canSend || busy}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              void send();
+            }
+          }}
+        />
+        <div className="composer-footer">
+          <span>{blocked ?? "Enter envia · Shift+Enter cria uma linha"}</span>
+          <button
+            type="button"
+            disabled={!phase.canSend || !draft.trim() || busy}
+            onClick={() => void send()}
+          >
+            Enviar
+          </button>
+        </div>
+      </footer>
+    </section>
   );
 }
 
 function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
-  const [error, setError] = useState(false);
+  const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   const [changingMode, setChangingMode] = useState(false);
 
   const loadSnapshot = useCallback(async () => {
-    try {
-      const next = await invoke<AppSnapshot>("get_app_snapshot");
-      setSnapshot(next);
-      setError(false);
-    } catch {
-      setError(true);
-    }
+    const next = await invoke<AppSnapshot>("get_app_snapshot");
+    setSnapshot(next);
+    setActiveAgentId((current) => current ?? next.agents[0]?.id ?? null);
   }, []);
 
   useEffect(() => {
@@ -70,164 +273,85 @@ function App() {
     return () => window.clearInterval(timer);
   }, [loadSnapshot]);
 
+  useEffect(() => {
+    const registration = createListenerRegistration();
+    void listen<string>("open-conversation", (event) =>
+      setActiveAgentId(event.payload),
+    ).then(registration.register);
+    return registration.dispose;
+  }, []);
+
   async function toggleSafeMode() {
     if (!snapshot || changingMode) return;
     setChangingMode(true);
     try {
-      const next = await invoke<AppSnapshot>("set_safe_mode", {
-        enabled: !snapshot.safeMode,
-      });
-      setSnapshot(next);
-      setError(false);
-    } catch {
-      setError(true);
+      setSnapshot(
+        await invoke<AppSnapshot>("set_safe_mode", {
+          enabled: !snapshot.safeMode,
+        }),
+      );
     } finally {
       setChangingMode(false);
     }
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell conversation-layout">
       <aside className="sidebar" aria-label="Navegação principal">
         <div className="brand-mark" aria-label="A.I.P.">
           <span className="brand-glyph">AI</span>
           <div>
             <strong>A.I.P.</strong>
-            <small>Fundação local</small>
+            <small>Conversa local</small>
           </div>
         </div>
-        <nav>
-          <a className="nav-item active" href="#inicio" aria-current="page">
-            <span aria-hidden="true">01</span> Início
-          </a>
-          <a className="nav-item" href="#agentes">
-            <span aria-hidden="true">02</span> Agentes
-          </a>
-          <a className="nav-item" href="#diagnostico">
-            <span aria-hidden="true">03</span> Diagnóstico
-          </a>
-        </nav>
+        <p className="sidebar-label">Conversas</p>
+        <div className="agent-tabs">
+          {snapshot?.agents.map((agent) => (
+            <AgentButton
+              key={agent.id}
+              agent={agent}
+              active={agent.id === activeAgentId}
+              onSelect={() => setActiveAgentId(agent.id)}
+            />
+          ))}
+        </div>
+        <button
+          className={snapshot?.safeMode ? "mode-button active" : "mode-button"}
+          type="button"
+          disabled={!snapshot || changingMode}
+          onClick={() => void toggleSafeMode()}
+        >
+          {snapshot?.safeMode ? "Sair do modo seguro" : "Ativar modo seguro"}
+        </button>
         <div className="sidebar-footer">
           <span className="local-dot" aria-hidden="true" />
-          Execução local
+          {snapshot
+            ? runtimeLabels[snapshot.runtime.state]
+            : "Verificando runtime"}
         </div>
       </aside>
-
-      <main className="main-panel" id="inicio">
-        <header className="page-header">
-          <div>
-            <p className="eyebrow">Agentes Independentes Personalizáveis</p>
-            <h1>Visão geral</h1>
-            <p className="page-summary">
-              Shell inicial para dois agentes locais e limites de runtime
-              resilientes.
-            </p>
-          </div>
-          <button
-            className={
-              snapshot?.safeMode ? "mode-button active" : "mode-button"
-            }
-            type="button"
-            disabled={!snapshot || changingMode}
-            onClick={() => void toggleSafeMode()}
-          >
-            <span className="mode-indicator" aria-hidden="true" />
-            {snapshot?.safeMode ? "Sair do modo seguro" : "Ativar modo seguro"}
-          </button>
-        </header>
-
-        {error ? (
-          <section className="notice notice-error" role="alert">
-            Não foi possível consultar o núcleo local. Reinicie o aplicativo em
-            modo seguro.
-          </section>
-        ) : null}
-
-        {snapshot && snapshot.runtime.state !== "ready" ? (
-          <section className="notice" role="status">
-            <strong>{runtimeLabels[snapshot.runtime.state]}.</strong>
+      <main className="conversation-main">
+        {snapshot?.runtime.state === "unavailable" ||
+        snapshot?.runtime.state === "crashed" ? (
+          <div className="runtime-banner" role="status">
             <span>
-              O painel e os dados locais continuam disponíveis; nenhum modelo
-              foi iniciado.
+              {runtimeLabels[snapshot.runtime.state]}. O histórico continua
+              disponível.
             </span>
-          </section>
+            <button
+              type="button"
+              onClick={() => void invoke("retry_phase_one_runtime")}
+            >
+              Tentar novamente
+            </button>
+          </div>
         ) : null}
-
-        {snapshot && !snapshot.databaseReady ? (
-          <section className="notice notice-error" role="alert">
-            A base local não pôde ser inicializada. O aplicativo permanece em
-            modo seguro.
-          </section>
-        ) : null}
-
-        <section className="status-grid" aria-label="Estado da fundação">
-          <article className="status-card">
-            <p>Aplicativo</p>
-            <strong>Fase 0</strong>
-            <span>Versão {snapshot?.appVersion ?? "0.1.0"}</span>
-          </article>
-          <article className="status-card">
-            <p>Dados locais</p>
-            <strong>
-              {snapshot
-                ? snapshot.databaseReady
-                  ? "Disponíveis"
-                  : "Indisponíveis"
-                : "Verificando"}
-            </strong>
-            <span>Migração {snapshot?.migrationVersion ?? 0}</span>
-          </article>
-          <article className="status-card">
-            <p>Runtime Python</p>
-            <strong>
-              {snapshot ? runtimeLabels[snapshot.runtime.state] : "Verificando"}
-            </strong>
-            <span>Protocolo {snapshot?.runtime.protocolVersion ?? "—"}</span>
-          </article>
-          <article className="status-card">
-            <p>Modo atual</p>
-            <strong>{snapshot?.safeMode ? "Seguro" : "Normal"}</strong>
-            <span>
-              {snapshot?.safeMode ? "Overlays ocultos" : "Overlays ativos"}
-            </span>
-          </article>
-        </section>
-
-        <section className="section-block" id="agentes">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Identidades locais</p>
-              <h2>Agentes provisórios</h2>
-            </div>
-            <span className="section-count">
-              {snapshot?.agents.length ?? 0} de 2
-            </span>
-          </div>
-          <div className="agent-grid">
-            {snapshot?.agents.map((agent) => (
-              <AgentCard agent={agent} key={agent.id} />
-            ))}
-            {!snapshot ? (
-              <div
-                className="agent-card skeleton"
-                aria-label="Carregando agentes"
-              />
-            ) : null}
-          </div>
-        </section>
-
-        <section className="diagnostic-strip" id="diagnostico">
-          <div>
-            <p className="eyebrow">Diagnóstico</p>
-            <h2>Limites ativos</h2>
-          </div>
-          <ul>
-            <li>SQLite sob autoridade do núcleo Rust</li>
-            <li>Runtime isolado por entrada e saída gerenciadas</li>
-            <li>Nenhum servidor de rede local</li>
-            <li>Nenhum modelo ou conversa real nesta fase</li>
-          </ul>
-        </section>
+        {activeAgentId === null ? (
+          <section className="conversation-empty">Carregando agentes…</section>
+        ) : (
+          <ConversationSurface agentId={activeAgentId} />
+        )}
       </main>
     </div>
   );
