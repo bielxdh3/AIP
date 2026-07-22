@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import threading
-from contextlib import suppress
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import IO, Any
 
+from .diagnostics import emit_diagnostic
 from .ollama import CancelledError, ConnectionLike, OllamaClient, ProviderError
 from .protocol import (
     MAX_CONTEXT_BYTES,
@@ -35,12 +36,20 @@ class ActiveGeneration:
 
 
 class RuntimeServer:
-    def __init__(self, output: IO[str], client: OllamaClient | None = None) -> None:
+    def __init__(
+        self,
+        output: IO[str],
+        client: OllamaClient | None = None,
+        diagnostic: Callable[[object], None] = emit_diagnostic,
+    ) -> None:
         self._output = output
         self._client = client or OllamaClient()
+        self._diagnostic = diagnostic
         self._write_lock = threading.Lock()
         self._active_lock = threading.Lock()
         self._active: ActiveGeneration | None = None
+        self._generation_lock = threading.Lock()
+        self._generation_workers: set[threading.Thread] = set()
         self._provider_lock = threading.Lock()
         self._provider_workers: set[threading.Thread] = set()
 
@@ -64,42 +73,60 @@ class RuntimeServer:
             params = request["params"]
             assert isinstance(params, dict)
 
-            if method == "runtime.health":
-                self._write(
-                    result_response(
-                        request_id,
-                        {
-                            "name": "aip-runtime",
-                            "protocolVersion": PROTOCOL_VERSION,
-                            "status": "ready",
-                        },
+            try:
+                if method == "runtime.health":
+                    self._write(
+                        result_response(
+                            request_id,
+                            {
+                                "name": "aip-runtime",
+                                "protocolVersion": PROTOCOL_VERSION,
+                                "status": "ready",
+                            },
+                        )
                     )
-                )
-            elif method == "runtime.shutdown":
+                elif method == "runtime.shutdown":
+                    self._diagnostic("runtime_shutdown_requested")
+                    self.shutdown()
+                    self._write(result_response(request_id, {"status": "stopping"}))
+                    return 0
+                elif method == "provider.discover":
+                    self._spawn_provider(request_id, "discover", params)
+                elif method == "provider.show":
+                    self._spawn_provider(request_id, "show", params)
+                elif method == "generation.start":
+                    self._start_generation(request_id, params)
+                elif method == "generation.cancel":
+                    self._cancel_generation(request_id, params)
+            except (BrokenPipeError, OSError):
+                self._diagnostic("runtime_stdout_write_failed")
                 self.shutdown()
-                self._write(result_response(request_id, {"status": "stopping"}))
-                return 0
-            elif method == "provider.discover":
-                self._spawn_provider(request_id, "discover", params)
-            elif method == "provider.show":
-                self._spawn_provider(request_id, "show", params)
-            elif method == "generation.start":
-                self._start_generation(request_id, params)
-            elif method == "generation.cancel":
-                self._cancel_generation(request_id, params)
+                return 2
+            except Exception:
+                self._diagnostic("runtime_request_exception")
+                try:
+                    self._write(error_response(request_id, "runtime_request_failed"))
+                except Exception:
+                    self._diagnostic("runtime_stdout_write_failed")
+                    self.shutdown()
+                    return 2
+        self._diagnostic("runtime_stdin_eof")
         self.shutdown()
         return 0
 
     def shutdown(self) -> None:
+        connection: ConnectionLike | None = None
         with self._active_lock:
             active = self._active
             if active is not None:
                 active.cancel_event.set()
-                if active.connection is not None:
-                    with suppress(OSError):
-                        active.connection.close()
-        if active is not None and active.thread is not None:
-            active.thread.join(timeout=5.0)
+                connection = active.connection
+        if connection is not None:
+            self._close_connection(connection)
+        with self._generation_lock:
+            generation_workers = list(self._generation_workers)
+        for worker in generation_workers:
+            worker.join(timeout=5.0)
         with self._provider_lock:
             provider_workers = list(self._provider_workers)
         for worker in provider_workers:
@@ -157,6 +184,8 @@ class RuntimeServer:
                     active.connection = connection
 
         def emit_chunk(sequence: int, content: str) -> None:
+            if active.cancel_event.is_set():
+                raise CancelledError()
             self._event(active, "generation.chunk", sequence=sequence, content=content)
 
         def run() -> None:
@@ -178,20 +207,31 @@ class RuntimeServer:
                 )
             except CancelledError:
                 terminal = "generation.cancelled"
+                self._diagnostic("ollama_stream_cancelled")
             except ProviderError as error:
                 terminal = "generation.failed"
                 error_code = error.code
+                self._diagnostic("ollama_stream_failed")
             except Exception:
                 terminal = "generation.failed"
                 error_code = "provider_internal_error"
+                self._diagnostic("runtime_worker_exception")
             finally:
-                self._event(active, terminal, error_code=error_code)
                 with self._active_lock:
                     if self._active is active:
                         self._active = None
+                try:
+                    self._event(active, terminal, error_code=error_code)
+                except Exception:
+                    self._diagnostic("runtime_stdout_write_failed")
+                finally:
+                    with self._generation_lock:
+                        self._generation_workers.discard(threading.current_thread())
 
         worker = threading.Thread(target=run, name="aip-generation", daemon=False)
         active.thread = worker
+        with self._generation_lock:
+            self._generation_workers.add(worker)
         worker.start()
         self._write(result_response(request_id, {"status": "accepted"}))
 
@@ -201,16 +241,23 @@ class RuntimeServer:
         except ProtocolError as error:
             self._write(error_response(request_id, error.code))
             return
+        connection: ConnectionLike | None = None
         with self._active_lock:
             active = self._active
             if active is None or active.request_id != target:
                 self._write(error_response(request_id, "generation_not_active"))
                 return
             active.cancel_event.set()
-            if active.connection is not None:
-                with suppress(OSError):
-                    active.connection.close()
+            connection = active.connection
+        if connection is not None:
+            self._close_connection(connection)
         self._write(result_response(request_id, {"status": "cancelling"}))
+
+    def _close_connection(self, connection: ConnectionLike) -> None:
+        try:
+            connection.close()
+        except Exception:
+            self._diagnostic("ollama_cancel_close_failed")
 
     @staticmethod
     def _validate_generation(request_id: str, params: dict[str, Any]) -> ActiveGeneration:

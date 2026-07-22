@@ -573,6 +573,8 @@ Phase 1 adds one bounded local conversation path without changing agent identity
   active connection cancellation;
 - one persistent child session keeps reading cancel and shutdown requests while one worker runs
   the only active heavy generation;
+- Rust continuously drains Python stderr into a bounded allowlisted diagnostic tail and records
+  the child exit code without retaining raw traceback or conversation/provider content;
 - unexpected runtime exit resolves active and queued attempts with stable failure codes, while
   startup recovery marks abandoned `pending` or `streaming` rows as interrupted;
 - the application-level Phase 1 model setting is deliberately separate from future per-agent

@@ -1,7 +1,8 @@
 use std::{
+    collections::VecDeque,
     io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
-    process::{ChildStdout, Command, Stdio},
+    process::{ChildStderr, ChildStdout, Command, ExitStatus, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc, Arc, Mutex,
@@ -22,6 +23,29 @@ use crate::{
 };
 
 const HANDSHAKE_ID: &str = "phase1-health";
+const DIAGNOSTIC_PREFIX: &str = "AIP_RUNTIME_DIAGNOSTIC ";
+const MAX_DIAGNOSTIC_LINE_BYTES: usize = 96;
+const MAX_DIAGNOSTIC_CODES: usize = 16;
+
+const PYTHON_DIAGNOSTIC_CODES: &[&str] = &[
+    "ollama_cancel_close_failed",
+    "ollama_stream_cancelled",
+    "ollama_stream_failed",
+    "runtime_diagnostic_rejected",
+    "runtime_request_exception",
+    "runtime_server_exception",
+    "runtime_shutdown_requested",
+    "runtime_stdin_eof",
+    "runtime_stdout_write_failed",
+    "runtime_worker_exception",
+];
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RuntimeDiagnostics {
+    pub last_lifecycle_code: Option<&'static str>,
+    pub exit_code: Option<i32>,
+    pub stderr_codes: VecDeque<String>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeNotice {
@@ -47,6 +71,7 @@ pub struct RuntimeController {
     worker: Arc<Mutex<Option<JoinHandle<()>>>>,
     command_sender: Arc<Mutex<Option<mpsc::Sender<RuntimeCommand>>>>,
     subscribers: Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
+    diagnostics: Arc<Mutex<RuntimeDiagnostics>>,
     source_root: PathBuf,
 }
 
@@ -67,6 +92,7 @@ impl RuntimeController {
             worker: Arc::new(Mutex::new(None)),
             command_sender: Arc::new(Mutex::new(None)),
             subscribers: Arc::new(Mutex::new(Vec::new())),
+            diagnostics: Arc::new(Mutex::new(RuntimeDiagnostics::default())),
             source_root,
         }
     }
@@ -79,6 +105,11 @@ impl RuntimeController {
         let (sender, receiver) = mpsc::channel();
         lock(&self.subscribers).push(sender);
         receiver
+    }
+
+    #[cfg(test)]
+    pub(crate) fn diagnostics(&self) -> RuntimeDiagnostics {
+        lock(&self.diagnostics).clone()
     }
 
     pub fn send(&self, message: String) -> Result<(), &'static str> {
@@ -103,6 +134,7 @@ impl RuntimeController {
         }
 
         self.stop.store(false, Ordering::SeqCst);
+        *lock(&self.diagnostics) = RuntimeDiagnostics::default();
         set_status(
             &self.status,
             RuntimeState::Starting,
@@ -115,9 +147,17 @@ impl RuntimeController {
         let stop = Arc::clone(&self.stop);
         let source_root = self.source_root.clone();
         let subscribers = Arc::clone(&self.subscribers);
+        let diagnostics = Arc::clone(&self.diagnostics);
         let stored_sender = Arc::clone(&self.command_sender);
         *worker = Some(thread::spawn(move || {
-            run_runtime_process(status, stop, source_root, command_receiver, subscribers);
+            run_runtime_process(
+                status,
+                stop,
+                source_root,
+                command_receiver,
+                subscribers,
+                diagnostics,
+            );
             *lock(&stored_sender) = None;
         }));
     }
@@ -159,6 +199,7 @@ fn run_runtime_process(
     source_root: PathBuf,
     command_receiver: mpsc::Receiver<RuntimeCommand>,
     subscribers: Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
+    diagnostics: Arc<Mutex<RuntimeDiagnostics>>,
 ) {
     let mut command = Command::new("python");
     let inherited_environment = ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR"]
@@ -177,7 +218,7 @@ fn run_runtime_process(
         .env("PYTHONUNBUFFERED", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     #[cfg(target_os = "windows")]
     command.creation_flags(0x0800_0000);
 
@@ -195,19 +236,29 @@ fn run_runtime_process(
         unavailable(&status, &subscribers, "runtime_stdio_unavailable");
         return;
     };
+    let Some(stderr) = child.stderr.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        unavailable(&status, &subscribers, "runtime_stdio_unavailable");
+        return;
+    };
 
     let (line_sender, line_receiver) = mpsc::channel();
     let reader = thread::spawn(move || read_runtime_lines(stdout, line_sender));
+    let diagnostic_state = Arc::clone(&diagnostics);
+    let stderr_reader = thread::spawn(move || read_runtime_stderr(stderr, diagnostic_state));
     let Ok(request) = health_request(HANDSHAKE_ID) else {
         let _ = child.kill();
         unavailable(&status, &subscribers, "protocol_encoding_failed");
         let _ = reader.join();
+        let _ = stderr_reader.join();
         return;
     };
     if write_message(&mut stdin, &request).is_err() {
         let _ = child.kill();
         unavailable(&status, &subscribers, "runtime_handshake_failed");
         let _ = reader.join();
+        let _ = stderr_reader.join();
         return;
     }
 
@@ -229,6 +280,8 @@ fn run_runtime_process(
         let _ = child.kill();
         let _ = child.wait();
         let _ = reader.join();
+        let _ = stderr_reader.join();
+        record_lifecycle(&diagnostics, "runtime_handshake_failed");
         unavailable(&status, &subscribers, "runtime_handshake_failed");
         return;
     }
@@ -254,19 +307,35 @@ fn run_runtime_process(
                         return crashed(
                             &mut child,
                             reader,
+                            stderr_reader,
                             &status,
                             &subscribers,
-                            "runtime_write_failed",
+                            &diagnostics,
+                            "runtime_stdin_closed",
                         );
                     }
                 }
                 RuntimeCommand::Stop => {
-                    return stop_child(&mut child, &mut stdin, reader, &status);
+                    return stop_child(
+                        &mut child,
+                        &mut stdin,
+                        reader,
+                        stderr_reader,
+                        &status,
+                        &diagnostics,
+                    );
                 }
             }
         }
         if stop.load(Ordering::SeqCst) {
-            return stop_child(&mut child, &mut stdin, reader, &status);
+            return stop_child(
+                &mut child,
+                &mut stdin,
+                reader,
+                stderr_reader,
+                &status,
+                &diagnostics,
+            );
         }
         match line_receiver.recv_timeout(Duration::from_millis(40)) {
             Ok(ReaderItem::Line(line)) => match parse_runtime_output(&line) {
@@ -275,9 +344,11 @@ fn run_runtime_process(
                     return crashed(
                         &mut child,
                         reader,
+                        stderr_reader,
                         &status,
                         &subscribers,
-                        "runtime_protocol_invalid",
+                        &diagnostics,
+                        "runtime_protocol_decode_failed",
                     );
                 }
             },
@@ -285,38 +356,64 @@ fn run_runtime_process(
                 return crashed(
                     &mut child,
                     reader,
+                    stderr_reader,
                     &status,
                     &subscribers,
-                    "runtime_protocol_invalid",
+                    &diagnostics,
+                    "runtime_protocol_decode_failed",
                 );
             }
             Ok(ReaderItem::Closed) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let detail_code = if child_exited_within(&mut child, Duration::from_millis(200)) {
+                    "runtime_process_exit_unexpected"
+                } else {
+                    "runtime_stdout_closed"
+                };
                 return crashed(
                     &mut child,
                     reader,
+                    stderr_reader,
                     &status,
                     &subscribers,
-                    "runtime_process_ended",
+                    &diagnostics,
+                    detail_code,
                 );
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
-        if child.try_wait().ok().flatten().is_some() {
+        if let Some(exit_status) = child.try_wait().ok().flatten() {
             let _ = reader.join();
+            let _ = stderr_reader.join();
+            record_exit(&diagnostics, Some(exit_status));
+            record_lifecycle(&diagnostics, "runtime_process_exit_unexpected");
+            report_crash_diagnostics(&diagnostics);
             set_status(
                 &status,
                 RuntimeState::Crashed,
                 None,
-                "runtime_process_ended",
+                "runtime_process_exit_unexpected",
             );
             broadcast(
                 &subscribers,
                 RuntimeNotice::Disconnected {
-                    detail_code: "runtime_process_ended",
+                    detail_code: "runtime_process_exit_unexpected",
                 },
             );
             return;
         }
+    }
+}
+
+fn child_exited_within(child: &mut std::process::Child, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if child.try_wait().ok().flatten().is_some() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -358,6 +455,78 @@ fn read_runtime_lines(stdout: ChildStdout, sender: mpsc::Sender<ReaderItem>) {
     }
 }
 
+fn read_runtime_stderr(stderr: ChildStderr, diagnostics: Arc<Mutex<RuntimeDiagnostics>>) {
+    let mut reader = BufReader::new(stderr);
+    loop {
+        let mut raw = Vec::new();
+        let result = reader
+            .by_ref()
+            .take((MAX_DIAGNOSTIC_LINE_BYTES + 2) as u64)
+            .read_until(b'\n', &mut raw);
+        match result {
+            Ok(0) => return,
+            Ok(_) if raw.len() > MAX_DIAGNOSTIC_LINE_BYTES + 1 || !raw.ends_with(b"\n") => {
+                record_stderr_code(&diagnostics, "runtime_diagnostic_rejected");
+            }
+            Ok(_) => {
+                raw.pop();
+                if raw.last() == Some(&b'\r') {
+                    raw.pop();
+                }
+                let Some(code) = parse_diagnostic_line(&raw) else {
+                    continue;
+                };
+                record_stderr_code(&diagnostics, code);
+            }
+            Err(_) => return,
+        }
+    }
+}
+
+fn parse_diagnostic_line(raw: &[u8]) -> Option<&'static str> {
+    let line = std::str::from_utf8(raw).ok()?;
+    let candidate = line.strip_prefix(DIAGNOSTIC_PREFIX)?;
+    PYTHON_DIAGNOSTIC_CODES
+        .iter()
+        .copied()
+        .find(|code| *code == candidate)
+}
+
+fn record_stderr_code(diagnostics: &Arc<Mutex<RuntimeDiagnostics>>, code: &str) {
+    let mut current = lock(diagnostics);
+    if current.stderr_codes.len() == MAX_DIAGNOSTIC_CODES {
+        current.stderr_codes.pop_front();
+    }
+    current.stderr_codes.push_back(code.to_string());
+}
+
+fn record_lifecycle(diagnostics: &Arc<Mutex<RuntimeDiagnostics>>, code: &'static str) {
+    lock(diagnostics).last_lifecycle_code = Some(code);
+}
+
+fn record_exit(diagnostics: &Arc<Mutex<RuntimeDiagnostics>>, exit_status: Option<ExitStatus>) {
+    lock(diagnostics).exit_code = exit_status.and_then(|status| status.code());
+}
+
+fn report_crash_diagnostics(diagnostics: &Arc<Mutex<RuntimeDiagnostics>>) {
+    let snapshot = lock(diagnostics).clone();
+    let lifecycle = snapshot.last_lifecycle_code.unwrap_or("runtime_crashed");
+    let exit = snapshot
+        .exit_code
+        .map_or_else(|| "none".to_string(), |code| code.to_string());
+    let stderr = if snapshot.stderr_codes.is_empty() {
+        "none".to_string()
+    } else {
+        snapshot
+            .stderr_codes
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    eprintln!("AIP_RUNTIME_EXIT lifecycle={lifecycle} exit={exit} stderr={stderr}");
+}
+
 fn write_message(stdin: &mut impl Write, message: &str) -> std::io::Result<()> {
     writeln!(stdin, "{message}")?;
     stdin.flush()
@@ -367,8 +536,11 @@ fn stop_child(
     child: &mut std::process::Child,
     stdin: &mut impl Write,
     reader: JoinHandle<()>,
+    stderr_reader: JoinHandle<()>,
     status: &Arc<Mutex<RuntimeStatus>>,
+    diagnostics: &Arc<Mutex<RuntimeDiagnostics>>,
 ) {
+    record_lifecycle(diagnostics, "runtime_shutdown_requested");
     if let Ok(request) = shutdown_request("phase1-shutdown") {
         let _ = write_message(stdin, &request);
     }
@@ -382,21 +554,31 @@ fn stop_child(
     if child.try_wait().ok().flatten().is_none() {
         let _ = child.kill();
     }
-    let _ = child.wait();
+    let exit_status = child.wait().ok();
     let _ = reader.join();
+    let _ = stderr_reader.join();
+    record_exit(diagnostics, exit_status);
     set_status(status, RuntimeState::Stopped, None, "runtime_stopped");
 }
 
 fn crashed(
     child: &mut std::process::Child,
     reader: JoinHandle<()>,
+    stderr_reader: JoinHandle<()>,
     status: &Arc<Mutex<RuntimeStatus>>,
     subscribers: &Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
+    diagnostics: &Arc<Mutex<RuntimeDiagnostics>>,
     detail_code: &'static str,
 ) {
-    let _ = child.kill();
-    let _ = child.wait();
+    record_lifecycle(diagnostics, detail_code);
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.kill();
+    }
+    let exit_status = child.wait().ok();
     let _ = reader.join();
+    let _ = stderr_reader.join();
+    record_exit(diagnostics, exit_status);
+    report_crash_diagnostics(diagnostics);
     set_status(status, RuntimeState::Crashed, None, detail_code);
     broadcast(subscribers, RuntimeNotice::Disconnected { detail_code });
 }
@@ -438,11 +620,138 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{
+        collections::VecDeque,
+        fs,
+        path::{Path, PathBuf},
+        sync::{mpsc, Arc, Mutex},
+        thread,
+        time::{Duration, Instant},
+    };
 
     use crate::domain::RuntimeState;
+    use crate::protocol::{
+        cancellation_request, discovery_request, generation_request, health_request, PromptMessage,
+        RuntimeOutput,
+    };
+    use uuid::Uuid;
 
-    use super::RuntimeController;
+    use super::{RuntimeController, RuntimeNotice};
+
+    const FIXTURE_RUNTIME: &str = r#"
+import json
+import sys
+
+active = None
+
+def write(value):
+    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+def event(request, kind, **extra):
+    value = {
+        "protocolVersion": 1,
+        "event": kind,
+        "requestId": request["id"],
+        "agentId": request["params"]["agentId"],
+        "conversationId": request["params"]["conversationId"],
+        "assistantMessageId": request["params"]["assistantMessageId"],
+    }
+    value.update(extra)
+    write(value)
+
+for raw in sys.stdin:
+    request = json.loads(raw)
+    method = request["method"]
+    if method == "runtime.health":
+        write({"protocolVersion": 1, "id": request["id"], "result": {"name": "aip-runtime", "status": "ready", "protocolVersion": 1}})
+    elif method == "runtime.shutdown":
+        write({"protocolVersion": 1, "id": request["id"], "result": {"status": "stopping"}})
+        raise SystemExit(0)
+    elif method == "provider.discover":
+        sys.stderr.write("AIP_RUNTIME_DIAGNOSTIC runtime_server_exception\n")
+        sys.stderr.flush()
+        raise SystemExit(7)
+    elif method == "generation.start":
+        write({"protocolVersion": 1, "id": request["id"], "result": {"status": "accepted"}})
+        event(request, "generation.started", sequence=0)
+        model = request["params"]["model"]
+        if model == "wait:latest":
+            active = request
+        elif model == "failure:latest":
+            event(request, "generation.failed", errorCode="provider_stream_failed")
+        else:
+            event(request, "generation.chunk", sequence=1, content="Synthetic reply")
+            event(request, "generation.complete")
+    elif method == "generation.cancel":
+        write({"protocolVersion": 1, "id": request["id"], "result": {"status": "cancelling"}})
+        if active is not None and active["id"] == request["params"]["requestId"]:
+            sys.stderr.write("AIP_RUNTIME_DIAGNOSTIC ollama_stream_cancelled\n")
+            sys.stderr.flush()
+            event(active, "generation.cancelled")
+            active = None
+"#;
+
+    fn fixture_source_root() -> PathBuf {
+        let root = std::env::temp_dir().join(format!("aip-runtime-fixture-{}", Uuid::now_v7()));
+        let package = root.join("aip_runtime");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("__init__.py"), "").unwrap();
+        fs::write(package.join("__main__.py"), FIXTURE_RUNTIME).unwrap();
+        root
+    }
+
+    fn wait_for_state(controller: &RuntimeController, expected: RuntimeState) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if controller.snapshot().state == expected {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!("runtime did not reach expected synthetic state");
+    }
+
+    fn wait_for_event(
+        receiver: &mpsc::Receiver<RuntimeNotice>,
+        request_id: &str,
+        event_type: &str,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            let Ok(notice) = receiver.recv_timeout(Duration::from_millis(100)) else {
+                continue;
+            };
+            if let RuntimeNotice::Output(RuntimeOutput::Event(event)) = notice {
+                if event.request_id.as_deref() == Some(request_id) && event.event_type == event_type
+                {
+                    return;
+                }
+            }
+        }
+        panic!("runtime did not emit expected synthetic event");
+    }
+
+    fn generation(id: &str, model: &str) -> String {
+        generation_request(
+            id,
+            "agent",
+            "conversation",
+            &format!("assistant-{id}"),
+            model,
+            15,
+            &[PromptMessage {
+                role: "user",
+                content: "Synthetic input".into(),
+            }],
+        )
+        .unwrap()
+    }
+
+    fn cleanup(controller: RuntimeController, root: &Path) {
+        controller.shutdown();
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn safe_mode_never_starts_a_runtime() {
@@ -456,5 +765,108 @@ mod tests {
     fn unavailable_session_rejects_commands() {
         let controller = RuntimeController::new(PathBuf::from("unused"), false);
         assert_eq!(controller.send("{}".into()), Err("runtime_unavailable"));
+    }
+
+    #[test]
+    fn persistent_child_survives_completion_cancellation_and_provider_failure() {
+        let root = fixture_source_root();
+        let controller = RuntimeController::new(root.clone(), false);
+        let receiver = controller.subscribe();
+        controller.start();
+        wait_for_state(&controller, RuntimeState::Ready);
+
+        controller
+            .send(generation("complete", "complete:latest"))
+            .unwrap();
+        wait_for_event(&receiver, "complete", "generation.complete");
+        assert_eq!(controller.snapshot().state, RuntimeState::Ready);
+
+        controller
+            .send(generation("cancelled", "wait:latest"))
+            .unwrap();
+        wait_for_event(&receiver, "cancelled", "generation.started");
+        controller
+            .send(cancellation_request("cancel-command", "cancelled").unwrap())
+            .unwrap();
+        wait_for_event(&receiver, "cancelled", "generation.cancelled");
+        assert_eq!(controller.snapshot().state, RuntimeState::Ready);
+
+        controller
+            .send(generation("failed", "failure:latest"))
+            .unwrap();
+        wait_for_event(&receiver, "failed", "generation.failed");
+        controller
+            .send(health_request("health-after-failure").unwrap())
+            .unwrap();
+        assert_eq!(controller.snapshot().state, RuntimeState::Ready);
+        assert!(controller
+            .diagnostics()
+            .stderr_codes
+            .contains(&"ollama_stream_cancelled".to_string()));
+
+        cleanup(controller, &root);
+    }
+
+    #[test]
+    fn unexpected_exit_is_diagnosed_once_and_explicit_restart_recovers() {
+        let root = fixture_source_root();
+        let controller = RuntimeController::new(root.clone(), false);
+        let receiver = controller.subscribe();
+        controller.start();
+        wait_for_state(&controller, RuntimeState::Ready);
+        controller
+            .send(discovery_request("crash").unwrap())
+            .unwrap();
+        wait_for_state(&controller, RuntimeState::Crashed);
+
+        let diagnostics = controller.diagnostics();
+        assert_eq!(
+            diagnostics.last_lifecycle_code,
+            Some("runtime_process_exit_unexpected")
+        );
+        assert_eq!(diagnostics.exit_code, Some(7));
+        assert_eq!(
+            diagnostics.stderr_codes,
+            VecDeque::from(["runtime_server_exception".to_string()])
+        );
+        assert_eq!(
+            receiver
+                .try_iter()
+                .filter(|notice| matches!(notice, RuntimeNotice::Disconnected { .. }))
+                .count(),
+            1
+        );
+
+        controller.start();
+        wait_for_state(&controller, RuntimeState::Ready);
+        assert!(controller
+            .send(health_request("health-after-restart").unwrap())
+            .is_ok());
+
+        cleanup(controller, &root);
+    }
+
+    #[test]
+    fn stderr_parser_accepts_only_bounded_stable_codes() {
+        assert_eq!(
+            super::parse_diagnostic_line(b"AIP_RUNTIME_DIAGNOSTIC runtime_worker_exception"),
+            Some("runtime_worker_exception")
+        );
+        assert_eq!(
+            super::parse_diagnostic_line(b"private conversation content"),
+            None
+        );
+        assert_eq!(
+            super::parse_diagnostic_line(b"AIP_RUNTIME_DIAGNOSTIC private_conversation_content"),
+            None
+        );
+        let diagnostics = Arc::new(Mutex::new(super::RuntimeDiagnostics::default()));
+        for _ in 0..(super::MAX_DIAGNOSTIC_CODES + 5) {
+            super::record_stderr_code(&diagnostics, "runtime_worker_exception");
+        }
+        assert_eq!(
+            diagnostics.lock().unwrap().stderr_codes.len(),
+            super::MAX_DIAGNOSTIC_CODES
+        );
     }
 }

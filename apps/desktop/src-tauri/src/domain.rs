@@ -220,6 +220,7 @@ pub struct QueueEntrySnapshot {
     pub assistant_message_id: String,
     pub position: usize,
     pub active: bool,
+    pub cancellation_requested: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

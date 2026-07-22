@@ -428,6 +428,9 @@ These require tests and explicit limitations in the final implementation report.
   output, queue length, and error codes are bounded and tested.
 - Raw provider errors, payloads, paths, digests, prompts, messages, model output, environment
   values, and model reasoning are not logged. Ollama `thinking` is discarded.
+- Python stderr is drained to prevent pipe blocking, but Rust accepts only a 16-entry bounded
+  allowlist of stable diagnostic codes. Raw tracebacks and arbitrary stderr text are discarded;
+  only stable lifecycle codes and the child exit code may appear in developer diagnostics.
 - Tool calls are never executed. A tool-only response becomes a stable unsupported failure; tool
   metadata accompanying valid plain text is ignored.
 - Rust validates agent/conversation ownership, selected-model availability, safe mode, request

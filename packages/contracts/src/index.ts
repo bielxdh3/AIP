@@ -102,6 +102,7 @@ export type QueueEntry = {
   assistantMessageId: string;
   position: number;
   active: boolean;
+  cancellationRequested: boolean;
 };
 
 export type PhaseOneState = {

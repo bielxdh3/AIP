@@ -9,6 +9,8 @@ import type {
 import AgentSprite from "./components/AgentSprite";
 import {
   blockedSendCopy,
+  canRequestCancellation,
+  messageStatusCopy,
   providerStatusCopy,
   requestForAgent,
 } from "./conversation-state";
@@ -23,14 +25,6 @@ const runtimeLabels: Record<AppSnapshot["runtime"]["state"], string> = {
   unavailable: "Runtime de IA indisponível",
   crashed: "Runtime interrompido",
   safe_mode: "Runtime desativado pelo modo seguro",
-};
-
-const statusLabels: Record<ConversationMessage["status"], string> = {
-  pending: "Aguardando processamento…",
-  streaming: "Gerando resposta…",
-  complete: "Concluída",
-  failed: "Não foi possível gerar a resposta",
-  cancelled: "Resposta cancelada",
 };
 
 function AgentButton({
@@ -62,7 +56,7 @@ function MessageItem({ message }: { message: ConversationMessage }) {
     >
       <div className="message-heading">
         <strong>{message.author === "user" ? "Você" : "Agente"}</strong>
-        <span>{statusLabels[message.status]}</span>
+        <span>{messageStatusCopy(message)}</span>
       </div>
       {message.content ? <p>{message.content}</p> : null}
       {message.status === "failed" ? (
@@ -79,6 +73,9 @@ function ConversationSurface({ agentId }: { agentId: string }) {
   const { phase, error, load } = usePhaseOne(agentId);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
+    null,
+  );
   const historyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -125,6 +122,23 @@ function ConversationSurface({ agentId }: { agentId: string }) {
   async function refreshModels() {
     await invoke("refresh_ollama_models").catch(() => null);
     await load();
+  }
+
+  async function cancelCurrentRequest() {
+    if (
+      request === null ||
+      !canRequestCancellation(request, cancellingRequestId)
+    )
+      return;
+    setCancellingRequestId(request.requestId);
+    try {
+      await invoke("cancel_phase_one_generation", {
+        requestId: request.requestId,
+      });
+      await load();
+    } finally {
+      setCancellingRequestId(null);
+    }
   }
 
   return (
@@ -213,18 +227,20 @@ function ConversationSurface({ agentId }: { agentId: string }) {
           <div className="queue-banner">
             <span>
               {request.active
-                ? "Gerando resposta…"
+                ? request.cancellationRequested
+                  ? "Cancelando resposta…"
+                  : "Gerando resposta…"
                 : "Aguardando processamento…"}
             </span>
             <button
               type="button"
-              onClick={() =>
-                void invoke("cancel_phase_one_generation", {
-                  requestId: request.requestId,
-                }).then(load)
-              }
+              disabled={!canRequestCancellation(request, cancellingRequestId)}
+              onClick={() => void cancelCurrentRequest()}
             >
-              Cancelar
+              {request.cancellationRequested ||
+              cancellingRequestId === request.requestId
+                ? "Cancelando…"
+                : "Cancelar"}
             </button>
           </div>
         ) : null}

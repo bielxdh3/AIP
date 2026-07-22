@@ -120,6 +120,37 @@ export function requestForAgent(
   return queue.find((entry) => entry.agentId === agentId) ?? null;
 }
 
+export function canRequestCancellation(
+  request: QueueEntry | null,
+  locallyPendingRequestId: string | null,
+): boolean {
+  return (
+    request !== null &&
+    !request.cancellationRequested &&
+    locallyPendingRequestId !== request.requestId
+  );
+}
+
+export function messageStatusCopy(message: ConversationMessage): string {
+  if (message.status === "failed") {
+    if (message.errorCode?.startsWith("runtime_")) {
+      return "Runtime local interrompido";
+    }
+    if (message.errorCode?.startsWith("provider_")) {
+      return "Ollama não conseguiu concluir a resposta";
+    }
+    return "Não foi possível gerar a resposta";
+  }
+  const labels: Record<ConversationMessage["status"], string> = {
+    pending: "Aguardando processamento…",
+    streaming: "Gerando resposta…",
+    complete: "Concluída",
+    failed: "Não foi possível gerar a resposta",
+    cancelled: "Resposta cancelada",
+  };
+  return labels[message.status];
+}
+
 export function providerStatusCopy(state: PhaseOneState): string {
   if (!state.selectedModelAvailable && state.selectedModelRef !== null) {
     return "Modelo selecionado indisponível";
@@ -184,9 +215,11 @@ export function bubblePresentation(state: PhaseOneState): BubblePresentation {
     .find((message) => message.author === "agent");
   const fullText = latestAgent?.content ?? "";
   const preview = request
-    ? request.active
-      ? "Gerando resposta…"
-      : "Aguardando processamento…"
+    ? request.cancellationRequested
+      ? "Cancelando resposta…"
+      : request.active
+        ? "Gerando resposta…"
+        : "Aguardando processamento…"
     : fullText
       ? compactPreview(fullText)
       : providerStatusCopy(state);

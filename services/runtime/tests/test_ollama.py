@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import unittest
+from typing import Any, cast
 
 from aip_runtime.ollama import (
     CancelledError,
@@ -10,6 +12,7 @@ from aip_runtime.ollama import (
     OllamaClient,
     ProviderError,
     ResponseLike,
+    _InterruptibleHttpConnection,
 )
 from aip_runtime.protocol import MAX_ASSISTANT_OUTPUT_BYTES, MAX_DISCOVERED_MODELS
 
@@ -51,6 +54,29 @@ class FakeConnection(ConnectionLike):
 
     def close(self) -> None:
         self.closed = True
+
+
+class FakeSocket:
+    def __init__(self) -> None:
+        self.shutdown_calls: list[int] = []
+
+    def shutdown(self, how: int) -> None:
+        self.shutdown_calls.append(how)
+
+
+class FakeRawHttpConnection:
+    def __init__(self) -> None:
+        self.sock = FakeSocket()
+        self.close_calls = 0
+
+    def request(self, *_args: Any, **_kwargs: Any) -> None:
+        return
+
+    def getresponse(self) -> ResponseLike:
+        return FakeResponse(b"{}")
+
+    def close(self) -> None:
+        self.close_calls += 1
 
 
 def client_for(response: ResponseLike) -> tuple[OllamaClient, FakeConnection]:
@@ -125,6 +151,14 @@ class OllamaDiscoveryTests(unittest.TestCase):
 
 
 class OllamaStreamingTests(unittest.TestCase):
+    def test_stream_close_interrupts_socket_once(self) -> None:
+        raw = FakeRawHttpConnection()
+        connection = _InterruptibleHttpConnection(cast(Any, raw))
+        connection.close()
+        connection.close()
+        self.assertEqual(raw.sock.shutdown_calls, [socket.SHUT_RDWR])
+        self.assertEqual(raw.close_calls, 1)
+
     def run_chat(
         self,
         lines: list[bytes],
