@@ -293,6 +293,23 @@ fn parse_event(value: Value) -> Result<RuntimeOutput, ()> {
     {
         return Err(());
     }
+    if event.event == "generation.started"
+        && (event.sequence != Some(0) || event.content.is_some() || event.error_code.is_some())
+    {
+        return Err(());
+    }
+    if matches!(
+        event.event.as_str(),
+        "generation.complete" | "generation.cancelled"
+    ) && (event.sequence.is_none() || event.content.is_some() || event.error_code.is_some())
+    {
+        return Err(());
+    }
+    if event.event == "generation.failed"
+        && (event.sequence.is_none() || event.content.is_some() || event.error_code.is_none())
+    {
+        return Err(());
+    }
     if event.event != "generation.chunk" && event.content.is_some() {
         return Err(());
     }

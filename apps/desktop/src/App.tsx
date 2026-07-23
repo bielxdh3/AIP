@@ -10,6 +10,7 @@ import AgentSprite from "./components/AgentSprite";
 import {
   blockedSendCopy,
   canRequestCancellation,
+  messageFailureCopy,
   messageStatusCopy,
   providerStatusCopy,
   requestForAgent,
@@ -60,10 +61,7 @@ function MessageItem({ message }: { message: ConversationMessage }) {
       </div>
       {message.content ? <p>{message.content}</p> : null}
       {message.status === "failed" ? (
-        <small>
-          O histórico local foi preservado. Tente novamente quando o runtime
-          estiver disponível.
-        </small>
+        <small>{messageFailureCopy(message.errorCode)}</small>
       ) : null}
     </article>
   );
@@ -113,7 +111,7 @@ function ConversationSurface({ agentId }: { agentId: string }) {
         content,
       });
       setDraft("");
-      await load();
+      void load();
     } finally {
       setBusy(false);
     }
@@ -135,7 +133,7 @@ function ConversationSurface({ agentId }: { agentId: string }) {
       await invoke("cancel_phase_one_generation", {
         requestId: request.requestId,
       });
-      await load();
+      void load();
     } finally {
       setCancellingRequestId(null);
     }

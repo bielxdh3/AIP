@@ -191,6 +191,13 @@ class RuntimeServer:
         def run() -> None:
             terminal = "generation.complete"
             error_code: str | None = None
+            last_sequence = 0
+
+            def emit_ordered_chunk(sequence: int, content: str) -> None:
+                nonlocal last_sequence
+                emit_chunk(sequence, content)
+                last_sequence = sequence
+
             try:
                 self._event(active, "generation.started", sequence=0)
                 model = str(params["model"])
@@ -203,7 +210,7 @@ class RuntimeServer:
                     keep_alive_minutes=keep_alive,
                     cancel_event=active.cancel_event,
                     observe_connection=observe_connection,
-                    emit_chunk=emit_chunk,
+                    emit_chunk=emit_ordered_chunk,
                 )
             except CancelledError:
                 terminal = "generation.cancelled"
@@ -214,14 +221,19 @@ class RuntimeServer:
                 self._diagnostic("ollama_stream_failed")
             except Exception:
                 terminal = "generation.failed"
-                error_code = "provider_internal_error"
+                error_code = "generation_failed_unknown"
                 self._diagnostic("runtime_worker_exception")
             finally:
                 with self._active_lock:
                     if self._active is active:
                         self._active = None
                 try:
-                    self._event(active, terminal, error_code=error_code)
+                    self._event(
+                        active,
+                        terminal,
+                        sequence=last_sequence,
+                        error_code=error_code,
+                    )
                 except Exception:
                     self._diagnostic("runtime_stdout_write_failed")
                 finally:

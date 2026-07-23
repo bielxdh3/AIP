@@ -296,6 +296,7 @@ class RuntimeServerTests(unittest.TestCase):
         self.assertTrue(all(event["requestId"] == "request-one" for event in events))
         self.assertEqual(events[1]["sequence"], 1)
         self.assertEqual(events[1]["content"], "Synthetic")
+        self.assertEqual(events[-1]["sequence"], 1)
         self.assertTrue(all(line.get("error") is None for line in lines))
 
     def test_only_one_generation_can_be_active(self) -> None:
