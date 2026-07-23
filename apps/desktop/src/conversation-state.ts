@@ -77,6 +77,8 @@ export function applyPhaseOneEvent(
       status: "streaming",
     });
   }
+  const lastSequence = state.lastSequenceByRequest[event.requestId] ?? 0;
+  if (event.sequence !== lastSequence) return state;
   return updateMessage(state, messageIndex, {
     ...current,
     status: nextStatus,
@@ -133,13 +135,7 @@ export function canRequestCancellation(
 
 export function messageStatusCopy(message: ConversationMessage): string {
   if (message.status === "failed") {
-    if (message.errorCode?.startsWith("runtime_")) {
-      return "Runtime local interrompido";
-    }
-    if (message.errorCode?.startsWith("provider_")) {
-      return "Ollama não conseguiu concluir a resposta";
-    }
-    return "Não foi possível gerar a resposta";
+    return messageFailureCopy(message.errorCode);
   }
   const labels: Record<ConversationMessage["status"], string> = {
     pending: "Aguardando processamento…",
@@ -149,6 +145,37 @@ export function messageStatusCopy(message: ConversationMessage): string {
     cancelled: "Resposta cancelada",
   };
   return labels[message.status];
+}
+
+export function messageFailureCopy(errorCode: string | null): string {
+  if (
+    errorCode === "provider_model_unavailable" ||
+    errorCode === "model_unavailable"
+  ) {
+    return "O modelo selecionado não está disponível";
+  }
+  if (errorCode === "provider_timeout") {
+    return "O modelo demorou demais para responder";
+  }
+  if (
+    errorCode === "provider_stream_closed" ||
+    errorCode === "provider_interrupted"
+  ) {
+    return "A resposta foi interrompida. O texto recebido foi preservado";
+  }
+  if (errorCode?.startsWith("provider_")) {
+    return "O Ollama não conseguiu concluir a resposta. Tente novamente";
+  }
+  if (errorCode?.startsWith("protocol_")) {
+    return "A comunicação com o runtime falhou. Tente reiniciar o runtime";
+  }
+  if (errorCode === "persistence_failed") {
+    return "A resposta não pôde ser salva corretamente";
+  }
+  if (errorCode?.startsWith("runtime_")) {
+    return "O runtime local está indisponível. Reinicie-o e tente novamente";
+  }
+  return "Não foi possível gerar a resposta";
 }
 
 export function providerStatusCopy(state: PhaseOneState): string {

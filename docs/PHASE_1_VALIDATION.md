@@ -41,6 +41,31 @@ before the new manual test. It:
 - reports genuine process death separately from ordinary provider failure or cancellation;
 - requires explicit runtime retry and does not add an automatic restart loop.
 
+## Remaining streamed-request failure evidence
+
+Manual validation of `9910418c803b62e756a7966980b321c601990b04` kept Ollama and the
+managed Python process healthy, but some persisted assistant attempts failed with the stable
+internal class `provider_internal_error`. Direct local Ollama requests and repeated managed-runtime
+requests using `llama3.2:1b` completed successfully, so the evidence does not support classifying
+those failures as runtime process death.
+
+The remaining defect was request-level error collapse: an exception from stream cleanup could escape
+the adapter's successful path and reach the Python worker's generic catch, where it became
+`provider_internal_error`. The desktop then rendered every failed attempt with the same
+runtime-unavailable guidance, hiding the actual class. The streamed-request hotfix:
+
+- treats a missing provider terminal record as `provider_stream_closed`;
+- prevents stream cleanup errors from replacing an already-complete terminal state;
+- emits the final accepted sequence on every Python terminal event;
+- rejects mismatched terminal sequences and retains a bounded, content-free request trace for queue
+  dispatch, stream acceptance, persistence, finalization, and stale-event rejection;
+- keeps terminal persistence write-once and queue handoff single-shot;
+- prevents stale asynchronous frontend loads from replacing newer authoritative state; and
+- maps provider, protocol, persistence, and runtime failures to distinct concise Portuguese text.
+
+The new local hotfix commit must be recorded in the validation report before manual retest. Phase 1
+remains pending.
+
 ## Automated boundary
 
 CI and local automated tests use synthetic provider data and temporary SQLite databases. They do
@@ -69,9 +94,9 @@ The pre-commit implementation gate completed successfully on the implementation 
 
 - secret/privacy scan: 88 repository files checked;
 - contracts: 2 tests passed;
-- desktop frontend: 18 tests passed;
-- Python runtime: 21 tests passed;
-- Rust/Tauri core: 33 tests passed;
+- desktop frontend: 19 tests passed;
+- Python runtime: 23 tests passed;
+- Rust/Tauri core: 34 tests passed;
 - ESLint, TypeScript, Ruff, mypy, Cargo fmt, Cargo check, and Clippy passed;
 - Vite production build and `tauri build --no-bundle` passed;
 - `git diff --check` passed.

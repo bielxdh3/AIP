@@ -7,6 +7,7 @@ import {
   canRequestCancellation,
   compactPreview,
   createConversationViewState,
+  messageFailureCopy,
   messageStatusCopy,
   providerStatusCopy,
   requestForAgent,
@@ -117,12 +118,27 @@ describe("conversation event reducer", () => {
     expect(applyPhaseOneEvent(initial, wrongAgent)).toBe(initial);
     const complete = applyPhaseOneEvent(
       initial,
-      event("generation.complete", null, null),
+      event("generation.complete", 0, null),
     );
     expect(complete.phase.messages[0]?.status).toBe("complete");
     expect(
-      applyPhaseOneEvent(complete, event("generation.failed", null, null)),
+      applyPhaseOneEvent(complete, event("generation.failed", 0, null)),
     ).toBe(complete);
+  });
+
+  it("rejects a terminal event whose sequence does not match accepted chunks", () => {
+    const initial = createConversationViewState(phase());
+    const chunked = applyPhaseOneEvent(
+      initial,
+      event("generation.chunk", 1, "parte"),
+    );
+    expect(
+      applyPhaseOneEvent(chunked, event("generation.complete", 0, null)),
+    ).toBe(chunked);
+    expect(
+      applyPhaseOneEvent(chunked, event("generation.complete", 1, null)).phase
+        .messages[0]?.status,
+    ).toBe("complete");
   });
 
   it("exposes provider, model, cancel and compact bubble states", () => {
@@ -166,9 +182,16 @@ describe("conversation event reducer", () => {
     const failed = current.messages[0]!;
     failed.status = "failed";
     failed.errorCode = "provider_interrupted";
-    expect(messageStatusCopy(failed)).toContain("Ollama");
+    expect(messageStatusCopy(failed)).toContain("interrompida");
     failed.errorCode = "runtime_process_exit_unexpected";
-    expect(messageStatusCopy(failed)).toContain("Runtime local");
+    expect(messageStatusCopy(failed)).toContain("runtime local");
+    expect(messageFailureCopy("provider_stream_closed")).toContain(
+      "interrompida",
+    );
+    expect(messageFailureCopy("persistence_failed")).toContain("salva");
+    expect(messageFailureCopy("protocol_decode_failed")).toContain(
+      "comunicação",
+    );
   });
 
   it("keeps simultaneous Astra and Luma bubble reducers isolated", () => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { PhaseOneEvent, PhaseOneState } from "@aip/contracts";
@@ -12,16 +12,20 @@ import { createListenerRegistration } from "./listener-lifecycle";
 export function usePhaseOne(agentId: string | null) {
   const [view, setView] = useState<ConversationViewState | null>(null);
   const [error, setError] = useState(false);
+  const loadRevision = useRef(0);
 
   const load = useCallback(async () => {
     if (agentId === null) return;
+    const revision = ++loadRevision.current;
     try {
       const phase = await invoke<PhaseOneState>("get_phase_one_state", {
         agentId,
       });
+      if (revision !== loadRevision.current) return;
       setView(createConversationViewState(phase));
       setError(false);
     } catch {
+      if (revision !== loadRevision.current) return;
       setError(true);
     }
   }, [agentId]);

@@ -56,6 +56,12 @@ class FakeConnection(ConnectionLike):
         self.closed = True
 
 
+class CloseFailureConnection(FakeConnection):
+    def close(self) -> None:
+        self.closed = True
+        raise OSError("synthetic close failure")
+
+
 class FakeSocket:
     def __init__(self) -> None:
         self.shutdown_calls: list[int] = []
@@ -226,6 +232,25 @@ class OllamaStreamingTests(unittest.TestCase):
                 emit_chunk=lambda _sequence, _content: None,
             )
         self.assertEqual(connection.requests, [])
+
+    def test_cleanup_failure_does_not_replace_a_completed_stream(self) -> None:
+        connection = CloseFailureConnection(
+            FakeResponse([b'{"message":{"content":"OK"},"done":false}\n', b'{"done":true}\n'])
+        )
+        chunks: list[tuple[int, str]] = []
+        OllamaClient(lambda: connection).stream_chat(
+            model_id="synthetic:latest",
+            messages=[{"role": "user", "content": "Synthetic input"}],
+            keep_alive_minutes=15,
+            cancel_event=threading.Event(),
+            observe_connection=lambda _connection: None,
+            emit_chunk=lambda sequence, content: chunks.append((sequence, content)),
+        )
+        self.assertEqual(chunks, [(1, "OK")])
+
+    def test_closed_stream_has_a_stable_failure_class(self) -> None:
+        with self.assertRaisesRegex(ProviderError, "provider_stream_closed"):
+            self.run_chat([b'{"message":{"content":"partial"},"done":false}\n'])
 
 
 if __name__ == "__main__":

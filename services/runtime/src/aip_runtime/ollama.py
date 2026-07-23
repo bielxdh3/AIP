@@ -248,7 +248,7 @@ class OllamaClient:
             if cancel_event.is_set():
                 raise CancelledError()
             if not saw_done:
-                raise ProviderError("provider_stream_incomplete")
+                raise ProviderError("provider_stream_closed")
         except CancelledError:
             raise
         except (OSError, http.client.HTTPException, TimeoutError) as error:
@@ -257,7 +257,11 @@ class OllamaClient:
             raise ProviderError("provider_interrupted") from error
         finally:
             observe_connection(None)
-            connection.close()
+            # Cleanup must not convert an already-complete response into an
+            # unrelated internal runtime failure. A closed stream is detected
+            # before this point from its missing terminal provider record.
+            with suppress(Exception):
+                connection.close()
 
     def _json_request(
         self, method: str, path: str, body: dict[str, object] | None = None

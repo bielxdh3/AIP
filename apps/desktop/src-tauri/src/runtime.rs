@@ -679,16 +679,16 @@ for raw in sys.stdin:
         if model == "wait:latest":
             active = request
         elif model == "failure:latest":
-            event(request, "generation.failed", errorCode="provider_stream_failed")
+            event(request, "generation.failed", sequence=0, errorCode="provider_stream_failed")
         else:
             event(request, "generation.chunk", sequence=1, content="Synthetic reply")
-            event(request, "generation.complete")
+            event(request, "generation.complete", sequence=1)
     elif method == "generation.cancel":
         write({"protocolVersion": 1, "id": request["id"], "result": {"status": "cancelling"}})
         if active is not None and active["id"] == request["params"]["requestId"]:
             sys.stderr.write("AIP_RUNTIME_DIAGNOSTIC ollama_stream_cancelled\n")
             sys.stderr.flush()
-            event(active, "generation.cancelled")
+            event(active, "generation.cancelled", sequence=0)
             active = None
 "#;
 
