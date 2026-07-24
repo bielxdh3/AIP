@@ -9,6 +9,13 @@ import {
 } from "./conversation-state";
 import { createListenerRegistration } from "./listener-lifecycle";
 
+export function loadIsCurrent(
+  startedRevision: number,
+  currentRevision: number,
+): boolean {
+  return startedRevision === currentRevision;
+}
+
 export function usePhaseOne(agentId: string | null) {
   const [view, setView] = useState<ConversationViewState | null>(null);
   const [error, setError] = useState(false);
@@ -21,11 +28,11 @@ export function usePhaseOne(agentId: string | null) {
       const phase = await invoke<PhaseOneState>("get_phase_one_state", {
         agentId,
       });
-      if (revision !== loadRevision.current) return;
+      if (!loadIsCurrent(revision, loadRevision.current)) return;
       setView(createConversationViewState(phase));
       setError(false);
     } catch {
-      if (revision !== loadRevision.current) return;
+      if (!loadIsCurrent(revision, loadRevision.current)) return;
       setError(true);
     }
   }, [agentId]);
@@ -39,9 +46,12 @@ export function usePhaseOne(agentId: string | null) {
     const registration = createListenerRegistration();
     void listen<PhaseOneEvent>("phase-one-event", (incoming) => {
       const event = incoming.payload;
-      setView((current) =>
-        current === null ? current : applyPhaseOneEvent(current, event),
-      );
+      setView((current) => {
+        if (current === null) return current;
+        const next = applyPhaseOneEvent(current, event);
+        if (next !== current) loadRevision.current += 1;
+        return next;
+      });
       if (
         event.eventType === "state.changed" ||
         event.eventType === "generation.complete" ||
