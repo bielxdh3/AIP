@@ -750,31 +750,6 @@ impl ChatCoordinator {
         error_code: Option<&str>,
         event: PhaseOneEvent,
     ) {
-        let cancelling_job = {
-            let queue = lock(&self.inner.queue);
-            queue
-                .active
-                .as_ref()
-                .filter(|active| {
-                    active.job.request_id == request_id && active.cancellation_requested
-                })
-                .map(|active| active.job.clone())
-        };
-        if let Some(active) = cancelling_job {
-            let cancelled = PhaseOneEvent {
-                protocol_version: PROTOCOL_VERSION,
-                event_type: "generation.cancelled".into(),
-                request_id: Some(active.request_id),
-                agent_id: Some(active.agent_id),
-                conversation_id: Some(active.conversation_id),
-                assistant_message_id: Some(active.assistant_message_id),
-                sequence: None,
-                content: None,
-                error_code: None,
-            };
-            self.finish_active(request_id, MessageStatus::Cancelled, None, cancelled);
-            return;
-        }
         self.finish_active(request_id, status, error_code, event);
     }
 
@@ -1103,8 +1078,32 @@ mod tests {
         );
         assert!(queue.snapshots()[0].cancellation_requested);
         assert_eq!(queue.accept_chunk("one", 1, 10), ChunkDecision::Ignored);
+        let active = queue.active.as_ref().unwrap().job.clone();
+        let cancelled = PhaseOneEvent {
+            protocol_version: PROTOCOL_VERSION,
+            event_type: "generation.cancelled".into(),
+            request_id: Some(active.request_id.clone()),
+            agent_id: Some(active.agent_id.clone()),
+            conversation_id: Some(active.conversation_id.clone()),
+            assistant_message_id: Some(active.assistant_message_id.clone()),
+            sequence: Some(0),
+            content: None,
+            error_code: None,
+        };
+        assert!(queue.accepts_terminal(&cancelled));
         assert!(queue.finish_active("one").is_some());
         assert_eq!(queue.activate_next().unwrap().request_id, "two");
+        assert!(queue.accepts_terminal(&PhaseOneEvent {
+            event_type: "generation.complete".into(),
+            request_id: Some("two".into()),
+            agent_id: Some("luma".into()),
+            conversation_id: Some("conversation-luma".into()),
+            assistant_message_id: Some("message-two".into()),
+            sequence: Some(0),
+            content: None,
+            error_code: None,
+            ..cancelled
+        }));
     }
 
     #[test]

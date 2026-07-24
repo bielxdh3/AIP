@@ -124,6 +124,9 @@ describe("conversation event reducer", () => {
     expect(
       applyPhaseOneEvent(complete, event("generation.failed", 0, null)),
     ).toBe(complete);
+    expect(
+      applyPhaseOneEvent(complete, event("generation.cancelled", 0, null)),
+    ).toBe(complete);
   });
 
   it("rejects a terminal event whose sequence does not match accepted chunks", () => {
@@ -139,6 +142,18 @@ describe("conversation event reducer", () => {
       applyPhaseOneEvent(chunked, event("generation.complete", 1, null)).phase
         .messages[0]?.status,
     ).toBe("complete");
+  });
+
+  it("accepts an immediate cancellation terminal with the final sequence", () => {
+    const initial = createConversationViewState(phase());
+    const chunked = applyPhaseOneEvent(
+      initial,
+      event("generation.chunk", 1, "parte"),
+    );
+    expect(
+      applyPhaseOneEvent(chunked, event("generation.cancelled", 1, null)).phase
+        .messages[0]?.status,
+    ).toBe("cancelled");
   });
 
   it("exposes provider, model, cancel and compact bubble states", () => {
