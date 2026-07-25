@@ -17,10 +17,12 @@ use crate::domain::{
 const MIGRATION_0001: &str = include_str!("../migrations/0001_phase0.sql");
 const MIGRATION_0002: &str = include_str!("../migrations/0002_phase1_conversations.sql");
 const MIGRATION_0003: &str = include_str!("../migrations/0003_phase1_agent_settings.sql");
-const MIGRATIONS: [(i64, &str); 3] = [
+const MIGRATION_0004: &str = include_str!("../migrations/0004_phase2_identity.sql");
+const MIGRATIONS: [(i64, &str); 4] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
+    (4, MIGRATION_0004),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -61,6 +63,7 @@ pub struct DatabaseSnapshot {
     pub safe_mode: bool,
     pub migration_version: i64,
     pub agents: Vec<ProvisionalAgent>,
+    pub onboarding_required: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,6 +186,12 @@ impl Database {
                  VALUES (?1, ?2, ?3, 'Conversa principal', 'normal', 1, ?4, ?4)",
                 params![Uuid::now_v7().to_string(), agent_id, OWNER_ID, now],
             )?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO agent_identity_profiles
+                 (agent_id, birthday, fictive_age, age_category, species, pronouns, personality_summary, traits_json, appearance_preset, created_at, updated_at)
+                 VALUES (?1, '2000-01-01', 18, 'adult', 'agent', 'they/them', '', '{}', ?2, ?3, ?3)",
+                params![agent_id, if agent_id == ASTRA_ID { "astra" } else { "luma" }, now],
+            )?;
         }
         transaction.execute(
             "INSERT OR IGNORE INTO app_settings (key, value_json, updated_at)
@@ -222,6 +231,14 @@ impl Database {
             )
             .optional()?
             .is_some_and(|value| value == "true");
+        let onboarding_required = connection
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = 'phase2_onboarding_complete'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .is_none_or(|value| value != "true");
         let migration_version = connection.query_row(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
             [],
@@ -230,9 +247,12 @@ impl Database {
 
         let mut statement = connection.prepare(
             "SELECT a.id, a.name, a.profile_key, a.sprite_key,
-                    p.preferred_x, p.preferred_y
+                    p.preferred_x, p.preferred_y, i.birthday, i.fictive_age,
+                    i.age_category, i.species, i.pronouns, i.personality_summary,
+                    i.traits_json, i.appearance_preset
              FROM agents a
              JOIN agent_screen_preferences p ON p.agent_id = a.id
+             JOIN agent_identity_profiles i ON i.agent_id = a.id
              WHERE a.status = 'active'
              ORDER BY a.profile_key DESC",
         )?;
@@ -244,6 +264,7 @@ impl Database {
             safe_mode,
             migration_version,
             agents,
+            onboarding_required,
         })
     }
 
@@ -252,9 +273,12 @@ impl Database {
         connection
             .query_row(
                 "SELECT a.id, a.name, a.profile_key, a.sprite_key,
-                        p.preferred_x, p.preferred_y
+                        p.preferred_x, p.preferred_y, i.birthday, i.fictive_age,
+                        i.age_category, i.species, i.pronouns, i.personality_summary,
+                        i.traits_json, i.appearance_preset
                  FROM agents a
                  JOIN agent_screen_preferences p ON p.agent_id = a.id
+                 JOIN agent_identity_profiles i ON i.agent_id = a.id
                  WHERE a.id = ?1 AND a.status = 'active'",
                 params![agent_id],
                 map_agent,
@@ -267,7 +291,7 @@ impl Database {
         let connection = self.open()?;
         connection
             .query_row(
-                "SELECT id, agent_id, title FROM conversations
+                "SELECT id, agent_id, title, model_override_ref FROM conversations
                  WHERE agent_id = ?1 AND is_main = 1 AND archived_at IS NULL",
                 params![agent_id],
                 |row| {
@@ -275,6 +299,7 @@ impl Database {
                         id: row.get(0)?,
                         agent_id: row.get(1)?,
                         title: row.get(2)?,
+                        model_override_ref: row.get(3)?,
                     })
                 },
             )
@@ -356,6 +381,82 @@ impl Database {
             params![minutes, now_millis(), agent_id],
         )? == 1
         {
+            Ok(())
+        } else {
+            Err(DatabaseError::NotFound)
+        }
+    }
+
+    pub fn update_profile(&self, agent: &ProvisionalAgent) -> Result<(), DatabaseError> {
+        if agent.name.trim().is_empty()
+            || agent.birthday.len() != 10
+            || agent.age_category.trim().is_empty()
+            || agent.species.trim().is_empty()
+            || agent.pronouns.trim().is_empty()
+            || agent.fictive_age > 10_000
+            || !matches!(agent.appearance_preset.as_str(), "astra" | "luma")
+        {
+            return Err(DatabaseError::InvalidValue);
+        }
+        let connection = self.open()?;
+        let now = now_millis();
+        let changed = connection.execute(
+            "UPDATE agents SET name = ?1, updated_at = ?2 WHERE id = ?3",
+            params![agent.name.trim(), now, agent.id],
+        )?;
+        if changed != 1 {
+            return Err(DatabaseError::NotFound);
+        }
+        connection.execute(
+            "UPDATE agent_identity_profiles SET birthday = ?1, fictive_age = ?2,
+             age_category = ?3, species = ?4, pronouns = ?5, personality_summary = ?6,
+             traits_json = ?7, appearance_preset = ?8, updated_at = ?9 WHERE agent_id = ?10",
+            params![
+                agent.birthday,
+                agent.fictive_age,
+                agent.age_category,
+                agent.species,
+                agent.pronouns,
+                agent.personality_summary,
+                agent.traits_json,
+                agent.appearance_preset,
+                now,
+                agent.id
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn complete_onboarding(&self, agents: &[ProvisionalAgent]) -> Result<(), DatabaseError> {
+        if agents.is_empty()
+            || agents.len() > 2
+            || agents
+                .iter()
+                .any(|agent| !matches!(agent.id.as_str(), ASTRA_ID | LUMA_ID))
+        {
+            return Err(DatabaseError::InvalidValue);
+        }
+        for agent in agents {
+            self.update_profile(agent)?;
+        }
+        self.set_setting("phase2_onboarding_complete", "true")
+    }
+
+    pub fn set_main_conversation_override(
+        &self,
+        agent_id: &str,
+        model_ref: Option<&str>,
+    ) -> Result<(), DatabaseError> {
+        if model_ref.is_some_and(|model| !valid_model_ref(model)) {
+            return Err(DatabaseError::InvalidValue);
+        }
+        let connection = self.open()?;
+        let changed = connection.execute(
+            "UPDATE conversations SET model_override_ref = ?1, updated_at = ?2
+             WHERE agent_id = ?3 AND is_main = 1 AND archived_at IS NULL",
+            params![model_ref, now_millis(), agent_id],
+        )?;
+        if changed == 1 {
             Ok(())
         } else {
             Err(DatabaseError::NotFound)
@@ -656,6 +757,14 @@ fn map_agent(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProvisionalAgent> {
             x: row.get(4)?,
             y: row.get(5)?,
         },
+        birthday: row.get(6)?,
+        fictive_age: row.get(7)?,
+        age_category: row.get(8)?,
+        species: row.get(9)?,
+        pronouns: row.get(10)?,
+        personality_summary: row.get(11)?,
+        traits_json: row.get(12)?,
+        appearance_preset: row.get(13)?,
     })
 }
 
@@ -713,7 +822,7 @@ mod tests {
         let first = Database::initialize(&path).expect("database should initialize");
         let second = Database::initialize(&path).expect("database should reinitialize");
         let snapshot = second.snapshot().expect("snapshot should load");
-        assert_eq!(snapshot.migration_version, 3);
+        assert_eq!(snapshot.migration_version, 4);
         assert_eq!(snapshot.agents.len(), 2);
         for agent in &snapshot.agents {
             assert_eq!(
@@ -742,7 +851,7 @@ mod tests {
         drop(connection);
 
         let database = Database::initialize(&path).expect("v1 database should upgrade");
-        assert_eq!(database.snapshot().unwrap().migration_version, 3);
+        assert_eq!(database.snapshot().unwrap().migration_version, 4);
         let connection = Connection::open(&path).unwrap();
         let preserved: String = connection
             .query_row(

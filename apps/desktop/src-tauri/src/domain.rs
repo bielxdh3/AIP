@@ -11,14 +11,14 @@ pub const MAX_PROVIDER_ERROR_BYTES: usize = 256;
 pub const DEFAULT_KEEP_ALIVE_MINUTES: u32 = 15;
 pub const MAX_KEEP_ALIVE_MINUTES: u32 = 120;
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentPosition {
     pub x: f64,
     pub y: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvisionalAgent {
     pub id: String,
@@ -26,6 +26,14 @@ pub struct ProvisionalAgent {
     pub profile_key: String,
     pub sprite_key: String,
     pub position: AgentPosition,
+    pub birthday: String,
+    pub fictive_age: u32,
+    pub age_category: String,
+    pub species: String,
+    pub pronouns: String,
+    pub personality_summary: String,
+    pub traits_json: String,
+    pub appearance_preset: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -66,6 +74,7 @@ pub struct AppSnapshot {
     pub migration_version: i64,
     pub runtime: RuntimeStatus,
     pub agents: Vec<ProvisionalAgent>,
+    pub onboarding_required: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,6 +203,7 @@ pub struct PhaseOneConversation {
     pub id: String,
     pub agent_id: String,
     pub title: String,
+    pub model_override_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -231,6 +241,8 @@ pub struct PhaseOneState {
     pub messages: Vec<ConversationMessage>,
     pub provider: ProviderSnapshot,
     pub selected_model_ref: Option<String>,
+    pub default_model_ref: Option<String>,
+    pub model_override_ref: Option<String>,
     pub selected_model_available: bool,
     pub keep_alive_minutes: u32,
     pub queue: Vec<QueueEntrySnapshot>,

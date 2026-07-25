@@ -1,5 +1,10 @@
 # AIP Roadmap
 
+## Phase 2
+
+Persistent identity profiles, per-agent model defaults, and the one-main-conversation
+boundary are implemented. Manual Windows Phase 2 validation remains pending.
+
 ## Roadmap principles
 
 - Build AIP standalone before BielOS integration.

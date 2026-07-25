@@ -125,6 +125,45 @@ fn update_keep_alive(
 }
 
 #[tauri::command]
+fn update_agent_profile(
+    state: State<'_, AppState>,
+    agent: domain::ProvisionalAgent,
+) -> Result<(), &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .update_profile(&agent)
+        .map_err(|_| "invalid_profile")
+}
+
+#[tauri::command]
+fn complete_phase_two_onboarding(
+    state: State<'_, AppState>,
+    agents: Vec<domain::ProvisionalAgent>,
+) -> Result<(), &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .complete_onboarding(&agents)
+        .map_err(|_| "invalid_profile")
+}
+
+#[tauri::command]
+fn set_main_conversation_model_override(
+    state: State<'_, AppState>,
+    agent_id: String,
+    model_ref: Option<String>,
+) -> Result<(), &'static str> {
+    state
+        .chat
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .set_main_override(&agent_id, model_ref.as_deref())
+}
+
+#[tauri::command]
 fn send_phase_one_message(
     state: State<'_, AppState>,
     agent_id: String,
@@ -242,6 +281,7 @@ fn snapshot(state: &AppState) -> Result<AppSnapshot, &'static str> {
             migration_version: 0,
             runtime: state.runtime.snapshot(),
             agents: Vec::new(),
+            onboarding_required: false,
         });
     };
     let stored = database.snapshot().map_err(|_| "operation_failed")?;
@@ -252,6 +292,7 @@ fn snapshot(state: &AppState) -> Result<AppSnapshot, &'static str> {
         migration_version: stored.migration_version,
         runtime: state.runtime.snapshot(),
         agents: stored.agents,
+        onboarding_required: stored.onboarding_required,
     })
 }
 
@@ -321,6 +362,9 @@ pub fn run() {
             refresh_ollama_models,
             select_phase_one_model,
             update_keep_alive,
+            update_agent_profile,
+            complete_phase_two_onboarding,
+            set_main_conversation_model_override,
             send_phase_one_message,
             cancel_phase_one_generation,
             retry_phase_one_runtime,

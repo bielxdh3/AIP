@@ -208,6 +208,14 @@ function ConversationSurface({ agentId }: { agentId: string }) {
             </select>
           </label>
           <label>
+            <span>Modelo desta conversa</span>
+            <select value={phase.modelOverrideRef ?? ""} onChange={(event) => void invoke("set_main_conversation_model_override", { agentId: currentPhase.agent.id, modelRef: event.target.value || null }).then(load)}>
+              <option value="">Usar modelo padrão do agente</option>
+              {phase.provider.models.map((model) => <option value={model.ref} key={`override-${model.ref}`}>{model.displayName}</option>)}
+              {phase.modelOverrideRef !== null && !phase.selectedModelAvailable ? <option value={phase.modelOverrideRef}>Modelo salvo (indisponível)</option> : null}
+            </select>
+          </label>
+          <label>
             <span>Manter modelo carregado</span>
             <select
               value={phase.keepAliveMinutes}
@@ -307,10 +315,36 @@ function ConversationSurface({ agentId }: { agentId: string }) {
   );
 }
 
+function ProfileForm({ agent, onboarding, done }: { agent: ProvisionalAgent; onboarding: boolean; done: () => void }) {
+  const [draft, setDraft] = useState(agent);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => setDraft(agent), [agent]);
+  async function save() {
+    if (!draft.name.trim() || !draft.birthday || !draft.species.trim() || !draft.pronouns.trim()) {
+      setError("Preencha nome, data, espécie e pronomes."); return;
+    }
+    try {
+      if (onboarding) await invoke("complete_phase_two_onboarding", { agents: [draft] });
+      else await invoke("update_agent_profile", { agent: draft });
+      done();
+    } catch { setError("Não foi possível salvar o perfil."); }
+  }
+  return <section className="conversation-empty" aria-label="Perfil do agente">
+    <h1>{onboarding ? "Crie o perfil" : `Perfil de ${agent.name}`}</h1>
+    <label>Nome<input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
+    <label>Data de aniversário<input type="date" value={draft.birthday} onChange={(event) => setDraft({ ...draft, birthday: event.target.value })} /></label>
+    <label>Espécie<input value={draft.species} onChange={(event) => setDraft({ ...draft, species: event.target.value })} /></label>
+    <label>Pronomes<input value={draft.pronouns} onChange={(event) => setDraft({ ...draft, pronouns: event.target.value })} /></label>
+    <label>Descrição<input value={draft.personalitySummary} onChange={(event) => setDraft({ ...draft, personalitySummary: event.target.value })} /></label>
+    {error ? <p role="alert">{error}</p> : null}<button type="button" onClick={() => void save()}>Salvar perfil</button>
+  </section>;
+}
+
 function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   const [changingMode, setChangingMode] = useState(false);
+  const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
 
   const loadSnapshot = useCallback(async () => {
     const next = await invoke<AppSnapshot>("get_app_snapshot");
@@ -367,6 +401,7 @@ function App() {
             />
           ))}
         </div>
+        {snapshot?.agents.map((agent) => <button key={`profile-${agent.id}`} type="button" onClick={() => setEditingAgentId(agent.id)}>Perfil de {agent.name}</button>)}
         <button
           className={snapshot?.safeMode ? "mode-button active" : "mode-button"}
           type="button"
@@ -398,7 +433,11 @@ function App() {
             </button>
           </div>
         ) : null}
-        {activeAgentId === null ? (
+        {snapshot?.onboardingRequired && snapshot.agents[0] ? (
+          <ProfileForm agent={snapshot.agents[0]} onboarding done={() => { setEditingAgentId(null); void loadSnapshot(); }} />
+        ) : editingAgentId !== null && snapshot?.agents.find((agent) => agent.id === editingAgentId) ? (
+          <ProfileForm agent={snapshot.agents.find((agent) => agent.id === editingAgentId)!} onboarding={false} done={() => { setEditingAgentId(null); void loadSnapshot(); }} />
+        ) : activeAgentId === null ? (
           <section className="conversation-empty">Carregando agentes…</section>
         ) : (
           <ConversationSurface agentId={activeAgentId} />

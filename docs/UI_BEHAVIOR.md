@@ -1,5 +1,11 @@
 # AIP UI Behavior
 
+## Phase 2 profiles
+
+Fresh local data enters onboarding before normal chat. Each agent profile can be edited
+without changing its identifier, messages, conversation ownership, or position. The
+conversation model selector can explicitly return to the agent default.
+
 ## 1. Language and style
 
 - All user-facing interface text is Portuguese.

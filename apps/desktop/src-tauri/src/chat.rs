@@ -354,20 +354,22 @@ impl ChatCoordinator {
             .settings(agent_id)
             .map_err(|_| "operation_failed")?;
         let provider = lock(&self.inner.provider).clone();
-        let selected_model_available =
-            settings
-                .selected_model_ref
-                .as_ref()
-                .is_some_and(|selected| {
-                    provider
-                        .models
-                        .iter()
-                        .any(|model| &model.model_ref == selected)
-                });
+        let default_model_ref = settings.selected_model_ref;
+        let selected_model_ref = conversation
+            .model_override_ref
+            .clone()
+            .or(default_model_ref.clone());
+        let model_override_ref = conversation.model_override_ref.clone();
+        let selected_model_available = selected_model_ref.as_ref().is_some_and(|selected| {
+            provider
+                .models
+                .iter()
+                .any(|model| &model.model_ref == selected)
+        });
         let queue = lock(&self.inner.queue).snapshots();
         let blocked = self.send_blocked_code(
             &provider,
-            settings.selected_model_ref.as_deref(),
+            selected_model_ref.as_deref(),
             selected_model_available,
             queue.len(),
         );
@@ -376,7 +378,9 @@ impl ChatCoordinator {
             conversation,
             messages,
             provider,
-            selected_model_ref: settings.selected_model_ref,
+            selected_model_ref,
+            default_model_ref,
+            model_override_ref,
             selected_model_available,
             keep_alive_minutes: settings.keep_alive_minutes,
             queue,
@@ -442,6 +446,28 @@ impl ChatCoordinator {
             .set_keep_alive(agent_id, minutes)
             .map_err(|_| "invalid_keep_alive")?;
         self.emit_refresh(None);
+        Ok(())
+    }
+
+    pub fn set_main_override(
+        &self,
+        agent_id: &str,
+        model_ref: Option<&str>,
+    ) -> Result<(), &'static str> {
+        if let Some(model) = model_ref {
+            if !lock(&self.inner.provider)
+                .models
+                .iter()
+                .any(|candidate| candidate.model_ref == model)
+            {
+                return Err("model_unavailable");
+            }
+        }
+        self.inner
+            .database
+            .set_main_conversation_override(agent_id, model_ref)
+            .map_err(|_| "operation_failed")?;
+        self.emit_refresh(Some(agent_id));
         Ok(())
     }
 
@@ -910,12 +936,18 @@ fn build_generation_request_from_database(
     let settings = database
         .settings(&job.agent_id)
         .map_err(|_| "persistence_failed")?;
+    let conversation = database
+        .main_conversation(&job.agent_id)
+        .map_err(|_| "persistence_failed")?;
     let context = database
         .context_messages(&job.agent_id, &job.conversation_id, MAX_HISTORY_MESSAGES)
         .map_err(|_| "persistence_failed")?;
     let messages = assemble_context(&agent.name, &agent.profile_key, context);
-    let provider_model_id = job
-        .model_ref
+    let model_ref = conversation
+        .model_override_ref
+        .as_deref()
+        .unwrap_or(&job.model_ref);
+    let provider_model_id = model_ref
         .strip_prefix("ollama:")
         .filter(|model| valid_provider_model_id(model))
         .ok_or("model_unavailable")?;

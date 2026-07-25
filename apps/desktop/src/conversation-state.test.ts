@@ -21,11 +21,13 @@ function phase(agentId = "astra"): PhaseOneState {
       profileKey: "owner",
       spriteKey: "astra",
       position: { x: 0, y: 0 },
+      birthday: "2000-01-01", fictiveAge: 18, ageCategory: "adult", species: "agent", pronouns: "they/them", personalitySummary: "", traitsJson: "{}", appearancePreset: "astra",
     },
     conversation: {
       id: `conversation-${agentId}`,
       agentId,
       title: "Conversa principal",
+      modelOverrideRef: null,
     },
     messages: [
       {
@@ -48,6 +50,8 @@ function phase(agentId = "astra"): PhaseOneState {
       refreshedAt: 1,
     },
     selectedModelRef: "ollama:test",
+    defaultModelRef: "ollama:test",
+    modelOverrideRef: null,
     selectedModelAvailable: true,
     keepAliveMinutes: 15,
     queue: [
