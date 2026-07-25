@@ -185,6 +185,7 @@ function ConversationSurface({ agentId }: { agentId: string }) {
               onChange={(event) => {
                 if (event.target.value) {
                   void invoke("select_phase_one_model", {
+                    agentId: currentPhase.agent.id,
                     modelRef: event.target.value,
                   }).then(load);
                 }
@@ -212,6 +213,7 @@ function ConversationSurface({ agentId }: { agentId: string }) {
               value={phase.keepAliveMinutes}
               onChange={(event) =>
                 void invoke("update_keep_alive", {
+                  agentId: currentPhase.agent.id,
                   minutes: Number(event.target.value),
                 }).then(load)
               }

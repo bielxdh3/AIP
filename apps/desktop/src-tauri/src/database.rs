@@ -16,7 +16,12 @@ use crate::domain::{
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_phase0.sql");
 const MIGRATION_0002: &str = include_str!("../migrations/0002_phase1_conversations.sql");
-const MIGRATIONS: [(i64, &str); 2] = [(1, MIGRATION_0001), (2, MIGRATION_0002)];
+const MIGRATION_0003: &str = include_str!("../migrations/0003_phase1_agent_settings.sql");
+const MIGRATIONS: [(i64, &str); 3] = [
+    (1, MIGRATION_0001),
+    (2, MIGRATION_0002),
+    (3, MIGRATION_0003),
+];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
 pub const LUMA_ID: &str = "agt_luma_provisional";
@@ -184,6 +189,14 @@ impl Database {
              VALUES ('phase1_keep_alive_minutes', ?1, ?2)",
             params![DEFAULT_KEEP_ALIVE_MINUTES.to_string(), now],
         )?;
+        for agent_id in [ASTRA_ID, LUMA_ID] {
+            transaction.execute(
+                "INSERT OR IGNORE INTO agent_phase1_settings
+                 (agent_id, selected_model_ref, keep_alive_minutes, updated_at)
+                 VALUES (?1, NULL, ?2, ?3)",
+                params![agent_id, DEFAULT_KEEP_ALIVE_MINUTES, now],
+            )?;
+        }
         transaction.commit()?;
         Ok(())
     }
@@ -290,59 +303,63 @@ impl Database {
         Ok(messages)
     }
 
-    pub fn settings(&self) -> Result<PhaseOneSettings, DatabaseError> {
+    pub fn settings(&self, agent_id: &str) -> Result<PhaseOneSettings, DatabaseError> {
         let connection = self.open()?;
-        let selected_model_ref = connection
+        connection
             .query_row(
-                "SELECT value_json FROM app_settings WHERE key = 'phase1_selected_model_ref'",
-                [],
-                |row| row.get::<_, String>(0),
+                "SELECT selected_model_ref, keep_alive_minutes
+                 FROM agent_phase1_settings WHERE agent_id = ?1",
+                params![agent_id],
+                |row| {
+                    let keep_alive_minutes = row.get::<_, u32>(1)?;
+                    Ok(PhaseOneSettings {
+                        selected_model_ref: row
+                            .get::<_, Option<String>>(0)?
+                            .filter(|value| valid_model_ref(value)),
+                        keep_alive_minutes: if keep_alive_minutes <= MAX_KEEP_ALIVE_MINUTES {
+                            keep_alive_minutes
+                        } else {
+                            DEFAULT_KEEP_ALIVE_MINUTES
+                        },
+                    })
+                },
             )
             .optional()?
-            .and_then(|value| serde_json::from_str::<String>(&value).ok())
-            .filter(|value| valid_model_ref(value));
-        let keep_alive_minutes = connection
-            .query_row(
-                "SELECT value_json FROM app_settings WHERE key = 'phase1_keep_alive_minutes'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .and_then(|value| serde_json::from_str::<u32>(&value).ok())
-            .filter(|value| *value <= MAX_KEEP_ALIVE_MINUTES)
-            .unwrap_or(DEFAULT_KEEP_ALIVE_MINUTES);
-        Ok(PhaseOneSettings {
-            selected_model_ref,
-            keep_alive_minutes,
-        })
+            .ok_or(DatabaseError::NotFound)
     }
 
-    pub fn set_selected_model(&self, model_ref: &str) -> Result<(), DatabaseError> {
+    pub fn set_selected_model(&self, agent_id: &str, model_ref: &str) -> Result<(), DatabaseError> {
         if !valid_model_ref(model_ref) {
             return Err(DatabaseError::InvalidValue);
         }
-        let value = serde_json::to_string(model_ref).map_err(|_| DatabaseError::InvalidValue)?;
-        self.set_setting("phase1_selected_model_ref", &value)
+        let connection = self.open()?;
+        if connection.execute(
+            "UPDATE agent_phase1_settings
+             SET selected_model_ref = ?1, updated_at = ?2 WHERE agent_id = ?3",
+            params![model_ref, now_millis(), agent_id],
+        )? == 1
+        {
+            Ok(())
+        } else {
+            Err(DatabaseError::NotFound)
+        }
     }
 
-    pub fn set_keep_alive(&self, minutes: u32) -> Result<(), DatabaseError> {
+    pub fn set_keep_alive(&self, agent_id: &str, minutes: u32) -> Result<(), DatabaseError> {
         if minutes > MAX_KEEP_ALIVE_MINUTES {
             return Err(DatabaseError::InvalidValue);
         }
-        self.set_setting("phase1_keep_alive_minutes", &minutes.to_string())
-    }
-
-    fn set_setting(&self, key: &str, value_json: &str) -> Result<(), DatabaseError> {
         let connection = self.open()?;
-        connection.execute(
-            "INSERT INTO app_settings (key, value_json, updated_at)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(key) DO UPDATE SET
-               value_json = excluded.value_json,
-               updated_at = excluded.updated_at",
-            params![key, value_json, now_millis()],
-        )?;
-        Ok(())
+        if connection.execute(
+            "UPDATE agent_phase1_settings
+             SET keep_alive_minutes = ?1, updated_at = ?2 WHERE agent_id = ?3",
+            params![minutes, now_millis(), agent_id],
+        )? == 1
+        {
+            Ok(())
+        } else {
+            Err(DatabaseError::NotFound)
+        }
     }
 
     pub fn create_message_attempt(
@@ -545,6 +562,19 @@ impl Database {
         self.set_setting("safe_mode", if enabled { "true" } else { "false" })
     }
 
+    fn set_setting(&self, key: &str, value_json: &str) -> Result<(), DatabaseError> {
+        let connection = self.open()?;
+        connection.execute(
+            "INSERT INTO app_settings (key, value_json, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET
+               value_json = excluded.value_json,
+               updated_at = excluded.updated_at",
+            params![key, value_json, now_millis()],
+        )?;
+        Ok(())
+    }
+
     pub fn update_position(&self, agent_id: &str, x: f64, y: f64) -> Result<(), DatabaseError> {
         if !x.is_finite() || !y.is_finite() {
             return Err(DatabaseError::InvalidValue);
@@ -665,7 +695,7 @@ mod tests {
 
     use crate::domain::MessageStatus;
 
-    use super::{Database, DatabaseError, MIGRATION_0001};
+    use super::{Database, DatabaseError, PhaseOneSettings, ASTRA_ID, LUMA_ID, MIGRATION_0001};
 
     fn test_path() -> std::path::PathBuf {
         std::env::temp_dir()
@@ -683,7 +713,7 @@ mod tests {
         let first = Database::initialize(&path).expect("database should initialize");
         let second = Database::initialize(&path).expect("database should reinitialize");
         let snapshot = second.snapshot().expect("snapshot should load");
-        assert_eq!(snapshot.migration_version, 2);
+        assert_eq!(snapshot.migration_version, 3);
         assert_eq!(snapshot.agents.len(), 2);
         for agent in &snapshot.agents {
             assert_eq!(
@@ -712,7 +742,7 @@ mod tests {
         drop(connection);
 
         let database = Database::initialize(&path).expect("v1 database should upgrade");
-        assert_eq!(database.snapshot().unwrap().migration_version, 2);
+        assert_eq!(database.snapshot().unwrap().migration_version, 3);
         let connection = Connection::open(&path).unwrap();
         let preserved: String = connection
             .query_row(
@@ -811,8 +841,10 @@ mod tests {
         database
             .mark_streaming(&attempt.assistant_message_id, &attempt.request_id)
             .unwrap();
-        database.set_selected_model("ollama:test").unwrap();
-        database.set_keep_alive(30).unwrap();
+        database
+            .set_selected_model(&agent.id, "ollama:test")
+            .unwrap();
+        database.set_keep_alive(&agent.id, 30).unwrap();
         drop(database);
 
         let reopened = Database::initialize(&path).unwrap();
@@ -823,10 +855,14 @@ mod tests {
             Some("runtime_interrupted")
         );
         assert_eq!(
-            reopened.settings().unwrap().selected_model_ref.as_deref(),
+            reopened
+                .settings(&agent.id)
+                .unwrap()
+                .selected_model_ref
+                .as_deref(),
             Some("ollama:test")
         );
-        assert_eq!(reopened.settings().unwrap().keep_alive_minutes, 30);
+        assert_eq!(reopened.settings(&agent.id).unwrap().keep_alive_minutes, 30);
 
         let connection = Connection::open(&path).unwrap();
         connection
@@ -837,7 +873,86 @@ mod tests {
             )
             .unwrap();
         drop(connection);
-        assert_eq!(reopened.settings().unwrap().keep_alive_minutes, 15);
+        assert_eq!(reopened.settings(&agent.id).unwrap().keep_alive_minutes, 30);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn phase_one_settings_and_context_are_scoped_to_each_agent() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let agents = database.snapshot().unwrap().agents;
+        let astra = agents.iter().find(|agent| agent.id == ASTRA_ID).unwrap();
+        let luma = agents.iter().find(|agent| agent.id == LUMA_ID).unwrap();
+        let astra_conversation = database.main_conversation(&astra.id).unwrap();
+        let luma_conversation = database.main_conversation(&luma.id).unwrap();
+
+        database
+            .set_selected_model(&astra.id, "ollama:astra-model")
+            .unwrap();
+        database
+            .set_selected_model(&luma.id, "ollama:luma-model")
+            .unwrap();
+        database.set_keep_alive(&astra.id, 5).unwrap();
+        database.set_keep_alive(&luma.id, 30).unwrap();
+
+        let astra_attempt = database
+            .create_message_attempt(
+                &astra.id,
+                &astra_conversation.id,
+                "Astra-only context",
+                "ollama:astra-model",
+            )
+            .unwrap();
+        database
+            .mark_streaming(
+                &astra_attempt.assistant_message_id,
+                &astra_attempt.request_id,
+            )
+            .unwrap();
+        database
+            .append_assistant_chunk(
+                &astra_attempt.assistant_message_id,
+                &astra_attempt.request_id,
+                "Astra-only reply",
+            )
+            .unwrap();
+        database
+            .finish_assistant(
+                &astra_attempt.assistant_message_id,
+                &astra_attempt.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+        database
+            .create_message_attempt(
+                &luma.id,
+                &luma_conversation.id,
+                "Luma-only context",
+                "ollama:luma-model",
+            )
+            .unwrap();
+
+        assert_eq!(
+            database.settings(&astra.id).unwrap(),
+            PhaseOneSettings {
+                selected_model_ref: Some("ollama:astra-model".into()),
+                keep_alive_minutes: 5,
+            }
+        );
+        assert_eq!(
+            database.settings(&luma.id).unwrap(),
+            PhaseOneSettings {
+                selected_model_ref: Some("ollama:luma-model".into()),
+                keep_alive_minutes: 30,
+            }
+        );
+        let luma_context = database
+            .context_messages(&luma.id, &luma_conversation.id, 32)
+            .unwrap();
+        assert_eq!(luma_context.len(), 1);
+        assert_eq!(luma_context[0].content, "Luma-only context");
         cleanup(&path);
     }
 

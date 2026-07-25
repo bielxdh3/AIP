@@ -101,22 +101,27 @@ fn refresh_ollama_models(state: State<'_, AppState>) -> Result<(), &'static str>
 #[tauri::command]
 fn select_phase_one_model(
     state: State<'_, AppState>,
+    agent_id: String,
     model_ref: String,
 ) -> Result<(), &'static str> {
     state
         .chat
         .as_ref()
         .ok_or("operation_unavailable")?
-        .select_model(&model_ref)
+        .select_model(&agent_id, &model_ref)
 }
 
 #[tauri::command]
-fn update_keep_alive(state: State<'_, AppState>, minutes: u32) -> Result<(), &'static str> {
+fn update_keep_alive(
+    state: State<'_, AppState>,
+    agent_id: String,
+    minutes: u32,
+) -> Result<(), &'static str> {
     state
         .chat
         .as_ref()
         .ok_or("operation_unavailable")?
-        .set_keep_alive(minutes)
+        .set_keep_alive(&agent_id, minutes)
 }
 
 #[tauri::command]

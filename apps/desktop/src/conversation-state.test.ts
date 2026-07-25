@@ -121,6 +121,7 @@ describe("conversation event reducer", () => {
       event("generation.complete", 0, null),
     );
     expect(complete.phase.messages[0]?.status).toBe("complete");
+    expect(complete.phase.queue).toEqual([]);
     expect(
       applyPhaseOneEvent(complete, event("generation.failed", 0, null)),
     ).toBe(complete);
@@ -154,6 +155,25 @@ describe("conversation event reducer", () => {
       applyPhaseOneEvent(chunked, event("generation.cancelled", 1, null)).phase
         .messages[0]?.status,
     ).toBe("cancelled");
+    expect(
+      applyPhaseOneEvent(chunked, event("generation.cancelled", 1, null)).phase
+        .queue,
+    ).toEqual([]);
+  });
+
+  it("finalizes an inactive agent view without changing the active agent", () => {
+    const astra = createConversationViewState(phase("astra"));
+    const luma = createConversationViewState(phase("luma"));
+    const lumaTerminal = {
+      ...event("generation.complete", 0, null),
+      agentId: "luma",
+      conversationId: "conversation-luma",
+    };
+    const finalizedLuma = applyPhaseOneEvent(luma, lumaTerminal);
+    expect(finalizedLuma.phase.messages[0]?.status).toBe("complete");
+    expect(finalizedLuma.phase.queue).toEqual([]);
+    expect(astra.phase.messages[0]?.status).toBe("streaming");
+    expect(astra.phase.queue).toHaveLength(1);
   });
 
   it("exposes provider, model, cancel and compact bubble states", () => {
