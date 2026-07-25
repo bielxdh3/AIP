@@ -21,13 +21,15 @@ const MIGRATION_0003: &str = include_str!("../migrations/0003_phase1_agent_setti
 const MIGRATION_0004: &str = include_str!("../migrations/0004_phase2_identity.sql");
 const MIGRATION_0005: &str = include_str!("../migrations/0005_phase3_conversations_memory.sql");
 const MIGRATION_0006: &str = include_str!("../migrations/0006_phase4_agent_state.sql");
-const MIGRATIONS: [(i64, &str); 6] = [
+const MIGRATION_0007: &str = include_str!("../migrations/0007_phase5_pixel_documents.sql");
+const MIGRATIONS: [(i64, &str); 7] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
     (4, MIGRATION_0004),
     (5, MIGRATION_0005),
     (6, MIGRATION_0006),
+    (7, MIGRATION_0007),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -221,6 +223,11 @@ impl Database {
                  (agent_id, sleep, energy, mood, focus, curiosity, social_fatigue, mode, suspended, last_simulated_at, updated_at)
                  VALUES (?1, 20, 80, 70, 70, 70, 20, 'normal', 0, ?2, ?2)",
                 params![agent_id, now],
+            )?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO pixel_documents (id, agent_id, owner_user_id, schema_version, width, height, source_json, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 1, 64, 64, '{\"layers\":[{\"id\":\"body\",\"name\":\"Body\",\"visible\":true,\"locked\":false,\"pixels\":[]}],\"attachmentPoints\":{}}', ?4, ?4)",
+                params![Uuid::now_v7().to_string(), agent_id, OWNER_ID, now],
             )?;
         }
         transaction.commit()?;
@@ -460,6 +467,46 @@ impl Database {
     pub fn simulated_state(&self, agent_id: &str) -> Result<AgentSimulatedState, DatabaseError> {
         let connection = self.open()?;
         connection.query_row("SELECT agent_id, sleep, energy, mood, focus, curiosity, social_fatigue, mode, suspended, wake_now_until, last_simulated_at FROM agent_simulated_states WHERE agent_id = ?1", params![agent_id], map_simulated_state).optional()?.ok_or(DatabaseError::NotFound)
+    }
+
+    pub fn pixel_document(&self, agent_id: &str) -> Result<String, DatabaseError> {
+        let connection = self.open()?;
+        connection
+            .query_row(
+                "SELECT source_json FROM pixel_documents WHERE agent_id = ?1",
+                params![agent_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(DatabaseError::NotFound)
+    }
+
+    pub fn save_pixel_document(
+        &self,
+        agent_id: &str,
+        source_json: &str,
+    ) -> Result<(), DatabaseError> {
+        let valid = serde_json::from_str::<serde_json::Value>(source_json).is_ok_and(|document| {
+            document
+                .get("layers")
+                .is_some_and(serde_json::Value::is_array)
+                && document
+                    .get("attachmentPoints")
+                    .is_some_and(serde_json::Value::is_object)
+        });
+        if !valid || source_json.len() > 1_000_000 {
+            return Err(DatabaseError::InvalidValue);
+        }
+        let connection = self.open()?;
+        if connection.execute(
+            "UPDATE pixel_documents SET source_json = ?1, updated_at = ?2 WHERE agent_id = ?3",
+            params![source_json, now_millis(), agent_id],
+        )? == 1
+        {
+            Ok(())
+        } else {
+            Err(DatabaseError::NotFound)
+        }
     }
 
     pub fn set_agent_mode(&self, agent_id: &str, mode: &str) -> Result<(), DatabaseError> {
@@ -1185,7 +1232,7 @@ mod tests {
         let first = Database::initialize(&path).expect("database should initialize");
         let second = Database::initialize(&path).expect("database should reinitialize");
         let snapshot = second.snapshot().expect("snapshot should load");
-        assert_eq!(snapshot.migration_version, 6);
+        assert_eq!(snapshot.migration_version, 7);
         assert_eq!(snapshot.agents.len(), 2);
         for agent in &snapshot.agents {
             assert_eq!(
@@ -1214,7 +1261,7 @@ mod tests {
         drop(connection);
 
         let database = Database::initialize(&path).expect("v1 database should upgrade");
-        assert_eq!(database.snapshot().unwrap().migration_version, 4);
+        assert_eq!(database.snapshot().unwrap().migration_version, 7);
         let connection = Connection::open(&path).unwrap();
         let preserved: String = connection
             .query_row(
@@ -1569,6 +1616,39 @@ mod tests {
         assert!(state.suspended);
         assert_eq!(state.sleep, 0);
         assert!(state.wake_now_until.is_some());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn pixel_documents_are_created_per_agent_at_64_pixels() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pixel_documents WHERE width = 64 AND height = 64",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+        drop(connection);
+        drop(database);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn pixel_document_round_trips_per_agent() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let edited = r##"{"layers":[{"id":"body","pixels":[[0,0,"#fff"]]}],"attachmentPoints":{"bubble":{"x":1,"y":2}}}"##;
+        database.save_pixel_document(ASTRA_ID, edited).unwrap();
+        assert_eq!(database.pixel_document(ASTRA_ID).unwrap(), edited);
+        assert_ne!(database.pixel_document(LUMA_ID).unwrap(), edited);
+        assert_eq!(
+            database.save_pixel_document(ASTRA_ID, "{}"),
+            Err(DatabaseError::InvalidValue)
+        );
         cleanup(&path);
     }
 
