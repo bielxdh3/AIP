@@ -522,6 +522,25 @@ impl Database {
         Ok(messages)
     }
 
+    fn confirmed_memory_context(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ContextMessage>, DatabaseError> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare("SELECT content FROM agent_memories WHERE agent_id = ?1 AND status = 'active' AND confirmation_status = 'confirmed' ORDER BY importance DESC, updated_at DESC, id ASC LIMIT ?2")?;
+        let memories = statement
+            .query_map(params![agent_id, limit as i64], |row| {
+                Ok(ContextMessage {
+                    author: MessageAuthor::System,
+                    content: format!("Memória confirmada: {}", row.get::<_, String>(0)?),
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DatabaseError::from)?;
+        Ok(memories)
+    }
+
     pub fn settings(&self, agent_id: &str) -> Result<PhaseOneSettings, DatabaseError> {
         let connection = self.open()?;
         connection
@@ -783,7 +802,9 @@ impl Database {
             })?
             .collect::<Result<Vec<_>, _>>()
             .map_err(DatabaseError::from)?;
-        Ok(messages)
+        let mut context = self.confirmed_memory_context(agent_id, 8)?;
+        context.extend(messages);
+        Ok(context)
     }
 
     pub fn mark_streaming(
@@ -1429,6 +1450,32 @@ mod tests {
             .set_memory_status(ASTRA_ID, &memory.id, "archived")
             .unwrap();
         assert_eq!(database.memories(ASTRA_ID).unwrap()[0].status, "archived");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn confirmed_memory_is_scoped_and_added_to_context() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let astra = database.main_conversation(ASTRA_ID).unwrap();
+        let luma = database.main_conversation(LUMA_ID).unwrap();
+        database
+            .create_memory(ASTRA_ID, "fact", "Astra fact", true)
+            .unwrap();
+        database
+            .create_memory(LUMA_ID, "fact", "Luma fact", true)
+            .unwrap();
+        let astra_context = database.context_messages(ASTRA_ID, &astra.id, 32).unwrap();
+        let luma_context = database.context_messages(LUMA_ID, &luma.id, 32).unwrap();
+        assert!(astra_context
+            .iter()
+            .any(|message| message.content.contains("Astra fact")));
+        assert!(!astra_context
+            .iter()
+            .any(|message| message.content.contains("Luma fact")));
+        assert!(luma_context
+            .iter()
+            .any(|message| message.content.contains("Luma fact")));
         cleanup(&path);
     }
 
