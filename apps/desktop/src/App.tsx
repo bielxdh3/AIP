@@ -412,6 +412,17 @@ function MemoryList({ agentId }: { agentId: string }) {
   </div>;
 }
 
+function PixelDocumentEditor({ agentId }: { agentId: string }) {
+  const [source, setSource] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { void invoke<string>("load_pixel_document", { agentId }).then(setSource).catch(() => setError("Não foi possível abrir a arte.")); }, [agentId]);
+  async function save() {
+    try { await invoke("save_pixel_document", { agentId, sourceJson: source }); setError(null); }
+    catch { setError("A arte precisa ter camadas e pontos de encaixe válidos."); }
+  }
+  return <details className="pixel-editor"><summary>Editor de pixel art (64×64)</summary><textarea value={source} onChange={(event) => setSource(event.target.value)} aria-label="Documento de pixel art" /><button type="button" onClick={() => void save()}>Salvar arte</button>{error ? <p role="alert">{error}</p> : null}</details>;
+}
+
 function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
@@ -476,6 +487,7 @@ function App() {
         </div>
         {activeAgentId ? <ConversationList agentId={activeAgentId} changed={() => setConversationRevision((value) => value + 1)} /> : null}
         {activeAgentId ? <MemoryList agentId={activeAgentId} /> : null}
+        {activeAgentId ? <PixelDocumentEditor agentId={activeAgentId} /> : null}
         {snapshot?.agents.map((agent) => <button key={`profile-${agent.id}`} type="button" onClick={() => setEditingAgentId(agent.id)}>Perfil de {agent.name}</button>)}
         <button
           className={snapshot?.safeMode ? "mode-button active" : "mode-button"}

@@ -256,6 +256,33 @@ fn wake_agent_now(state: State<'_, AppState>, agent_id: String) -> Result<(), &'
 }
 
 #[tauri::command]
+fn load_pixel_document(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<String, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .pixel_document(&agent_id)
+        .map_err(|_| "operation_unavailable")
+}
+
+#[tauri::command]
+fn save_pixel_document(
+    state: State<'_, AppState>,
+    agent_id: String,
+    source_json: String,
+) -> Result<(), &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .save_pixel_document(&agent_id, &source_json)
+        .map_err(|_| "invalid_pixel_document")
+}
+
+#[tauri::command]
 fn set_agent_memory_status(
     state: State<'_, AppState>,
     agent_id: String,
@@ -552,6 +579,8 @@ pub fn run() {
             set_agent_simulated_mode,
             set_agent_suspension,
             wake_agent_now,
+            load_pixel_document,
+            save_pixel_document,
             set_agent_memory_status,
             refresh_ollama_models,
             select_phase_one_model,
