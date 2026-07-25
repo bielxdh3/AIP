@@ -411,11 +411,20 @@ impl Database {
         self.verify_conversation(agent_id, conversation_id)?;
         let connection = self.open()?;
         let mut statement = connection.prepare(
-            "SELECT author_type, content FROM (
-               SELECT author_type, content, created_at, id
+            "WITH ordered AS (
+               SELECT author_type, content, status, created_at, id,
+                      LEAD(author_type) OVER (ORDER BY created_at, id) AS next_author,
+                      LEAD(status) OVER (ORDER BY created_at, id) AS next_status
                FROM conversation_messages
                WHERE conversation_id = ?1 AND agent_id = ?2
-                 AND status = 'complete' AND author_type IN ('user', 'agent')
+             )
+             SELECT author_type, content FROM (
+               SELECT author_type, content, created_at, id
+               FROM ordered
+               WHERE status = 'complete' AND author_type IN ('user', 'agent')
+                 AND (author_type = 'agent' OR next_author IS NULL
+                      OR next_author != 'agent'
+                      OR next_status IN ('pending', 'streaming', 'complete'))
                ORDER BY created_at DESC, id DESC LIMIT ?3
              ) ORDER BY created_at ASC, id ASC",
         )?;

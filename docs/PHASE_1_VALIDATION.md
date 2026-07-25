@@ -76,6 +76,24 @@ Focused tests now cover `llama3.2:1b` dispatch to `POST /api/chat`, assistant co
 user-message limit, classified pre-dispatch validation failure, split multi-byte UTF-8 stream input,
 and initial/bottom-follow conversation scrolling. Manual Windows UI retest remains pending.
 
+## Desktop-path context hotfix
+
+Manual testing after `a13470277dbe74179aafda6daf94eae546031801` still failed every selected
+model through the desktop UI, even though the earlier isolated runtime probe completed. That probe
+did not assemble persisted conversation history through Rust, so it could not cover the desktop
+payload shape.
+
+The first differing layer was persisted context assembly: completed user messages remained in the
+prompt when their following assistant record was failed or cancelled. The desktop request could
+therefore contain interrupted historical turns that the isolated probe never sent. Context assembly
+now excludes those historical user records while retaining completed turns and the fresh user message
+whose assistant record is pending or streaming.
+
+Focused Rust coverage uses the production database and request builder with completed, failed, and
+cancelled records. The ignored local provider probe uses the managed runtime, a temporary persisted
+conversation, `llama3.2:1b`, streamed chunks, terminal persistence, and clean shutdown. Manual
+Windows UI retest remains pending; Phase 1 is not approved.
+
 ## Automated boundary
 
 CI and local automated tests use synthetic provider data and temporary SQLite databases. They do
