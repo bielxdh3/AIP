@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -388,16 +389,7 @@ impl Database {
     }
 
     pub fn update_profile(&self, agent: &ProvisionalAgent) -> Result<(), DatabaseError> {
-        if agent.name.trim().is_empty()
-            || agent.birthday.len() != 10
-            || agent.age_category.trim().is_empty()
-            || agent.species.trim().is_empty()
-            || agent.pronouns.trim().is_empty()
-            || agent.fictive_age > 10_000
-            || !matches!(agent.appearance_preset.as_str(), "astra" | "luma")
-        {
-            return Err(DatabaseError::InvalidValue);
-        }
+        validate_profile(agent)?;
         let connection = self.open()?;
         let now = now_millis();
         let changed = connection.execute(
@@ -428,18 +420,54 @@ impl Database {
     }
 
     pub fn complete_onboarding(&self, agents: &[ProvisionalAgent]) -> Result<(), DatabaseError> {
-        if agents.is_empty()
-            || agents.len() > 2
-            || agents
-                .iter()
-                .any(|agent| !matches!(agent.id.as_str(), ASTRA_ID | LUMA_ID))
+        let ids = agents
+            .iter()
+            .map(|agent| agent.id.as_str())
+            .collect::<HashSet<_>>();
+        if agents.len() != 2
+            || ids.len() != 2
+            || ids != HashSet::from([ASTRA_ID, LUMA_ID])
+            || agents.iter().any(|agent| validate_profile(agent).is_err())
         {
             return Err(DatabaseError::InvalidValue);
         }
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        let now = now_millis();
         for agent in agents {
-            self.update_profile(agent)?;
+            let changed = transaction.execute(
+                "UPDATE agents SET name = ?1, updated_at = ?2 WHERE id = ?3",
+                params![agent.name.trim(), now, agent.id],
+            )?;
+            if changed != 1 {
+                return Err(DatabaseError::NotFound);
+            }
+            transaction.execute(
+                "UPDATE agent_identity_profiles SET birthday = ?1, fictive_age = ?2,
+                 age_category = ?3, species = ?4, pronouns = ?5, personality_summary = ?6,
+                 traits_json = ?7, appearance_preset = ?8, updated_at = ?9 WHERE agent_id = ?10",
+                params![
+                    agent.birthday,
+                    agent.fictive_age,
+                    agent.age_category,
+                    agent.species,
+                    agent.pronouns,
+                    agent.personality_summary,
+                    agent.traits_json,
+                    agent.appearance_preset,
+                    now,
+                    agent.id
+                ],
+            )?;
         }
-        self.set_setting("phase2_onboarding_complete", "true")
+        transaction.execute(
+            "INSERT INTO app_settings (key, value_json, updated_at)
+             VALUES ('phase2_onboarding_complete', 'true', ?1)
+             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+            params![now],
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn set_main_conversation_override(
@@ -745,6 +773,38 @@ fn valid_model_ref(value: &str) -> bool {
         && model_id
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || ".:_/-".contains(character))
+}
+
+fn validate_profile(agent: &ProvisionalAgent) -> Result<(), DatabaseError> {
+    let birthday = agent.birthday.as_bytes();
+    let birthday_is_iso_date = birthday.len() == 10
+        && birthday[4] == b'-'
+        && birthday[7] == b'-'
+        && birthday
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit());
+    let traits_are_an_object = serde_json::from_str::<serde_json::Value>(&agent.traits_json)
+        .is_ok_and(|value| value.is_object());
+
+    if agent.name.trim().is_empty()
+        || agent.name.len() > 120
+        || !birthday_is_iso_date
+        || agent.age_category.trim().is_empty()
+        || agent.age_category.len() > 64
+        || agent.species.trim().is_empty()
+        || agent.species.len() > 120
+        || agent.pronouns.trim().is_empty()
+        || agent.pronouns.len() > 120
+        || agent.personality_summary.len() > 1_000
+        || !traits_are_an_object
+        || agent.traits_json.len() > 8_192
+        || agent.fictive_age > 10_000
+        || !matches!(agent.appearance_preset.as_str(), "astra" | "luma")
+    {
+        return Err(DatabaseError::InvalidValue);
+    }
+    Ok(())
 }
 
 fn map_agent(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProvisionalAgent> {
@@ -1062,6 +1122,68 @@ mod tests {
             .unwrap();
         assert_eq!(luma_context.len(), 1);
         assert_eq!(luma_context[0].content, "Luma-only context");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn onboarding_requires_both_profiles_and_is_idempotent() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let agents = database.snapshot().unwrap().agents;
+        assert!(database.snapshot().unwrap().onboarding_required);
+        assert_eq!(
+            database.complete_onboarding(&agents[..1]),
+            Err(DatabaseError::InvalidValue)
+        );
+        assert!(database.snapshot().unwrap().onboarding_required);
+
+        database.complete_onboarding(&agents).unwrap();
+        assert!(!database.snapshot().unwrap().onboarding_required);
+        drop(database);
+
+        let reopened = Database::initialize(&path).unwrap();
+        let snapshot = reopened.snapshot().unwrap();
+        assert_eq!(snapshot.agents.len(), 2);
+        assert!(!snapshot.onboarding_required);
+        for agent in snapshot.agents {
+            assert!(matches!(agent.id.as_str(), ASTRA_ID | LUMA_ID));
+            assert!(reopened.main_conversation(&agent.id).is_ok());
+        }
+        cleanup(&path);
+    }
+
+    #[test]
+    fn profile_edits_preserve_conversations_and_agent_settings() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let mut agent = database.agent(ASTRA_ID).unwrap();
+        let conversation = database.main_conversation(ASTRA_ID).unwrap();
+        database
+            .set_selected_model(ASTRA_ID, "ollama:astra-model")
+            .unwrap();
+        database.set_keep_alive(ASTRA_ID, 30).unwrap();
+        agent.name = "Astra edited".into();
+        agent.species = "fox".into();
+        agent.traits_json = r#"{"curiosity":80}"#.into();
+        database.update_profile(&agent).unwrap();
+
+        let restored = database.agent(ASTRA_ID).unwrap();
+        assert_eq!(restored.name, "Astra edited");
+        assert_eq!(restored.species, "fox");
+        assert_eq!(restored.traits_json, r#"{"curiosity":80}"#);
+        assert_eq!(
+            database.main_conversation(ASTRA_ID).unwrap().id,
+            conversation.id
+        );
+        assert_eq!(
+            database
+                .settings(ASTRA_ID)
+                .unwrap()
+                .selected_model_ref
+                .as_deref(),
+            Some("ollama:astra-model")
+        );
+        assert_eq!(database.settings(ASTRA_ID).unwrap().keep_alive_minutes, 30);
         cleanup(&path);
     }
 

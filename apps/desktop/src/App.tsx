@@ -315,7 +315,20 @@ function ConversationSurface({ agentId }: { agentId: string }) {
   );
 }
 
-function ProfileForm({ agent, onboarding, done }: { agent: ProvisionalAgent; onboarding: boolean; done: () => void }) {
+function ProfileFields({ draft, onChange }: { draft: ProvisionalAgent; onChange: (next: ProvisionalAgent) => void }) {
+  return <>
+    <label>Nome<input value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} /></label>
+    <label>Data de aniversário<input type="date" value={draft.birthday} onChange={(event) => onChange({ ...draft, birthday: event.target.value })} /></label>
+    <label>Idade fictícia<input type="number" min="0" max="10000" value={draft.fictiveAge} onChange={(event) => onChange({ ...draft, fictiveAge: Number(event.target.value) })} /></label>
+    <label>Categoria de idade<input value={draft.ageCategory} onChange={(event) => onChange({ ...draft, ageCategory: event.target.value })} /></label>
+    <label>Espécie<input value={draft.species} onChange={(event) => onChange({ ...draft, species: event.target.value })} /></label>
+    <label>Pronomes<input value={draft.pronouns} onChange={(event) => onChange({ ...draft, pronouns: event.target.value })} /></label>
+    <label>Descrição<input value={draft.personalitySummary} onChange={(event) => onChange({ ...draft, personalitySummary: event.target.value })} /></label>
+    <label>Traços (JSON)<input value={draft.traitsJson} onChange={(event) => onChange({ ...draft, traitsJson: event.target.value })} /></label>
+  </>;
+}
+
+function ProfileForm({ agent, done }: { agent: ProvisionalAgent; done: () => void }) {
   const [draft, setDraft] = useState(agent);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => setDraft(agent), [agent]);
@@ -324,19 +337,35 @@ function ProfileForm({ agent, onboarding, done }: { agent: ProvisionalAgent; onb
       setError("Preencha nome, data, espécie e pronomes."); return;
     }
     try {
-      if (onboarding) await invoke("complete_phase_two_onboarding", { agents: [draft] });
-      else await invoke("update_agent_profile", { agent: draft });
+      await invoke("update_agent_profile", { agent: draft });
       done();
     } catch { setError("Não foi possível salvar o perfil."); }
   }
   return <section className="conversation-empty" aria-label="Perfil do agente">
-    <h1>{onboarding ? "Crie o perfil" : `Perfil de ${agent.name}`}</h1>
-    <label>Nome<input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
-    <label>Data de aniversário<input type="date" value={draft.birthday} onChange={(event) => setDraft({ ...draft, birthday: event.target.value })} /></label>
-    <label>Espécie<input value={draft.species} onChange={(event) => setDraft({ ...draft, species: event.target.value })} /></label>
-    <label>Pronomes<input value={draft.pronouns} onChange={(event) => setDraft({ ...draft, pronouns: event.target.value })} /></label>
-    <label>Descrição<input value={draft.personalitySummary} onChange={(event) => setDraft({ ...draft, personalitySummary: event.target.value })} /></label>
+    <h1>{`Perfil de ${agent.name}`}</h1>
+    <ProfileFields draft={draft} onChange={setDraft} />
     {error ? <p role="alert">{error}</p> : null}<button type="button" onClick={() => void save()}>Salvar perfil</button>
+  </section>;
+}
+
+function OnboardingForm({ agents, done }: { agents: ProvisionalAgent[]; done: () => void }) {
+  const [drafts, setDrafts] = useState(agents);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => setDrafts(agents), [agents]);
+  const update = (index: number, next: ProvisionalAgent) => setDrafts((current) => current.map((agent, currentIndex) => currentIndex === index ? next : agent));
+  async function save() {
+    if (drafts.length !== 2 || drafts.some((agent) => !agent.name.trim() || !agent.birthday || !agent.ageCategory.trim() || !agent.species.trim() || !agent.pronouns.trim())) {
+      setError("Preencha os campos obrigatórios dos dois agentes."); return;
+    }
+    try {
+      await invoke("complete_phase_two_onboarding", { agents: drafts });
+      done();
+    } catch { setError("Não foi possível concluir a criação dos perfis."); }
+  }
+  return <section className="conversation-empty" aria-label="Criação dos perfis">
+    <h1>Crie os dois perfis</h1>
+    {drafts.map((agent, index) => <fieldset key={agent.id}><legend>{agent.name}</legend><ProfileFields draft={agent} onChange={(next) => update(index, next)} /></fieldset>)}
+    {error ? <p role="alert">{error}</p> : null}<button type="button" onClick={() => void save()}>Concluir criação</button>
   </section>;
 }
 
@@ -433,10 +462,10 @@ function App() {
             </button>
           </div>
         ) : null}
-        {snapshot?.onboardingRequired && snapshot.agents[0] ? (
-          <ProfileForm agent={snapshot.agents[0]} onboarding done={() => { setEditingAgentId(null); void loadSnapshot(); }} />
+        {snapshot?.onboardingRequired && snapshot.agents.length === 2 ? (
+          <OnboardingForm agents={snapshot.agents} done={() => { setEditingAgentId(null); void loadSnapshot(); }} />
         ) : editingAgentId !== null && snapshot?.agents.find((agent) => agent.id === editingAgentId) ? (
-          <ProfileForm agent={snapshot.agents.find((agent) => agent.id === editingAgentId)!} onboarding={false} done={() => { setEditingAgentId(null); void loadSnapshot(); }} />
+          <ProfileForm agent={snapshot.agents.find((agent) => agent.id === editingAgentId)!} done={() => { setEditingAgentId(null); void loadSnapshot(); }} />
         ) : activeAgentId === null ? (
           <section className="conversation-empty">Carregando agentes…</section>
         ) : (
