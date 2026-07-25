@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import http.client
 import json
 import socket
@@ -65,6 +66,31 @@ class ResponseLike(Protocol):
 ConnectionFactory = Callable[[], ConnectionLike]
 ConnectionObserver = Callable[[ConnectionLike | None], None]
 ChunkEmitter = Callable[[int, str], None]
+
+
+class _NdjsonDecoder:
+    """Incrementally decode bounded UTF-8 NDJSON without splitting characters."""
+
+    def __init__(self) -> None:
+        self._decoder = codecs.getincrementaldecoder("utf-8")("strict")
+        self._buffer = ""
+
+    def feed(self, raw: bytes, *, final: bool = False) -> list[str]:
+        try:
+            self._buffer += self._decoder.decode(raw, final=final)
+        except UnicodeDecodeError as error:
+            raise ProviderError("provider_stream_malformed") from error
+        if len(self._buffer.encode("utf-8")) > MAX_MESSAGE_BYTES:
+            raise ProviderError("provider_chunk_too_large")
+
+        lines: list[str] = []
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            lines.append(line.removesuffix("\r"))
+        if final and self._buffer:
+            lines.append(self._buffer)
+            self._buffer = ""
+        return lines
 
 
 class _InterruptibleHttpConnection:
@@ -189,6 +215,44 @@ class OllamaClient:
         total_bytes = 0
         sequence = 0
         saw_done = False
+
+        def consume_line(line: str) -> bool:
+            nonlocal sequence, total_bytes
+            try:
+                chunk = json.loads(line)
+            except (json.JSONDecodeError, RecursionError) as error:
+                raise ProviderError("provider_stream_malformed") from error
+            if not isinstance(chunk, dict):
+                raise ProviderError("provider_stream_malformed")
+            if "error" in chunk:
+                raise ProviderError("provider_stream_error")
+            message = chunk.get("message")
+            if message is not None and not isinstance(message, dict):
+                raise ProviderError("provider_stream_malformed")
+            if isinstance(message, dict):
+                content = message.get("content", "")
+                if not isinstance(content, str):
+                    raise ProviderError("provider_stream_malformed")
+                tool_calls = message.get("tool_calls")
+                if tool_calls and not content:
+                    raise ProviderError("provider_tools_unsupported")
+                # Raw thinking and tool calls are intentionally never emitted.
+                if content:
+                    encoded_size = len(content.encode("utf-8"))
+                    if encoded_size > MAX_STREAM_CHUNK_BYTES:
+                        raise ProviderError("provider_chunk_too_large")
+                    total_bytes += encoded_size
+                    if total_bytes > MAX_ASSISTANT_OUTPUT_BYTES:
+                        raise ProviderError("provider_output_too_large")
+                    if cancel_event.is_set():
+                        raise CancelledError()
+                    sequence += 1
+                    emit_chunk(sequence, content)
+            done = chunk.get("done", False)
+            if not isinstance(done, bool):
+                raise ProviderError("provider_stream_malformed")
+            return done
+
         try:
             if cancel_event.is_set():
                 raise CancelledError()
@@ -201,49 +265,22 @@ class OllamaClient:
             response = connection.getresponse()
             if response.status != 200:
                 raise ProviderError("provider_http_error")
-            while True:
+            decoder = _NdjsonDecoder()
+            while not saw_done:
                 if cancel_event.is_set():
                     raise CancelledError()
                 raw_line = response.readline(MAX_MESSAGE_BYTES + 1)
                 if not raw_line:
-                    break
-                if len(raw_line) > MAX_MESSAGE_BYTES:
-                    raise ProviderError("provider_chunk_too_large")
-                try:
-                    chunk = json.loads(raw_line.decode("utf-8", errors="strict"))
-                except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
-                    raise ProviderError("provider_stream_malformed") from error
-                if not isinstance(chunk, dict):
-                    raise ProviderError("provider_stream_malformed")
-                if "error" in chunk:
-                    raise ProviderError("provider_stream_error")
-                message = chunk.get("message")
-                if message is not None and not isinstance(message, dict):
-                    raise ProviderError("provider_stream_malformed")
-                if isinstance(message, dict):
-                    content = message.get("content", "")
-                    if not isinstance(content, str):
-                        raise ProviderError("provider_stream_malformed")
-                    tool_calls = message.get("tool_calls")
-                    if tool_calls and not content:
-                        raise ProviderError("provider_tools_unsupported")
-                    # Raw thinking and tool calls are intentionally never emitted.
-                    if content:
-                        encoded_size = len(content.encode("utf-8"))
-                        if encoded_size > MAX_STREAM_CHUNK_BYTES:
-                            raise ProviderError("provider_chunk_too_large")
-                        total_bytes += encoded_size
-                        if total_bytes > MAX_ASSISTANT_OUTPUT_BYTES:
-                            raise ProviderError("provider_output_too_large")
-                        if cancel_event.is_set():
-                            raise CancelledError()
-                        sequence += 1
-                        emit_chunk(sequence, content)
-                done = chunk.get("done", False)
-                if not isinstance(done, bool):
-                    raise ProviderError("provider_stream_malformed")
-                if done:
-                    saw_done = True
+                    lines = decoder.feed(b"", final=True)
+                else:
+                    if len(raw_line) > MAX_MESSAGE_BYTES:
+                        raise ProviderError("provider_chunk_too_large")
+                    lines = decoder.feed(raw_line)
+                for line in lines:
+                    if consume_line(line):
+                        saw_done = True
+                        break
+                if not raw_line:
                     break
             if cancel_event.is_set():
                 raise CancelledError()

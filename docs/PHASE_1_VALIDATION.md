@@ -10,7 +10,7 @@ the implementation commit message is `feat: add local conversation vertical slic
 
 Manual validation of `2f41be2ae558b4e7536cbd2755349c3a688a4500` failed and that commit
 remains unchanged. The recorded environment was Windows 10, 100% display scaling, 1920 x 1080,
-one monitor, Ollama 0.13.11, and the selected `llama3.2:1b` model.
+one monitor, Ollama 0.30.11, and the selected `llama3.2:1b` model.
 
 Ollama discovery, initial Astra and Luma streaming, persistence, bubbles, click-through,
 fullscreen, and safe mode passed before the failure. Ollama and its API remained healthy while
@@ -49,6 +49,12 @@ internal class `provider_internal_error`. Direct local Ollama requests and repea
 requests using `llama3.2:1b` completed successfully, so the evidence does not support classifying
 those failures as runtime process death.
 
+Before the current hotfix, failed AIP sends reached provider discovery but did not produce a
+generation POST in the Ollama log. The Python runtime rejected a persisted assistant message above
+the user-message byte limit before `OllamaClient.stream_chat` ran, so `/api/chat` was never called.
+The current hotfix applies the user limit only to user messages while retaining the aggregate context
+limit, adds a bounded validation diagnostic, and incrementally decodes streamed UTF-8 NDJSON.
+
 The remaining defect was request-level error collapse: an exception from stream cleanup could escape
 the adapter's successful path and reach the Python worker's generic catch, where it became
 `provider_internal_error`. The desktop then rendered every failed attempt with the same
@@ -65,6 +71,10 @@ runtime-unavailable guidance, hiding the actual class. The streamed-request hotf
 
 The new local hotfix commit must be recorded in the validation report before manual retest. Phase 1
 remains pending.
+
+Focused tests now cover `llama3.2:1b` dispatch to `POST /api/chat`, assistant context above the
+user-message limit, classified pre-dispatch validation failure, split multi-byte UTF-8 stream input,
+and initial/bottom-follow conversation scrolling. Manual Windows UI retest remains pending.
 
 ## Automated boundary
 

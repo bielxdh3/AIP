@@ -120,6 +120,7 @@ class LockedOutput:
 class LifecycleClient:
     def __init__(self) -> None:
         self.cancel_started = threading.Event()
+        self.models: list[str] = []
 
     def discover(self) -> list[dict[str, object]]:
         return []
@@ -136,6 +137,7 @@ class LifecycleClient:
         emit_chunk: Any,
         **_kwargs: Any,
     ) -> None:
+        self.models.append(model_id)
         if model_id == "failure:latest":
             raise ProviderError("provider_stream_failed")
         if model_id == "cancel:latest":
@@ -329,7 +331,8 @@ class RuntimeServerTests(unittest.TestCase):
     def test_invalid_context_is_rejected_without_starting_worker(self) -> None:
         output = io.StringIO()
         client = FakeClient()
-        server = RuntimeServer(output, client)  # type: ignore[arg-type]
+        diagnostics: list[object] = []
+        server = RuntimeServer(output, client, diagnostics.append)  # type: ignore[arg-type]
         params = generation_params()
         params["messages"] = [{"role": "system", "content": ""}]
         server._start_generation("request-invalid", params)
@@ -337,6 +340,27 @@ class RuntimeServerTests(unittest.TestCase):
         lines = decoded_lines(output)
         self.assertEqual(lines[0]["error"]["code"], "invalid_context")  # type: ignore[index]
         self.assertFalse(client.started.is_set())
+        self.assertEqual(diagnostics, ["generation_validation_failed"])
+
+    def test_assistant_context_above_user_limit_reaches_provider_dispatch(self) -> None:
+        output = LockedOutput()
+        client = LifecycleClient()
+        server = RuntimeServer(output, client)  # type: ignore[arg-type]
+        params = generation_params()
+        params["model"] = "llama3.2:1b"
+        params["messages"] = [
+            {"role": "assistant", "content": "x" * 16_385},
+            {"role": "user", "content": "Continue"},
+        ]
+        server._start_generation("llama-dispatch", params)
+        output.wait_for(
+            lambda line: (
+                line.get("event") == "generation.complete"
+                and line.get("requestId") == "llama-dispatch"
+            )
+        )
+        self.assertEqual(client.models, ["llama3.2:1b"])
+        server.shutdown()
 
     def test_concurrent_writes_are_complete_json_lines(self) -> None:
         output = io.StringIO()

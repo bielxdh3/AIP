@@ -169,6 +169,7 @@ class RuntimeServer:
         try:
             active = self._validate_generation(request_id, params)
         except ProtocolError as error:
+            self._diagnostic("generation_validation_failed")
             self._write(error_response(request_id, error.code))
             return
 
@@ -300,7 +301,8 @@ class RuntimeServer:
             if role not in {"system", "user", "assistant"} or not isinstance(content, str):
                 raise ProtocolError("invalid_context")
             encoded = len(content.encode("utf-8"))
-            if not content or encoded > MAX_USER_MESSAGE_BYTES:
+            message_limit = MAX_USER_MESSAGE_BYTES if role == "user" else MAX_CONTEXT_BYTES
+            if not content or encoded > message_limit:
                 raise ProtocolError("invalid_context")
             context_bytes += encoded
         if context_bytes > MAX_CONTEXT_BYTES:

@@ -11,6 +11,7 @@ DIAGNOSTIC_CODES = frozenset(
         "ollama_cancel_close_failed",
         "ollama_stream_cancelled",
         "ollama_stream_failed",
+        "generation_validation_failed",
         "runtime_diagnostic_rejected",
         "runtime_request_exception",
         "runtime_server_exception",

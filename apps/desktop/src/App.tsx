@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
@@ -15,6 +21,10 @@ import {
   providerStatusCopy,
   requestForAgent,
 } from "./conversation-state";
+import {
+  isNearConversationBottom,
+  shouldScrollConversationToBottom,
+} from "./conversation-scroll";
 import { usePhaseOne } from "./use-phase-one";
 import { createListenerRegistration } from "./listener-lifecycle";
 import "./App.css";
@@ -75,11 +85,25 @@ function ConversationSurface({ agentId }: { agentId: string }) {
     null,
   );
   const historyRef = useRef<HTMLDivElement>(null);
+  const conversationIdRef = useRef<string | null>(null);
+  const followsBottomRef = useRef(true);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const history = historyRef.current;
-    if (history !== null) history.scrollTop = history.scrollHeight;
-  }, [phase?.messages]);
+    const conversationId = phase?.conversation.id;
+    if (history === null || conversationId === undefined) return;
+    const conversationChanged = conversationIdRef.current !== conversationId;
+    if (
+      shouldScrollConversationToBottom(
+        conversationChanged,
+        followsBottomRef.current,
+      )
+    ) {
+      history.scrollTop = history.scrollHeight;
+      followsBottomRef.current = true;
+    }
+    conversationIdRef.current = conversationId;
+  }, [phase?.conversation.id, phase?.messages]);
 
   if (error) {
     return (
@@ -103,6 +127,7 @@ function ConversationSurface({ agentId }: { agentId: string }) {
   async function send() {
     const content = draft.trim();
     if (!content || busy || !currentPhase.canSend) return;
+    followsBottomRef.current = true;
     setBusy(true);
     try {
       await invoke("send_phase_one_message", {
@@ -205,7 +230,17 @@ function ConversationSurface({ agentId }: { agentId: string }) {
         </div>
       </header>
 
-      <div className="message-history" ref={historyRef} aria-live="polite">
+      <div
+        className="message-history"
+        ref={historyRef}
+        aria-live="polite"
+        onScroll={() => {
+          const history = historyRef.current;
+          if (history !== null) {
+            followsBottomRef.current = isNearConversationBottom(history);
+          }
+        }}
+      >
         {phase.messages.length === 0 ? (
           <div className="history-placeholder">
             <strong>Esta conversa ainda está vazia.</strong>
