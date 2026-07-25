@@ -937,7 +937,7 @@ fn build_generation_request_from_database(
         .settings(&job.agent_id)
         .map_err(|_| "persistence_failed")?;
     let conversation = database
-        .main_conversation(&job.agent_id)
+        .conversation(&job.agent_id, &job.conversation_id)
         .map_err(|_| "persistence_failed")?;
     let context = database
         .context_messages(&job.agent_id, &job.conversation_id, MAX_HISTORY_MESSAGES)
@@ -1232,6 +1232,50 @@ mod tests {
                 .sum::<usize>()
                 <= MAX_CONTEXT_BYTES
         );
+    }
+
+    #[test]
+    fn secondary_conversation_uses_its_own_context_and_override() {
+        let path = std::env::temp_dir()
+            .join(format!("aip-phase3-context-{}", Uuid::now_v7()))
+            .join("aip.sqlite3");
+        let database = Database::initialize(&path).unwrap();
+        let agent = database.snapshot().unwrap().agents.remove(0);
+        let secondary = database
+            .create_conversation(&agent.id, "Secondary")
+            .unwrap();
+        database
+            .set_main_conversation_override(&agent.id, Some("ollama:main"))
+            .unwrap();
+        database
+            .set_selected_model(&agent.id, "ollama:default")
+            .unwrap();
+        database
+            .set_active_conversation(&agent.id, &secondary.id)
+            .unwrap();
+        let attempt = database
+            .create_message_attempt(&agent.id, &secondary.id, "secondary-only", "ollama:default")
+            .unwrap();
+        database
+            .mark_streaming(&attempt.assistant_message_id, &attempt.request_id)
+            .unwrap();
+        database
+            .finish_assistant(
+                &attempt.assistant_message_id,
+                &attempt.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+        let request = build_generation_request_from_database(
+            &database,
+            &job_from_attempt(&agent.id, &secondary.id, "ollama:default", &attempt),
+        )
+        .unwrap();
+        assert!(request.contains("secondary-only"));
+        assert!(!request.contains("ollama:main"));
+        drop(database);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

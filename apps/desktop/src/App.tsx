@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   AppSnapshot,
+  AgentMemory,
   ConversationMessage,
   PhaseOneConversation,
   ProvisionalAgent,
@@ -385,9 +386,29 @@ function ConversationList({ agentId, changed }: { agentId: string; changed: () =
     changed();
   }
   return <div className="conversation-list" aria-label="Conversas do agente">
-    {items.map((item) => <button key={item.id} type="button" onClick={() => void select(item.id)}>{item.title}{item.id === items[0]?.id ? " · Principal" : ""}</button>)}
+    {items.map((item) => <div key={item.id}><button type="button" onClick={() => void select(item.id)}>{item.title}{item.id === items[0]?.id ? " · Principal" : ""}</button>{item.id !== items[0]?.id ? <button type="button" onClick={() => void invoke("archive_agent_conversation", { agentId, conversationId: item.id }).then(load)}>Arquivar</button> : null}</div>)}
     <input value={title} placeholder="Nova conversa" onChange={(event) => setTitle(event.target.value)} />
     <button type="button" onClick={() => void create()}>Criar conversa</button>
+  </div>;
+}
+
+function MemoryList({ agentId }: { agentId: string }) {
+  const [items, setItems] = useState<AgentMemory[]>([]);
+  const [content, setContent] = useState("");
+  const [category, setCategory] = useState("preference");
+  const load = useCallback(() => void invoke<AgentMemory[]>("list_agent_memories", { agentId }).then(setItems), [agentId]);
+  useEffect(() => { load(); }, [load]);
+  async function save() {
+    if (!content.trim()) return;
+    await invoke("create_agent_memory", { agentId, category, content });
+    setContent(""); load();
+  }
+  return <div className="memory-list" aria-label="Memórias do agente">
+    <strong>Memórias</strong>
+    {items.filter((item) => item.status === "active").map((item) => <p key={item.id}><small>{item.category}</small> {item.content}</p>)}
+    <input value={category} onChange={(event) => setCategory(event.target.value)} aria-label="Categoria da memória" />
+    <input value={content} onChange={(event) => setContent(event.target.value)} placeholder="Nova memória" />
+    <button type="button" onClick={() => void save()}>Salvar memória</button>
   </div>;
 }
 
@@ -454,6 +475,7 @@ function App() {
           ))}
         </div>
         {activeAgentId ? <ConversationList agentId={activeAgentId} changed={() => setConversationRevision((value) => value + 1)} /> : null}
+        {activeAgentId ? <MemoryList agentId={activeAgentId} /> : null}
         {snapshot?.agents.map((agent) => <button key={`profile-${agent.id}`} type="button" onClick={() => setEditingAgentId(agent.id)}>Perfil de {agent.name}</button>)}
         <button
           className={snapshot?.safeMode ? "mode-button active" : "mode-button"}
