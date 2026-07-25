@@ -31,6 +31,7 @@ const PYTHON_DIAGNOSTIC_CODES: &[&str] = &[
     "ollama_cancel_close_failed",
     "ollama_stream_cancelled",
     "ollama_stream_failed",
+    "generation_validation_failed",
     "runtime_diagnostic_rejected",
     "runtime_request_exception",
     "runtime_server_exception",
@@ -851,6 +852,10 @@ for raw in sys.stdin:
         assert_eq!(
             super::parse_diagnostic_line(b"AIP_RUNTIME_DIAGNOSTIC runtime_worker_exception"),
             Some("runtime_worker_exception")
+        );
+        assert_eq!(
+            super::parse_diagnostic_line(b"AIP_RUNTIME_DIAGNOSTIC generation_validation_failed"),
+            Some("generation_validation_failed")
         );
         assert_eq!(
             super::parse_diagnostic_line(b"private conversation content"),

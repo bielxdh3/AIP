@@ -62,6 +62,8 @@ a:focus-visible {
 
 .app-shell {
   display: grid;
+  height: 100vh;
+  height: 100dvh;
   min-height: 100vh;
   min-height: 100dvh;
   grid-template-columns: 220px minmax(0, 1fr);
@@ -74,10 +76,12 @@ a:focus-visible {
 
 .conversation-main {
   display: grid;
+  height: 100%;
   min-width: 0;
   min-height: 100vh;
   grid-template-rows: auto minmax(0, 1fr);
   background: #0b0d11;
+  overflow: hidden;
 }
 
 .sidebar-label {
@@ -153,9 +157,11 @@ a:focus-visible {
 
 .conversation-surface {
   display: grid;
+  height: 100%;
   min-width: 0;
   min-height: 0;
   grid-template-rows: auto minmax(200px, 1fr) auto;
+  overflow: hidden;
 }
 
 .conversation-header {

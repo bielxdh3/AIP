@@ -170,11 +170,12 @@ class OllamaStreamingTests(unittest.TestCase):
         lines: list[bytes],
         *,
         cancel: threading.Event | None = None,
+        model_id: str = "synthetic:latest",
     ) -> tuple[list[tuple[int, str]], FakeConnection]:
         client, connection = client_for(FakeResponse(lines))
         chunks: list[tuple[int, str]] = []
         client.stream_chat(
-            model_id="synthetic:latest",
+            model_id=model_id,
             messages=[{"role": "user", "content": "Synthetic input"}],
             keep_alive_minutes=15,
             cancel_event=cancel or threading.Event(),
@@ -197,6 +198,28 @@ class OllamaStreamingTests(unittest.TestCase):
         self.assertTrue(body["stream"])
         self.assertEqual(body["keep_alive"], "15m")
         self.assertEqual(body["messages"][0]["content"], "Synthetic input")
+
+    def test_llama_model_uses_the_chat_endpoint(self) -> None:
+        _, connection = self.run_chat(
+            [b'{"message":{"content":"OK"},"done":false}\n', b'{"done":true}\n'],
+            model_id="llama3.2:1b",
+        )
+        body = json.loads(connection.requests[0][2] or "{}")
+        self.assertEqual(connection.requests[0][0:2], ("POST", "/api/chat"))
+        self.assertEqual(body["model"], "llama3.2:1b")
+
+    def test_stream_preserves_utf8_split_across_byte_chunks(self) -> None:
+        expected = "calendário"
+        record = (
+            json.dumps(
+                {"message": {"content": expected}, "done": False}, ensure_ascii=False
+            ).encode("utf-8")
+            + b"\n"
+        )
+        split = record.index("á".encode()) + 1
+        chunks, _ = self.run_chat([record[:split], record[split:], b'{"done":true}\n'])
+        self.assertEqual(chunks, [(1, expected)])
+        self.assertNotIn("\ufffd", chunks[0][1])
 
     def test_midstream_error_malformed_tool_and_oversized_output_are_rejected(self) -> None:
         cases: list[tuple[list[bytes], str]] = [
