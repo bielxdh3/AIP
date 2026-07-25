@@ -39,6 +39,14 @@ export type ProvisionalAgent = {
   profileKey: "owner" | "companion";
   spriteKey: "astra" | "luma";
   position: AgentPosition;
+  birthday: string;
+  fictiveAge: number;
+  ageCategory: string;
+  species: string;
+  pronouns: string;
+  personalitySummary: string;
+  traitsJson: string;
+  appearancePreset: string;
 };
 
 export type AppSnapshot = {
@@ -48,6 +56,7 @@ export type AppSnapshot = {
   migrationVersion: number;
   runtime: RuntimeStatus;
   agents: ProvisionalAgent[];
+  onboardingRequired: boolean;
 };
 
 export type ProviderState =
@@ -93,6 +102,7 @@ export type PhaseOneConversation = {
   id: string;
   agentId: string;
   title: string;
+  modelOverrideRef: string | null;
 };
 
 export type QueueEntry = {
@@ -111,6 +121,8 @@ export type PhaseOneState = {
   messages: ConversationMessage[];
   provider: ProviderSnapshot;
   selectedModelRef: string | null;
+  defaultModelRef: string | null;
+  modelOverrideRef: string | null;
   selectedModelAvailable: boolean;
   keepAliveMinutes: number;
   queue: QueueEntry[];

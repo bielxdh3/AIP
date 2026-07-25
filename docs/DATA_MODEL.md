@@ -1,5 +1,12 @@
 # AIP Data Model
 
+## Phase 2 identity
+
+One implicit local Owner owns the two fixed initial agents. Migration `0004` adds a
+per-agent identity profile and a nullable main-conversation model override. Existing
+Astra and Luma records, positions, histories, main conversations, model defaults, and
+keep-alive settings are preserved; missing identity fields receive deterministic defaults.
+
 ## 1. Principles
 
 - SQLite is the authoritative local database.
