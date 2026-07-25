@@ -208,6 +208,25 @@ pub struct PhaseOneConversation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentMemory {
+    pub id: String,
+    pub agent_id: String,
+    pub category: String,
+    pub content: String,
+    pub status: String,
+    pub confirmation_status: String,
+    pub confidence_milli: u16,
+    pub importance: u8,
+    pub source_type: String,
+    pub source_message_id: Option<String>,
+    pub source_conversation_id: Option<String>,
+    pub conflict_key: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationMessage {
     pub id: String,
     pub conversation_id: String,

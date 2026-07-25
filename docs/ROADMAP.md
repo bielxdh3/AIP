@@ -281,3 +281,6 @@ After every phase:
 5. select the next phase only after the current one is approved.
 
 Use `.agents/skills/aip-phase-review/SKILL.md` for phase review.
+# Phase 3 foundation
+
+Persistent multi-conversation and memory storage work is in progress. Manual Windows validation remains pending.

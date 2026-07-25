@@ -506,3 +506,6 @@ apply to both agent and bubble windows, with previously open bubbles restored af
 The provisional Phase 0 thought demo is replaced by real queue/generation state. Actual Windows
 click-through, screen-edge placement, focus, full-screen restoration, simultaneous bubbles, and
 the drag/click/double-click transition remain pending the Phase 1 manual smoke test.
+# Phase 3 foundation
+
+The desktop sidebar can create and select normal conversations per agent. The selected conversation is restored locally for that agent after restart.

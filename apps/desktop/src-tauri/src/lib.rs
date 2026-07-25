@@ -18,7 +18,10 @@ use std::{
 
 use chat::ChatCoordinator;
 use database::Database;
-use domain::{AppSnapshot, ConversationMessage, PhaseOneState, SendMessageResult};
+use domain::{
+    AgentMemory, AppSnapshot, ConversationMessage, PhaseOneConversation, PhaseOneState,
+    SendMessageResult,
+};
 use overlays::{InteractiveRegion, OverlayInputState};
 use runtime::RuntimeController;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
@@ -87,6 +90,133 @@ fn load_phase_one_messages(
         .ok_or("operation_unavailable")?
         .messages(&agent_id, &conversation_id)
         .map_err(|_| "operation_unavailable")
+}
+
+#[tauri::command]
+fn list_agent_conversations(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<PhaseOneConversation>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .conversations(&agent_id)
+        .map_err(|_| "operation_unavailable")
+}
+
+#[tauri::command]
+fn create_agent_conversation(
+    state: State<'_, AppState>,
+    agent_id: String,
+    title: String,
+) -> Result<PhaseOneConversation, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .create_conversation(&agent_id, &title)
+        .map_err(|_| "invalid_conversation")
+}
+
+#[tauri::command]
+fn set_active_agent_conversation(
+    state: State<'_, AppState>,
+    agent_id: String,
+    conversation_id: String,
+) -> Result<(), &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .set_active_conversation(&agent_id, &conversation_id)
+        .map_err(|_| "invalid_conversation")
+}
+
+#[tauri::command]
+fn rename_agent_conversation(
+    state: State<'_, AppState>,
+    agent_id: String,
+    conversation_id: String,
+    title: String,
+) -> Result<(), &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .rename_conversation(&agent_id, &conversation_id, &title)
+        .map_err(|_| "invalid_conversation")
+}
+
+#[tauri::command]
+fn archive_agent_conversation(
+    state: State<'_, AppState>,
+    agent_id: String,
+    conversation_id: String,
+) -> Result<(), &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .archive_conversation(&agent_id, &conversation_id)
+        .map_err(|_| "invalid_conversation")
+}
+
+#[tauri::command]
+fn restore_agent_conversation(
+    state: State<'_, AppState>,
+    agent_id: String,
+    conversation_id: String,
+) -> Result<(), &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .restore_conversation(&agent_id, &conversation_id)
+        .map_err(|_| "invalid_conversation")
+}
+
+#[tauri::command]
+fn list_agent_memories(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<AgentMemory>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .memories(&agent_id)
+        .map_err(|_| "operation_unavailable")
+}
+
+#[tauri::command]
+fn create_agent_memory(
+    state: State<'_, AppState>,
+    agent_id: String,
+    category: String,
+    content: String,
+) -> Result<AgentMemory, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .create_memory(&agent_id, &category, &content, true)
+        .map_err(|_| "invalid_memory")
+}
+
+#[tauri::command]
+fn set_agent_memory_status(
+    state: State<'_, AppState>,
+    agent_id: String,
+    memory_id: String,
+    status: String,
+) -> Result<(), &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .set_memory_status(&agent_id, &memory_id, &status)
+        .map_err(|_| "invalid_memory")
 }
 
 #[tauri::command]
@@ -359,6 +489,15 @@ pub fn run() {
             set_safe_mode,
             get_phase_one_state,
             load_phase_one_messages,
+            list_agent_conversations,
+            create_agent_conversation,
+            set_active_agent_conversation,
+            rename_agent_conversation,
+            archive_agent_conversation,
+            restore_agent_conversation,
+            list_agent_memories,
+            create_agent_memory,
+            set_agent_memory_status,
             refresh_ollama_models,
             select_phase_one_model,
             update_keep_alive,

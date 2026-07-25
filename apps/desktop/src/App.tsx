@@ -10,6 +10,7 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   AppSnapshot,
   ConversationMessage,
+  PhaseOneConversation,
   ProvisionalAgent,
 } from "@aip/contracts";
 import AgentSprite from "./components/AgentSprite";
@@ -369,11 +370,33 @@ function OnboardingForm({ agents, done }: { agents: ProvisionalAgent[]; done: ()
   </section>;
 }
 
+function ConversationList({ agentId, changed }: { agentId: string; changed: () => void }) {
+  const [items, setItems] = useState<PhaseOneConversation[]>([]);
+  const [title, setTitle] = useState("");
+  const load = useCallback(() => void invoke<PhaseOneConversation[]>("list_agent_conversations", { agentId }).then(setItems), [agentId]);
+  useEffect(() => { load(); }, [load]);
+  async function create() {
+    if (!title.trim()) return;
+    await invoke("create_agent_conversation", { agentId, title });
+    setTitle(""); load();
+  }
+  async function select(conversationId: string) {
+    await invoke("set_active_agent_conversation", { agentId, conversationId });
+    changed();
+  }
+  return <div className="conversation-list" aria-label="Conversas do agente">
+    {items.map((item) => <button key={item.id} type="button" onClick={() => void select(item.id)}>{item.title}{item.id === items[0]?.id ? " · Principal" : ""}</button>)}
+    <input value={title} placeholder="Nova conversa" onChange={(event) => setTitle(event.target.value)} />
+    <button type="button" onClick={() => void create()}>Criar conversa</button>
+  </div>;
+}
+
 function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   const [changingMode, setChangingMode] = useState(false);
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
+  const [conversationRevision, setConversationRevision] = useState(0);
 
   const loadSnapshot = useCallback(async () => {
     const next = await invoke<AppSnapshot>("get_app_snapshot");
@@ -430,6 +453,7 @@ function App() {
             />
           ))}
         </div>
+        {activeAgentId ? <ConversationList agentId={activeAgentId} changed={() => setConversationRevision((value) => value + 1)} /> : null}
         {snapshot?.agents.map((agent) => <button key={`profile-${agent.id}`} type="button" onClick={() => setEditingAgentId(agent.id)}>Perfil de {agent.name}</button>)}
         <button
           className={snapshot?.safeMode ? "mode-button active" : "mode-button"}
@@ -469,7 +493,7 @@ function App() {
         ) : activeAgentId === null ? (
           <section className="conversation-empty">Carregando agentes…</section>
         ) : (
-          <ConversationSurface agentId={activeAgentId} />
+          <ConversationSurface key={`${activeAgentId}-${conversationRevision}`} agentId={activeAgentId} />
         )}
       </main>
     </div>
