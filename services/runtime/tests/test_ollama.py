@@ -222,7 +222,11 @@ class OllamaStreamingTests(unittest.TestCase):
         )
         body = connection.requests[0][2]
         self.assertIsInstance(body, bytes)
-        self.assertEqual(json.loads(body.decode("utf-8"))["messages"][0]["content"], "Synthetic \u20ac input")
+        encoded_body = cast(bytes, body)
+        self.assertEqual(
+            json.loads(encoded_body.decode("utf-8"))["messages"][0]["content"],
+            "Synthetic \u20ac input",
+        )
         self.assertEqual(
             connection.requests[0][3]["Content-Type"], "application/json; charset=utf-8"
         )
