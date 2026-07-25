@@ -79,11 +79,25 @@ export function applyPhaseOneEvent(
   }
   const lastSequence = state.lastSequenceByRequest[event.requestId] ?? 0;
   if (event.sequence !== lastSequence) return state;
-  return updateMessage(state, messageIndex, {
-    ...current,
-    status: nextStatus,
-    errorCode: event.errorCode,
-  });
+  return updateMessage(
+    {
+      ...state,
+      phase: {
+        ...state.phase,
+        queue: state.phase.queue.filter(
+          (entry) =>
+            entry.requestId !== event.requestId &&
+            entry.assistantMessageId !== event.assistantMessageId,
+        ),
+      },
+    },
+    messageIndex,
+    {
+      ...current,
+      status: nextStatus,
+      errorCode: event.errorCode,
+    },
+  );
 }
 
 function updateMessage(

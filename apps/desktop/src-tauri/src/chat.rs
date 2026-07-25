@@ -351,7 +351,7 @@ impl ChatCoordinator {
         let settings = self
             .inner
             .database
-            .settings()
+            .settings(agent_id)
             .map_err(|_| "operation_failed")?;
         let provider = lock(&self.inner.provider).clone();
         let selected_model_available =
@@ -408,7 +408,7 @@ impl ChatCoordinator {
         Ok(())
     }
 
-    pub fn select_model(&self, model_ref: &str) -> Result<(), &'static str> {
+    pub fn select_model(&self, agent_id: &str, model_ref: &str) -> Result<(), &'static str> {
         let provider = lock(&self.inner.provider);
         if !provider
             .models
@@ -420,7 +420,7 @@ impl ChatCoordinator {
         drop(provider);
         self.inner
             .database
-            .set_selected_model(model_ref)
+            .set_selected_model(agent_id, model_ref)
             .map_err(|_| "operation_failed")?;
         if let Some(provider_model_id) = model_ref.strip_prefix("ollama:") {
             let request_id = format!("show-{}", uuid::Uuid::now_v7());
@@ -436,10 +436,10 @@ impl ChatCoordinator {
         Ok(())
     }
 
-    pub fn set_keep_alive(&self, minutes: u32) -> Result<(), &'static str> {
+    pub fn set_keep_alive(&self, agent_id: &str, minutes: u32) -> Result<(), &'static str> {
         self.inner
             .database
-            .set_keep_alive(minutes)
+            .set_keep_alive(agent_id, minutes)
             .map_err(|_| "invalid_keep_alive")?;
         self.emit_refresh(None);
         Ok(())
@@ -907,7 +907,9 @@ fn build_generation_request_from_database(
     let agent = database
         .agent(&job.agent_id)
         .map_err(|_| "operation_unavailable")?;
-    let settings = database.settings().map_err(|_| "persistence_failed")?;
+    let settings = database
+        .settings(&job.agent_id)
+        .map_err(|_| "persistence_failed")?;
     let context = database
         .context_messages(&job.agent_id, &job.conversation_id, MAX_HISTORY_MESSAGES)
         .map_err(|_| "persistence_failed")?;
