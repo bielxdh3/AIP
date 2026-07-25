@@ -105,6 +105,23 @@ export type PhaseOneConversation = {
   modelOverrideRef: string | null;
 };
 
+export type AgentMemory = {
+  id: string;
+  agentId: string;
+  category: string;
+  content: string;
+  status: "active" | "archived" | "trashed" | "candidate_rejected";
+  confirmationStatus: "confirmed" | "pending" | "rejected";
+  confidenceMilli: number;
+  importance: number;
+  sourceType: string;
+  sourceMessageId: string | null;
+  sourceConversationId: string | null;
+  conflictKey: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type QueueEntry = {
   requestId: string;
   agentId: string;

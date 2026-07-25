@@ -411,6 +411,15 @@ impl Database {
             .map_or_else(|| self.main_conversation(agent_id), Ok)
     }
 
+    pub fn conversation(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+    ) -> Result<PhaseOneConversation, DatabaseError> {
+        let connection = self.open()?;
+        connection.query_row("SELECT id, agent_id, title, model_override_ref FROM conversations WHERE id = ?1 AND agent_id = ?2 AND archived_at IS NULL", params![conversation_id, agent_id], |row| Ok(PhaseOneConversation { id: row.get(0)?, agent_id: row.get(1)?, title: row.get(2)?, model_override_ref: row.get(3)? })).optional()?.ok_or(DatabaseError::OwnershipMismatch)
+    }
+
     pub fn archive_conversation(
         &self,
         agent_id: &str,
