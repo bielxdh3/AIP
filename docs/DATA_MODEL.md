@@ -397,3 +397,6 @@ The Phase 1 selected model and keep-alive remain typed `app_settings` entries. M
 not erase the saved reference or conversation history. On startup, abandoned `pending` and
 `streaming` assistant rows become `failed` with `runtime_interrupted`, preserving any valid
 partial content. The in-memory queue is not persisted; SQLite messages remain authoritative.
+# Phase 3 foundation
+
+Phase 3 adds agent-scoped normal conversations, an active-conversation preference, memory records, and separate summary storage. Each record remains owned by exactly one agent and the implicit local Owner; cross-agent reads and assignments are rejected by the Rust database layer.

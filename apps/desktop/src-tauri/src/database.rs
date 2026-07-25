@@ -10,20 +10,22 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::domain::{
-    can_transition_message, AgentPosition, ConversationMessage, MessageAuthor, MessageStatus,
-    PhaseOneConversation, ProvisionalAgent, DEFAULT_KEEP_ALIVE_MINUTES, MAX_KEEP_ALIVE_MINUTES,
-    MAX_USER_MESSAGE_BYTES,
+    can_transition_message, AgentMemory, AgentPosition, ConversationMessage, MessageAuthor,
+    MessageStatus, PhaseOneConversation, ProvisionalAgent, DEFAULT_KEEP_ALIVE_MINUTES,
+    MAX_KEEP_ALIVE_MINUTES, MAX_USER_MESSAGE_BYTES,
 };
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_phase0.sql");
 const MIGRATION_0002: &str = include_str!("../migrations/0002_phase1_conversations.sql");
 const MIGRATION_0003: &str = include_str!("../migrations/0003_phase1_agent_settings.sql");
 const MIGRATION_0004: &str = include_str!("../migrations/0004_phase2_identity.sql");
-const MIGRATIONS: [(i64, &str); 4] = [
+const MIGRATION_0005: &str = include_str!("../migrations/0005_phase3_conversations_memory.sql");
+const MIGRATIONS: [(i64, &str); 5] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
     (4, MIGRATION_0004),
+    (5, MIGRATION_0005),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -206,6 +208,12 @@ impl Database {
                  VALUES (?1, NULL, ?2, ?3)",
                 params![agent_id, DEFAULT_KEEP_ALIVE_MINUTES, now],
             )?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO agent_phase3_settings (agent_id, active_conversation_id, updated_at)
+                 SELECT ?1, id, ?2 FROM conversations
+                 WHERE agent_id = ?1 AND is_main = 1 AND archived_at IS NULL",
+                params![agent_id, now],
+            )?;
         }
         transaction.commit()?;
         Ok(())
@@ -306,6 +314,182 @@ impl Database {
             )
             .optional()?
             .ok_or(DatabaseError::NotFound)
+    }
+
+    pub fn conversations(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<PhaseOneConversation>, DatabaseError> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT id, agent_id, title, model_override_ref FROM conversations
+             WHERE agent_id = ?1 AND archived_at IS NULL ORDER BY is_main DESC, updated_at DESC, id ASC",
+        )?;
+        let conversations = statement
+            .query_map(params![agent_id], |row| {
+                Ok(PhaseOneConversation {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    title: row.get(2)?,
+                    model_override_ref: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DatabaseError::from)?;
+        Ok(conversations)
+    }
+
+    pub fn create_conversation(
+        &self,
+        agent_id: &str,
+        title: &str,
+    ) -> Result<PhaseOneConversation, DatabaseError> {
+        let title = title.trim();
+        if title.is_empty() || title.len() > 160 {
+            return Err(DatabaseError::InvalidValue);
+        }
+        self.agent(agent_id)?;
+        let conversation = PhaseOneConversation {
+            id: Uuid::now_v7().to_string(),
+            agent_id: agent_id.into(),
+            title: title.into(),
+            model_override_ref: None,
+        };
+        let connection = self.open()?;
+        let now = now_millis();
+        connection.execute("INSERT INTO conversations (id, agent_id, owner_user_id, title, kind, is_main, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, 'normal', 0, ?5, ?5)", params![conversation.id, agent_id, OWNER_ID, title, now])?;
+        Ok(conversation)
+    }
+
+    pub fn rename_conversation(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        title: &str,
+    ) -> Result<(), DatabaseError> {
+        let title = title.trim();
+        if title.is_empty() || title.len() > 160 {
+            return Err(DatabaseError::InvalidValue);
+        }
+        let connection = self.open()?;
+        if connection.execute("UPDATE conversations SET title = ?1, updated_at = ?2 WHERE id = ?3 AND agent_id = ?4 AND archived_at IS NULL", params![title, now_millis(), conversation_id, agent_id])? == 1 { Ok(()) } else { Err(DatabaseError::OwnershipMismatch) }
+    }
+
+    pub fn set_active_conversation(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+    ) -> Result<(), DatabaseError> {
+        self.verify_conversation(agent_id, conversation_id)?;
+        let connection = self.open()?;
+        connection.execute("UPDATE agent_phase3_settings SET active_conversation_id = ?1, updated_at = ?2 WHERE agent_id = ?3", params![conversation_id, now_millis(), agent_id])?;
+        Ok(())
+    }
+
+    pub fn active_conversation(
+        &self,
+        agent_id: &str,
+    ) -> Result<PhaseOneConversation, DatabaseError> {
+        let connection = self.open()?;
+        connection
+            .query_row(
+                "SELECT c.id, c.agent_id, c.title, c.model_override_ref
+             FROM agent_phase3_settings s JOIN conversations c ON c.id = s.active_conversation_id
+             WHERE s.agent_id = ?1 AND c.agent_id = ?1 AND c.archived_at IS NULL",
+                params![agent_id],
+                |row| {
+                    Ok(PhaseOneConversation {
+                        id: row.get(0)?,
+                        agent_id: row.get(1)?,
+                        title: row.get(2)?,
+                        model_override_ref: row.get(3)?,
+                    })
+                },
+            )
+            .optional()?
+            .map_or_else(|| self.main_conversation(agent_id), Ok)
+    }
+
+    pub fn archive_conversation(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+    ) -> Result<(), DatabaseError> {
+        let connection = self.open()?;
+        if connection.execute("UPDATE conversations SET archived_at = ?1, updated_at = ?1 WHERE id = ?2 AND agent_id = ?3 AND is_main = 0 AND archived_at IS NULL", params![now_millis(), conversation_id, agent_id])? == 1 { Ok(()) } else { Err(DatabaseError::OwnershipMismatch) }
+    }
+
+    pub fn restore_conversation(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+    ) -> Result<(), DatabaseError> {
+        let connection = self.open()?;
+        if connection.execute("UPDATE conversations SET archived_at = NULL, updated_at = ?1 WHERE id = ?2 AND agent_id = ?3 AND is_main = 0 AND archived_at IS NOT NULL", params![now_millis(), conversation_id, agent_id])? == 1 { Ok(()) } else { Err(DatabaseError::OwnershipMismatch) }
+    }
+
+    pub fn memories(&self, agent_id: &str) -> Result<Vec<AgentMemory>, DatabaseError> {
+        self.agent(agent_id)?;
+        let connection = self.open()?;
+        let mut statement = connection.prepare("SELECT id, agent_id, category, content, status, confirmation_status, confidence, importance, source_type, source_message_id, source_conversation_id, conflict_key, created_at, updated_at FROM agent_memories WHERE agent_id = ?1 ORDER BY updated_at DESC, id ASC")?;
+        let memories = statement
+            .query_map(params![agent_id], map_memory)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DatabaseError::from)?;
+        Ok(memories)
+    }
+
+    pub fn create_memory(
+        &self,
+        agent_id: &str,
+        category: &str,
+        content: &str,
+        confirmed: bool,
+    ) -> Result<AgentMemory, DatabaseError> {
+        let category = category.trim();
+        let content = content.trim();
+        if category.is_empty() || category.len() > 64 || content.is_empty() || content.len() > 4_000
+        {
+            return Err(DatabaseError::InvalidValue);
+        }
+        self.agent(agent_id)?;
+        let now = now_millis();
+        let memory = AgentMemory {
+            id: Uuid::now_v7().to_string(),
+            agent_id: agent_id.into(),
+            category: category.into(),
+            content: content.into(),
+            status: "active".into(),
+            confirmation_status: if confirmed { "confirmed" } else { "pending" }.into(),
+            confidence_milli: if confirmed { 1000 } else { 500 },
+            importance: 50,
+            source_type: "manual".into(),
+            source_message_id: None,
+            source_conversation_id: None,
+            conflict_key: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let connection = self.open()?;
+        connection.execute("INSERT INTO agent_memories (id, agent_id, owner_user_id, category, content, status, confirmation_status, confidence, importance, source_type, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)", params![memory.id, agent_id, OWNER_ID, memory.category, memory.content, memory.status, memory.confirmation_status, f64::from(memory.confidence_milli) / 1000.0, memory.importance, memory.source_type, now])?;
+        Ok(memory)
+    }
+
+    pub fn set_memory_status(
+        &self,
+        agent_id: &str,
+        memory_id: &str,
+        status: &str,
+    ) -> Result<(), DatabaseError> {
+        if !matches!(
+            status,
+            "active" | "archived" | "trashed" | "candidate_rejected"
+        ) {
+            return Err(DatabaseError::InvalidValue);
+        }
+        let connection = self.open()?;
+        if connection.execute("UPDATE agent_memories SET status = ?1, archived_at = CASE WHEN ?1 = 'archived' THEN ?2 ELSE NULL END, trashed_at = CASE WHEN ?1 = 'trashed' THEN ?2 ELSE NULL END, updated_at = ?2 WHERE id = ?3 AND agent_id = ?4", params![status, now_millis(), memory_id, agent_id])? == 1 { Ok(()) } else { Err(DatabaseError::OwnershipMismatch) }
     }
 
     pub fn messages(
@@ -828,6 +1012,25 @@ fn map_agent(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProvisionalAgent> {
     })
 }
 
+fn map_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentMemory> {
+    Ok(AgentMemory {
+        id: row.get(0)?,
+        agent_id: row.get(1)?,
+        category: row.get(2)?,
+        content: row.get(3)?,
+        status: row.get(4)?,
+        confirmation_status: row.get(5)?,
+        confidence_milli: (row.get::<_, f64>(6)? * 1000.0).round().clamp(0.0, 1000.0) as u16,
+        importance: row.get(7)?,
+        source_type: row.get(8)?,
+        source_message_id: row.get(9)?,
+        source_conversation_id: row.get(10)?,
+        conflict_key: row.get(11)?,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
+    })
+}
+
 fn map_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationMessage> {
     let author_raw: String = row.get(3)?;
     let status_raw: String = row.get(6)?;
@@ -1184,6 +1387,39 @@ mod tests {
             Some("ollama:astra-model")
         );
         assert_eq!(database.settings(ASTRA_ID).unwrap().keep_alive_minutes, 30);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn phase_three_conversations_and_memories_are_agent_scoped() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let astra = database
+            .create_conversation(ASTRA_ID, "Astra notes")
+            .unwrap();
+        database
+            .set_active_conversation(ASTRA_ID, &astra.id)
+            .unwrap();
+        assert_eq!(database.active_conversation(ASTRA_ID).unwrap().id, astra.id);
+        assert_eq!(database.conversations(LUMA_ID).unwrap().len(), 1);
+        assert_eq!(
+            database.set_active_conversation(LUMA_ID, &astra.id),
+            Err(DatabaseError::OwnershipMismatch)
+        );
+
+        let memory = database
+            .create_memory(ASTRA_ID, "preference", "Likes astronomy", true)
+            .unwrap();
+        assert_eq!(database.memories(ASTRA_ID).unwrap().len(), 1);
+        assert!(database.memories(LUMA_ID).unwrap().is_empty());
+        assert_eq!(
+            database.set_memory_status(LUMA_ID, &memory.id, "archived"),
+            Err(DatabaseError::OwnershipMismatch)
+        );
+        database
+            .set_memory_status(ASTRA_ID, &memory.id, "archived")
+            .unwrap();
+        assert_eq!(database.memories(ASTRA_ID).unwrap()[0].status, "archived");
         cleanup(&path);
     }
 

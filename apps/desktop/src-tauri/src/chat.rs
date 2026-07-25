@@ -341,7 +341,7 @@ impl ChatCoordinator {
         let conversation = self
             .inner
             .database
-            .main_conversation(agent_id)
+            .active_conversation(agent_id)
             .map_err(|_| "operation_unavailable")?;
         let messages = self
             .inner

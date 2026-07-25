@@ -441,3 +441,6 @@ These require tests and explicit limitations in the final implementation report.
 
 Phase 1 adds no filesystem tools, production network listener, custom endpoint, automatic model
 download, remote access, Android, voice, extension, memory, or BielOS integration.
+# Phase 3 foundation
+
+Conversation and memory ownership is enforced by agent ID in persistent database operations. A conversation belonging to one agent cannot be selected by another.
