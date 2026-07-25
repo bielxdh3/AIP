@@ -227,6 +227,22 @@ pub struct AgentMemory {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentSimulatedState {
+    pub agent_id: String,
+    pub sleep: u8,
+    pub energy: u8,
+    pub mood: u8,
+    pub focus: u8,
+    pub curiosity: u8,
+    pub social_fatigue: u8,
+    pub mode: String,
+    pub suspended: bool,
+    pub wake_now_until: Option<i64>,
+    pub last_simulated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationMessage {
     pub id: String,
     pub conversation_id: String,

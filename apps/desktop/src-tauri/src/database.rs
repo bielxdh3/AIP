@@ -10,9 +10,9 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::domain::{
-    can_transition_message, AgentMemory, AgentPosition, ConversationMessage, MessageAuthor,
-    MessageStatus, PhaseOneConversation, ProvisionalAgent, DEFAULT_KEEP_ALIVE_MINUTES,
-    MAX_KEEP_ALIVE_MINUTES, MAX_USER_MESSAGE_BYTES,
+    can_transition_message, AgentMemory, AgentPosition, AgentSimulatedState, ConversationMessage,
+    MessageAuthor, MessageStatus, PhaseOneConversation, ProvisionalAgent,
+    DEFAULT_KEEP_ALIVE_MINUTES, MAX_KEEP_ALIVE_MINUTES, MAX_USER_MESSAGE_BYTES,
 };
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_phase0.sql");
@@ -20,12 +20,14 @@ const MIGRATION_0002: &str = include_str!("../migrations/0002_phase1_conversatio
 const MIGRATION_0003: &str = include_str!("../migrations/0003_phase1_agent_settings.sql");
 const MIGRATION_0004: &str = include_str!("../migrations/0004_phase2_identity.sql");
 const MIGRATION_0005: &str = include_str!("../migrations/0005_phase3_conversations_memory.sql");
-const MIGRATIONS: [(i64, &str); 5] = [
+const MIGRATION_0006: &str = include_str!("../migrations/0006_phase4_agent_state.sql");
+const MIGRATIONS: [(i64, &str); 6] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
     (4, MIGRATION_0004),
     (5, MIGRATION_0005),
+    (6, MIGRATION_0006),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -212,6 +214,12 @@ impl Database {
                 "INSERT OR IGNORE INTO agent_phase3_settings (agent_id, active_conversation_id, updated_at)
                  SELECT ?1, id, ?2 FROM conversations
                  WHERE agent_id = ?1 AND is_main = 1 AND archived_at IS NULL",
+                params![agent_id, now],
+            )?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO agent_simulated_states
+                 (agent_id, sleep, energy, mood, focus, curiosity, social_fatigue, mode, suspended, last_simulated_at, updated_at)
+                 VALUES (?1, 20, 80, 70, 70, 70, 20, 'normal', 0, ?2, ?2)",
                 params![agent_id, now],
             )?;
         }
@@ -447,6 +455,52 @@ impl Database {
             .collect::<Result<Vec<_>, _>>()
             .map_err(DatabaseError::from)?;
         Ok(memories)
+    }
+
+    pub fn simulated_state(&self, agent_id: &str) -> Result<AgentSimulatedState, DatabaseError> {
+        let connection = self.open()?;
+        connection.query_row("SELECT agent_id, sleep, energy, mood, focus, curiosity, social_fatigue, mode, suspended, wake_now_until, last_simulated_at FROM agent_simulated_states WHERE agent_id = ?1", params![agent_id], map_simulated_state).optional()?.ok_or(DatabaseError::NotFound)
+    }
+
+    pub fn set_agent_mode(&self, agent_id: &str, mode: &str) -> Result<(), DatabaseError> {
+        if !matches!(mode, "normal" | "voice_muted" | "silent" | "safe") {
+            return Err(DatabaseError::InvalidValue);
+        }
+        let connection = self.open()?;
+        if connection.execute(
+            "UPDATE agent_simulated_states SET mode = ?1, updated_at = ?2 WHERE agent_id = ?3",
+            params![mode, now_millis(), agent_id],
+        )? == 1
+        {
+            Ok(())
+        } else {
+            Err(DatabaseError::NotFound)
+        }
+    }
+
+    pub fn set_agent_suspended(
+        &self,
+        agent_id: &str,
+        suspended: bool,
+    ) -> Result<(), DatabaseError> {
+        let connection = self.open()?;
+        if connection.execute(
+            "UPDATE agent_simulated_states SET suspended = ?1, updated_at = ?2 WHERE agent_id = ?3",
+            params![suspended, now_millis(), agent_id],
+        )? == 1
+        {
+            Ok(())
+        } else {
+            Err(DatabaseError::NotFound)
+        }
+    }
+
+    pub fn wake_agent_now(&self, agent_id: &str, until: i64) -> Result<(), DatabaseError> {
+        if until <= now_millis() {
+            return Err(DatabaseError::InvalidValue);
+        }
+        let connection = self.open()?;
+        if connection.execute("UPDATE agent_simulated_states SET sleep = 0, energy = MIN(100, energy + 20), wake_now_until = ?1, updated_at = ?2 WHERE agent_id = ?3", params![until, now_millis(), agent_id])? == 1 { Ok(()) } else { Err(DatabaseError::NotFound) }
     }
 
     pub fn create_memory(
@@ -1061,6 +1115,22 @@ fn map_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentMemory> {
     })
 }
 
+fn map_simulated_state(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentSimulatedState> {
+    Ok(AgentSimulatedState {
+        agent_id: row.get(0)?,
+        sleep: row.get(1)?,
+        energy: row.get(2)?,
+        mood: row.get(3)?,
+        focus: row.get(4)?,
+        curiosity: row.get(5)?,
+        social_fatigue: row.get(6)?,
+        mode: row.get(7)?,
+        suspended: row.get(8)?,
+        wake_now_until: row.get(9)?,
+        last_simulated_at: row.get(10)?,
+    })
+}
+
 fn map_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationMessage> {
     let author_raw: String = row.get(3)?;
     let status_raw: String = row.get(6)?;
@@ -1115,7 +1185,7 @@ mod tests {
         let first = Database::initialize(&path).expect("database should initialize");
         let second = Database::initialize(&path).expect("database should reinitialize");
         let snapshot = second.snapshot().expect("snapshot should load");
-        assert_eq!(snapshot.migration_version, 4);
+        assert_eq!(snapshot.migration_version, 6);
         assert_eq!(snapshot.agents.len(), 2);
         for agent in &snapshot.agents {
             assert_eq!(
@@ -1476,6 +1546,29 @@ mod tests {
         assert!(luma_context
             .iter()
             .any(|message| message.content.contains("Luma fact")));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn simulated_state_is_agent_scoped_and_validated() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        assert_eq!(database.simulated_state(ASTRA_ID).unwrap().mode, "normal");
+        database.set_agent_mode(ASTRA_ID, "silent").unwrap();
+        assert_eq!(database.simulated_state(ASTRA_ID).unwrap().mode, "silent");
+        assert_eq!(database.simulated_state(LUMA_ID).unwrap().mode, "normal");
+        assert_eq!(
+            database.set_agent_mode(ASTRA_ID, "invalid"),
+            Err(DatabaseError::InvalidValue)
+        );
+        database.set_agent_suspended(ASTRA_ID, true).unwrap();
+        database
+            .wake_agent_now(ASTRA_ID, super::now_millis() + 60_000)
+            .unwrap();
+        let state = database.simulated_state(ASTRA_ID).unwrap();
+        assert!(state.suspended);
+        assert_eq!(state.sleep, 0);
+        assert!(state.wake_now_until.is_some());
         cleanup(&path);
     }
 
