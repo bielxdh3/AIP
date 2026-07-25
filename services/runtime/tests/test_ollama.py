@@ -37,14 +37,14 @@ class FakeResponse(ResponseLike):
 class FakeConnection(ConnectionLike):
     def __init__(self, response: ResponseLike) -> None:
         self.response = response
-        self.requests: list[tuple[str, str, str | None, dict[str, str]]] = []
+        self.requests: list[tuple[str, str, str | bytes | None, dict[str, str]]] = []
         self.closed = False
 
     def request(
         self,
         method: str,
         url: str,
-        body: str | None = None,
+        body: str | bytes | None = None,
         headers: dict[str, str] | None = None,
     ) -> None:
         self.requests.append((method, url, body, headers or {}))
@@ -207,6 +207,25 @@ class OllamaStreamingTests(unittest.TestCase):
         body = json.loads(connection.requests[0][2] or "{}")
         self.assertEqual(connection.requests[0][0:2], ("POST", "/api/chat"))
         self.assertEqual(body["model"], "llama3.2:1b")
+
+    def test_chat_body_is_utf8_bytes_before_http_dispatch(self) -> None:
+        client, connection = client_for(
+            FakeResponse([b'{"message":{"content":"OK"},"done":false}\n', b'{"done":true}\n'])
+        )
+        client.stream_chat(
+            model_id="synthetic:latest",
+            messages=[{"role": "user", "content": "Synthetic \u20ac input"}],
+            keep_alive_minutes=15,
+            cancel_event=threading.Event(),
+            observe_connection=lambda _connection: None,
+            emit_chunk=lambda _sequence, _content: None,
+        )
+        body = connection.requests[0][2]
+        self.assertIsInstance(body, bytes)
+        self.assertEqual(json.loads(body.decode("utf-8"))["messages"][0]["content"], "Synthetic \u20ac input")
+        self.assertEqual(
+            connection.requests[0][3]["Content-Type"], "application/json; charset=utf-8"
+        )
 
     def test_stream_preserves_utf8_split_across_byte_chunks(self) -> None:
         expected = "calendário"
