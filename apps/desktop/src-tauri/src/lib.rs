@@ -19,8 +19,8 @@ use std::{
 use chat::ChatCoordinator;
 use database::Database;
 use domain::{
-    AgentMemory, AppSnapshot, ConversationMessage, PhaseOneConversation, PhaseOneState,
-    SendMessageResult,
+    AgentMemory, AgentSimulatedState, AppSnapshot, ConversationMessage, PhaseOneConversation,
+    PhaseOneState, SendMessageResult,
 };
 use overlays::{InteractiveRegion, OverlayInputState};
 use runtime::RuntimeController;
@@ -202,6 +202,57 @@ fn create_agent_memory(
         .ok_or("operation_unavailable")?
         .create_memory(&agent_id, &category, &content, true)
         .map_err(|_| "invalid_memory")
+}
+
+#[tauri::command]
+fn get_agent_simulated_state(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<AgentSimulatedState, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .simulated_state(&agent_id)
+        .map_err(|_| "operation_unavailable")
+}
+
+#[tauri::command]
+fn set_agent_simulated_mode(
+    state: State<'_, AppState>,
+    agent_id: String,
+    mode: String,
+) -> Result<(), &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .set_agent_mode(&agent_id, &mode)
+        .map_err(|_| "invalid_mode")
+}
+
+#[tauri::command]
+fn set_agent_suspension(
+    state: State<'_, AppState>,
+    agent_id: String,
+    suspended: bool,
+) -> Result<(), &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .set_agent_suspended(&agent_id, suspended)
+        .map_err(|_| "operation_unavailable")
+}
+
+#[tauri::command]
+fn wake_agent_now(state: State<'_, AppState>, agent_id: String) -> Result<(), &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .wake_agent_now(&agent_id, database::now_millis() + 60 * 60 * 1000)
+        .map_err(|_| "operation_unavailable")
 }
 
 #[tauri::command]
@@ -497,6 +548,10 @@ pub fn run() {
             restore_agent_conversation,
             list_agent_memories,
             create_agent_memory,
+            get_agent_simulated_state,
+            set_agent_simulated_mode,
+            set_agent_suspension,
+            wake_agent_now,
             set_agent_memory_status,
             refresh_ollama_models,
             select_phase_one_model,
