@@ -844,37 +844,7 @@ impl ChatCoordinator {
     }
 
     fn build_generation_request(&self, job: &GenerationJob) -> Result<String, &'static str> {
-        let agent = self
-            .inner
-            .database
-            .agent(&job.agent_id)
-            .map_err(|_| "operation_unavailable")?;
-        let settings = self
-            .inner
-            .database
-            .settings()
-            .map_err(|_| "persistence_failed")?;
-        let context = self
-            .inner
-            .database
-            .context_messages(&job.agent_id, &job.conversation_id, MAX_HISTORY_MESSAGES)
-            .map_err(|_| "persistence_failed")?;
-        let messages = assemble_context(&agent.name, &agent.profile_key, context);
-        let provider_model_id = job
-            .model_ref
-            .strip_prefix("ollama:")
-            .filter(|model| valid_provider_model_id(model))
-            .ok_or("model_unavailable")?;
-        generation_request(
-            &job.request_id,
-            &job.agent_id,
-            &job.conversation_id,
-            &job.assistant_message_id,
-            provider_model_id,
-            settings.keep_alive_minutes,
-            &messages,
-        )
-        .map_err(|_| "protocol_encoding_failed")
+        build_generation_request_from_database(&self.inner.database, job)
     }
 
     fn emit_terminal(&self, job: &GenerationJob, event_type: &str, error_code: Option<&str>) {
@@ -928,6 +898,35 @@ impl ChatCoordinator {
     ) {
         lock(&self.inner.request_traces).record(request_id, code, sequence, terminal_code);
     }
+}
+
+fn build_generation_request_from_database(
+    database: &Database,
+    job: &GenerationJob,
+) -> Result<String, &'static str> {
+    let agent = database
+        .agent(&job.agent_id)
+        .map_err(|_| "operation_unavailable")?;
+    let settings = database.settings().map_err(|_| "persistence_failed")?;
+    let context = database
+        .context_messages(&job.agent_id, &job.conversation_id, MAX_HISTORY_MESSAGES)
+        .map_err(|_| "persistence_failed")?;
+    let messages = assemble_context(&agent.name, &agent.profile_key, context);
+    let provider_model_id = job
+        .model_ref
+        .strip_prefix("ollama:")
+        .filter(|model| valid_provider_model_id(model))
+        .ok_or("model_unavailable")?;
+    generation_request(
+        &job.request_id,
+        &job.agent_id,
+        &job.conversation_id,
+        &job.assistant_message_id,
+        provider_model_id,
+        settings.keep_alive_minutes,
+        &messages,
+    )
+    .map_err(|_| "protocol_encoding_failed")
 }
 
 fn job_from_attempt(
@@ -1004,7 +1003,12 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
 
     use crate::domain::ConversationMessage;
     use uuid::Uuid;
@@ -1293,5 +1297,230 @@ mod tests {
         );
         drop(reopened);
         let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn persisted_history_uses_the_desktop_generation_request_shape() {
+        let path = std::env::temp_dir()
+            .join(format!("aip-phase1-request-{}", Uuid::now_v7()))
+            .join("aip.sqlite3");
+        let database = Database::initialize(&path).unwrap();
+        let agent = database.snapshot().unwrap().agents.remove(0);
+        let conversation = database.main_conversation(&agent.id).unwrap();
+
+        let completed = database
+            .create_message_attempt(
+                &agent.id,
+                &conversation.id,
+                "Synthetic completed user",
+                "ollama:llama3.2:1b",
+            )
+            .unwrap();
+        database
+            .mark_streaming(&completed.assistant_message_id, &completed.request_id)
+            .unwrap();
+        database
+            .append_assistant_chunk(
+                &completed.assistant_message_id,
+                &completed.request_id,
+                "Synthetic completed assistant",
+            )
+            .unwrap();
+        database
+            .finish_assistant(
+                &completed.assistant_message_id,
+                &completed.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+
+        for status in [MessageStatus::Failed, MessageStatus::Cancelled] {
+            let terminal = database
+                .create_message_attempt(
+                    &agent.id,
+                    &conversation.id,
+                    "Synthetic terminal user",
+                    "ollama:llama3.2:1b",
+                )
+                .unwrap();
+            database
+                .finish_assistant(
+                    &terminal.assistant_message_id,
+                    &terminal.request_id,
+                    status,
+                    None,
+                )
+                .unwrap();
+        }
+
+        let fresh = database
+            .create_message_attempt(
+                &agent.id,
+                &conversation.id,
+                "Synthetic short user",
+                "ollama:llama3.2:1b",
+            )
+            .unwrap();
+        let job = job_from_attempt(&agent.id, &conversation.id, "ollama:llama3.2:1b", &fresh);
+        let request = build_generation_request_from_database(&database, &job).unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&request).unwrap();
+        let params = payload["params"].as_object().unwrap();
+        let messages = params["messages"].as_array().unwrap();
+
+        for model_ref in ["ollama:llama3.2:1b", "ollama:qwen2.5:7b"] {
+            let request = build_generation_request_from_database(
+                &database,
+                &job_from_attempt(&agent.id, &conversation.id, model_ref, &fresh),
+            )
+            .unwrap();
+            let payload: serde_json::Value = serde_json::from_str(&request).unwrap();
+            assert_eq!(
+                payload["params"]["model"],
+                model_ref.trim_start_matches("ollama:")
+            );
+        }
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages.first().unwrap()["role"], "system");
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message["role"] == "assistant")
+                .count(),
+            1
+        );
+        assert_eq!(messages.last().unwrap()["role"], "user");
+        drop(database);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    #[ignore = "requires a local Ollama llama3.2:1b model"]
+    fn desktop_equivalent_persisted_generation_reaches_runtime_and_persists() {
+        let path = std::env::temp_dir()
+            .join(format!("aip-phase1-provider-probe-{}", Uuid::now_v7()))
+            .join("aip.sqlite3");
+        let database = Database::initialize(&path).unwrap();
+        let agent = database.snapshot().unwrap().agents.remove(0);
+        let conversation = database.main_conversation(&agent.id).unwrap();
+        let completed = database
+            .create_message_attempt(
+                &agent.id,
+                &conversation.id,
+                "Synthetic completed user",
+                "ollama:llama3.2:1b",
+            )
+            .unwrap();
+        database
+            .mark_streaming(&completed.assistant_message_id, &completed.request_id)
+            .unwrap();
+        database
+            .append_assistant_chunk(
+                &completed.assistant_message_id,
+                &completed.request_id,
+                "Synthetic completed assistant",
+            )
+            .unwrap();
+        database
+            .finish_assistant(
+                &completed.assistant_message_id,
+                &completed.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+        for status in [MessageStatus::Failed, MessageStatus::Cancelled] {
+            let terminal = database
+                .create_message_attempt(
+                    &agent.id,
+                    &conversation.id,
+                    "Synthetic terminal user",
+                    "ollama:llama3.2:1b",
+                )
+                .unwrap();
+            database
+                .finish_assistant(
+                    &terminal.assistant_message_id,
+                    &terminal.request_id,
+                    status,
+                    None,
+                )
+                .unwrap();
+        }
+        let fresh = database
+            .create_message_attempt(&agent.id, &conversation.id, "ping", "ollama:llama3.2:1b")
+            .unwrap();
+        let job = job_from_attempt(&agent.id, &conversation.id, "ollama:llama3.2:1b", &fresh);
+        let request = build_generation_request_from_database(&database, &job).unwrap();
+        database
+            .mark_streaming(&fresh.assistant_message_id, &fresh.request_id)
+            .unwrap();
+
+        let source_root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../services/runtime/src");
+        let runtime = RuntimeController::new(source_root, false);
+        let receiver = runtime.subscribe();
+        runtime.start();
+        wait_for_runtime_ready(&receiver);
+        runtime.send(request).unwrap();
+
+        let mut chunks = 0;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let notice = receiver.recv_timeout(remaining).unwrap();
+            let RuntimeNotice::Output(RuntimeOutput::Event(event)) = notice else {
+                continue;
+            };
+            if event.request_id.as_deref() != Some(fresh.request_id.as_str()) {
+                continue;
+            }
+            match event.event_type.as_str() {
+                "generation.chunk" => {
+                    chunks += 1;
+                    database
+                        .append_assistant_chunk(
+                            &fresh.assistant_message_id,
+                            &fresh.request_id,
+                            event.content.as_deref().unwrap(),
+                        )
+                        .unwrap();
+                }
+                "generation.complete" => {
+                    database
+                        .finish_assistant(
+                            &fresh.assistant_message_id,
+                            &fresh.request_id,
+                            MessageStatus::Complete,
+                            None,
+                        )
+                        .unwrap();
+                    break;
+                }
+                "generation.failed" | "generation.cancelled" => {
+                    panic!("desktop-equivalent provider probe did not complete")
+                }
+                _ => {}
+            }
+        }
+        runtime.shutdown();
+        assert!(chunks > 0);
+        let messages = database.messages(&agent.id, &conversation.id).unwrap();
+        assert_eq!(messages.last().unwrap().status, MessageStatus::Complete);
+        drop(database);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    fn wait_for_runtime_ready(receiver: &mpsc::Receiver<RuntimeNotice>) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if matches!(
+                receiver.recv_timeout(Duration::from_millis(100)),
+                Ok(RuntimeNotice::Output(RuntimeOutput::HealthReady { .. }))
+            ) {
+                return;
+            }
+        }
+        panic!("desktop-equivalent runtime did not become ready");
     }
 }
