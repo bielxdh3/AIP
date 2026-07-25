@@ -46,7 +46,7 @@ class ConnectionLike(Protocol):
         self,
         method: str,
         url: str,
-        body: str | None = None,
+        body: str | bytes | None = None,
         headers: dict[str, str] | None = None,
     ) -> None: ...
 
@@ -105,7 +105,7 @@ class _InterruptibleHttpConnection:
         self,
         method: str,
         url: str,
-        body: str | None = None,
+        body: str | bytes | None = None,
         headers: dict[str, str] | None = None,
     ) -> None:
         self._connection.request(method, url, body=body, headers=headers or {})
@@ -259,8 +259,11 @@ class OllamaClient:
             connection.request(
                 "POST",
                 "/api/chat",
-                body=body,
-                headers={"Content-Type": "application/json", "Accept": "application/x-ndjson"},
+                body=body.encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json; charset=utf-8",
+                    "Accept": "application/x-ndjson",
+                },
             )
             response = connection.getresponse()
             if response.status != 200:
