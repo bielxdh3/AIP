@@ -17,7 +17,7 @@ class FakeConnection(ConnectionLike):
         self,
         method: str,
         url: str,
-        body: str | None = None,
+        body: str | bytes | None = None,
         headers: dict[str, str] | None = None,
     ) -> None:
         del method, url, body, headers
