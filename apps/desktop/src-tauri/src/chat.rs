@@ -381,11 +381,18 @@ impl ChatCoordinator {
                 .any(|model| &model.model_ref == selected)
         });
         let queue = lock(&self.inner.queue).snapshots();
+        let simulated_state = self
+            .inner
+            .database
+            .simulated_state(agent_id)
+            .map_err(|_| "operation_failed")?;
         let blocked = self.send_blocked_code(
             &provider,
             selected_model_ref.as_deref(),
             selected_model_available,
             queue.len(),
+            simulated_state.suspended,
+            simulated_state.mode.as_str(),
         );
         Ok(PhaseOneState {
             agent,
@@ -445,12 +452,19 @@ impl ChatCoordinator {
                     .iter()
                     .any(|model| &model.model_ref == selected)
             });
+        let simulated_state = self
+            .inner
+            .database
+            .simulated_state(agent_id)
+            .map_err(|_| "operation_failed")?;
         state.send_blocked_code = self
             .send_blocked_code(
                 &state.provider,
                 state.selected_model_ref.as_deref(),
                 state.selected_model_available,
                 state.queue.len(),
+                simulated_state.suspended,
+                simulated_state.mode.as_str(),
             )
             .map(str::to_string);
         state.can_send = state.send_blocked_code.is_none();
@@ -534,6 +548,8 @@ impl ChatCoordinator {
             return Err(match code {
                 "queue_full" => "queue_full",
                 "safe_mode_active" => "safe_mode_active",
+                "agent_safe_mode" => "agent_safe_mode",
+                "agent_suspended" => "agent_suspended",
                 "model_not_selected" | "selected_model_unavailable" => "model_unavailable",
                 _ => "runtime_unavailable",
             });
@@ -575,6 +591,8 @@ impl ChatCoordinator {
             return Err(match code {
                 "queue_full" => "queue_full",
                 "safe_mode_active" => "safe_mode_active",
+                "agent_safe_mode" => "agent_safe_mode",
+                "agent_suspended" => "agent_suspended",
                 "model_not_selected" | "selected_model_unavailable" => "model_unavailable",
                 _ => "runtime_unavailable",
             });
@@ -698,6 +716,8 @@ impl ChatCoordinator {
         selected_model: Option<&str>,
         selected_available: bool,
         queue_length: usize,
+        suspended: bool,
+        agent_mode: &str,
     ) -> Option<&'static str> {
         if self.inner.safe_mode.load(Ordering::SeqCst) {
             Some("safe_mode_active")
@@ -713,6 +733,10 @@ impl ChatCoordinator {
             Some("model_not_selected")
         } else if !selected_available {
             Some("selected_model_unavailable")
+        } else if suspended {
+            Some("agent_suspended")
+        } else if agent_mode == "safe" {
+            Some("agent_safe_mode")
         } else if queue_length >= MAX_QUEUE_LENGTH {
             Some("queue_full")
         } else {
