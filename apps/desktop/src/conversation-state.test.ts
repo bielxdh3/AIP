@@ -5,6 +5,7 @@ import {
   blockedSendCopy,
   bubblePresentation,
   canRequestCancellation,
+  conversationOverrideArguments,
   compactPreview,
   createConversationViewState,
   messageFailureCopy,
@@ -97,6 +98,15 @@ function event(
 }
 
 describe("conversation event reducer", () => {
+  it("scopes a model override command to the active agent and conversation", () => {
+    expect(conversationOverrideArguments("luma", "secondary", "ollama:test")).toEqual({
+      agentId: "luma",
+      conversationId: "secondary",
+      modelRef: "ollama:test",
+    });
+    expect(conversationOverrideArguments("astra", "main", "").modelRef).toBeNull();
+  });
+
   it("appends each ordered streaming chunk exactly once", () => {
     const initial = createConversationViewState(phase());
     const first = applyPhaseOneEvent(

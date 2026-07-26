@@ -62,3 +62,35 @@ export function updatePixelLayer(
     layers: document.layers.map((layer) => (layer.id === layerId ? update(layer) : layer)),
   };
 }
+
+export function floodFillLayer(
+  layer: PixelLayer,
+  startX: number,
+  startY: number,
+  replacement: string,
+): PixelLayer {
+  if (layer.locked || startX < 0 || startX >= 64 || startY < 0 || startY >= 64) return layer;
+  const colors = new Map(layer.pixels.map(([x, y, color]) => [`${x},${y}`, color]));
+  const target = colors.get(`${startX},${startY}`) ?? null;
+  if (target === replacement) return layer;
+  const pending: Pixel[] = [[startX, startY, replacement]];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const [x, y] = pending.pop()!;
+    const key = `${x},${y}`;
+    if (visited.has(key) || (colors.get(key) ?? null) !== target) continue;
+    visited.add(key);
+    colors.set(key, replacement);
+    const neighbors: Array<[number, number]> = [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]];
+    for (const [nextX, nextY] of neighbors) {
+      if (nextX >= 0 && nextX < 64 && nextY >= 0 && nextY < 64) pending.push([nextX, nextY, replacement]);
+    }
+  }
+  return {
+    ...layer,
+    pixels: [...colors.entries()].map(([key, color]) => {
+      const [x, y] = key.split(",").map(Number);
+      return [x, y, color] as Pixel;
+    }),
+  };
+}

@@ -35,8 +35,9 @@ manual test at 100% display scaling and its exact-SHA GitHub Actions run. Window
 non-100% real display scaling, multiple monitors, and installer behavior remain manual
 validation limitations. Phase 1 automated tests do not require Ollama, but real discovery,
 streaming, queue, cancellation, bubble, restart, and provider-interruption behavior still
-require the documented manual smoke test. No model is downloaded automatically. Memory,
-tools, voice, Android, autonomous behavior, scheduling, and BielOS integration are not implemented.
+require the documented manual smoke test. No model is downloaded automatically. Scoped
+memory candidates, memory review, and bounded summaries are implemented; tools, voice,
+Android, autonomous behavior, scheduling, and BielOS integration are not implemented.
 
 ## Supported platform
 

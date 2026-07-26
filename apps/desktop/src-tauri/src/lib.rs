@@ -267,6 +267,18 @@ fn send_temporary_phase_one_message(
 }
 
 #[tauri::command]
+fn close_temporary_phase_one_chat(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<(), &'static str> {
+    state
+        .chat
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .reset_temporary(&agent_id)
+}
+
+#[tauri::command]
 fn get_agent_simulated_state(
     state: State<'_, AppState>,
     agent_id: String,
@@ -440,16 +452,17 @@ fn complete_phase_two_onboarding(
 }
 
 #[tauri::command]
-fn set_main_conversation_model_override(
+fn set_conversation_model_override(
     state: State<'_, AppState>,
     agent_id: String,
+    conversation_id: String,
     model_ref: Option<String>,
 ) -> Result<(), &'static str> {
     state
         .chat
         .as_ref()
         .ok_or("operation_unavailable")?
-        .set_main_override(&agent_id, model_ref.as_deref())
+        .set_conversation_override(&agent_id, &conversation_id, model_ref.as_deref())
 }
 
 #[tauri::command]
@@ -660,6 +673,7 @@ pub fn run() {
             search_agent_memories,
             create_agent_memory,
             send_temporary_phase_one_message,
+            close_temporary_phase_one_chat,
             get_agent_simulated_state,
             set_agent_simulated_mode,
             set_agent_suspension,
@@ -673,7 +687,7 @@ pub fn run() {
             update_keep_alive,
             update_agent_profile,
             complete_phase_two_onboarding,
-            set_main_conversation_model_override,
+            set_conversation_model_override,
             send_phase_one_message,
             cancel_phase_one_generation,
             retry_phase_one_runtime,
