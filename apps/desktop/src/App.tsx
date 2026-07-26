@@ -1058,7 +1058,7 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
     });
   }
   return (
-    <details className="pixel-editor">
+    <details className="pixel-editor" open>
       <summary>Editor de pixel art (64×64)</summary>
       <div className="pixel-tools">
         <input
@@ -1180,11 +1180,14 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         }}
         aria-label="Grade de pixel art"
       />
-      <textarea
-        value={source}
-        onChange={(event) => replaceSource(event.target.value)}
-        aria-label="Documento de pixel art"
-      />
+      <details className="pixel-source">
+        <summary>Avançado: documento da arte</summary>
+        <textarea
+          value={source}
+          onChange={(event) => replaceSource(event.target.value)}
+          aria-label="Documento de pixel art"
+        />
+      </details>
       <button type="button" onClick={() => void save()}>
         Salvar arte
       </button>
@@ -1200,6 +1203,9 @@ function App() {
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
   const [conversationRevision, setConversationRevision] = useState(0);
   const [temporaryChat, setTemporaryChat] = useState(false);
+  const [workspace, setWorkspace] = useState<
+    "chat" | "memories" | "state" | "appearance"
+  >("chat");
 
   const loadSnapshot = useCallback(async () => {
     const next = await invoke<AppSnapshot>("get_app_snapshot");
@@ -1252,14 +1258,22 @@ function App() {
               key={agent.id}
               agent={agent}
               active={agent.id === activeAgentId}
-              onSelect={() => setActiveAgentId(agent.id)}
+              onSelect={() => {
+                setActiveAgentId(agent.id);
+                setTemporaryChat(false);
+                setWorkspace("chat");
+              }}
             />
           ))}
         </div>
         {activeAgentId ? (
           <ConversationList
             agentId={activeAgentId}
-            changed={() => setConversationRevision((value) => value + 1)}
+            changed={() => {
+              setConversationRevision((value) => value + 1);
+              setTemporaryChat(false);
+              setWorkspace("chat");
+            }}
           />
         ) : null}
         {activeAgentId ? (
@@ -1312,6 +1326,56 @@ function App() {
         </div>
       </aside>
       <main className="conversation-main">
+        {activeAgentId ? (
+          <nav className="workspace-tabs" aria-label="Área do agente">
+            <button
+              className={workspace === "chat" ? "active" : undefined}
+              type="button"
+              onClick={() => setWorkspace("chat")}
+            >
+              Conversa
+            </button>
+            <button
+              className={workspace === "memories" ? "active" : undefined}
+              type="button"
+              onClick={() => setWorkspace("memories")}
+            >
+              Memórias
+            </button>
+            <button
+              className={workspace === "state" ? "active" : undefined}
+              type="button"
+              onClick={() => setWorkspace("state")}
+            >
+              Estado
+            </button>
+            <button
+              className={workspace === "appearance" ? "active" : undefined}
+              type="button"
+              onClick={() => setWorkspace("appearance")}
+            >
+              Aparência
+            </button>
+            <span className="workspace-spacer" />
+            <button
+              className="workspace-profile"
+              type="button"
+              onClick={() => setEditingAgentId(activeAgentId)}
+            >
+              Perfil
+            </button>
+            <button
+              className={temporaryChat ? "workspace-temporary active" : "workspace-temporary"}
+              type="button"
+              onClick={() => {
+                setTemporaryChat((current) => !current);
+                setWorkspace("chat");
+              }}
+            >
+              {temporaryChat ? "Conversa salva" : "Temporária"}
+            </button>
+          </nav>
+        ) : null}
         {snapshot?.runtime.state === "unavailable" ||
         snapshot?.runtime.state === "crashed" ? (
           <div className="runtime-banner" role="status">
@@ -1348,6 +1412,18 @@ function App() {
           />
         ) : activeAgentId === null ? (
           <section className="conversation-empty">Carregando agentes…</section>
+        ) : workspace === "memories" ? (
+          <section className="workspace-panel">
+            <MemoryList agentId={activeAgentId} />
+          </section>
+        ) : workspace === "state" ? (
+          <section className="workspace-panel">
+            <AgentStateControls agentId={activeAgentId} />
+          </section>
+        ) : workspace === "appearance" ? (
+          <section className="workspace-panel">
+            <PixelDocumentEditor agentId={activeAgentId} />
+          </section>
         ) : (
           <ConversationSurface
             key={`${activeAgentId}-${conversationRevision}-${temporaryChat}`}
