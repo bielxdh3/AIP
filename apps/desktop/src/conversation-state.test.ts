@@ -9,6 +9,7 @@ import {
   createConversationViewState,
   messageFailureCopy,
   messageStatusCopy,
+  providerRecoveryCopy,
   providerStatusCopy,
   requestForAgent,
 } from "./conversation-state";
@@ -21,7 +22,14 @@ function phase(agentId = "astra"): PhaseOneState {
       profileKey: "owner",
       spriteKey: "astra",
       position: { x: 0, y: 0 },
-      birthday: "2000-01-01", fictiveAge: 18, ageCategory: "adult", species: "agent", pronouns: "they/them", personalitySummary: "", traitsJson: "{}", appearancePreset: "astra",
+      birthday: "2000-01-01",
+      fictiveAge: 18,
+      ageCategory: "adult",
+      species: "agent",
+      pronouns: "they/them",
+      personalitySummary: "",
+      traitsJson: "{}",
+      appearancePreset: "astra",
     },
     conversation: {
       id: `conversation-${agentId}`,
@@ -196,6 +204,14 @@ describe("conversation event reducer", () => {
     current.selectedModelAvailable = false;
     expect(providerStatusCopy(current)).toBe("Modelo selecionado indisponível");
     expect(current.selectedModelRef).toBe("ollama:test");
+  });
+
+  it("explains how to recover when the local Ollama service is unavailable", () => {
+    const current = phase();
+    current.provider.state = "unavailable";
+    expect(providerRecoveryCopy(current)).toContain("Ollama não está ativo");
+    current.provider.state = "available";
+    expect(providerRecoveryCopy(current)).toBeNull();
   });
 
   it("derives compact, expanded and cancel controls from authoritative state", () => {

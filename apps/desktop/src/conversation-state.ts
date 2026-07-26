@@ -212,6 +212,23 @@ export function providerStatusCopy(state: PhaseOneState): string {
   }
 }
 
+export function providerRecoveryCopy(state: PhaseOneState): string | null {
+  switch (state.provider.state) {
+    case "checking":
+      return "Procurando os modelos instalados no Ollama…";
+    case "unavailable":
+      return "O Ollama não está ativo. Abra o Ollama e tente atualizar os modelos.";
+    case "empty":
+      return "O Ollama está ativo, mas ainda não há um modelo instalado.";
+    case "timeout":
+      return "O Ollama demorou para responder. Tente atualizar novamente.";
+    case "malformed":
+      return "O Ollama respondeu em um formato que o A.I.P. não reconheceu.";
+    case "available":
+      return null;
+  }
+}
+
 export function blockedSendCopy(code: string | null): string | null {
   switch (code) {
     case null:
