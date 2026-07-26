@@ -195,12 +195,13 @@ fn create_agent_memory(
     agent_id: String,
     category: String,
     content: String,
+    confirmed: Option<bool>,
 ) -> Result<AgentMemory, &'static str> {
     state
         .database
         .as_ref()
         .ok_or("operation_unavailable")?
-        .create_memory(&agent_id, &category, &content, true)
+        .create_memory(&agent_id, &category, &content, confirmed.unwrap_or(true))
         .map_err(|_| "invalid_memory")
 }
 

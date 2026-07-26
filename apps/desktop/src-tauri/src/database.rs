@@ -1582,6 +1582,9 @@ mod tests {
         database
             .create_memory(LUMA_ID, "fact", "Luma fact", true)
             .unwrap();
+        database
+            .create_memory(ASTRA_ID, "fact", "Pending Astra fact", false)
+            .unwrap();
         let astra_context = database.context_messages(ASTRA_ID, &astra.id, 32).unwrap();
         let luma_context = database.context_messages(LUMA_ID, &luma.id, 32).unwrap();
         assert!(astra_context
@@ -1590,6 +1593,9 @@ mod tests {
         assert!(!astra_context
             .iter()
             .any(|message| message.content.contains("Luma fact")));
+        assert!(!astra_context
+            .iter()
+            .any(|message| message.content.contains("Pending Astra fact")));
         assert!(luma_context
             .iter()
             .any(|message| message.content.contains("Luma fact")));
