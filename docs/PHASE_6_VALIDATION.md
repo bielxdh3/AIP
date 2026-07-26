@@ -18,6 +18,8 @@ It is not published, tagged, signed, or pushed by this validation record.
   no database, logs, models, media, exports, or credentials were found.
 - The NSIS package was silently installed into a temporary directory, its installed
   executable was started successfully, and the temporary installation was removed.
+- A preliminary benchmark completed for every locally installed model on the current
+  CPU-only hardware profile. Results and harness instructions are in `BENCHMARKS.md`.
 - The temporary inspection directory was removed after the check.
 
 ## Manual gate still required
