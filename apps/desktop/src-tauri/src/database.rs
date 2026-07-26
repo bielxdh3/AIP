@@ -871,9 +871,17 @@ impl Database {
         self.verify_conversation(agent_id, conversation_id)?;
         let connection = self.open()?;
         let mut statement = connection.prepare(
-            "SELECT id, author_type, content FROM conversation_messages
-             WHERE agent_id = ?1 AND conversation_id = ?2
-               AND status = 'complete' AND author_type IN ('user', 'agent')
+            "WITH ordered AS (
+               SELECT id, author_type, content, status, created_at,
+                      LEAD(author_type) OVER (ORDER BY created_at, id) AS next_author,
+                      LEAD(status) OVER (ORDER BY created_at, id) AS next_status
+               FROM conversation_messages WHERE agent_id = ?1 AND conversation_id = ?2
+             )
+             SELECT id, author_type, content FROM ordered
+             WHERE status = 'complete' AND author_type IN ('user', 'agent')
+               AND (author_type = 'agent' OR next_author IS NULL
+                    OR next_author != 'agent'
+                    OR next_status IN ('pending', 'streaming', 'complete'))
              ORDER BY created_at ASC, id ASC",
         )?;
         let rows = statement
@@ -2001,6 +2009,58 @@ mod tests {
             .unwrap()
             .is_none());
         assert_eq!(database.memories(LUMA_ID).unwrap().len(), 0);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn summaries_cover_only_completed_turns_and_enter_scoped_context() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let conversation = database.main_conversation(ASTRA_ID).unwrap();
+        for index in 0..9 {
+            let attempt = database
+                .create_message_attempt(
+                    ASTRA_ID,
+                    &conversation.id,
+                    &format!("completed user {index}"),
+                    "ollama:test",
+                )
+                .unwrap();
+            database
+                .mark_streaming(&attempt.assistant_message_id, &attempt.request_id)
+                .unwrap();
+            database
+                .finish_assistant(
+                    &attempt.assistant_message_id,
+                    &attempt.request_id,
+                    MessageStatus::Complete,
+                    None,
+                )
+                .unwrap();
+        }
+        let failed = database
+            .create_message_attempt(ASTRA_ID, &conversation.id, "failed user", "ollama:test")
+            .unwrap();
+        database
+            .finish_assistant(
+                &failed.assistant_message_id,
+                &failed.request_id,
+                MessageStatus::Failed,
+                Some("provider_failed"),
+            )
+            .unwrap();
+        database
+            .refresh_conversation_summary(ASTRA_ID, &conversation.id)
+            .unwrap();
+        let context = database
+            .context_messages(ASTRA_ID, &conversation.id, 32)
+            .unwrap();
+        let summary = context
+            .iter()
+            .find(|message| message.content.starts_with("Resumo local"))
+            .unwrap();
+        assert!(summary.content.contains("completed user"));
+        assert!(!summary.content.contains("failed user"));
         cleanup(&path);
     }
 
