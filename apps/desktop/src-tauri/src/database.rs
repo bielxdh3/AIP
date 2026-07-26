@@ -465,8 +465,46 @@ impl Database {
     }
 
     pub fn simulated_state(&self, agent_id: &str) -> Result<AgentSimulatedState, DatabaseError> {
+        self.advance_simulated_state(agent_id, now_millis())?;
         let connection = self.open()?;
         connection.query_row("SELECT agent_id, sleep, energy, mood, focus, curiosity, social_fatigue, mode, suspended, wake_now_until, last_simulated_at FROM agent_simulated_states WHERE agent_id = ?1", params![agent_id], map_simulated_state).optional()?.ok_or(DatabaseError::NotFound)
+    }
+
+    pub fn advance_simulated_state(&self, agent_id: &str, now: i64) -> Result<(), DatabaseError> {
+        let current = {
+            let connection = self.open()?;
+            connection
+                .query_row("SELECT agent_id, sleep, energy, mood, focus, curiosity, social_fatigue, mode, suspended, wake_now_until, last_simulated_at FROM agent_simulated_states WHERE agent_id = ?1", params![agent_id], map_simulated_state)
+                .optional()?
+                .ok_or(DatabaseError::NotFound)?
+        };
+        if current.suspended || now <= current.last_simulated_at {
+            return Ok(());
+        }
+        let elapsed_minutes = ((now - current.last_simulated_at) / 60_000).clamp(0, 240) as u8;
+        if elapsed_minutes == 0 {
+            return Ok(());
+        }
+        let protected_by_wake = current.wake_now_until.is_some_and(|until| now < until);
+        let sleep = if protected_by_wake {
+            0
+        } else {
+            current.sleep.saturating_sub(elapsed_minutes)
+        };
+        let energy = if sleep > 0 {
+            current.energy.saturating_add(elapsed_minutes / 2).min(100)
+        } else {
+            current.energy.saturating_sub((elapsed_minutes / 8).max(1))
+        };
+        let social_fatigue = current
+            .social_fatigue
+            .saturating_sub((elapsed_minutes / 4).max(1));
+        let connection = self.open()?;
+        connection.execute(
+            "UPDATE agent_simulated_states SET sleep = ?1, energy = ?2, social_fatigue = ?3, wake_now_until = CASE WHEN wake_now_until <= ?4 THEN NULL ELSE wake_now_until END, last_simulated_at = ?4, updated_at = ?4 WHERE agent_id = ?5",
+            params![sleep, energy, social_fatigue, now, agent_id],
+        )?;
+        Ok(())
     }
 
     pub fn pixel_document(&self, agent_id: &str) -> Result<String, DatabaseError> {
@@ -1622,6 +1660,26 @@ mod tests {
         assert!(state.suspended);
         assert_eq!(state.sleep, 0);
         assert!(state.wake_now_until.is_some());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn simulated_state_advances_without_changing_suspended_agents() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let before = database.simulated_state(ASTRA_ID).unwrap();
+        database
+            .advance_simulated_state(ASTRA_ID, before.last_simulated_at + 10 * 60_000)
+            .unwrap();
+        let advanced = database.simulated_state(ASTRA_ID).unwrap();
+        assert!(advanced.sleep <= before.sleep);
+        assert!(advanced.energy < before.energy || advanced.sleep > 0);
+        database.set_agent_suspended(ASTRA_ID, true).unwrap();
+        let suspended = database.simulated_state(ASTRA_ID).unwrap();
+        database
+            .advance_simulated_state(ASTRA_ID, suspended.last_simulated_at + 10 * 60_000)
+            .unwrap();
+        assert_eq!(database.simulated_state(ASTRA_ID).unwrap(), suspended);
         cleanup(&path);
     }
 
