@@ -495,12 +495,45 @@ function AgentStateControls({ agentId }: { agentId: string }) {
 function PixelDocumentEditor({ agentId }: { agentId: string }) {
   const [source, setSource] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [color, setColor] = useState("#57d8bd");
+  const [tool, setTool] = useState<"pencil" | "eraser">("pencil");
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   useEffect(() => { void invoke<string>("load_pixel_document", { agentId }).then(setSource).catch(() => setError("Não foi possível abrir a arte.")); }, [agentId]);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (canvas === null) return;
+    const context = canvas.getContext("2d");
+    if (context === null) return;
+    context.fillStyle = "#10151c";
+    context.fillRect(0, 0, 256, 256);
+    try {
+      const document = JSON.parse(source) as { layers?: Array<{ visible?: boolean; pixels?: Array<[number, number, string]> }> };
+      for (const layer of document.layers ?? []) for (const [x, y, pixelColor] of layer.pixels ?? []) {
+        if (layer.visible !== false && Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < 64 && y < 64) { context.fillStyle = pixelColor; context.fillRect(x * 4, y * 4, 4, 4); }
+      }
+    } catch { /* Invalid source stays editable in the raw document field. */ }
+  }, [source]);
+  function paint(event: React.PointerEvent<HTMLCanvasElement>) {
+    const canvas = canvasRef.current;
+    if (canvas === null) return;
+    const x = Math.max(0, Math.min(63, Math.floor((event.nativeEvent.offsetX * 64) / canvas.clientWidth)));
+    const y = Math.max(0, Math.min(63, Math.floor((event.nativeEvent.offsetY * 64) / canvas.clientHeight)));
+    try {
+      const document = JSON.parse(source) as { layers: Array<{ pixels?: Array<[number, number, string]> }> };
+      const layer = document.layers?.[0];
+      if (layer === undefined) throw new Error("missing layer");
+      const pixels = (layer.pixels ?? []).filter(([pixelX, pixelY]) => pixelX !== x || pixelY !== y);
+      if (tool === "pencil") pixels.push([x, y, color]);
+      layer.pixels = pixels;
+      setSource(JSON.stringify(document));
+      setError(null);
+    } catch { setError("Arte inválida: use uma camada com pixels."); }
+  }
   async function save() {
     try { await invoke("save_pixel_document", { agentId, sourceJson: source }); setError(null); }
     catch { setError("A arte precisa ter camadas e pontos de encaixe válidos."); }
   }
-  return <details className="pixel-editor"><summary>Editor de pixel art (64×64)</summary><textarea value={source} onChange={(event) => setSource(event.target.value)} aria-label="Documento de pixel art" /><button type="button" onClick={() => void save()}>Salvar arte</button>{error ? <p role="alert">{error}</p> : null}</details>;
+  return <details className="pixel-editor"><summary>Editor de pixel art (64×64)</summary><div className="pixel-tools"><input type="color" value={color} onChange={(event) => setColor(event.target.value)} aria-label="Cor" /><button type="button" className={tool === "pencil" ? "active" : ""} onClick={() => setTool("pencil")}>Lápis</button><button type="button" className={tool === "eraser" ? "active" : ""} onClick={() => setTool("eraser")}>Borracha</button></div><canvas ref={canvasRef} width="256" height="256" className="pixel-canvas" onPointerDown={paint} onPointerMove={(event) => { if (event.buttons === 1) paint(event); }} aria-label="Grade de pixel art" /><textarea value={source} onChange={(event) => setSource(event.target.value)} aria-label="Documento de pixel art" /><button type="button" onClick={() => void save()}>Salvar arte</button>{error ? <p role="alert">{error}</p> : null}</details>;
 }
 
 function App() {
