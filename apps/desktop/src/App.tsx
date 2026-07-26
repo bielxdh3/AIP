@@ -852,8 +852,16 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
   const [source, setSource] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [color, setColor] = useState("#57d8bd");
-  const [tool, setTool] = useState<"pencil" | "eraser">("pencil");
+  const [tool, setTool] = useState<"pencil" | "eraser" | "fill" | "eyedropper">("pencil");
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const undoRef = useRef<string[]>([]);
+  const redoRef = useRef<string[]>([]);
+  function replaceSource(next: string) {
+    if (next === source) return;
+    undoRef.current = [...undoRef.current.slice(-49), source];
+    redoRef.current = [];
+    setSource(next);
+  }
   useEffect(() => {
     void invoke<string>("load_pixel_document", { agentId })
       .then(setSource)
@@ -920,7 +928,23 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
       );
       if (tool === "pencil") pixels.push([x, y, color]);
       layer.pixels = pixels;
-      setSource(JSON.stringify(document));
+      if (tool === "eyedropper") {
+        setColor(
+          layer.pixels?.find(([pixelX, pixelY]) => pixelX === x && pixelY === y)?.[2] ?? "#10151c",
+        );
+        return;
+      }
+      if (tool === "fill") {
+        const target = layer.pixels?.find(([pixelX, pixelY]) => pixelX === x && pixelY === y)?.[2] ?? null;
+        if (target !== color) {
+          layer.pixels = (layer.pixels ?? []).map(([pixelX, pixelY, pixelColor]) => [
+            pixelX,
+            pixelY,
+            pixelColor === target ? color : pixelColor,
+          ] as [number, number, string]);
+        }
+      }
+      replaceSource(JSON.stringify(document));
       setError(null);
     } catch {
       setError("Arte inválida: use uma camada com pixels.");
@@ -958,6 +982,24 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         >
           Borracha
         </button>
+        <button type="button" className={tool === "fill" ? "active" : ""} onClick={() => setTool("fill")}>
+          Preencher
+        </button>
+        <button type="button" className={tool === "eyedropper" ? "active" : ""} onClick={() => setTool("eyedropper")}>
+          Conta-gotas
+        </button>
+        <button type="button" disabled={undoRef.current.length === 0} onClick={() => {
+          const previous = undoRef.current.pop();
+          if (previous !== undefined) { redoRef.current.push(source); setSource(previous); }
+        }}>
+          Desfazer
+        </button>
+        <button type="button" disabled={redoRef.current.length === 0} onClick={() => {
+          const next = redoRef.current.pop();
+          if (next !== undefined) { undoRef.current.push(source); setSource(next); }
+        }}>
+          Refazer
+        </button>
       </div>
       <canvas
         ref={canvasRef}
@@ -972,7 +1014,7 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
       />
       <textarea
         value={source}
-        onChange={(event) => setSource(event.target.value)}
+        onChange={(event) => replaceSource(event.target.value)}
         aria-label="Documento de pixel art"
       />
       <button type="button" onClick={() => void save()}>
