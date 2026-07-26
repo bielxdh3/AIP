@@ -57,7 +57,7 @@ function AgentButton({
       type="button"
       onClick={onSelect}
     >
-      <AgentSprite spriteKey={agent.spriteKey} name={agent.name} />
+      <AgentSprite agentId={agent.id} spriteKey={agent.spriteKey} name={agent.name} />
       <span>{agent.name}</span>
     </button>
   );

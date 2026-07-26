@@ -182,6 +182,7 @@ export default function Overlay({ agentId }: { agentId: string }) {
       >
         <AgentSprite
           ref={spriteRef}
+          agentId={agent.id}
           spriteKey={agent.spriteKey}
           name={agent.name}
           onLoad={(image) => setSpriteMask(readSpriteMask(image))}
