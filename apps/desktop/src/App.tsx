@@ -653,12 +653,18 @@ function MemoryList({ agentId }: { agentId: string }) {
   const [items, setItems] = useState<AgentMemory[]>([]);
   const [content, setContent] = useState("");
   const [category, setCategory] = useState("preference");
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("active");
   const load = useCallback(
     () =>
-      void invoke<AgentMemory[]>("list_agent_memories", { agentId }).then(
-        setItems,
-      ),
-    [agentId],
+      void invoke<AgentMemory[]>("search_agent_memories", {
+        agentId,
+        query: query || null,
+        status: status === "all" ? null : status,
+        category: null,
+        sourceType: null,
+      }).then(setItems),
+    [agentId, query, status],
   );
   useEffect(() => {
     load();
@@ -681,9 +687,24 @@ function MemoryList({ agentId }: { agentId: string }) {
   return (
     <div className="memory-list" aria-label="Memórias do agente">
       <strong>Memórias</strong>
-      {items
-        .filter((item) => item.status === "active")
-        .map((item) => (
+      <input
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Buscar memórias"
+        aria-label="Buscar memórias"
+      />
+      <select
+        value={status}
+        onChange={(event) => setStatus(event.target.value)}
+        aria-label="Estado das memórias"
+      >
+        <option value="active">Ativas</option>
+        <option value="archived">Arquivadas</option>
+        <option value="trashed">Lixeira</option>
+        <option value="candidate_rejected">Rejeitadas</option>
+        <option value="all">Todas</option>
+      </select>
+      {items.map((item) => (
           <div className="memory-item" key={item.id}>
             <p>
               <small>
@@ -712,12 +733,21 @@ function MemoryList({ agentId }: { agentId: string }) {
                 </button>
               </>
             ) : null}
-            <button
-              type="button"
-              onClick={() => void updateStatus(item.id, "archived")}
-            >
-              Arquivar
-            </button>
+            {item.status === "active" ? (
+              <button
+                type="button"
+                onClick={() => void updateStatus(item.id, "archived")}
+              >
+                Arquivar
+              </button>
+            ) : item.status === "archived" || item.status === "trashed" ? (
+              <button
+                type="button"
+                onClick={() => void updateStatus(item.id, "active")}
+              >
+                Restaurar
+              </button>
+            ) : null}
           </div>
         ))}
       <input

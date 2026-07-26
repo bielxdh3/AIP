@@ -189,6 +189,9 @@ instruction (`lembre que`, `lembra que`, or `anote que`) after the associated
 assistant response completes. The candidate retains its message and conversation
 source; implicit inferences do not become memories automatically.
 
+Memory access is always scoped by agent ID and supports text, status, category,
+and source filters. Editing a memory preserves its stable ID and source metadata.
+
 ### `memory_conflicts`
 
 | Field | Type | Notes |

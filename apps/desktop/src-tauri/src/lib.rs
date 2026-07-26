@@ -215,6 +215,29 @@ fn list_agent_memories(
 }
 
 #[tauri::command]
+fn search_agent_memories(
+    state: State<'_, AppState>,
+    agent_id: String,
+    query: Option<String>,
+    status: Option<String>,
+    category: Option<String>,
+    source_type: Option<String>,
+) -> Result<Vec<AgentMemory>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .search_memories(
+            &agent_id,
+            query.as_deref(),
+            status.as_deref(),
+            category.as_deref(),
+            source_type.as_deref(),
+        )
+        .map_err(|_| "invalid_memory")
+}
+
+#[tauri::command]
 fn create_agent_memory(
     state: State<'_, AppState>,
     agent_id: String,
@@ -333,6 +356,22 @@ fn set_agent_memory_status(
         .as_ref()
         .ok_or("operation_unavailable")?
         .set_memory_status(&agent_id, &memory_id, &status)
+        .map_err(|_| "invalid_memory")
+}
+
+#[tauri::command]
+fn update_agent_memory(
+    state: State<'_, AppState>,
+    agent_id: String,
+    memory_id: String,
+    category: String,
+    content: String,
+) -> Result<(), &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .update_memory(&agent_id, &memory_id, &category, &content)
         .map_err(|_| "invalid_memory")
 }
 
@@ -615,6 +654,7 @@ pub fn run() {
             archive_agent_conversation,
             restore_agent_conversation,
             list_agent_memories,
+            search_agent_memories,
             create_agent_memory,
             send_temporary_phase_one_message,
             get_agent_simulated_state,
@@ -624,6 +664,7 @@ pub fn run() {
             load_pixel_document,
             save_pixel_document,
             set_agent_memory_status,
+            update_agent_memory,
             refresh_ollama_models,
             select_phase_one_model,
             update_keep_alive,
