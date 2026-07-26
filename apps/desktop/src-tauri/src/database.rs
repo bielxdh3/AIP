@@ -489,6 +489,47 @@ impl Database {
         Ok(memories)
     }
 
+    pub fn search_memories(
+        &self,
+        agent_id: &str,
+        query: Option<&str>,
+        status: Option<&str>,
+        category: Option<&str>,
+        source_type: Option<&str>,
+    ) -> Result<Vec<AgentMemory>, DatabaseError> {
+        self.agent(agent_id)?;
+        for value in [status, category, source_type].into_iter().flatten() {
+            if value.trim().is_empty() || value.len() > 64 {
+                return Err(DatabaseError::InvalidValue);
+            }
+        }
+        let query = query.map(str::trim).filter(|value| !value.is_empty());
+        if query.is_some_and(|value| value.len() > 256) {
+            return Err(DatabaseError::InvalidValue);
+        }
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT id, agent_id, category, content, status, confirmation_status,
+                    confidence, importance, source_type, source_message_id,
+                    source_conversation_id, conflict_key, created_at, updated_at
+             FROM agent_memories
+             WHERE agent_id = ?1
+               AND (?2 IS NULL OR instr(lower(content), lower(?2)) > 0)
+               AND (?3 IS NULL OR status = ?3)
+               AND (?4 IS NULL OR category = ?4)
+               AND (?5 IS NULL OR source_type = ?5)
+             ORDER BY updated_at DESC, id ASC",
+        )?;
+        let memories = statement
+            .query_map(
+                params![agent_id, query, status, category, source_type],
+                map_memory,
+            )?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DatabaseError::from)?;
+        Ok(memories)
+    }
+
     pub fn simulated_state(&self, agent_id: &str) -> Result<AgentSimulatedState, DatabaseError> {
         self.advance_simulated_state(agent_id, now_millis())?;
         let connection = self.open()?;
@@ -754,6 +795,32 @@ impl Database {
         }
         let connection = self.open()?;
         if connection.execute("UPDATE agent_memories SET status = ?1, confirmation_status = CASE WHEN ?1 = 'active' THEN 'confirmed' WHEN ?1 = 'candidate_rejected' THEN 'rejected' ELSE confirmation_status END, archived_at = CASE WHEN ?1 = 'archived' THEN ?2 ELSE NULL END, trashed_at = CASE WHEN ?1 = 'trashed' THEN ?2 ELSE NULL END, updated_at = ?2 WHERE id = ?3 AND agent_id = ?4", params![status, now_millis(), memory_id, agent_id])? == 1 { Ok(()) } else { Err(DatabaseError::OwnershipMismatch) }
+    }
+
+    pub fn update_memory(
+        &self,
+        agent_id: &str,
+        memory_id: &str,
+        category: &str,
+        content: &str,
+    ) -> Result<(), DatabaseError> {
+        let category = category.trim();
+        let content = content.trim();
+        if category.is_empty() || category.len() > 64 || content.is_empty() || content.len() > 4_000
+        {
+            return Err(DatabaseError::InvalidValue);
+        }
+        let connection = self.open()?;
+        if connection.execute(
+            "UPDATE agent_memories SET category = ?1, content = ?2, updated_at = ?3
+             WHERE id = ?4 AND agent_id = ?5",
+            params![category, content, now_millis(), memory_id, agent_id],
+        )? == 1
+        {
+            Ok(())
+        } else {
+            Err(DatabaseError::OwnershipMismatch)
+        }
     }
 
     pub fn messages(
@@ -1840,6 +1907,35 @@ mod tests {
             .unwrap()
             .is_none());
         assert_eq!(database.memories(LUMA_ID).unwrap().len(), 0);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn memory_search_and_edit_remain_agent_scoped() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let memory = database
+            .create_memory(ASTRA_ID, "preference", "Likes astronomy", true)
+            .unwrap();
+        database
+            .create_memory(LUMA_ID, "fact", "Likes astronomy", true)
+            .unwrap();
+        let found = database
+            .search_memories(ASTRA_ID, Some("ASTRONOMY"), Some("active"), None, None)
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, memory.id);
+        database
+            .update_memory(ASTRA_ID, &memory.id, "fact", "Studies astronomy")
+            .unwrap();
+        assert_eq!(
+            database.memories(ASTRA_ID).unwrap()[0].content,
+            "Studies astronomy"
+        );
+        assert_eq!(
+            database.update_memory(LUMA_ID, &memory.id, "fact", "Wrong owner"),
+            Err(DatabaseError::OwnershipMismatch)
+        );
         cleanup(&path);
     }
 
