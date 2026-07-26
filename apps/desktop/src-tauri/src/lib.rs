@@ -332,6 +332,7 @@ fn load_pixel_document(
 
 #[tauri::command]
 fn save_pixel_document(
+    app: AppHandle,
     state: State<'_, AppState>,
     agent_id: String,
     source_json: String,
@@ -341,7 +342,9 @@ fn save_pixel_document(
         .as_ref()
         .ok_or("operation_unavailable")?
         .save_pixel_document(&agent_id, &source_json)
-        .map_err(|_| "invalid_pixel_document")
+        .map_err(|_| "invalid_pixel_document")?;
+    app.emit("pixel-document-updated", agent_id)
+        .map_err(|_| "operation_failed")
 }
 
 #[tauri::command]
