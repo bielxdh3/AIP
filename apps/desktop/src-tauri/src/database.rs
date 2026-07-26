@@ -662,7 +662,7 @@ impl Database {
             return Err(DatabaseError::InvalidValue);
         }
         let connection = self.open()?;
-        if connection.execute("UPDATE agent_memories SET status = ?1, archived_at = CASE WHEN ?1 = 'archived' THEN ?2 ELSE NULL END, trashed_at = CASE WHEN ?1 = 'trashed' THEN ?2 ELSE NULL END, updated_at = ?2 WHERE id = ?3 AND agent_id = ?4", params![status, now_millis(), memory_id, agent_id])? == 1 { Ok(()) } else { Err(DatabaseError::OwnershipMismatch) }
+        if connection.execute("UPDATE agent_memories SET status = ?1, confirmation_status = CASE WHEN ?1 = 'active' THEN 'confirmed' WHEN ?1 = 'candidate_rejected' THEN 'rejected' ELSE confirmation_status END, archived_at = CASE WHEN ?1 = 'archived' THEN ?2 ELSE NULL END, trashed_at = CASE WHEN ?1 = 'trashed' THEN ?2 ELSE NULL END, updated_at = ?2 WHERE id = ?3 AND agent_id = ?4", params![status, now_millis(), memory_id, agent_id])? == 1 { Ok(()) } else { Err(DatabaseError::OwnershipMismatch) }
     }
 
     pub fn messages(
@@ -1641,6 +1641,19 @@ mod tests {
             .set_memory_status(ASTRA_ID, &memory.id, "archived")
             .unwrap();
         assert_eq!(database.memories(ASTRA_ID).unwrap()[0].status, "archived");
+        let candidate = database
+            .create_memory(ASTRA_ID, "fact", "Needs confirmation", false)
+            .unwrap();
+        database
+            .set_memory_status(ASTRA_ID, &candidate.id, "active")
+            .unwrap();
+        let promoted = database
+            .memories(ASTRA_ID)
+            .unwrap()
+            .into_iter()
+            .find(|item| item.id == candidate.id)
+            .unwrap();
+        assert_eq!(promoted.confirmation_status, "confirmed");
         cleanup(&path);
     }
 
