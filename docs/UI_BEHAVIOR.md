@@ -101,6 +101,9 @@ Shows:
 
 Automatic memory candidates must be distinguishable from confirmed facts.
 
+An explicit request to remember something can appear as a pending candidate after
+the response completes. The Owner must confirm it before it enters model context.
+
 ### 3.5 Appearance
 
 Contains:

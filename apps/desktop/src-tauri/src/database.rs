@@ -649,6 +649,97 @@ impl Database {
         Ok(memory)
     }
 
+    pub fn create_explicit_memory_candidate(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        assistant_message_id: &str,
+    ) -> Result<Option<AgentMemory>, DatabaseError> {
+        self.verify_conversation(agent_id, conversation_id)?;
+        let connection = self.open()?;
+        let source = connection
+            .query_row(
+                "SELECT user_message.id, user_message.content
+                 FROM conversation_messages AS assistant_message
+                 JOIN conversation_messages AS user_message
+                   ON user_message.conversation_id = assistant_message.conversation_id
+                  AND user_message.agent_id = assistant_message.agent_id
+                 WHERE assistant_message.id = ?1
+                   AND assistant_message.agent_id = ?2
+                   AND assistant_message.conversation_id = ?3
+                   AND assistant_message.author_type = 'agent'
+                   AND assistant_message.status = 'complete'
+                   AND user_message.author_type = 'user'
+                   AND user_message.status = 'complete'
+                   AND user_message.created_at < assistant_message.created_at
+                 ORDER BY user_message.created_at DESC, user_message.id DESC
+                 LIMIT 1",
+                params![assistant_message_id, agent_id, conversation_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        let Some((source_message_id, source_content)) = source else {
+            return Ok(None);
+        };
+        let Some(content) = explicit_memory_content(&source_content) else {
+            return Ok(None);
+        };
+        let already_exists = connection
+            .query_row(
+                "SELECT 1 FROM agent_memories
+                 WHERE agent_id = ?1 AND content = ?2
+                   AND status != 'candidate_rejected'
+                 LIMIT 1",
+                params![agent_id, content],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if already_exists {
+            return Ok(None);
+        }
+        let now = now_millis();
+        let memory = AgentMemory {
+            id: Uuid::now_v7().to_string(),
+            agent_id: agent_id.into(),
+            category: "fact".into(),
+            content: content.into(),
+            status: "active".into(),
+            confirmation_status: "pending".into(),
+            confidence_milli: 950,
+            importance: 70,
+            source_type: "explicit_owner_statement".into(),
+            source_message_id: Some(source_message_id),
+            source_conversation_id: Some(conversation_id.into()),
+            conflict_key: None,
+            created_at: now,
+            updated_at: now,
+        };
+        connection.execute(
+            "INSERT INTO agent_memories
+             (id, agent_id, owner_user_id, category, content, status,
+              confirmation_status, confidence, importance, source_type,
+              source_message_id, source_conversation_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
+            params![
+                memory.id,
+                agent_id,
+                OWNER_ID,
+                memory.category,
+                memory.content,
+                memory.status,
+                memory.confirmation_status,
+                f64::from(memory.confidence_milli) / 1000.0,
+                memory.importance,
+                memory.source_type,
+                memory.source_message_id,
+                memory.source_conversation_id,
+                now,
+            ],
+        )?;
+        Ok(Some(memory))
+    }
+
     pub fn set_memory_status(
         &self,
         agent_id: &str,
@@ -1225,6 +1316,18 @@ fn map_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentMemory> {
     })
 }
 
+fn explicit_memory_content(source: &str) -> Option<&str> {
+    let trimmed = source.trim();
+    let normalized = trimmed.to_lowercase();
+    for prefix in ["lembre que ", "lembra que ", "anote que "] {
+        if normalized.starts_with(prefix) {
+            let content = trimmed[prefix.len()..].trim();
+            return (!content.is_empty() && content.len() <= 4_000).then_some(content);
+        }
+    }
+    None
+}
+
 fn map_simulated_state(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentSimulatedState> {
     Ok(AgentSimulatedState {
         agent_id: row.get(0)?,
@@ -1686,6 +1789,57 @@ mod tests {
         assert!(luma_context
             .iter()
             .any(|message| message.content.contains("Luma fact")));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn explicit_memory_candidate_is_pending_scoped_and_deduplicated() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let conversation = database.main_conversation(ASTRA_ID).unwrap();
+        let attempt = database
+            .create_message_attempt(
+                ASTRA_ID,
+                &conversation.id,
+                "Lembre que eu gosto de astronomia",
+                "ollama:test",
+            )
+            .unwrap();
+        database
+            .mark_streaming(&attempt.assistant_message_id, &attempt.request_id)
+            .unwrap();
+        database
+            .finish_assistant(
+                &attempt.assistant_message_id,
+                &attempt.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+        let candidate = database
+            .create_explicit_memory_candidate(
+                ASTRA_ID,
+                &conversation.id,
+                &attempt.assistant_message_id,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(candidate.content, "eu gosto de astronomia");
+        assert_eq!(candidate.confirmation_status, "pending");
+        assert_eq!(candidate.source_type, "explicit_owner_statement");
+        assert_eq!(
+            candidate.source_conversation_id.as_deref(),
+            Some(conversation.id.as_str())
+        );
+        assert!(database
+            .create_explicit_memory_candidate(
+                ASTRA_ID,
+                &conversation.id,
+                &attempt.assistant_message_id,
+            )
+            .unwrap()
+            .is_none());
+        assert_eq!(database.memories(LUMA_ID).unwrap().len(), 0);
         cleanup(&path);
     }
 
