@@ -93,6 +93,7 @@ listener.
 - [Phase 0 validation](docs/PHASE_0_VALIDATION.md)
 - [Phase 1 validation](docs/PHASE_1_VALIDATION.md)
 - [Phase 6 automated validation](docs/PHASE_6_VALIDATION.md)
+- [Local benchmark profiles](docs/BENCHMARKS.md)
 - [v0.1 manual validation](docs/V0_1_MANUAL_VALIDATION.md)
 - [Known limitations](docs/KNOWN_LIMITATIONS.md)
 - [Candidate checklist](docs/RELEASE_CHECKLIST.md)
