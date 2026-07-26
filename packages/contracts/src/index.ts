@@ -122,6 +122,20 @@ export type AgentMemory = {
   updatedAt: number;
 };
 
+export type AgentSimulatedState = {
+  agentId: string;
+  sleep: number;
+  energy: number;
+  mood: number;
+  focus: number;
+  curiosity: number;
+  socialFatigue: number;
+  mode: "normal" | "voice_muted" | "silent" | "safe";
+  suspended: boolean;
+  wakeNowUntil: number | null;
+  lastSimulatedAt: number;
+};
+
 export type QueueEntry = {
   requestId: string;
   agentId: string;
