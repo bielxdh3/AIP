@@ -859,8 +859,9 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
   const [activeLayerId, setActiveLayerId] = useState("body");
   const [error, setError] = useState<string | null>(null);
   const [color, setColor] = useState("#57d8bd");
-  const [tool, setTool] = useState<"pencil" | "eraser" | "fill" | "eyedropper">("pencil");
+  const [tool, setTool] = useState<"pencil" | "eraser" | "fill" | "eyedropper" | "select">("pencil");
   const [mirror, setMirror] = useState(false);
+  const [selection, setSelection] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const undoRef = useRef<string[]>([]);
   const redoRef = useRef<string[]>([]);
@@ -903,10 +904,15 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
             context.fillRect(x * 4, y * 4, 4, 4);
           }
         }
+      if (selection !== null) {
+        context.strokeStyle = "#57d8bd";
+        context.lineWidth = 1;
+        context.strokeRect(selection.x * 4 + 0.5, selection.y * 4 + 0.5, selection.width * 4 - 1, selection.height * 4 - 1);
+      }
     } catch {
       /* Invalid source stays editable in the raw document field. */
     }
-  }, [document, source]);
+  }, [document, selection, source]);
   function paint(event: React.PointerEvent<HTMLCanvasElement>) {
     const canvas = canvasRef.current;
     if (canvas === null) return;
@@ -924,6 +930,19 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         Math.floor((event.nativeEvent.offsetY * 64) / canvas.clientHeight),
       ),
     );
+    if (tool === "select") {
+      setSelection((current) =>
+        current === null
+          ? { x, y, width: 1, height: 1 }
+          : {
+              x: Math.min(current.x, x),
+              y: Math.min(current.y, y),
+              width: Math.abs(current.x - x) + 1,
+              height: Math.abs(current.y - y) + 1,
+            },
+      );
+      return;
+    }
     try {
       if (document === null || activeLayer === undefined || activeLayer.locked) {
         throw new Error("missing layer");
@@ -974,6 +993,21 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
     setActiveLayerId(nextActive);
     replaceSource(JSON.stringify(next));
   }
+  function moveSelection(dx: number, dy: number) {
+    if (document === null || activeLayer === undefined || selection === null || activeLayer.locked) return;
+    const inside = (x: number, y: number) =>
+      x >= selection.x && x < selection.x + selection.width && y >= selection.y && y < selection.y + selection.height;
+    const moved = activeLayer.pixels.flatMap(([x, y, pixelColor]) => {
+      if (!inside(x, y)) return [[x, y, pixelColor] as [number, number, string]];
+      const nextX = x + dx;
+      const nextY = y + dy;
+      return nextX >= 0 && nextX < 64 && nextY >= 0 && nextY < 64
+        ? [[nextX, nextY, pixelColor] as [number, number, string]]
+        : [];
+    });
+    updateLayers(updatePixelLayer(document, activeLayer.id, (layer) => ({ ...layer, pixels: moved })));
+    setSelection((current) => current === null ? null : { ...current, x: Math.max(0, Math.min(63 - current.width + 1, current.x + dx)), y: Math.max(0, Math.min(63 - current.height + 1, current.y + dy)) });
+  }
   return (
     <details className="pixel-editor">
       <summary>Editor de pixel art (64×64)</summary>
@@ -1004,6 +1038,9 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         <button type="button" className={tool === "eyedropper" ? "active" : ""} onClick={() => setTool("eyedropper")}>
           Conta-gotas
         </button>
+        <button type="button" className={tool === "select" ? "active" : ""} onClick={() => setTool("select")}>
+          Selecionar
+        </button>
         <label>
           <input type="checkbox" checked={mirror} onChange={(event) => setMirror(event.target.checked)} /> Espelhar
         </label>
@@ -1019,6 +1056,10 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         }}>
           Refazer
         </button>
+        <button type="button" disabled={selection === null || activeLayer?.locked} onClick={() => moveSelection(-1, 0)}>←</button>
+        <button type="button" disabled={selection === null || activeLayer?.locked} onClick={() => moveSelection(1, 0)}>→</button>
+        <button type="button" disabled={selection === null || activeLayer?.locked} onClick={() => moveSelection(0, -1)}>↑</button>
+        <button type="button" disabled={selection === null || activeLayer?.locked} onClick={() => moveSelection(0, 1)}>↓</button>
       </div>
       {document ? (
         <div className="pixel-layers" aria-label="Camadas">
