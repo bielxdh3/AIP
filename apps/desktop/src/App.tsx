@@ -853,6 +853,7 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [color, setColor] = useState("#57d8bd");
   const [tool, setTool] = useState<"pencil" | "eraser" | "fill" | "eyedropper">("pencil");
+  const [mirror, setMirror] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const undoRef = useRef<string[]>([]);
   const redoRef = useRef<string[]>([]);
@@ -923,17 +924,23 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
       };
       const layer = document.layers?.[0];
       if (layer === undefined) throw new Error("missing layer");
-      const pixels = (layer.pixels ?? []).filter(
-        ([pixelX, pixelY]) => pixelX !== x || pixelY !== y,
-      );
-      if (tool === "pencil") pixels.push([x, y, color]);
-      layer.pixels = pixels;
+      const existingColor = layer.pixels?.find(
+        ([pixelX, pixelY]) => pixelX === x && pixelY === y,
+      )?.[2];
       if (tool === "eyedropper") {
-        setColor(
-          layer.pixels?.find(([pixelX, pixelY]) => pixelX === x && pixelY === y)?.[2] ?? "#10151c",
-        );
+        setColor(existingColor ?? "#10151c");
         return;
       }
+      const pixels = (layer.pixels ?? []).filter(
+        ([pixelX, pixelY]) =>
+          (pixelX !== x || pixelY !== y) &&
+          (!mirror || pixelX !== 63 - x || pixelY !== y),
+      );
+      if (tool === "pencil") {
+        pixels.push([x, y, color]);
+        if (mirror && x !== 63 - x) pixels.push([63 - x, y, color]);
+      }
+      layer.pixels = pixels;
       if (tool === "fill") {
         const target = layer.pixels?.find(([pixelX, pixelY]) => pixelX === x && pixelY === y)?.[2] ?? null;
         if (target !== color) {
@@ -988,6 +995,9 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         <button type="button" className={tool === "eyedropper" ? "active" : ""} onClick={() => setTool("eyedropper")}>
           Conta-gotas
         </button>
+        <label>
+          <input type="checkbox" checked={mirror} onChange={(event) => setMirror(event.target.checked)} /> Espelhar
+        </label>
         <button type="button" disabled={undoRef.current.length === 0} onClick={() => {
           const previous = undoRef.current.pop();
           if (previous !== undefined) { redoRef.current.push(source); setSource(previous); }
