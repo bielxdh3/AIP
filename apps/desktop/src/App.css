@@ -1007,6 +1007,28 @@ h3 {
   }
 }
 
+.pixel-tools {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin: 8px 0;
+}
+
+.pixel-tools button.active {
+  border-color: #57d8bd;
+  color: #57d8bd;
+}
+
+.pixel-canvas {
+  display: block;
+  width: min(256px, 100%);
+  height: auto;
+  margin: 8px 0;
+  border: 1px solid #3b4654;
+  image-rendering: pixelated;
+  touch-action: none;
+}
+
 @media (max-width: 600px) {
   .app-shell {
     display: block;
