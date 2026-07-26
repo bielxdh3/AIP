@@ -407,14 +407,18 @@ function MemoryList({ agentId }: { agentId: string }) {
     await invoke("create_agent_memory", { agentId, category, content, confirmed });
     setContent(""); load();
   }
+  async function updateStatus(memoryId: string, status: string) {
+    await invoke("set_agent_memory_status", { agentId, memoryId, status });
+    load();
+  }
   return <div className="memory-list" aria-label="Memórias do agente">
     <strong>Memórias</strong>
-    {items.filter((item) => item.status === "active").map((item) => <p key={item.id}><small>{item.category}</small> {item.content}</p>)}
+    {items.filter((item) => item.status === "active").map((item) => <div className="memory-item" key={item.id}><p><small>{item.category} · {item.confirmationStatus === "pending" ? "pendente" : "confirmada"}</small> {item.content}</p>{item.confirmationStatus === "pending" ? <><button type="button" onClick={() => void updateStatus(item.id, "active")}>Confirmar</button><button type="button" onClick={() => void updateStatus(item.id, "candidate_rejected")}>Rejeitar</button></> : null}<button type="button" onClick={() => void updateStatus(item.id, "archived")}>Arquivar</button></div>)}
     <input value={category} onChange={(event) => setCategory(event.target.value)} aria-label="Categoria da memória" />
     <input value={content} onChange={(event) => setContent(event.target.value)} placeholder="Nova memória" />
     <button type="button" onClick={() => void save()}>Salvar memória</button>
     <button type="button" onClick={() => void save(false)}>
-      Propor memÃ³ria
+      Propor memória
     </button>
   </div>;
 }

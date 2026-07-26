@@ -1007,6 +1007,26 @@ h3 {
   }
 }
 
+.memory-item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.memory-item p {
+  flex-basis: 100%;
+  margin: 4px 0;
+}
+
+.memory-item button {
+  min-height: 27px;
+  border: 1px solid #303742;
+  border-radius: 4px;
+  color: #dce1e8;
+  background: #171d24;
+}
+
 .pixel-tools {
   display: flex;
   gap: 6px;
