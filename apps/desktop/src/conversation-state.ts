@@ -235,6 +235,10 @@ export function blockedSendCopy(code: string | null): string | null {
       return null;
     case "safe_mode_active":
       return "Saia do modo seguro para conversar.";
+    case "agent_safe_mode":
+      return "Este agente está no modo seguro.";
+    case "agent_suspended":
+      return "Retome este agente para conversar.";
     case "runtime_unavailable":
       return "Runtime indisponível.";
     case "provider_checking":
