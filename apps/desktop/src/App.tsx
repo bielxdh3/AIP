@@ -80,8 +80,8 @@ function MessageItem({ message }: { message: ConversationMessage }) {
   );
 }
 
-function ConversationSurface({ agentId }: { agentId: string }) {
-  const { phase, error, load } = usePhaseOne(agentId);
+function ConversationSurface({ agentId, temporary }: { agentId: string; temporary: boolean }) {
+  const { phase, error, load } = usePhaseOne(agentId, temporary);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
@@ -133,11 +133,9 @@ function ConversationSurface({ agentId }: { agentId: string }) {
     followsBottomRef.current = true;
     setBusy(true);
     try {
-      await invoke("send_phase_one_message", {
-        agentId: currentPhase.agent.id,
-        conversationId: currentPhase.conversation.id,
-        content,
-      });
+      await invoke(temporary ? "send_temporary_phase_one_message" : "send_phase_one_message", temporary
+        ? { agentId: currentPhase.agent.id, content }
+        : { agentId: currentPhase.agent.id, conversationId: currentPhase.conversation.id, content });
       setDraft("");
       void load();
     } finally {
@@ -174,7 +172,7 @@ function ConversationSurface({ agentId }: { agentId: string }) {
     >
       <header className="conversation-header">
         <div>
-          <p className="eyebrow">Conversa principal</p>
+          <p className="eyebrow">{temporary ? "Conversa temporária" : "Conversa principal"}</p>
           <h1>{phase.agent.name}</h1>
           <span className={`provider-state ${phase.provider.state}`}>
             {providerStatusCopy(phase)}
@@ -210,14 +208,14 @@ function ConversationSurface({ agentId }: { agentId: string }) {
               ) : null}
             </select>
           </label>
-          <label>
+          {!temporary ? <label>
             <span>Modelo desta conversa</span>
             <select value={phase.modelOverrideRef ?? ""} onChange={(event) => void invoke("set_main_conversation_model_override", { agentId: currentPhase.agent.id, modelRef: event.target.value || null }).then(load)}>
               <option value="">Usar modelo padrão do agente</option>
               {phase.provider.models.map((model) => <option value={model.ref} key={`override-${model.ref}`}>{model.displayName}</option>)}
               {phase.modelOverrideRef !== null && !phase.selectedModelAvailable ? <option value={phase.modelOverrideRef}>Modelo salvo (indisponível)</option> : null}
             </select>
-          </label>
+          </label> : null}
           <label>
             <span>Manter modelo carregado</span>
             <select
@@ -511,6 +509,7 @@ function App() {
   const [changingMode, setChangingMode] = useState(false);
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
   const [conversationRevision, setConversationRevision] = useState(0);
+  const [temporaryChat, setTemporaryChat] = useState(false);
 
   const loadSnapshot = useCallback(async () => {
     const next = await invoke<AppSnapshot>("get_app_snapshot");
@@ -568,6 +567,7 @@ function App() {
           ))}
         </div>
         {activeAgentId ? <ConversationList agentId={activeAgentId} changed={() => setConversationRevision((value) => value + 1)} /> : null}
+        {activeAgentId ? <button type="button" onClick={() => setTemporaryChat((current) => !current)}>{temporaryChat ? "Voltar à conversa salva" : "Abrir conversa temporária"}</button> : null}
         {activeAgentId ? <MemoryList agentId={activeAgentId} /> : null}
         {activeAgentId ? <AgentStateControls agentId={activeAgentId} /> : null}
         {activeAgentId ? <PixelDocumentEditor agentId={activeAgentId} /> : null}
@@ -610,7 +610,7 @@ function App() {
         ) : activeAgentId === null ? (
           <section className="conversation-empty">Carregando agentes…</section>
         ) : (
-          <ConversationSurface key={`${activeAgentId}-${conversationRevision}`} agentId={activeAgentId} />
+          <ConversationSurface key={`${activeAgentId}-${conversationRevision}-${temporaryChat}`} agentId={activeAgentId} temporary={temporaryChat} />
         )}
       </main>
     </div>

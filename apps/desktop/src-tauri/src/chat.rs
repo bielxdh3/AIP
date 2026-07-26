@@ -36,6 +36,18 @@ struct GenerationJob {
     conversation_id: String,
     assistant_message_id: String,
     model_ref: String,
+    temporary: bool,
+}
+
+#[derive(Debug, Default)]
+struct TemporaryChatStore {
+    conversations: HashMap<String, TemporaryConversation>,
+}
+
+#[derive(Debug, Clone)]
+struct TemporaryConversation {
+    conversation: crate::domain::PhaseOneConversation,
+    messages: Vec<crate::domain::ConversationMessage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -294,6 +306,7 @@ struct ChatInner {
     send_lock: Mutex<()>,
     queue: Mutex<GenerationQueue>,
     request_traces: Mutex<RequestTraceStore>,
+    temporary_chats: Mutex<TemporaryChatStore>,
 }
 
 #[derive(Clone)]
@@ -321,6 +334,7 @@ impl ChatCoordinator {
                 send_lock: Mutex::new(()),
                 queue: Mutex::new(GenerationQueue::default()),
                 request_traces: Mutex::new(RequestTraceStore::default()),
+                temporary_chats: Mutex::new(TemporaryChatStore::default()),
             }),
         };
         let listener = coordinator.clone();
@@ -412,6 +426,37 @@ impl ChatCoordinator {
         Ok(())
     }
 
+    pub fn temporary_state(&self, agent_id: &str) -> Result<PhaseOneState, &'static str> {
+        let mut state = self.state(agent_id)?;
+        let conversation = temporary_conversation(agent_id);
+        state.conversation = conversation.clone();
+        state.messages = lock(&self.inner.temporary_chats)
+            .conversations
+            .get(agent_id)
+            .map(|chat| chat.messages.clone())
+            .unwrap_or_default();
+        state.model_override_ref = None;
+        state.selected_model_ref = state.default_model_ref.clone();
+        state.selected_model_available =
+            state.selected_model_ref.as_ref().is_some_and(|selected| {
+                state
+                    .provider
+                    .models
+                    .iter()
+                    .any(|model| &model.model_ref == selected)
+            });
+        state.send_blocked_code = self
+            .send_blocked_code(
+                &state.provider,
+                state.selected_model_ref.as_deref(),
+                state.selected_model_available,
+                state.queue.len(),
+            )
+            .map(str::to_string);
+        state.can_send = state.send_blocked_code.is_none();
+        Ok(state)
+    }
+
     pub fn select_model(&self, agent_id: &str, model_ref: &str) -> Result<(), &'static str> {
         let provider = lock(&self.inner.provider);
         if !provider
@@ -500,13 +545,8 @@ impl ChatCoordinator {
             .create_message_attempt(agent_id, conversation_id, content, &model_ref)
             .map_err(|_| "operation_failed")?;
         let job = job_from_attempt(agent_id, conversation_id, &model_ref, &attempt);
-        if let Err(code) = lock(&self.inner.queue).enqueue(job) {
-            let _ = self.inner.database.finish_assistant(
-                &attempt.assistant_message_id,
-                &attempt.request_id,
-                MessageStatus::Failed,
-                Some(code),
-            );
+        if let Err(code) = lock(&self.inner.queue).enqueue(job.clone()) {
+            let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
             return Err(code);
         }
         self.trace(&attempt.request_id, "request_enqueued", None, None);
@@ -521,18 +561,92 @@ impl ChatCoordinator {
         Ok(result)
     }
 
+    pub fn send_temporary_message(
+        &self,
+        agent_id: &str,
+        content: &str,
+    ) -> Result<SendMessageResult, &'static str> {
+        let _send_guard = lock(&self.inner.send_lock);
+        if content.is_empty() || content.len() > MAX_USER_MESSAGE_BYTES {
+            return Err("invalid_message");
+        }
+        let state = self.temporary_state(agent_id)?;
+        if let Some(code) = state.send_blocked_code.as_deref() {
+            return Err(match code {
+                "queue_full" => "queue_full",
+                "safe_mode_active" => "safe_mode_active",
+                "model_not_selected" | "selected_model_unavailable" => "model_unavailable",
+                _ => "runtime_unavailable",
+            });
+        }
+        let model_ref = state.selected_model_ref.ok_or("model_unavailable")?;
+        let now = now_millis();
+        let request_id = uuid::Uuid::now_v7().to_string();
+        let user_message_id = uuid::Uuid::now_v7().to_string();
+        let assistant_message_id = uuid::Uuid::now_v7().to_string();
+        let conversation = temporary_conversation(agent_id);
+        {
+            let mut chats = lock(&self.inner.temporary_chats);
+            let chat = chats
+                .conversations
+                .entry(agent_id.to_string())
+                .or_insert_with(|| TemporaryConversation {
+                    conversation: conversation.clone(),
+                    messages: Vec::new(),
+                });
+            chat.messages.push(crate::domain::ConversationMessage {
+                id: user_message_id.clone(),
+                conversation_id: conversation.id.clone(),
+                agent_id: agent_id.into(),
+                author: MessageAuthor::User,
+                content: content.into(),
+                model_ref: None,
+                status: MessageStatus::Complete,
+                created_at: now,
+                completed_at: Some(now),
+                error_code: None,
+            });
+            chat.messages.push(crate::domain::ConversationMessage {
+                id: assistant_message_id.clone(),
+                conversation_id: conversation.id.clone(),
+                agent_id: agent_id.into(),
+                author: MessageAuthor::Agent,
+                content: String::new(),
+                model_ref: Some(model_ref.clone()),
+                status: MessageStatus::Pending,
+                created_at: now + 1,
+                completed_at: None,
+                error_code: None,
+            });
+        }
+        let job = GenerationJob {
+            request_id: request_id.clone(),
+            agent_id: agent_id.into(),
+            conversation_id: conversation.id.clone(),
+            assistant_message_id: assistant_message_id.clone(),
+            model_ref,
+            temporary: true,
+        };
+        if let Err(code) = lock(&self.inner.queue).enqueue(job.clone()) {
+            let _ = self.finish_temporary(&job, MessageStatus::Failed, Some(code));
+            return Err(code);
+        }
+        self.trace(&request_id, "temporary_request_enqueued", None, None);
+        self.emit_refresh(Some(agent_id));
+        self.dispatch_next();
+        Ok(SendMessageResult {
+            request_id,
+            conversation_id: conversation.id,
+            user_message_id,
+            assistant_message_id,
+        })
+    }
+
     pub fn cancel(&self, request_id: &str) -> Result<(), &'static str> {
         let mut queue = lock(&self.inner.queue);
         if let Some(job) = queue.cancel_queued(request_id) {
             drop(queue);
-            self.inner
-                .database
-                .finish_assistant(
-                    &job.assistant_message_id,
-                    &job.request_id,
-                    MessageStatus::Cancelled,
-                    None,
-                )
+            self.finish_job(&job, MessageStatus::Cancelled, None)
                 .map_err(|_| "operation_failed")?;
             self.emit_terminal(&job, "generation.cancelled", None);
             return Ok(());
@@ -565,12 +679,7 @@ impl ChatCoordinator {
         let jobs = queue.clear();
         drop(queue);
         for job in jobs {
-            let _ = self.inner.database.finish_assistant(
-                &job.assistant_message_id,
-                &job.request_id,
-                MessageStatus::Cancelled,
-                Some(error_code),
-            );
+            let _ = self.finish_job(&job, MessageStatus::Cancelled, Some(error_code));
             self.emit_terminal(&job, "generation.cancelled", Some(error_code));
         }
     }
@@ -709,12 +818,7 @@ impl ChatCoordinator {
                         return;
                     }
                 };
-                if self
-                    .inner
-                    .database
-                    .append_assistant_chunk(&job.assistant_message_id, &job.request_id, content)
-                    .is_ok()
-                {
+                if self.append_job_chunk(&job, content).is_ok() {
                     self.trace(&request_id, "chunk_persisted", Some(sequence), None);
                     self.emit(event);
                 } else {
@@ -789,12 +893,7 @@ impl ChatCoordinator {
         let Some(job) = lock(&self.inner.queue).finish_active(request_id) else {
             return;
         };
-        let persisted = self.inner.database.finish_assistant(
-            &job.assistant_message_id,
-            &job.request_id,
-            status,
-            error_code,
-        );
+        let persisted = self.finish_job(&job, status, error_code);
         if persisted.is_ok() {
             self.trace(request_id, "terminal_persisted", event.sequence, error_code);
             self.emit(event);
@@ -810,12 +909,7 @@ impl ChatCoordinator {
             return;
         };
         self.trace(request_id, "queue_finalized", None, Some(code));
-        let _ = self.inner.database.finish_assistant(
-            &job.assistant_message_id,
-            &job.request_id,
-            MessageStatus::Failed,
-            Some(code),
-        );
+        let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
         self.emit_terminal(&job, "generation.failed", Some(code));
         self.dispatch_next();
     }
@@ -823,12 +917,7 @@ impl ChatCoordinator {
     fn fail_all(&self, code: &str) {
         let jobs = lock(&self.inner.queue).clear();
         for job in jobs {
-            let _ = self.inner.database.finish_assistant(
-                &job.assistant_message_id,
-                &job.request_id,
-                MessageStatus::Failed,
-                Some(code),
-            );
+            let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
             self.emit_terminal(&job, "generation.failed", Some(code));
         }
     }
@@ -845,21 +934,13 @@ impl ChatCoordinator {
             };
             self.trace(&job.request_id, "queue_activated", None, None);
             let dispatch = self.build_generation_request(&job).and_then(|request| {
-                self.inner
-                    .database
-                    .mark_streaming(&job.assistant_message_id, &job.request_id)
-                    .map_err(|_| "persistence_failed")?;
+                self.mark_job_streaming(&job)?;
                 self.inner.runtime.send(request)
             });
             if let Err(code) = dispatch {
                 self.trace(&job.request_id, "queue_dispatch_failed", None, Some(code));
                 let _ = lock(&self.inner.queue).finish_active(&job.request_id);
-                let _ = self.inner.database.finish_assistant(
-                    &job.assistant_message_id,
-                    &job.request_id,
-                    MessageStatus::Failed,
-                    Some(code),
-                );
+                let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
                 self.emit_terminal(&job, "generation.failed", Some(code));
                 continue;
             }
@@ -870,7 +951,147 @@ impl ChatCoordinator {
     }
 
     fn build_generation_request(&self, job: &GenerationJob) -> Result<String, &'static str> {
+        if job.temporary {
+            return self.build_temporary_generation_request(job);
+        }
         build_generation_request_from_database(&self.inner.database, job)
+    }
+
+    fn build_temporary_generation_request(
+        &self,
+        job: &GenerationJob,
+    ) -> Result<String, &'static str> {
+        let agent = self
+            .inner
+            .database
+            .agent(&job.agent_id)
+            .map_err(|_| "operation_unavailable")?;
+        let settings = self
+            .inner
+            .database
+            .settings(&job.agent_id)
+            .map_err(|_| "persistence_failed")?;
+        let messages = lock(&self.inner.temporary_chats)
+            .conversations
+            .get(&job.agent_id)
+            .filter(|chat| chat.conversation.id == job.conversation_id)
+            .map(|chat| {
+                chat.messages
+                    .iter()
+                    .filter(|message| message.status == MessageStatus::Complete)
+                    .map(|message| ContextMessage {
+                        author: message.author,
+                        content: message.content.clone(),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .ok_or("operation_unavailable")?;
+        let provider_model_id = job
+            .model_ref
+            .strip_prefix("ollama:")
+            .filter(|model| valid_provider_model_id(model))
+            .ok_or("model_unavailable")?;
+        generation_request(
+            &job.request_id,
+            &job.agent_id,
+            &job.conversation_id,
+            &job.assistant_message_id,
+            provider_model_id,
+            settings.keep_alive_minutes,
+            &assemble_context(&agent.name, &agent.profile_key, messages),
+        )
+        .map_err(|_| "protocol_encoding_failed")
+    }
+
+    fn mark_job_streaming(&self, job: &GenerationJob) -> Result<(), &'static str> {
+        if job.temporary {
+            return self.update_temporary_message(job, MessageStatus::Streaming, None, None);
+        }
+        self.inner
+            .database
+            .mark_streaming(&job.assistant_message_id, &job.request_id)
+            .map_err(|_| "persistence_failed")
+    }
+
+    fn append_job_chunk(&self, job: &GenerationJob, content: &str) -> Result<(), &'static str> {
+        if job.temporary {
+            return self.update_temporary_message(
+                job,
+                MessageStatus::Streaming,
+                Some(content),
+                None,
+            );
+        }
+        self.inner
+            .database
+            .append_assistant_chunk(&job.assistant_message_id, &job.request_id, content)
+            .map_err(|_| "persistence_failed")
+    }
+
+    fn finish_job(
+        &self,
+        job: &GenerationJob,
+        status: MessageStatus,
+        error_code: Option<&str>,
+    ) -> Result<(), &'static str> {
+        if job.temporary {
+            return self.finish_temporary(job, status, error_code);
+        }
+        self.inner
+            .database
+            .finish_assistant(
+                &job.assistant_message_id,
+                &job.request_id,
+                status,
+                error_code,
+            )
+            .map_err(|_| "persistence_failed")
+    }
+
+    fn finish_temporary(
+        &self,
+        job: &GenerationJob,
+        status: MessageStatus,
+        error_code: Option<&str>,
+    ) -> Result<(), &'static str> {
+        self.update_temporary_message(job, status, None, error_code)
+    }
+
+    fn update_temporary_message(
+        &self,
+        job: &GenerationJob,
+        status: MessageStatus,
+        chunk: Option<&str>,
+        error_code: Option<&str>,
+    ) -> Result<(), &'static str> {
+        let mut chats = lock(&self.inner.temporary_chats);
+        let chat = chats
+            .conversations
+            .get_mut(&job.agent_id)
+            .filter(|chat| chat.conversation.id == job.conversation_id)
+            .ok_or("persistence_failed")?;
+        let message = chat
+            .messages
+            .iter_mut()
+            .find(|message| {
+                message.id == job.assistant_message_id
+                    && message.status != MessageStatus::Complete
+                    && message.status != MessageStatus::Failed
+                    && message.status != MessageStatus::Cancelled
+            })
+            .ok_or("persistence_failed")?;
+        if let Some(chunk) = chunk {
+            message.content.push_str(chunk);
+        }
+        message.status = status;
+        if matches!(
+            status,
+            MessageStatus::Complete | MessageStatus::Failed | MessageStatus::Cancelled
+        ) {
+            message.completed_at = Some(now_millis());
+            message.error_code = error_code.map(str::to_string);
+        }
+        Ok(())
     }
 
     fn emit_terminal(&self, job: &GenerationJob, event_type: &str, error_code: Option<&str>) {
@@ -975,6 +1196,16 @@ fn job_from_attempt(
         conversation_id: conversation_id.to_string(),
         assistant_message_id: attempt.assistant_message_id.clone(),
         model_ref: model_ref.to_string(),
+        temporary: false,
+    }
+}
+
+fn temporary_conversation(agent_id: &str) -> crate::domain::PhaseOneConversation {
+    crate::domain::PhaseOneConversation {
+        id: format!("temporary-{agent_id}"),
+        agent_id: agent_id.to_string(),
+        title: "Conversa temporária".into(),
+        model_override_ref: None,
     }
 }
 
@@ -1056,6 +1287,7 @@ mod tests {
             conversation_id: format!("conversation-{agent}"),
             assistant_message_id: format!("message-{id}"),
             model_ref: "ollama:test".into(),
+            temporary: false,
         }
     }
 
@@ -1075,6 +1307,16 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(queue.enqueue(job("overflow", "luma")), Err("queue_full"));
+    }
+
+    #[test]
+    fn temporary_conversations_are_distinct_from_persisted_conversation_ids() {
+        let astra = temporary_conversation("astra");
+        let luma = temporary_conversation("luma");
+        assert_eq!(astra.id, "temporary-astra");
+        assert_eq!(luma.id, "temporary-luma");
+        assert_ne!(astra.id, luma.id);
+        assert_eq!(astra.model_override_ref, None);
     }
 
     #[test]

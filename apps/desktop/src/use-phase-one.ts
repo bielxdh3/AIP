@@ -16,7 +16,7 @@ export function loadIsCurrent(
   return startedRevision === currentRevision;
 }
 
-export function usePhaseOne(agentId: string | null) {
+export function usePhaseOne(agentId: string | null, temporary = false) {
   const [view, setView] = useState<ConversationViewState | null>(null);
   const [error, setError] = useState(false);
   const loadRevision = useRef(0);
@@ -25,7 +25,7 @@ export function usePhaseOne(agentId: string | null) {
     if (agentId === null) return;
     const revision = ++loadRevision.current;
     try {
-      const phase = await invoke<PhaseOneState>("get_phase_one_state", {
+      const phase = await invoke<PhaseOneState>(temporary ? "get_temporary_phase_one_state" : "get_phase_one_state", {
         agentId,
       });
       if (!loadIsCurrent(revision, loadRevision.current)) return;
@@ -35,7 +35,7 @@ export function usePhaseOne(agentId: string | null) {
       if (!loadIsCurrent(revision, loadRevision.current)) return;
       setError(true);
     }
-  }, [agentId]);
+  }, [agentId, temporary]);
 
   useEffect(() => {
     setView(null);

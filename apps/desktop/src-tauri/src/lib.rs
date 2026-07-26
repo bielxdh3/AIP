@@ -79,6 +79,18 @@ fn get_phase_one_state(
 }
 
 #[tauri::command]
+fn get_temporary_phase_one_state(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<PhaseOneState, &'static str> {
+    state
+        .chat
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .temporary_state(&agent_id)
+}
+
+#[tauri::command]
 fn load_phase_one_messages(
     state: State<'_, AppState>,
     agent_id: String,
@@ -203,6 +215,19 @@ fn create_agent_memory(
         .ok_or("operation_unavailable")?
         .create_memory(&agent_id, &category, &content, confirmed.unwrap_or(true))
         .map_err(|_| "invalid_memory")
+}
+
+#[tauri::command]
+fn send_temporary_phase_one_message(
+    state: State<'_, AppState>,
+    agent_id: String,
+    content: String,
+) -> Result<SendMessageResult, &'static str> {
+    state
+        .chat
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .send_temporary_message(&agent_id, &content)
 }
 
 #[tauri::command]
@@ -567,6 +592,7 @@ pub fn run() {
             get_app_snapshot,
             set_safe_mode,
             get_phase_one_state,
+            get_temporary_phase_one_state,
             load_phase_one_messages,
             list_agent_conversations,
             create_agent_conversation,
@@ -576,6 +602,7 @@ pub fn run() {
             restore_agent_conversation,
             list_agent_memories,
             create_agent_memory,
+            send_temporary_phase_one_message,
             get_agent_simulated_state,
             set_agent_simulated_mode,
             set_agent_suspension,
