@@ -251,20 +251,24 @@ pub fn create_windows(
 pub fn set_visible(app: &AppHandle, input_state: &OverlayInputState, visible: bool) {
     for label in AGENT_LABELS {
         if let Some(window) = app.get_webview_window(label) {
-            let _ = if visible {
-                window.show()
+            if visible {
+                // Windows can leave a borderless overlay minimized after it is hidden.
+                // Restore it before showing so every tracked agent follows safe-mode changes.
+                let _ = window.unminimize();
+                let _ = window.show();
             } else {
-                window.hide()
-            };
+                let _ = window.hide();
+            }
         }
     }
     for label in ["agent-astra-bubble", "agent-luma-bubble"] {
         if let Some(window) = app.get_webview_window(label) {
-            let _ = if visible && input_state.bubble_visible(label) {
-                window.show()
+            if visible && input_state.bubble_visible(label) {
+                let _ = window.unminimize();
+                let _ = window.show();
             } else {
-                window.hide()
-            };
+                let _ = window.hide();
+            }
         }
     }
 }
