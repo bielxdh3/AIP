@@ -63,7 +63,11 @@ function AgentButton({
       type="button"
       onClick={onSelect}
     >
-      <AgentSprite agentId={agent.id} spriteKey={agent.spriteKey} name={agent.name} />
+      <AgentSprite
+        agentId={agent.id}
+        spriteKey={agent.spriteKey}
+        name={agent.name}
+      />
       <span>{agent.name}</span>
     </button>
   );
@@ -711,51 +715,49 @@ function MemoryList({ agentId }: { agentId: string }) {
         <option value="all">Todas</option>
       </select>
       {items.map((item) => (
-          <div className="memory-item" key={item.id}>
-            <p>
-              <small>
-                {item.category} ·{" "}
-                {item.confirmationStatus === "pending"
-                  ? "pendente"
-                  : "confirmada"}
-              </small>{" "}
-              {item.content}
-            </p>
-            {item.confirmationStatus === "pending" ? (
-              <>
-                <button
-                  type="button"
-                  onClick={() => void updateStatus(item.id, "active")}
-                >
-                  Confirmar
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    void updateStatus(item.id, "candidate_rejected")
-                  }
-                >
-                  Rejeitar
-                </button>
-              </>
-            ) : null}
-            {item.status === "active" ? (
-              <button
-                type="button"
-                onClick={() => void updateStatus(item.id, "archived")}
-              >
-                Arquivar
-              </button>
-            ) : item.status === "archived" || item.status === "trashed" ? (
+        <div className="memory-item" key={item.id}>
+          <p>
+            <small>
+              {item.category} ·{" "}
+              {item.confirmationStatus === "pending"
+                ? "pendente"
+                : "confirmada"}
+            </small>{" "}
+            {item.content}
+          </p>
+          {item.confirmationStatus === "pending" ? (
+            <>
               <button
                 type="button"
                 onClick={() => void updateStatus(item.id, "active")}
               >
-                Restaurar
+                Confirmar
               </button>
-            ) : null}
-          </div>
-        ))}
+              <button
+                type="button"
+                onClick={() => void updateStatus(item.id, "candidate_rejected")}
+              >
+                Rejeitar
+              </button>
+            </>
+          ) : null}
+          {item.status === "active" ? (
+            <button
+              type="button"
+              onClick={() => void updateStatus(item.id, "archived")}
+            >
+              Arquivar
+            </button>
+          ) : item.status === "archived" || item.status === "trashed" ? (
+            <button
+              type="button"
+              onClick={() => void updateStatus(item.id, "active")}
+            >
+              Restaurar
+            </button>
+          ) : null}
+        </div>
+      ))}
       <input
         value={category}
         onChange={(event) => setCategory(event.target.value)}
@@ -773,6 +775,178 @@ function MemoryList({ agentId }: { agentId: string }) {
         Propor memória
       </button>
     </div>
+  );
+}
+
+function MemoryWorkspace({ agentId }: { agentId: string }) {
+  const [items, setItems] = useState<AgentMemory[]>([]);
+  const [content, setContent] = useState("");
+  const [category, setCategory] = useState("preference");
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("active");
+  const load = useCallback(
+    () =>
+      void invoke<AgentMemory[]>("search_agent_memories", {
+        agentId,
+        query: query || null,
+        status: status === "all" ? null : status,
+        category: null,
+        sourceType: null,
+      }).then(setItems),
+    [agentId, query, status],
+  );
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function save(confirmed = true) {
+    if (!content.trim()) return;
+    await invoke("create_agent_memory", {
+      agentId,
+      category,
+      content,
+      confirmed,
+    });
+    setContent("");
+    load();
+  }
+
+  async function updateStatus(memoryId: string, nextStatus: string) {
+    await invoke("set_agent_memory_status", {
+      agentId,
+      memoryId,
+      status: nextStatus,
+    });
+    load();
+  }
+
+  return (
+    <section className="memory-workspace" aria-label="Memórias do agente">
+      <header className="workspace-heading">
+        <div>
+          <p className="eyebrow">Conhecimento do agente</p>
+          <h2>Memórias</h2>
+          <span>Fatos, preferências e regras ficam separados por agente.</span>
+        </div>
+        <span className="workspace-count">{items.length}</span>
+      </header>
+      <div className="memory-filters">
+        <label>
+          Buscar
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Buscar memórias"
+          />
+        </label>
+        <label>
+          Mostrar
+          <select
+            value={status}
+            onChange={(event) => setStatus(event.target.value)}
+          >
+            <option value="active">Ativas</option>
+            <option value="archived">Arquivadas</option>
+            <option value="trashed">Lixeira</option>
+            <option value="candidate_rejected">Rejeitadas</option>
+            <option value="all">Todas</option>
+          </select>
+        </label>
+      </div>
+      <div className="memory-records">
+        {items.map((item) => (
+          <article className="memory-card" key={item.id}>
+            <div className="memory-card-heading">
+              <span>{item.category}</span>
+              <small>
+                {item.confirmationStatus === "pending"
+                  ? "Pendente"
+                  : "Confirmada"}
+              </small>
+            </div>
+            <p>{item.content}</p>
+            <div className="memory-card-actions">
+              {item.confirmationStatus === "pending" ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void updateStatus(item.id, "active")}
+                  >
+                    Confirmar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void updateStatus(item.id, "candidate_rejected")
+                    }
+                  >
+                    Rejeitar
+                  </button>
+                </>
+              ) : null}
+              {item.status === "active" ? (
+                <button
+                  type="button"
+                  onClick={() => void updateStatus(item.id, "archived")}
+                >
+                  Arquivar
+                </button>
+              ) : item.status === "archived" || item.status === "trashed" ? (
+                <button
+                  type="button"
+                  onClick={() => void updateStatus(item.id, "active")}
+                >
+                  Restaurar
+                </button>
+              ) : null}
+            </div>
+          </article>
+        ))}
+        {items.length === 0 ? (
+          <p className="workspace-empty">Nenhuma memória encontrada aqui.</p>
+        ) : null}
+      </div>
+      <form
+        className="memory-composer"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void save();
+        }}
+      >
+        <div>
+          <p className="eyebrow">Adicionar</p>
+          <h3>Nova memória</h3>
+        </div>
+        <label>
+          Categoria
+          <select
+            value={category}
+            onChange={(event) => setCategory(event.target.value)}
+          >
+            <option value="fact">Fato</option>
+            <option value="preference">Preferência</option>
+            <option value="rule">Regra</option>
+            <option value="emotional">Lembrança afetiva</option>
+            <option value="permanent">Permanente</option>
+          </select>
+        </label>
+        <label className="memory-content-field">
+          Conteúdo
+          <textarea
+            value={content}
+            onChange={(event) => setContent(event.target.value)}
+            placeholder="O que este agente deve lembrar?"
+            maxLength={4000}
+          />
+        </label>
+        <div className="memory-composer-actions">
+          <button type="submit">Salvar memória</button>
+          <button type="button" onClick={() => void save(false)}>
+            Propor memória
+          </button>
+        </div>
+      </form>
+    </section>
   );
 }
 
@@ -859,16 +1033,25 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
   const [activeLayerId, setActiveLayerId] = useState("body");
   const [error, setError] = useState<string | null>(null);
   const [color, setColor] = useState("#57d8bd");
-  const [tool, setTool] = useState<"pencil" | "eraser" | "fill" | "eyedropper" | "select">("pencil");
+  const [tool, setTool] = useState<
+    "pencil" | "eraser" | "fill" | "eyedropper" | "select"
+  >("pencil");
   const [mirror, setMirror] = useState(false);
-  const [selection, setSelection] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const [selection, setSelection] = useState<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
   const [zoom, setZoom] = useState(4);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const undoRef = useRef<string[]>([]);
   const redoRef = useRef<string[]>([]);
   const document = parsePixelDocument(source);
-  const activeLayer = document?.layers.find((layer) => layer.id === activeLayerId) ?? document?.layers[0];
+  const activeLayer =
+    document?.layers.find((layer) => layer.id === activeLayerId) ??
+    document?.layers[0];
   function replaceSource(next: string) {
     if (next === source) return;
     undoRef.current = [...undoRef.current.slice(-49), source];
@@ -909,7 +1092,12 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
       if (selection !== null) {
         context.strokeStyle = "#57d8bd";
         context.lineWidth = 1;
-        context.strokeRect(selection.x * 4 + 0.5, selection.y * 4 + 0.5, selection.width * 4 - 1, selection.height * 4 - 1);
+        context.strokeRect(
+          selection.x * 4 + 0.5,
+          selection.y * 4 + 0.5,
+          selection.width * 4 - 1,
+          selection.height * 4 - 1,
+        );
       }
     } catch {
       /* Invalid source stays editable in the raw document field. */
@@ -946,7 +1134,11 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
       return;
     }
     try {
-      if (document === null || activeLayer === undefined || activeLayer.locked) {
+      if (
+        document === null ||
+        activeLayer === undefined ||
+        activeLayer.locked
+      ) {
         throw new Error("missing layer");
       }
       const layer = activeLayer;
@@ -968,16 +1160,24 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
       }
       layer.pixels = pixels;
       if (tool === "fill") {
-        const target = layer.pixels?.find(([pixelX, pixelY]) => pixelX === x && pixelY === y)?.[2] ?? null;
+        const target =
+          layer.pixels?.find(
+            ([pixelX, pixelY]) => pixelX === x && pixelY === y,
+          )?.[2] ?? null;
         if (target !== color) {
-          layer.pixels = (layer.pixels ?? []).map(([pixelX, pixelY, pixelColor]) => [
-            pixelX,
-            pixelY,
-            pixelColor === target ? color : pixelColor,
-          ] as [number, number, string]);
+          layer.pixels = (layer.pixels ?? []).map(
+            ([pixelX, pixelY, pixelColor]) =>
+              [pixelX, pixelY, pixelColor === target ? color : pixelColor] as [
+                number,
+                number,
+                string,
+              ],
+          );
         }
       }
-      replaceSource(JSON.stringify(updatePixelLayer(document, layer.id, () => layer)));
+      replaceSource(
+        JSON.stringify(updatePixelLayer(document, layer.id, () => layer)),
+      );
       setError(null);
     } catch {
       setError("Arte inválida: use uma camada com pixels.");
@@ -996,23 +1196,50 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
     replaceSource(JSON.stringify(next));
   }
   function moveSelection(dx: number, dy: number) {
-    if (document === null || activeLayer === undefined || selection === null || activeLayer.locked) return;
+    if (
+      document === null ||
+      activeLayer === undefined ||
+      selection === null ||
+      activeLayer.locked
+    )
+      return;
     const inside = (x: number, y: number) =>
-      x >= selection.x && x < selection.x + selection.width && y >= selection.y && y < selection.y + selection.height;
+      x >= selection.x &&
+      x < selection.x + selection.width &&
+      y >= selection.y &&
+      y < selection.y + selection.height;
     const moved = activeLayer.pixels.flatMap(([x, y, pixelColor]) => {
-      if (!inside(x, y)) return [[x, y, pixelColor] as [number, number, string]];
+      if (!inside(x, y))
+        return [[x, y, pixelColor] as [number, number, string]];
       const nextX = x + dx;
       const nextY = y + dy;
       return nextX >= 0 && nextX < 64 && nextY >= 0 && nextY < 64
         ? [[nextX, nextY, pixelColor] as [number, number, string]]
         : [];
     });
-    updateLayers(updatePixelLayer(document, activeLayer.id, (layer) => ({ ...layer, pixels: moved })));
-    setSelection((current) => current === null ? null : { ...current, x: Math.max(0, Math.min(63 - current.width + 1, current.x + dx)), y: Math.max(0, Math.min(63 - current.height + 1, current.y + dy)) });
+    updateLayers(
+      updatePixelLayer(document, activeLayer.id, (layer) => ({
+        ...layer,
+        pixels: moved,
+      })),
+    );
+    setSelection((current) =>
+      current === null
+        ? null
+        : {
+            ...current,
+            x: Math.max(0, Math.min(63 - current.width + 1, current.x + dx)),
+            y: Math.max(0, Math.min(63 - current.height + 1, current.y + dy)),
+          },
+    );
   }
   async function importPng(file: File | undefined) {
     if (file === undefined) return;
-    if (file.type !== "image/png" || file.size > 1_000_000 || document === null) {
+    if (
+      file.type !== "image/png" ||
+      file.size > 1_000_000 ||
+      document === null
+    ) {
       setError("Use um PNG de até 1 MB.");
       return;
     }
@@ -1030,7 +1257,9 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
       const context = imported.getContext("2d", { willReadFrequently: true });
       if (context === null) throw new Error("canvas_unavailable");
       context.drawImage(image, 0, 0, 64, 64);
-      const pixels = Array.from(context.getImageData(0, 0, 64, 64).data).reduce<[number, number, string][]>((result, _, index, data) => {
+      const pixels = Array.from(context.getImageData(0, 0, 64, 64).data).reduce<
+        [number, number, string][]
+      >((result, _, index, data) => {
         const alpha = data[index + 3] ?? 0;
         if (index % 4 !== 0 || alpha < 128) return result;
         const x = (index / 4) % 64;
@@ -1040,7 +1269,16 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         return result;
       }, []);
       const id = nextLayerId(document);
-      updateLayers({ ...document, layers: [...document.layers, { id, name: "PNG importado", visible: true, locked: false, pixels }] }, id);
+      updateLayers(
+        {
+          ...document,
+          layers: [
+            ...document.layers,
+            { id, name: "PNG importado", visible: true, locked: false, pixels },
+          ],
+        },
+        id,
+      );
       setError(null);
     } catch {
       setError("Não foi possível importar este PNG.");
@@ -1054,7 +1292,10 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
     const current = document.attachmentPoints.bubble ?? { x: 32, y: 8 };
     updateLayers({
       ...document,
-      attachmentPoints: { ...document.attachmentPoints, bubble: { ...current, [axis]: Math.max(0, Math.min(63, value || 0)) } },
+      attachmentPoints: {
+        ...document.attachmentPoints,
+        bubble: { ...current, [axis]: Math.max(0, Math.min(63, value || 0)) },
+      },
     });
   }
   return (
@@ -1081,41 +1322,109 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         >
           Borracha
         </button>
-        <button type="button" className={tool === "fill" ? "active" : ""} onClick={() => setTool("fill")}>
+        <button
+          type="button"
+          className={tool === "fill" ? "active" : ""}
+          onClick={() => setTool("fill")}
+        >
           Preencher
         </button>
-        <button type="button" className={tool === "eyedropper" ? "active" : ""} onClick={() => setTool("eyedropper")}>
+        <button
+          type="button"
+          className={tool === "eyedropper" ? "active" : ""}
+          onClick={() => setTool("eyedropper")}
+        >
           Conta-gotas
         </button>
-        <button type="button" className={tool === "select" ? "active" : ""} onClick={() => setTool("select")}>
+        <button
+          type="button"
+          className={tool === "select" ? "active" : ""}
+          onClick={() => setTool("select")}
+        >
           Selecionar
         </button>
         <label>
-          <input type="checkbox" checked={mirror} onChange={(event) => setMirror(event.target.checked)} /> Espelhar
+          <input
+            type="checkbox"
+            checked={mirror}
+            onChange={(event) => setMirror(event.target.checked)}
+          />{" "}
+          Espelhar
         </label>
         <label>
           Zoom
-          <select value={zoom} onChange={(event) => setZoom(Number(event.target.value))}>
-            {[2, 4, 6, 8].map((value) => <option key={value} value={value}>{value}×</option>)}
+          <select
+            value={zoom}
+            onChange={(event) => setZoom(Number(event.target.value))}
+          >
+            {[2, 4, 6, 8].map((value) => (
+              <option key={value} value={value}>
+                {value}×
+              </option>
+            ))}
           </select>
         </label>
-        <input ref={importRef} type="file" accept="image/png" aria-label="Importar PNG" onChange={(event) => void importPng(event.currentTarget.files?.[0])} />
-        <button type="button" disabled={undoRef.current.length === 0} onClick={() => {
-          const previous = undoRef.current.pop();
-          if (previous !== undefined) { redoRef.current.push(source); setSource(previous); }
-        }}>
+        <input
+          ref={importRef}
+          type="file"
+          accept="image/png"
+          aria-label="Importar PNG"
+          onChange={(event) => void importPng(event.currentTarget.files?.[0])}
+        />
+        <button
+          type="button"
+          disabled={undoRef.current.length === 0}
+          onClick={() => {
+            const previous = undoRef.current.pop();
+            if (previous !== undefined) {
+              redoRef.current.push(source);
+              setSource(previous);
+            }
+          }}
+        >
           Desfazer
         </button>
-        <button type="button" disabled={redoRef.current.length === 0} onClick={() => {
-          const next = redoRef.current.pop();
-          if (next !== undefined) { undoRef.current.push(source); setSource(next); }
-        }}>
+        <button
+          type="button"
+          disabled={redoRef.current.length === 0}
+          onClick={() => {
+            const next = redoRef.current.pop();
+            if (next !== undefined) {
+              undoRef.current.push(source);
+              setSource(next);
+            }
+          }}
+        >
           Refazer
         </button>
-        <button type="button" disabled={selection === null || activeLayer?.locked} onClick={() => moveSelection(-1, 0)}>←</button>
-        <button type="button" disabled={selection === null || activeLayer?.locked} onClick={() => moveSelection(1, 0)}>→</button>
-        <button type="button" disabled={selection === null || activeLayer?.locked} onClick={() => moveSelection(0, -1)}>↑</button>
-        <button type="button" disabled={selection === null || activeLayer?.locked} onClick={() => moveSelection(0, 1)}>↓</button>
+        <button
+          type="button"
+          disabled={selection === null || activeLayer?.locked}
+          onClick={() => moveSelection(-1, 0)}
+        >
+          ←
+        </button>
+        <button
+          type="button"
+          disabled={selection === null || activeLayer?.locked}
+          onClick={() => moveSelection(1, 0)}
+        >
+          →
+        </button>
+        <button
+          type="button"
+          disabled={selection === null || activeLayer?.locked}
+          onClick={() => moveSelection(0, -1)}
+        >
+          ↑
+        </button>
+        <button
+          type="button"
+          disabled={selection === null || activeLayer?.locked}
+          onClick={() => moveSelection(0, 1)}
+        >
+          ↓
+        </button>
       </div>
       {document ? (
         <div className="pixel-layers" aria-label="Camadas">
@@ -1126,7 +1435,19 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
               onClick={() => {
                 const id = nextLayerId(document);
                 updateLayers(
-                  { ...document, layers: [...document.layers, { id, name: `Camada ${document.layers.length + 1}`, visible: true, locked: false, pixels: [] }] },
+                  {
+                    ...document,
+                    layers: [
+                      ...document.layers,
+                      {
+                        id,
+                        name: `Camada ${document.layers.length + 1}`,
+                        visible: true,
+                        locked: false,
+                        pixels: [],
+                      },
+                    ],
+                  },
                   id,
                 );
               }}
@@ -1135,28 +1456,86 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
             </button>
           </div>
           {document.layers.map((layer, index) => (
-            <div key={layer.id} className={layer.id === activeLayer?.id ? "pixel-layer active" : "pixel-layer"}>
-              <button type="button" onClick={() => setActiveLayerId(layer.id)}>{layer.name}</button>
+            <div
+              key={layer.id}
+              className={
+                layer.id === activeLayer?.id
+                  ? "pixel-layer active"
+                  : "pixel-layer"
+              }
+            >
+              <button type="button" onClick={() => setActiveLayerId(layer.id)}>
+                {layer.name}
+              </button>
               <input
                 value={layer.name}
                 aria-label={`Nome da camada ${layer.name}`}
-                onChange={(event) => updateLayers(updatePixelLayer(document, layer.id, (current) => ({ ...current, name: event.target.value.slice(0, 64) || "Camada" })))}
+                onChange={(event) =>
+                  updateLayers(
+                    updatePixelLayer(document, layer.id, (current) => ({
+                      ...current,
+                      name: event.target.value.slice(0, 64) || "Camada",
+                    })),
+                  )
+                }
               />
-              <button type="button" onClick={() => updateLayers(updatePixelLayer(document, layer.id, (current) => ({ ...current, visible: !current.visible })))}>{layer.visible ? "Ocultar" : "Mostrar"}</button>
-              <button type="button" onClick={() => updateLayers(updatePixelLayer(document, layer.id, (current) => ({ ...current, locked: !current.locked })))}>{layer.locked ? "Desbloquear" : "Bloquear"}</button>
-              <button type="button" disabled={index === 0} onClick={() => {
-                const layers = [...document.layers];
-                const previous = layers[index - 1];
-                const current = layers[index];
-                if (previous === undefined || current === undefined) return;
-                [layers[index - 1], layers[index]] = [current, previous];
-                updateLayers({ ...document, layers });
-              }}>Subir</button>
-              <button type="button" disabled={document.layers.length === 1} onClick={() => {
-                if (!window.confirm(`Excluir a camada ${layer.name}?`)) return;
-                const layers = document.layers.filter((current) => current.id !== layer.id);
-                updateLayers({ ...document, layers }, layers[0]?.id ?? "body");
-              }}>Excluir</button>
+              <button
+                type="button"
+                onClick={() =>
+                  updateLayers(
+                    updatePixelLayer(document, layer.id, (current) => ({
+                      ...current,
+                      visible: !current.visible,
+                    })),
+                  )
+                }
+              >
+                {layer.visible ? "Ocultar" : "Mostrar"}
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  updateLayers(
+                    updatePixelLayer(document, layer.id, (current) => ({
+                      ...current,
+                      locked: !current.locked,
+                    })),
+                  )
+                }
+              >
+                {layer.locked ? "Desbloquear" : "Bloquear"}
+              </button>
+              <button
+                type="button"
+                disabled={index === 0}
+                onClick={() => {
+                  const layers = [...document.layers];
+                  const previous = layers[index - 1];
+                  const current = layers[index];
+                  if (previous === undefined || current === undefined) return;
+                  [layers[index - 1], layers[index]] = [current, previous];
+                  updateLayers({ ...document, layers });
+                }}
+              >
+                Subir
+              </button>
+              <button
+                type="button"
+                disabled={document.layers.length === 1}
+                onClick={() => {
+                  if (!window.confirm(`Excluir a camada ${layer.name}?`))
+                    return;
+                  const layers = document.layers.filter(
+                    (current) => current.id !== layer.id,
+                  );
+                  updateLayers(
+                    { ...document, layers },
+                    layers[0]?.id ?? "body",
+                  );
+                }}
+              >
+                Excluir
+              </button>
             </div>
           ))}
         </div>
@@ -1164,8 +1543,30 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
       {document ? (
         <div className="pixel-attachment">
           <strong>Encaixe do balão</strong>
-          <label>X <input type="number" min="0" max="63" value={document.attachmentPoints.bubble?.x ?? 32} onChange={(event) => updateBubbleAttachment("x", Number(event.target.value))} /></label>
-          <label>Y <input type="number" min="0" max="63" value={document.attachmentPoints.bubble?.y ?? 8} onChange={(event) => updateBubbleAttachment("y", Number(event.target.value))} /></label>
+          <label>
+            X{" "}
+            <input
+              type="number"
+              min="0"
+              max="63"
+              value={document.attachmentPoints.bubble?.x ?? 32}
+              onChange={(event) =>
+                updateBubbleAttachment("x", Number(event.target.value))
+              }
+            />
+          </label>
+          <label>
+            Y{" "}
+            <input
+              type="number"
+              min="0"
+              max="63"
+              value={document.attachmentPoints.bubble?.y ?? 8}
+              onChange={(event) =>
+                updateBubbleAttachment("y", Number(event.target.value))
+              }
+            />
+          </label>
         </div>
       ) : null}
       <canvas
@@ -1221,9 +1622,12 @@ function App() {
 
   useEffect(() => {
     const registration = createListenerRegistration();
-    void listen<string>("open-conversation", (event) =>
-      setActiveAgentId(event.payload),
-    ).then(registration.register);
+    void listen<string>("open-conversation", (event) => {
+      setActiveAgentId(event.payload);
+      setTemporaryChat(false);
+      setEditingAgentId(null);
+      setWorkspace("chat");
+    }).then(registration.register);
     return registration.dispose;
   }, []);
 
@@ -1239,6 +1643,11 @@ function App() {
     } finally {
       setChangingMode(false);
     }
+  }
+
+  function openWorkspace(next: "chat" | "memories" | "state" | "appearance") {
+    setEditingAgentId(null);
+    setWorkspace(next);
   }
 
   return (
@@ -1261,6 +1670,7 @@ function App() {
               onSelect={() => {
                 setActiveAgentId(agent.id);
                 setTemporaryChat(false);
+                setEditingAgentId(null);
                 setWorkspace("chat");
               }}
             />
@@ -1272,6 +1682,7 @@ function App() {
             changed={() => {
               setConversationRevision((value) => value + 1);
               setTemporaryChat(false);
+              setEditingAgentId(null);
               setWorkspace("chat");
             }}
           />
@@ -1331,28 +1742,28 @@ function App() {
             <button
               className={workspace === "chat" ? "active" : undefined}
               type="button"
-              onClick={() => setWorkspace("chat")}
+              onClick={() => openWorkspace("chat")}
             >
               Conversa
             </button>
             <button
               className={workspace === "memories" ? "active" : undefined}
               type="button"
-              onClick={() => setWorkspace("memories")}
+              onClick={() => openWorkspace("memories")}
             >
               Memórias
             </button>
             <button
               className={workspace === "state" ? "active" : undefined}
               type="button"
-              onClick={() => setWorkspace("state")}
+              onClick={() => openWorkspace("state")}
             >
               Estado
             </button>
             <button
               className={workspace === "appearance" ? "active" : undefined}
               type="button"
-              onClick={() => setWorkspace("appearance")}
+              onClick={() => openWorkspace("appearance")}
             >
               Aparência
             </button>
@@ -1365,10 +1776,15 @@ function App() {
               Perfil
             </button>
             <button
-              className={temporaryChat ? "workspace-temporary active" : "workspace-temporary"}
+              className={
+                temporaryChat
+                  ? "workspace-temporary active"
+                  : "workspace-temporary"
+              }
               type="button"
               onClick={() => {
                 setTemporaryChat((current) => !current);
+                setEditingAgentId(null);
                 setWorkspace("chat");
               }}
             >
@@ -1414,15 +1830,35 @@ function App() {
           <section className="conversation-empty">Carregando agentes…</section>
         ) : workspace === "memories" ? (
           <section className="workspace-panel">
-            <MemoryList agentId={activeAgentId} />
+            <MemoryWorkspace agentId={activeAgentId} />
           </section>
         ) : workspace === "state" ? (
           <section className="workspace-panel">
-            <AgentStateControls agentId={activeAgentId} />
+            <section className="state-workspace">
+              <header className="workspace-heading">
+                <div>
+                  <p className="eyebrow">Ritmo do agente</p>
+                  <h2>Estado</h2>
+                  <span>
+                    Escolha como este agente pode aparecer e responder.
+                  </span>
+                </div>
+              </header>
+              <AgentStateControls agentId={activeAgentId} />
+            </section>
           </section>
         ) : workspace === "appearance" ? (
           <section className="workspace-panel">
-            <PixelDocumentEditor agentId={activeAgentId} />
+            <section className="appearance-workspace">
+              <header className="workspace-heading">
+                <div>
+                  <p className="eyebrow">Visual 64 × 64</p>
+                  <h2>Aparência</h2>
+                  <span>Edite em etapas: ferramenta, camada e grade.</span>
+                </div>
+              </header>
+              <PixelDocumentEditor agentId={activeAgentId} />
+            </section>
           </section>
         ) : (
           <ConversationSurface
