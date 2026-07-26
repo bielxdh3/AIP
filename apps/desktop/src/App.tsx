@@ -1023,27 +1023,39 @@ function App() {
           />
         ) : null}
         {activeAgentId ? (
-          <button
-            type="button"
-            onClick={() => setTemporaryChat((current) => !current)}
-          >
-            {temporaryChat
-              ? "Voltar à conversa salva"
-              : "Abrir conversa temporária"}
-          </button>
+          <details className="agent-tools">
+            <summary>Ferramentas do agente</summary>
+            <button
+              type="button"
+              onClick={() => setTemporaryChat((current) => !current)}
+            >
+              {temporaryChat
+                ? "Voltar à conversa salva"
+                : "Abrir conversa temporária"}
+            </button>
+            <details>
+              <summary>Memórias</summary>
+              <MemoryList agentId={activeAgentId} />
+            </details>
+            <details>
+              <summary>Estado</summary>
+              <AgentStateControls agentId={activeAgentId} />
+            </details>
+            <details>
+              <summary>Aparência</summary>
+              <PixelDocumentEditor agentId={activeAgentId} />
+            </details>
+            {snapshot?.agents.map((agent) => (
+              <button
+                key={`profile-${agent.id}`}
+                type="button"
+                onClick={() => setEditingAgentId(agent.id)}
+              >
+                Perfil de {agent.name}
+              </button>
+            ))}
+          </details>
         ) : null}
-        {activeAgentId ? <MemoryList agentId={activeAgentId} /> : null}
-        {activeAgentId ? <AgentStateControls agentId={activeAgentId} /> : null}
-        {activeAgentId ? <PixelDocumentEditor agentId={activeAgentId} /> : null}
-        {snapshot?.agents.map((agent) => (
-          <button
-            key={`profile-${agent.id}`}
-            type="button"
-            onClick={() => setEditingAgentId(agent.id)}
-          >
-            Perfil de {agent.name}
-          </button>
-        ))}
         <button
           className={snapshot?.safeMode ? "mode-button active" : "mode-button"}
           type="button"
