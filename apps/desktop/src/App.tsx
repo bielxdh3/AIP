@@ -31,6 +31,12 @@ import {
 } from "./conversation-scroll";
 import { usePhaseOne } from "./use-phase-one";
 import { createListenerRegistration } from "./listener-lifecycle";
+import {
+  nextLayerId,
+  parsePixelDocument,
+  updatePixelLayer,
+  type PixelDocument,
+} from "./pixel-document";
 import "./App.css";
 
 const runtimeLabels: Record<AppSnapshot["runtime"]["state"], string> = {
@@ -850,6 +856,7 @@ function AgentStateControls({ agentId }: { agentId: string }) {
 
 function PixelDocumentEditor({ agentId }: { agentId: string }) {
   const [source, setSource] = useState("");
+  const [activeLayerId, setActiveLayerId] = useState("body");
   const [error, setError] = useState<string | null>(null);
   const [color, setColor] = useState("#57d8bd");
   const [tool, setTool] = useState<"pencil" | "eraser" | "fill" | "eyedropper">("pencil");
@@ -857,6 +864,8 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const undoRef = useRef<string[]>([]);
   const redoRef = useRef<string[]>([]);
+  const document = parsePixelDocument(source);
+  const activeLayer = document?.layers.find((layer) => layer.id === activeLayerId) ?? document?.layers[0];
   function replaceSource(next: string) {
     if (next === source) return;
     undoRef.current = [...undoRef.current.slice(-49), source];
@@ -865,7 +874,10 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
   }
   useEffect(() => {
     void invoke<string>("load_pixel_document", { agentId })
-      .then(setSource)
+      .then((loaded) => {
+        setSource(loaded);
+        setActiveLayerId(parsePixelDocument(loaded)?.layers[0]?.id ?? "body");
+      })
       .catch(() => setError("Não foi possível abrir a arte."));
   }, [agentId]);
   useEffect(() => {
@@ -876,13 +888,7 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
     context.fillStyle = "#10151c";
     context.fillRect(0, 0, 256, 256);
     try {
-      const document = JSON.parse(source) as {
-        layers?: Array<{
-          visible?: boolean;
-          pixels?: Array<[number, number, string]>;
-        }>;
-      };
-      for (const layer of document.layers ?? [])
+      for (const layer of document?.layers ?? [])
         for (const [x, y, pixelColor] of layer.pixels ?? []) {
           if (
             layer.visible !== false &&
@@ -900,7 +906,7 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
     } catch {
       /* Invalid source stays editable in the raw document field. */
     }
-  }, [source]);
+  }, [document, source]);
   function paint(event: React.PointerEvent<HTMLCanvasElement>) {
     const canvas = canvasRef.current;
     if (canvas === null) return;
@@ -919,11 +925,10 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
       ),
     );
     try {
-      const document = JSON.parse(source) as {
-        layers: Array<{ pixels?: Array<[number, number, string]> }>;
-      };
-      const layer = document.layers?.[0];
-      if (layer === undefined) throw new Error("missing layer");
+      if (document === null || activeLayer === undefined || activeLayer.locked) {
+        throw new Error("missing layer");
+      }
+      const layer = activeLayer;
       const existingColor = layer.pixels?.find(
         ([pixelX, pixelY]) => pixelX === x && pixelY === y,
       )?.[2];
@@ -951,7 +956,7 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
           ] as [number, number, string]);
         }
       }
-      replaceSource(JSON.stringify(document));
+      replaceSource(JSON.stringify(updatePixelLayer(document, layer.id, () => layer)));
       setError(null);
     } catch {
       setError("Arte inválida: use uma camada com pixels.");
@@ -964,6 +969,10 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
     } catch {
       setError("A arte precisa ter camadas e pontos de encaixe válidos.");
     }
+  }
+  function updateLayers(next: PixelDocument, nextActive = activeLayerId) {
+    setActiveLayerId(nextActive);
+    replaceSource(JSON.stringify(next));
   }
   return (
     <details className="pixel-editor">
@@ -1011,6 +1020,50 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
           Refazer
         </button>
       </div>
+      {document ? (
+        <div className="pixel-layers" aria-label="Camadas">
+          <div>
+            <strong>Camadas</strong>
+            <button
+              type="button"
+              onClick={() => {
+                const id = nextLayerId(document);
+                updateLayers(
+                  { ...document, layers: [...document.layers, { id, name: `Camada ${document.layers.length + 1}`, visible: true, locked: false, pixels: [] }] },
+                  id,
+                );
+              }}
+            >
+              Nova camada
+            </button>
+          </div>
+          {document.layers.map((layer, index) => (
+            <div key={layer.id} className={layer.id === activeLayer?.id ? "pixel-layer active" : "pixel-layer"}>
+              <button type="button" onClick={() => setActiveLayerId(layer.id)}>{layer.name}</button>
+              <input
+                value={layer.name}
+                aria-label={`Nome da camada ${layer.name}`}
+                onChange={(event) => updateLayers(updatePixelLayer(document, layer.id, (current) => ({ ...current, name: event.target.value.slice(0, 64) || "Camada" })))}
+              />
+              <button type="button" onClick={() => updateLayers(updatePixelLayer(document, layer.id, (current) => ({ ...current, visible: !current.visible })))}>{layer.visible ? "Ocultar" : "Mostrar"}</button>
+              <button type="button" onClick={() => updateLayers(updatePixelLayer(document, layer.id, (current) => ({ ...current, locked: !current.locked })))}>{layer.locked ? "Desbloquear" : "Bloquear"}</button>
+              <button type="button" disabled={index === 0} onClick={() => {
+                const layers = [...document.layers];
+                const previous = layers[index - 1];
+                const current = layers[index];
+                if (previous === undefined || current === undefined) return;
+                [layers[index - 1], layers[index]] = [current, previous];
+                updateLayers({ ...document, layers });
+              }}>Subir</button>
+              <button type="button" disabled={document.layers.length === 1} onClick={() => {
+                if (!window.confirm(`Excluir a camada ${layer.name}?`)) return;
+                const layers = document.layers.filter((current) => current.id !== layer.id);
+                updateLayers({ ...document, layers }, layers[0]?.id ?? "body");
+              }}>Excluir</button>
+            </div>
+          ))}
+        </div>
+      ) : null}
       <canvas
         ref={canvasRef}
         width="256"

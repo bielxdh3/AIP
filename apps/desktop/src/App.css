@@ -1123,6 +1123,25 @@ h3 {
   color: #57d8bd;
 }
 
+.pixel-layers {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.pixel-layers > div,
+.pixel-layer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.pixel-layer.active > button:first-child {
+  border-color: #57d8bd;
+  color: #57d8bd;
+}
+
 .pixel-canvas {
   display: block;
   width: min(256px, 100%);
