@@ -399,9 +399,9 @@ function MemoryList({ agentId }: { agentId: string }) {
   const [category, setCategory] = useState("preference");
   const load = useCallback(() => void invoke<AgentMemory[]>("list_agent_memories", { agentId }).then(setItems), [agentId]);
   useEffect(() => { load(); }, [load]);
-  async function save() {
+  async function save(confirmed = true) {
     if (!content.trim()) return;
-    await invoke("create_agent_memory", { agentId, category, content });
+    await invoke("create_agent_memory", { agentId, category, content, confirmed });
     setContent(""); load();
   }
   return <div className="memory-list" aria-label="Memórias do agente">
@@ -410,6 +410,9 @@ function MemoryList({ agentId }: { agentId: string }) {
     <input value={category} onChange={(event) => setCategory(event.target.value)} aria-label="Categoria da memória" />
     <input value={content} onChange={(event) => setContent(event.target.value)} placeholder="Nova memória" />
     <button type="button" onClick={() => void save()}>Salvar memória</button>
+    <button type="button" onClick={() => void save(false)}>
+      Propor memÃ³ria
+    </button>
   </div>;
 }
 
