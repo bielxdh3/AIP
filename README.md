@@ -8,8 +8,8 @@ integration. The visual product name is **A.I.P.**
 
 ## Status
 
-Phase 0 is approved and complete. Phase 1 is implemented locally and pending real Windows
-and Ollama validation:
+Phase 0 is approved and complete. Phases 1 through 5 are implemented locally; the v0.1
+candidate is prepared but remains pending the documented Windows and Ollama validation:
 
 - pnpm workspace;
 - React and TypeScript main panel in Portuguese;
@@ -19,6 +19,10 @@ and Ollama validation:
   cancellation protocol;
 - loopback-only Ollama discovery and streaming chat adapter;
 - one provisional main conversation per Astra and Luma, with isolated persistent histories;
+- per-agent profiles, multiple persistent conversations, temporary in-memory chat, scoped
+  memories, and bounded conversation summaries;
+- deterministic states, silent/safe modes, suspension, and wake-now controls;
+- per-agent 64×64 pixel documents rendered over the provisional sprites;
 - one bounded FIFO generation queue, provisional global model selection, and configurable
   keep-alive;
 - Portuguese conversation panel and independent compact/expanded overlay bubbles;
@@ -32,7 +36,7 @@ non-100% real display scaling, multiple monitors, and installer behavior remain 
 validation limitations. Phase 1 automated tests do not require Ollama, but real discovery,
 streaming, queue, cancellation, bubble, restart, and provider-interruption behavior still
 require the documented manual smoke test. No model is downloaded automatically. Memory,
-tools, voice, Android, autonomous behavior, and BielOS integration are not implemented.
+tools, voice, Android, autonomous behavior, scheduling, and BielOS integration are not implemented.
 
 ## Supported platform
 
@@ -88,6 +92,9 @@ listener.
 - [Windows setup](docs/WINDOWS_SETUP.md)
 - [Phase 0 validation](docs/PHASE_0_VALIDATION.md)
 - [Phase 1 validation](docs/PHASE_1_VALIDATION.md)
+- [v0.1 manual validation](docs/V0_1_MANUAL_VALIDATION.md)
+- [Known limitations](docs/KNOWN_LIMITATIONS.md)
+- [Candidate checklist](docs/RELEASE_CHECKLIST.md)
 
 ## License
 
