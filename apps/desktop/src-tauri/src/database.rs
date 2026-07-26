@@ -863,6 +863,99 @@ impl Database {
         Ok(memories)
     }
 
+    pub fn refresh_conversation_summary(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+    ) -> Result<(), DatabaseError> {
+        self.verify_conversation(agent_id, conversation_id)?;
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT id, author_type, content FROM conversation_messages
+             WHERE agent_id = ?1 AND conversation_id = ?2
+               AND status = 'complete' AND author_type IN ('user', 'agent')
+             ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = statement
+            .query_map(params![agent_id, conversation_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        const RECENT_MESSAGES: usize = 8;
+        if rows.len() <= RECENT_MESSAGES {
+            return Ok(());
+        }
+        let covered = &rows[..rows.len() - RECENT_MESSAGES];
+        let through_message_id = covered
+            .last()
+            .map(|row| row.0.as_str())
+            .ok_or(DatabaseError::NotFound)?;
+        let mut content = String::from("Resumo local de mensagens anteriores:\n");
+        for (_, author, text) in covered.iter().rev().take(12).rev() {
+            let prefix = if author == "user" { "Você" } else { "Agente" };
+            let remaining = 4_000usize.saturating_sub(content.len());
+            if remaining < 16 {
+                break;
+            }
+            let excerpt: String = text
+                .chars()
+                .take(remaining.saturating_sub(prefix.len() + 3))
+                .collect();
+            content.push_str(prefix);
+            content.push_str(": ");
+            content.push_str(&excerpt);
+            content.push('\n');
+        }
+        let now = now_millis();
+        connection.execute(
+            "UPDATE conversation_summaries SET superseded_at = ?1
+             WHERE agent_id = ?2 AND conversation_id = ?3 AND superseded_at IS NULL",
+            params![now, agent_id, conversation_id],
+        )?;
+        connection.execute(
+            "INSERT INTO conversation_summaries
+             (id, conversation_id, agent_id, through_message_id, content, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                Uuid::now_v7().to_string(),
+                conversation_id,
+                agent_id,
+                through_message_id,
+                content,
+                now
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn current_summary_context(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+    ) -> Result<Vec<ContextMessage>, DatabaseError> {
+        let connection = self.open()?;
+        connection
+            .query_row(
+                "SELECT content FROM conversation_summaries
+                 WHERE agent_id = ?1 AND conversation_id = ?2 AND superseded_at IS NULL
+                 ORDER BY created_at DESC LIMIT 1",
+                params![agent_id, conversation_id],
+                |row| {
+                    Ok(ContextMessage {
+                        author: MessageAuthor::System,
+                        content: row.get(0)?,
+                    })
+                },
+            )
+            .optional()
+            .map(|summary| summary.into_iter().collect())
+            .map_err(DatabaseError::from)
+    }
+
     pub fn settings(&self, agent_id: &str) -> Result<PhaseOneSettings, DatabaseError> {
         let connection = self.open()?;
         connection
@@ -1124,7 +1217,8 @@ impl Database {
             })?
             .collect::<Result<Vec<_>, _>>()
             .map_err(DatabaseError::from)?;
-        let mut context = self.confirmed_memory_context(agent_id, 8)?;
+        let mut context = self.current_summary_context(agent_id, conversation_id)?;
+        context.extend(self.confirmed_memory_context(agent_id, 8)?);
         context.extend(messages);
         Ok(context)
     }

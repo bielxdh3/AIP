@@ -896,6 +896,10 @@ impl ChatCoordinator {
         let persisted = self.finish_job(&job, status, error_code);
         if persisted.is_ok() {
             if status == MessageStatus::Complete && !job.temporary {
+                let _ = self
+                    .inner
+                    .database
+                    .refresh_conversation_summary(&job.agent_id, &job.conversation_id);
                 let _ = self.inner.database.create_explicit_memory_candidate(
                     &job.agent_id,
                     &job.conversation_id,

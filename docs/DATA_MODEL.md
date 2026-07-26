@@ -160,6 +160,10 @@ Temporary conversations are not stored here.
 | `model_ref` | text nullable | Model used |
 | `created_at` | integer | UTC milliseconds |
 
+The current v0.1 implementation refreshes a bounded local summary from completed
+turns only. Failed and cancelled turns are excluded; replacing a summary marks the
+previous record superseded rather than rewriting message history.
+
 ## 5. Memory
 
 ### `memories`
