@@ -276,6 +276,12 @@ impl GenerationQueue {
         jobs.extend(self.pending.drain(..));
         jobs
     }
+
+    fn discard_temporary_pending(&mut self, agent_id: &str, conversation_id: &str) {
+        self.pending.retain(|job| {
+            !(job.temporary && job.agent_id == agent_id && job.conversation_id == conversation_id)
+        });
+    }
 }
 
 fn snapshot(
@@ -508,9 +514,10 @@ impl ChatCoordinator {
         Ok(())
     }
 
-    pub fn set_main_override(
+    pub fn set_conversation_override(
         &self,
         agent_id: &str,
+        conversation_id: &str,
         model_ref: Option<&str>,
     ) -> Result<(), &'static str> {
         if let Some(model) = model_ref {
@@ -524,7 +531,7 @@ impl ChatCoordinator {
         }
         self.inner
             .database
-            .set_main_conversation_override(agent_id, model_ref)
+            .set_conversation_override(agent_id, conversation_id, model_ref)
             .map_err(|_| "operation_failed")?;
         self.emit_refresh(Some(agent_id));
         Ok(())
@@ -700,6 +707,35 @@ impl ChatCoordinator {
             let _ = self.finish_job(&job, MessageStatus::Cancelled, Some(error_code));
             self.emit_terminal(&job, "generation.cancelled", Some(error_code));
         }
+    }
+
+    pub fn reset_temporary(&self, agent_id: &str) -> Result<(), &'static str> {
+        let conversation_id = temporary_conversation(agent_id).id;
+        let mut queue = lock(&self.inner.queue);
+        let mut cancelled_active = None;
+        if queue.active.as_ref().is_some_and(|active| {
+            active.job.temporary
+                && active.job.agent_id == agent_id
+                && active.job.conversation_id == conversation_id
+        }) {
+            if let Some(request_id) = queue.active_request().map(str::to_string) {
+                let _ = queue.request_cancellation(&request_id);
+                cancelled_active = Some(request_id);
+            }
+        }
+        queue.discard_temporary_pending(agent_id, &conversation_id);
+        drop(queue);
+        clear_temporary_chat(&mut lock(&self.inner.temporary_chats), agent_id);
+        if let Some(request_id) = cancelled_active {
+            let cancel_id = format!("cancel-{}", uuid::Uuid::now_v7());
+            let request =
+                cancellation_request(&cancel_id, &request_id).map_err(|_| "operation_failed")?;
+            if let Err(code) = self.inner.runtime.send(request) {
+                self.fail_active(&request_id, code);
+            }
+        }
+        self.emit_refresh(Some(agent_id));
+        Ok(())
     }
 
     pub fn retry_runtime(&self) {
@@ -1033,7 +1069,7 @@ impl ChatCoordinator {
             &job.assistant_message_id,
             provider_model_id,
             settings.keep_alive_minutes,
-            &assemble_context(&agent.name, &agent.profile_key, messages),
+            &assemble_context(&agent, messages),
         )
         .map_err(|_| "protocol_encoding_failed")
     }
@@ -1192,18 +1228,12 @@ fn build_generation_request_from_database(
     let settings = database
         .settings(&job.agent_id)
         .map_err(|_| "persistence_failed")?;
-    let conversation = database
-        .conversation(&job.agent_id, &job.conversation_id)
-        .map_err(|_| "persistence_failed")?;
     let context = database
         .context_messages(&job.agent_id, &job.conversation_id, MAX_HISTORY_MESSAGES)
         .map_err(|_| "persistence_failed")?;
-    let messages = assemble_context(&agent.name, &agent.profile_key, context);
-    let model_ref = conversation
-        .model_override_ref
-        .as_deref()
-        .unwrap_or(&job.model_ref);
-    let provider_model_id = model_ref
+    let messages = assemble_context(&agent, context);
+    let provider_model_id = job
+        .model_ref
         .strip_prefix("ollama:")
         .filter(|model| valid_provider_model_id(model))
         .ok_or("model_unavailable")?;
@@ -1244,13 +1274,27 @@ fn temporary_conversation(agent_id: &str) -> crate::domain::PhaseOneConversation
     }
 }
 
+fn clear_temporary_chat(store: &mut TemporaryChatStore, agent_id: &str) {
+    store.conversations.remove(agent_id);
+}
+
 fn assemble_context(
-    agent_name: &str,
-    profile_key: &str,
+    agent: &crate::domain::ProvisionalAgent,
     messages: Vec<ContextMessage>,
 ) -> Vec<PromptMessage> {
+    let agent_name = &agent.name;
+    let profile_key = &agent.profile_key;
     let instruction = format!(
         "Você é {agent_name}, um agente provisório local do perfil {profile_key}. Responda em português por padrão. Não afirme ter executado ações externas."
+    );
+    let instruction = format!(
+        "{instruction} Persistent identity: species: {}; pronouns: {}; fictive age: {} ({}); personality: {}; validated traits (0 to 100): {}.",
+        agent.species,
+        agent.pronouns,
+        agent.fictive_age,
+        agent.age_category,
+        agent.personality_summary,
+        agent.traits_json,
     );
     let mut used = instruction.len();
     let mut selected = Vec::new();
@@ -1352,6 +1396,45 @@ mod tests {
         assert_eq!(luma.id, "temporary-luma");
         assert_ne!(astra.id, luma.id);
         assert_eq!(astra.model_override_ref, None);
+    }
+
+    #[test]
+    fn closing_temporary_chat_discards_ram_and_pending_work_without_persistence() {
+        let mut temporary = TemporaryChatStore::default();
+        temporary.conversations.insert(
+            "astra".into(),
+            TemporaryConversation {
+                conversation: temporary_conversation("astra"),
+                messages: Vec::new(),
+            },
+        );
+        let mut queue = GenerationQueue::default();
+        let mut pending = job("temporary", "astra");
+        pending.temporary = true;
+        pending.conversation_id = temporary_conversation("astra").id;
+        queue.enqueue(pending).unwrap();
+        queue.discard_temporary_pending("astra", &temporary_conversation("astra").id);
+        clear_temporary_chat(&mut temporary, "astra");
+        assert!(temporary.conversations.is_empty());
+        assert_eq!(queue.len(), 0);
+
+        let path = std::env::temp_dir()
+            .join(format!("aip-temporary-close-{}", Uuid::now_v7()))
+            .join("aip.sqlite3");
+        let database = Database::initialize(&path).unwrap();
+        let agent = database.agent(crate::database::ASTRA_ID).unwrap();
+        assert!(database
+            .messages(
+                &agent.id,
+                &database.main_conversation(&agent.id).unwrap().id
+            )
+            .unwrap()
+            .is_empty());
+        assert!(database
+            .conversation(&agent.id, &temporary_conversation(&agent.id).id)
+            .is_err());
+        drop(database);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
@@ -1499,7 +1582,24 @@ mod tests {
                 content: format!("message-{index}"),
             })
             .collect();
-        let prompt = assemble_context("Astra", "owner", messages);
+        let prompt = assemble_context(
+            &crate::domain::ProvisionalAgent {
+                id: "astra".into(),
+                name: "Astra".into(),
+                profile_key: "owner".into(),
+                sprite_key: "astra".into(),
+                position: crate::domain::AgentPosition { x: 0.0, y: 0.0 },
+                birthday: "2000-01-01".into(),
+                fictive_age: 18,
+                age_category: "adult".into(),
+                species: "agent".into(),
+                pronouns: "they/them".into(),
+                personality_summary: "curious".into(),
+                traits_json: r#"{"curiosity":80}"#.into(),
+                appearance_preset: "astra".into(),
+            },
+            messages,
+        );
         assert_eq!(prompt[0].role, "system");
         assert!(prompt.last().unwrap().content.ends_with("39"));
         assert!(
@@ -1522,7 +1622,11 @@ mod tests {
             .create_conversation(&agent.id, "Secondary")
             .unwrap();
         database
-            .set_main_conversation_override(&agent.id, Some("ollama:main"))
+            .set_conversation_override(
+                &agent.id,
+                &database.main_conversation(&agent.id).unwrap().id,
+                Some("ollama:main"),
+            )
             .unwrap();
         database
             .set_selected_model(&agent.id, "ollama:default")
@@ -1551,6 +1655,88 @@ mod tests {
         .unwrap();
         assert!(request.contains("secondary-only"));
         assert!(!request.contains("ollama:main"));
+        drop(database);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn edited_identity_enters_later_request_context_without_cross_agent_leakage() {
+        let path = std::env::temp_dir()
+            .join(format!("aip-identity-context-{}", Uuid::now_v7()))
+            .join("aip.sqlite3");
+        let database = Database::initialize(&path).unwrap();
+        let mut astra = database.agent(crate::database::ASTRA_ID).unwrap();
+        astra.name = "Nova Astra".into();
+        astra.species = "fox".into();
+        astra.pronouns = "ela/dela".into();
+        astra.fictive_age = 42;
+        astra.age_category = "custom".into();
+        astra.personality_summary = "calma".into();
+        astra.traits_json = r#"{"curiosity":80,"custom_focus":60}"#.into();
+        database.update_profile(&astra).unwrap();
+        let conversation = database.main_conversation(&astra.id).unwrap();
+        let attempt = database
+            .create_message_attempt(&astra.id, &conversation.id, "hello", "ollama:test")
+            .unwrap();
+        let request = build_generation_request_from_database(
+            &database,
+            &job_from_attempt(&astra.id, &conversation.id, "ollama:test", &attempt),
+        )
+        .unwrap();
+        assert!(request.contains("Nova Astra"));
+        assert!(request.contains("fox"));
+        assert!(request.contains("custom_focus"));
+        let luma = database.agent(crate::database::LUMA_ID).unwrap();
+        let luma_conversation = database.main_conversation(&luma.id).unwrap();
+        let luma_attempt = database
+            .create_message_attempt(&luma.id, &luma_conversation.id, "hello", "ollama:test")
+            .unwrap();
+        let luma_request = build_generation_request_from_database(
+            &database,
+            &job_from_attempt(
+                &luma.id,
+                &luma_conversation.id,
+                "ollama:test",
+                &luma_attempt,
+            ),
+        )
+        .unwrap();
+        assert!(!luma_request.contains("Nova Astra"));
+        drop(database);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn queued_generation_keeps_the_persisted_model_when_overrides_change() {
+        let path = std::env::temp_dir()
+            .join(format!("aip-model-freeze-{}", Uuid::now_v7()))
+            .join("aip.sqlite3");
+        let database = Database::initialize(&path).unwrap();
+        let agent = database.agent(crate::database::ASTRA_ID).unwrap();
+        let conversation = database.main_conversation(&agent.id).unwrap();
+        let attempt = database
+            .create_message_attempt(&agent.id, &conversation.id, "queued", "ollama:queued")
+            .unwrap();
+        database
+            .set_conversation_override(&agent.id, &conversation.id, Some("ollama:changed"))
+            .unwrap();
+        let request = build_generation_request_from_database(
+            &database,
+            &job_from_attempt(&agent.id, &conversation.id, "ollama:queued", &attempt),
+        )
+        .unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&request).unwrap();
+        assert_eq!(payload["params"]["model"], "queued");
+        assert_eq!(
+            database
+                .messages(&agent.id, &conversation.id)
+                .unwrap()
+                .last()
+                .unwrap()
+                .model_ref
+                .as_deref(),
+            Some("ollama:queued")
+        );
         drop(database);
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }

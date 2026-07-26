@@ -1025,16 +1025,17 @@ impl Database {
 
     pub fn update_profile(&self, agent: &ProvisionalAgent) -> Result<(), DatabaseError> {
         validate_profile(agent)?;
-        let connection = self.open()?;
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
         let now = now_millis();
-        let changed = connection.execute(
+        let changed = transaction.execute(
             "UPDATE agents SET name = ?1, updated_at = ?2 WHERE id = ?3",
             params![agent.name.trim(), now, agent.id],
         )?;
         if changed != 1 {
             return Err(DatabaseError::NotFound);
         }
-        connection.execute(
+        let identity_changed = transaction.execute(
             "UPDATE agent_identity_profiles SET birthday = ?1, fictive_age = ?2,
              age_category = ?3, species = ?4, pronouns = ?5, personality_summary = ?6,
              traits_json = ?7, appearance_preset = ?8, updated_at = ?9 WHERE agent_id = ?10",
@@ -1051,6 +1052,10 @@ impl Database {
                 agent.id
             ],
         )?;
+        if identity_changed != 1 {
+            return Err(DatabaseError::NotFound);
+        }
+        transaction.commit()?;
         Ok(())
     }
 
@@ -1105,9 +1110,10 @@ impl Database {
         Ok(())
     }
 
-    pub fn set_main_conversation_override(
+    pub fn set_conversation_override(
         &self,
         agent_id: &str,
+        conversation_id: &str,
         model_ref: Option<&str>,
     ) -> Result<(), DatabaseError> {
         if model_ref.is_some_and(|model| !valid_model_ref(model)) {
@@ -1116,8 +1122,8 @@ impl Database {
         let connection = self.open()?;
         let changed = connection.execute(
             "UPDATE conversations SET model_override_ref = ?1, updated_at = ?2
-             WHERE agent_id = ?3 AND is_main = 1 AND archived_at IS NULL",
-            params![model_ref, now_millis(), agent_id],
+             WHERE id = ?3 AND agent_id = ?4 AND archived_at IS NULL",
+            params![model_ref, now_millis(), conversation_id, agent_id],
         )?;
         if changed == 1 {
             Ok(())
@@ -1414,20 +1420,12 @@ fn valid_model_ref(value: &str) -> bool {
 }
 
 fn validate_profile(agent: &ProvisionalAgent) -> Result<(), DatabaseError> {
-    let birthday = agent.birthday.as_bytes();
-    let birthday_is_iso_date = birthday.len() == 10
-        && birthday[4] == b'-'
-        && birthday[7] == b'-'
-        && birthday
-            .iter()
-            .enumerate()
-            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit());
-    let traits_are_an_object = serde_json::from_str::<serde_json::Value>(&agent.traits_json)
-        .is_ok_and(|value| value.is_object());
+    let birthday_is_real_date = valid_calendar_date(&agent.birthday);
+    let traits_are_valid = valid_traits(&agent.traits_json);
 
     if agent.name.trim().is_empty()
         || agent.name.len() > 120
-        || !birthday_is_iso_date
+        || !birthday_is_real_date
         || agent.age_category.trim().is_empty()
         || agent.age_category.len() > 64
         || agent.species.trim().is_empty()
@@ -1435,7 +1433,7 @@ fn validate_profile(agent: &ProvisionalAgent) -> Result<(), DatabaseError> {
         || agent.pronouns.trim().is_empty()
         || agent.pronouns.len() > 120
         || agent.personality_summary.len() > 1_000
-        || !traits_are_an_object
+        || !traits_are_valid
         || agent.traits_json.len() > 8_192
         || agent.fictive_age > 10_000
         || !matches!(agent.appearance_preset.as_str(), "astra" | "luma")
@@ -1443,6 +1441,53 @@ fn validate_profile(agent: &ProvisionalAgent) -> Result<(), DatabaseError> {
         return Err(DatabaseError::InvalidValue);
     }
     Ok(())
+}
+
+fn valid_calendar_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return false;
+    }
+    let parse = |range: std::ops::Range<usize>| {
+        std::str::from_utf8(&bytes[range]).ok()?.parse::<u32>().ok()
+    };
+    let (Some(year), Some(month), Some(day)) = (parse(0..4), parse(5..7), parse(8..10)) else {
+        return false;
+    };
+    if year == 0 || !(1..=12).contains(&month) || day == 0 {
+        return false;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    day <= days
+}
+
+fn valid_traits(source: &str) -> bool {
+    let Ok(serde_json::Value::Object(traits)) = serde_json::from_str(source) else {
+        return false;
+    };
+    traits.into_iter().all(|(key, value)| {
+        let key_is_valid = matches!(
+            key.as_str(),
+            "curiosity" | "sociability" | "criticality" | "spontaneity" | "affection" | "autonomy"
+        ) || key.strip_prefix("custom_").is_some_and(|suffix| {
+            !suffix.is_empty()
+                && suffix.len() <= 48
+                && suffix.chars().all(|character| {
+                    character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+                })
+        });
+        key_is_valid
+            && value
+                .as_f64()
+                .is_some_and(|number| number.is_finite() && (0.0..=100.0).contains(&number))
+    })
 }
 
 fn map_agent(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProvisionalAgent> {
@@ -1869,6 +1914,96 @@ mod tests {
             Some("ollama:astra-model")
         );
         assert_eq!(database.settings(ASTRA_ID).unwrap().keep_alive_minutes, 30);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn profile_update_is_atomic_and_validates_calendar_dates_and_traits() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let original = database.agent(ASTRA_ID).unwrap();
+        let mut invalid = original.clone();
+        invalid.birthday = "2025-02-29".into();
+        assert_eq!(
+            database.update_profile(&invalid),
+            Err(DatabaseError::InvalidValue)
+        );
+        invalid.birthday = "2024-02-29".into();
+        invalid.traits_json = r#"{"unknown":20}"#.into();
+        assert_eq!(
+            database.update_profile(&invalid),
+            Err(DatabaseError::InvalidValue)
+        );
+        invalid.traits_json = r#"{"curiosity":101}"#.into();
+        assert_eq!(
+            database.update_profile(&invalid),
+            Err(DatabaseError::InvalidValue)
+        );
+
+        let mut edited = original.clone();
+        edited.name = "Atomic Astra".into();
+        database
+            .open()
+            .unwrap()
+            .execute(
+                "DELETE FROM agent_identity_profiles WHERE agent_id = ?1",
+                params![ASTRA_ID],
+            )
+            .unwrap();
+        assert_eq!(
+            database.update_profile(&edited),
+            Err(DatabaseError::NotFound)
+        );
+        let connection = database.open().unwrap();
+        let name: String = connection
+            .query_row(
+                "SELECT name FROM agents WHERE id = ?1",
+                params![ASTRA_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(name, original.name);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn conversation_overrides_are_scoped_to_the_matching_agent_and_conversation() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let main = database.main_conversation(ASTRA_ID).unwrap();
+        let secondary = database.create_conversation(ASTRA_ID, "Secondary").unwrap();
+        database
+            .set_conversation_override(ASTRA_ID, &secondary.id, Some("ollama:secondary"))
+            .unwrap();
+        assert_eq!(
+            database
+                .conversation(ASTRA_ID, &secondary.id)
+                .unwrap()
+                .model_override_ref
+                .as_deref(),
+            Some("ollama:secondary")
+        );
+        assert_eq!(
+            database
+                .conversation(ASTRA_ID, &main.id)
+                .unwrap()
+                .model_override_ref,
+            None
+        );
+        assert_eq!(
+            database.set_conversation_override(LUMA_ID, &secondary.id, Some("ollama:luma")),
+            Err(DatabaseError::NotFound)
+        );
+        database
+            .set_conversation_override(ASTRA_ID, &secondary.id, None)
+            .unwrap();
+        assert_eq!(
+            database
+                .conversation(ASTRA_ID, &secondary.id)
+                .unwrap()
+                .model_override_ref,
+            None
+        );
         cleanup(&path);
     }
 

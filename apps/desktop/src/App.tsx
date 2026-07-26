@@ -19,6 +19,7 @@ import AgentSprite from "./components/AgentSprite";
 import {
   blockedSendCopy,
   canRequestCancellation,
+  conversationOverrideArguments,
   messageFailureCopy,
   messageStatusCopy,
   providerRecoveryCopy,
@@ -33,6 +34,7 @@ import { usePhaseOne } from "./use-phase-one";
 import { createListenerRegistration } from "./listener-lifecycle";
 import {
   nextLayerId,
+  floodFillLayer,
   parsePixelDocument,
   updatePixelLayer,
   type PixelDocument,
@@ -47,6 +49,66 @@ const runtimeLabels: Record<AppSnapshot["runtime"]["state"], string> = {
   crashed: "Runtime interrompido",
   safe_mode: "Runtime desativado pelo modo seguro",
 };
+
+const initialTraits = [
+  ["curiosity", "Curiosidade"],
+  ["sociability", "Sociabilidade"],
+  ["criticality", "Criticidade"],
+  ["spontaneity", "Espontaneidade"],
+  ["affection", "Afetividade"],
+  ["autonomy", "Autonomia"],
+] as const;
+
+function traitValues(source: string): Record<string, number> {
+  try {
+    const value: unknown = JSON.parse(source);
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      return Object.fromEntries(
+        Object.entries(value).filter(
+          ([, trait]) => typeof trait === "number" && Number.isFinite(trait),
+        ),
+      );
+    }
+  } catch {
+    /* Rust remains the authoritative validator. */
+  }
+  return {};
+}
+
+function updateInitialTrait(agent: ProvisionalAgent, key: string, value: number) {
+  const traits = traitValues(agent.traitsJson);
+  traits[key] = Math.max(0, Math.min(100, value));
+  return { ...agent, traitsJson: JSON.stringify(traits) };
+}
+
+function withInitialTraitDefaults(agent: ProvisionalAgent): ProvisionalAgent {
+  const traits = traitValues(agent.traitsJson);
+  for (const [key] of initialTraits) traits[key] ??= 50;
+  return { ...agent, traitsJson: JSON.stringify(traits) };
+}
+
+function validCalendarDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (match === null) return false;
+  const [, yearText = "", monthText = "", dayText = ""] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function profileValidationError(agent: ProvisionalAgent): string | null {
+  if (!agent.name.trim() || !agent.species.trim() || !agent.pronouns.trim()) return "Preencha nome, espécie e pronomes.";
+  if (!validCalendarDate(agent.birthday)) return "Informe uma data de aniversário válida.";
+  if (!agent.ageCategory.trim()) return "Informe a categoria de idade.";
+  if (!Number.isFinite(agent.fictiveAge) || agent.fictiveAge < 0 || agent.fictiveAge > 10000) return "Informe uma idade fictícia entre 0 e 10000.";
+  if (initialTraits.some(([key]) => {
+    const value = traitValues(agent.traitsJson)[key];
+    return value !== undefined && (!Number.isFinite(value) || value < 0 || value > 100);
+  })) return "Cada traço deve ser um número entre 0 e 100.";
+  return null;
+}
 
 function AgentButton({
   agent,
@@ -263,10 +325,14 @@ function ConversationSurface({
                     disabled={!modelsAvailable}
                     value={phase.modelOverrideRef ?? ""}
                     onChange={(event) =>
-                      void invoke("set_main_conversation_model_override", {
-                        agentId: currentPhase.agent.id,
-                        modelRef: event.target.value || null,
-                      }).then(load)
+                      void invoke(
+                        "set_conversation_model_override",
+                        conversationOverrideArguments(
+                          currentPhase.agent.id,
+                          currentPhase.conversation.id,
+                          event.target.value,
+                        ),
+                      ).then(load)
                     }
                   >
                     <option value="">Usar modelo padrão do agente</option>
@@ -457,15 +523,33 @@ function ProfileFields({
           }
         />
       </label>
-      <label>
-        Traços (JSON)
+      <fieldset className="trait-controls">
+        <legend>Traços iniciais</legend>
         <input
+          type="hidden"
           value={draft.traitsJson}
           onChange={(event) =>
             onChange({ ...draft, traitsJson: event.target.value })
           }
         />
-      </label>
+        <div>
+          {initialTraits.map(([key, label]) => (
+            <label key={key}>
+              {label}
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="1"
+                value={traitValues(draft.traitsJson)[key] ?? 50}
+                onChange={(event) =>
+                  onChange(updateInitialTrait(draft, key, Number(event.target.value)))
+                }
+              />
+            </label>
+          ))}
+        </div>
+      </fieldset>
     </>
   );
 }
@@ -481,6 +565,12 @@ function ProfileForm({
   const [error, setError] = useState<string | null>(null);
   useEffect(() => setDraft(agent), [agent]);
   async function save() {
+    const prepared = withInitialTraitDefaults(draft);
+    const validation = profileValidationError(prepared);
+    if (validation !== null) {
+      setError(validation);
+      return;
+    }
     if (
       !draft.name.trim() ||
       !draft.birthday ||
@@ -491,7 +581,7 @@ function ProfileForm({
       return;
     }
     try {
-      await invoke("update_agent_profile", { agent: draft });
+      await invoke("update_agent_profile", { agent: prepared });
       done();
     } catch {
       setError("Não foi possível salvar o perfil.");
@@ -526,6 +616,11 @@ function OnboardingForm({
       ),
     );
   async function save() {
+    const prepared = drafts.map(withInitialTraitDefaults);
+    if (prepared.some((agent) => profileValidationError(agent) !== null)) {
+      setError("Revise a data, a idade e os traços dos dois agentes.");
+      return;
+    }
     if (
       drafts.length !== 2 ||
       drafts.some(
@@ -541,7 +636,7 @@ function OnboardingForm({
       return;
     }
     try {
-      await invoke("complete_phase_two_onboarding", { agents: drafts });
+      await invoke("complete_phase_two_onboarding", { agents: prepared });
       done();
     } catch {
       setError("Não foi possível concluir a criação dos perfis.");
@@ -1149,6 +1244,17 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         setColor(existingColor ?? "#10151c");
         return;
       }
+      if (tool === "fill") {
+        replaceSource(
+          JSON.stringify(
+            updatePixelLayer(document, layer.id, (current) =>
+              floodFillLayer(current, x, y, color),
+            ),
+          ),
+        );
+        setError(null);
+        return;
+      }
       const pixels = (layer.pixels ?? []).filter(
         ([pixelX, pixelY]) =>
           (pixelX !== x || pixelY !== y) &&
@@ -1159,22 +1265,6 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         if (mirror && x !== 63 - x) pixels.push([63 - x, y, color]);
       }
       layer.pixels = pixels;
-      if (tool === "fill") {
-        const target =
-          layer.pixels?.find(
-            ([pixelX, pixelY]) => pixelX === x && pixelY === y,
-          )?.[2] ?? null;
-        if (target !== color) {
-          layer.pixels = (layer.pixels ?? []).map(
-            ([pixelX, pixelY, pixelColor]) =>
-              [pixelX, pixelY, pixelColor === target ? color : pixelColor] as [
-                number,
-                number,
-                string,
-              ],
-          );
-        }
-      }
       replaceSource(
         JSON.stringify(updatePixelLayer(document, layer.id, () => layer)),
       );
@@ -1624,7 +1714,6 @@ function App() {
     const registration = createListenerRegistration();
     void listen<string>("open-conversation", (event) => {
       setActiveAgentId(event.payload);
-      setTemporaryChat(false);
       setEditingAgentId(null);
       setWorkspace("chat");
     }).then(registration.register);
@@ -1650,6 +1739,30 @@ function App() {
     setWorkspace(next);
   }
 
+  async function leaveTemporaryChat() {
+    if (temporaryChat && activeAgentId !== null) {
+      await invoke("close_temporary_phase_one_chat", { agentId: activeAgentId });
+    }
+    setTemporaryChat(false);
+  }
+
+  async function toggleTemporaryChat() {
+    if (temporaryChat) {
+      await leaveTemporaryChat();
+      return;
+    }
+    setEditingAgentId(null);
+    setWorkspace("chat");
+    setTemporaryChat(true);
+  }
+
+  async function selectAgent(agentId: string) {
+    await leaveTemporaryChat();
+    setActiveAgentId(agentId);
+    setEditingAgentId(null);
+    setWorkspace("chat");
+  }
+
   return (
     <div className="app-shell conversation-layout">
       <aside className="sidebar" aria-label="Navegação principal">
@@ -1667,12 +1780,7 @@ function App() {
               key={agent.id}
               agent={agent}
               active={agent.id === activeAgentId}
-              onSelect={() => {
-                setActiveAgentId(agent.id);
-                setTemporaryChat(false);
-                setEditingAgentId(null);
-                setWorkspace("chat");
-              }}
+              onSelect={() => void selectAgent(agent.id)}
             />
           ))}
         </div>
@@ -1692,7 +1800,7 @@ function App() {
             <summary>Ferramentas do agente</summary>
             <button
               type="button"
-              onClick={() => setTemporaryChat((current) => !current)}
+              onClick={() => void toggleTemporaryChat()}
             >
               {temporaryChat
                 ? "Voltar à conversa salva"
@@ -1782,11 +1890,7 @@ function App() {
                   : "workspace-temporary"
               }
               type="button"
-              onClick={() => {
-                setTemporaryChat((current) => !current);
-                setEditingAgentId(null);
-                setWorkspace("chat");
-              }}
+              onClick={() => void toggleTemporaryChat()}
             >
               {temporaryChat ? "Conversa salva" : "Temporária"}
             </button>

@@ -10,6 +10,14 @@ export type ConversationViewState = {
   lastSequenceByRequest: Record<string, number>;
 };
 
+export function conversationOverrideArguments(
+  agentId: string,
+  conversationId: string,
+  modelRef: string,
+) {
+  return { agentId, conversationId, modelRef: modelRef || null };
+}
+
 const terminalStatuses = new Set(["complete", "failed", "cancelled"]);
 
 export function createConversationViewState(
