@@ -683,8 +683,21 @@ pub fn run() {
         .expect("AIP desktop initialization failed");
 
     app.run(|app_handle, event| {
+        if let tauri::RunEvent::WindowEvent { label, event, .. } = &event {
+            if label == "main" && matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                if let Some(state) = app_handle.try_state::<AppState>() {
+                    overlays::close_all(app_handle, &state.overlay_input);
+                }
+                app_handle.exit(0);
+                return;
+            }
+        }
         if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
-            overlays::reset_native_regions(app_handle);
+            if let Some(state) = app_handle.try_state::<AppState>() {
+                overlays::close_all(app_handle, &state.overlay_input);
+            } else {
+                overlays::reset_native_regions(app_handle);
+            }
         }
         if matches!(event, tauri::RunEvent::Exit) {
             if let Some(state) = app_handle.try_state::<AppState>() {
