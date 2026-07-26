@@ -354,6 +354,31 @@ impl Database {
         Ok(conversations)
     }
 
+    pub fn archived_conversations(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<PhaseOneConversation>, DatabaseError> {
+        self.agent(agent_id)?;
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT id, agent_id, title, model_override_ref FROM conversations
+             WHERE agent_id = ?1 AND archived_at IS NOT NULL
+             ORDER BY archived_at DESC, id ASC",
+        )?;
+        let conversations = statement
+            .query_map(params![agent_id], |row| {
+                Ok(PhaseOneConversation {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    title: row.get(2)?,
+                    model_override_ref: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DatabaseError::from)?;
+        Ok(conversations)
+    }
+
     pub fn create_conversation(
         &self,
         agent_id: &str,
@@ -1591,6 +1616,17 @@ mod tests {
             database.set_active_conversation(LUMA_ID, &astra.id),
             Err(DatabaseError::OwnershipMismatch)
         );
+        database.archive_conversation(ASTRA_ID, &astra.id).unwrap();
+        assert!(database
+            .conversations(ASTRA_ID)
+            .unwrap()
+            .iter()
+            .all(|item| item.id != astra.id));
+        assert_eq!(
+            database.archived_conversations(ASTRA_ID).unwrap()[0].id,
+            astra.id
+        );
+        database.restore_conversation(ASTRA_ID, &astra.id).unwrap();
 
         let memory = database
             .create_memory(ASTRA_ID, "preference", "Likes astronomy", true)

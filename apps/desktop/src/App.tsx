@@ -372,8 +372,12 @@ function OnboardingForm({ agents, done }: { agents: ProvisionalAgent[]; done: ()
 
 function ConversationList({ agentId, changed }: { agentId: string; changed: () => void }) {
   const [items, setItems] = useState<PhaseOneConversation[]>([]);
+  const [archived, setArchived] = useState<PhaseOneConversation[]>([]);
   const [title, setTitle] = useState("");
-  const load = useCallback(() => void invoke<PhaseOneConversation[]>("list_agent_conversations", { agentId }).then(setItems), [agentId]);
+  const load = useCallback(() => void Promise.all([
+    invoke<PhaseOneConversation[]>("list_agent_conversations", { agentId }),
+    invoke<PhaseOneConversation[]>("list_archived_agent_conversations", { agentId }),
+  ]).then(([current, previous]) => { setItems(current); setArchived(previous); }), [agentId]);
   useEffect(() => { load(); }, [load]);
   async function create() {
     if (!title.trim()) return;
@@ -386,6 +390,7 @@ function ConversationList({ agentId, changed }: { agentId: string; changed: () =
   }
   return <div className="conversation-list" aria-label="Conversas do agente">
     {items.map((item) => <div key={item.id}><button type="button" onClick={() => void select(item.id)}>{item.title}{item.id === items[0]?.id ? " · Principal" : ""}</button>{item.id !== items[0]?.id ? <button type="button" onClick={() => void invoke("archive_agent_conversation", { agentId, conversationId: item.id }).then(load)}>Arquivar</button> : null}</div>)}
+    {archived.length > 0 ? <details><summary>Arquivadas ({archived.length})</summary>{archived.map((item) => <div key={item.id}><span>{item.title}</span><button type="button" onClick={() => void invoke("restore_agent_conversation", { agentId, conversationId: item.id }).then(load)}>Restaurar</button></div>)}</details> : null}
     <input value={title} placeholder="Nova conversa" onChange={(event) => setTitle(event.target.value)} />
     <button type="button" onClick={() => void create()}>Criar conversa</button>
   </div>;
