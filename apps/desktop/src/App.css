@@ -140,6 +140,33 @@ a:focus-visible {
   font-size: 11px;
 }
 
+.agent-tools {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  color: #aeb6c2;
+  font-size: 11px;
+}
+
+.agent-tools > summary,
+.agent-tools > details > summary {
+  cursor: pointer;
+  color: #8d96a5;
+}
+
+.agent-tools > details > summary {
+  padding: 5px 0;
+}
+
+.agent-tools button {
+  width: 100%;
+  min-height: 31px;
+  border: 1px solid #303742;
+  border-radius: 5px;
+  color: #dce1e8;
+  background: #171d24;
+}
+
 .agent-state-controls label {
   display: grid;
   gap: 4px;
