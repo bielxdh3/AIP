@@ -128,6 +128,38 @@ a:focus-visible {
   margin-top: 18px;
 }
 
+.agent-state-controls {
+  display: grid;
+  gap: 7px;
+  margin-top: 14px;
+  padding: 10px;
+  border: 1px solid #293139;
+  border-radius: 6px;
+  color: #aeb6c2;
+  background: #11161c;
+  font-size: 11px;
+}
+
+.agent-state-controls label {
+  display: grid;
+  gap: 4px;
+  color: #7d8794;
+  font-size: 10px;
+}
+
+.agent-state-controls select,
+.agent-state-controls button {
+  min-height: 30px;
+  border: 1px solid #303742;
+  border-radius: 5px;
+  color: #dce1e8;
+  background: #171d24;
+}
+
+.agent-state-controls small {
+  color: #7d8794;
+}
+
 .runtime-banner {
   display: flex;
   align-items: center;

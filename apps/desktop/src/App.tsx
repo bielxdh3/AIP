@@ -10,6 +10,7 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   AppSnapshot,
   AgentMemory,
+  AgentSimulatedState,
   ConversationMessage,
   PhaseOneConversation,
   ProvisionalAgent,
@@ -412,6 +413,84 @@ function MemoryList({ agentId }: { agentId: string }) {
   </div>;
 }
 
+function AgentStateControls({ agentId }: { agentId: string }) {
+  const [state, setState] = useState<AgentSimulatedState | null>(null);
+  const [saving, setSaving] = useState(false);
+  const load = useCallback(
+    () =>
+      void invoke<AgentSimulatedState>("get_agent_simulated_state", { agentId })
+        .then(setState)
+        .catch(() => setState(null)),
+    [agentId],
+  );
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function update(action: () => Promise<unknown>) {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await action();
+      load();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (state === null) return null;
+  return (
+    <section className="agent-state-controls" aria-label="Estado do agente">
+      <strong>Estado</strong>
+      <label>
+        Modo
+        <select
+          value={state.mode}
+          disabled={saving}
+          onChange={(event) =>
+            void update(() =>
+              invoke("set_agent_simulated_mode", {
+                agentId,
+                mode: event.target.value,
+              }),
+            )
+          }
+        >
+          <option value="normal">Normal</option>
+          <option value="voice_muted">Sem voz</option>
+          <option value="silent">Silencioso</option>
+          <option value="safe">Seguro</option>
+        </select>
+      </label>
+      <small>
+        Energia {state.energy}% · Humor {state.mood}% · Sono {state.sleep}%
+      </small>
+      <button
+        type="button"
+        disabled={saving}
+        onClick={() =>
+          void update(() =>
+            invoke("set_agent_suspension", {
+              agentId,
+              suspended: !state.suspended,
+            }),
+          )
+        }
+      >
+        {state.suspended ? "Retomar agente" : "Suspender agente"}
+      </button>
+      <button
+        type="button"
+        disabled={saving || !state.suspended}
+        onClick={() => void update(() => invoke("wake_agent_now", { agentId }))}
+      >
+        Acordar agora
+      </button>
+    </section>
+  );
+}
+
 function PixelDocumentEditor({ agentId }: { agentId: string }) {
   const [source, setSource] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -487,6 +566,7 @@ function App() {
         </div>
         {activeAgentId ? <ConversationList agentId={activeAgentId} changed={() => setConversationRevision((value) => value + 1)} /> : null}
         {activeAgentId ? <MemoryList agentId={activeAgentId} /> : null}
+        {activeAgentId ? <AgentStateControls agentId={activeAgentId} /> : null}
         {activeAgentId ? <PixelDocumentEditor agentId={activeAgentId} /> : null}
         {snapshot?.agents.map((agent) => <button key={`profile-${agent.id}`} type="button" onClick={() => setEditingAgentId(agent.id)}>Perfil de {agent.name}</button>)}
         <button
