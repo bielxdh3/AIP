@@ -176,6 +176,20 @@ impl GenerationQueue {
         None
     }
 
+    fn take_temporary_active(
+        &mut self,
+        agent_id: &str,
+        conversation_id: &str,
+    ) -> Option<GenerationJob> {
+        let request_id = self.active.as_ref().and_then(|active| {
+            (active.job.temporary
+                && active.job.agent_id == agent_id
+                && active.job.conversation_id == conversation_id)
+                .then(|| active.job.request_id.clone())
+        })?;
+        self.finish_active(&request_id)
+    }
+
     fn active_request(&self) -> Option<&str> {
         self.active
             .as_ref()
@@ -712,29 +726,18 @@ impl ChatCoordinator {
     pub fn reset_temporary(&self, agent_id: &str) -> Result<(), &'static str> {
         let conversation_id = temporary_conversation(agent_id).id;
         let mut queue = lock(&self.inner.queue);
-        let mut cancelled_active = None;
-        if queue.active.as_ref().is_some_and(|active| {
-            active.job.temporary
-                && active.job.agent_id == agent_id
-                && active.job.conversation_id == conversation_id
-        }) {
-            if let Some(request_id) = queue.active_request().map(str::to_string) {
-                let _ = queue.request_cancellation(&request_id);
-                cancelled_active = Some(request_id);
-            }
-        }
+        let cancelled_active = queue.take_temporary_active(agent_id, &conversation_id);
         queue.discard_temporary_pending(agent_id, &conversation_id);
         drop(queue);
         clear_temporary_chat(&mut lock(&self.inner.temporary_chats), agent_id);
-        if let Some(request_id) = cancelled_active {
+        if let Some(job) = cancelled_active {
             let cancel_id = format!("cancel-{}", uuid::Uuid::now_v7());
-            let request =
-                cancellation_request(&cancel_id, &request_id).map_err(|_| "operation_failed")?;
-            if let Err(code) = self.inner.runtime.send(request) {
-                self.fail_active(&request_id, code);
+            if let Ok(request) = cancellation_request(&cancel_id, &job.request_id) {
+                let _ = self.inner.runtime.send(request);
             }
         }
         self.emit_refresh(Some(agent_id));
+        self.dispatch_next();
         Ok(())
     }
 
@@ -1399,24 +1402,76 @@ mod tests {
     }
 
     #[test]
-    fn closing_temporary_chat_discards_ram_and_pending_work_without_persistence() {
+    fn closing_active_temporary_chat_releases_queue_and_ignores_late_events() {
         let mut temporary = TemporaryChatStore::default();
+        let temporary_conversation = temporary_conversation("astra");
         temporary.conversations.insert(
             "astra".into(),
             TemporaryConversation {
-                conversation: temporary_conversation("astra"),
-                messages: Vec::new(),
+                conversation: temporary_conversation.clone(),
+                messages: vec![ConversationMessage {
+                    id: "temporary-assistant".into(),
+                    conversation_id: temporary_conversation.id.clone(),
+                    agent_id: "astra".into(),
+                    author: MessageAuthor::Agent,
+                    content: "not persisted".into(),
+                    model_ref: Some("ollama:test".into()),
+                    status: MessageStatus::Streaming,
+                    created_at: now_millis(),
+                    completed_at: None,
+                    error_code: None,
+                }],
             },
         );
         let mut queue = GenerationQueue::default();
-        let mut pending = job("temporary", "astra");
-        pending.temporary = true;
-        pending.conversation_id = temporary_conversation("astra").id;
-        queue.enqueue(pending).unwrap();
-        queue.discard_temporary_pending("astra", &temporary_conversation("astra").id);
+        let mut active = job("temporary-active", "astra");
+        active.temporary = true;
+        active.conversation_id = temporary_conversation.id.clone();
+        active.assistant_message_id = "temporary-assistant".into();
+        queue.enqueue(active.clone()).unwrap();
+        queue.enqueue(job("next", "luma")).unwrap();
+        assert_eq!(queue.activate_next(), Some(active.clone()));
+
+        assert_eq!(
+            queue.take_temporary_active("astra", &temporary_conversation.id),
+            Some(active.clone())
+        );
+        queue.discard_temporary_pending("astra", &temporary_conversation.id);
         clear_temporary_chat(&mut temporary, "astra");
         assert!(temporary.conversations.is_empty());
-        assert_eq!(queue.len(), 0);
+        assert_eq!(queue.activate_next().unwrap().request_id, "next");
+
+        let late_chunk = PhaseOneEvent {
+            protocol_version: PROTOCOL_VERSION,
+            event_type: "generation.chunk".into(),
+            request_id: Some(active.request_id.clone()),
+            agent_id: Some(active.agent_id.clone()),
+            conversation_id: Some(active.conversation_id.clone()),
+            assistant_message_id: Some(active.assistant_message_id.clone()),
+            sequence: Some(1),
+            content: Some("late".into()),
+            error_code: None,
+        };
+        assert!(!queue.matches_event(&late_chunk));
+        assert_eq!(
+            queue.accept_chunk(&active.request_id, 1, 4),
+            ChunkDecision::Ignored
+        );
+        let late_terminal = PhaseOneEvent {
+            event_type: "generation.cancelled".into(),
+            content: None,
+            ..late_chunk
+        };
+        assert!(!queue.accepts_terminal(&late_terminal));
+
+        temporary.conversations.insert(
+            "astra".into(),
+            TemporaryConversation {
+                conversation: temporary_conversation.clone(),
+                messages: Vec::new(),
+            },
+        );
+        assert!(temporary.conversations["astra"].messages.is_empty());
 
         let path = std::env::temp_dir()
             .join(format!("aip-temporary-close-{}", Uuid::now_v7()))
@@ -1431,8 +1486,11 @@ mod tests {
             .unwrap()
             .is_empty());
         assert!(database
-            .conversation(&agent.id, &temporary_conversation(&agent.id).id)
-            .is_err());
+            .conversations(&agent.id)
+            .unwrap()
+            .iter()
+            .all(|conversation| conversation.id != temporary_conversation.id));
+        assert!(database.memories(&agent.id).unwrap().is_empty());
         drop(database);
         let _ = fs::remove_dir_all(path.parent().unwrap());
     }
