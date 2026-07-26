@@ -79,7 +79,7 @@ a:focus-visible {
   height: 100%;
   min-width: 0;
   min-height: 100vh;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   background: #0b0d11;
   overflow: hidden;
 }
@@ -141,11 +141,108 @@ a:focus-visible {
 }
 
 .agent-tools {
-  display: grid;
+  display: none;
   gap: 8px;
   margin-top: 14px;
   color: #aeb6c2;
   font-size: 11px;
+}
+
+.workspace-tabs {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 11px 28px;
+  border-bottom: 1px solid #242932;
+  background: #0e1116;
+  overflow-x: auto;
+}
+
+.workspace-tabs button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: #8993a1;
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.workspace-tabs button:hover,
+.workspace-tabs button.active {
+  border-color: #303a45;
+  color: #edf0f5;
+  background: #171d24;
+}
+
+.workspace-tabs .workspace-profile {
+  border-color: #303a45;
+}
+
+.workspace-spacer {
+  flex: 1;
+}
+
+.workspace-panel {
+  min-width: 0;
+  min-height: 0;
+  padding: 24px 28px 40px;
+  overflow: auto;
+}
+
+.workspace-panel > .memory-list,
+.workspace-panel > .agent-state-controls,
+.workspace-panel > .pixel-editor {
+  width: min(900px, 100%);
+  margin: 0 auto;
+}
+
+.workspace-panel .agent-state-controls,
+.workspace-panel .memory-list,
+.pixel-editor {
+  padding: 18px;
+  border: 1px solid #293139;
+  border-radius: 8px;
+  background: #11161c;
+}
+
+.workspace-panel .agent-state-controls {
+  max-width: 520px;
+}
+
+.memory-list {
+  display: grid;
+  gap: 10px;
+}
+
+.pixel-editor > summary,
+.pixel-source > summary {
+  cursor: pointer;
+  color: #dce1e8;
+  font-weight: 600;
+}
+
+.pixel-editor > summary {
+  margin-bottom: 14px;
+}
+
+.pixel-source {
+  margin-top: 14px;
+}
+
+.pixel-source textarea {
+  width: 100%;
+  min-height: 180px;
+  margin-top: 9px;
+  padding: 10px;
+  border: 1px solid #303742;
+  border-radius: 5px;
+  color: #dce1e8;
+  background: #0b0f14;
+  font-family: Consolas, monospace;
+  font-size: 12px;
 }
 
 .agent-tools > summary,
@@ -1089,6 +1186,11 @@ h3 {
   .agent-grid {
     grid-template-columns: 1fr;
   }
+
+  .workspace-tabs,
+  .workspace-panel {
+    padding-inline: 18px;
+  }
 }
 
 .memory-item {
@@ -1188,6 +1290,42 @@ h3 {
   .sidebar nav,
   .sidebar-footer {
     display: none;
+  }
+
+  .conversation-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-tabs,
+  .conversation-list,
+  .sidebar-label {
+    display: none;
+  }
+
+  .conversation-layout .mode-button {
+    width: auto;
+    margin: 0 0 0 auto;
+  }
+
+  .workspace-tabs {
+    padding: 9px 12px;
+  }
+
+  .workspace-spacer {
+    display: none;
+  }
+
+  .workspace-tabs .workspace-profile,
+  .workspace-tabs .workspace-temporary {
+    margin-left: auto;
+  }
+
+  .workspace-tabs .workspace-profile + .workspace-temporary {
+    margin-left: 0;
+  }
+
+  .workspace-panel {
+    padding: 16px 12px 32px;
   }
 
   .main-panel {
