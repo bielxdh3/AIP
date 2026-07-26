@@ -21,6 +21,7 @@ import {
   canRequestCancellation,
   messageFailureCopy,
   messageStatusCopy,
+  providerRecoveryCopy,
   providerStatusCopy,
   requestForAgent,
 } from "./conversation-state";
@@ -80,7 +81,13 @@ function MessageItem({ message }: { message: ConversationMessage }) {
   );
 }
 
-function ConversationSurface({ agentId, temporary }: { agentId: string; temporary: boolean }) {
+function ConversationSurface({
+  agentId,
+  temporary,
+}: {
+  agentId: string;
+  temporary: boolean;
+}) {
   const { phase, error, load } = usePhaseOne(agentId, temporary);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -126,6 +133,8 @@ function ConversationSurface({ agentId, temporary }: { agentId: string; temporar
   const currentPhase = phase;
   const request = requestForAgent(phase.queue, phase.agent.id);
   const blocked = blockedSendCopy(phase.sendBlockedCode);
+  const providerRecovery = providerRecoveryCopy(phase);
+  const modelsAvailable = phase.provider.models.length > 0;
 
   async function send() {
     const content = draft.trim();
@@ -133,9 +142,18 @@ function ConversationSurface({ agentId, temporary }: { agentId: string; temporar
     followsBottomRef.current = true;
     setBusy(true);
     try {
-      await invoke(temporary ? "send_temporary_phase_one_message" : "send_phase_one_message", temporary
-        ? { agentId: currentPhase.agent.id, content }
-        : { agentId: currentPhase.agent.id, conversationId: currentPhase.conversation.id, content });
+      await invoke(
+        temporary
+          ? "send_temporary_phase_one_message"
+          : "send_phase_one_message",
+        temporary
+          ? { agentId: currentPhase.agent.id, content }
+          : {
+              agentId: currentPhase.agent.id,
+              conversationId: currentPhase.conversation.id,
+              content,
+            },
+      );
       setDraft("");
       void load();
     } finally {
@@ -172,72 +190,111 @@ function ConversationSurface({ agentId, temporary }: { agentId: string; temporar
     >
       <header className="conversation-header">
         <div>
-          <p className="eyebrow">{temporary ? "Conversa temporária" : "Conversa principal"}</p>
+          <p className="eyebrow">
+            {temporary ? "Conversa temporária" : "Conversa principal"}
+          </p>
           <h1>{phase.agent.name}</h1>
           <span className={`provider-state ${phase.provider.state}`}>
             {providerStatusCopy(phase)}
           </span>
         </div>
         <div className="conversation-controls">
-          <label>
-            <span>Modelo local</span>
-            <select
-              value={phase.selectedModelRef ?? ""}
-              onChange={(event) => {
-                if (event.target.value) {
-                  void invoke("select_phase_one_model", {
-                    agentId: currentPhase.agent.id,
-                    modelRef: event.target.value,
-                  }).then(load);
-                }
-              }}
-            >
-              <option value="">Selecione um modelo</option>
-              {phase.provider.models.map((model) => (
-                <option value={model.ref} key={model.ref}>
-                  {model.displayName}
-                  {model.parameterSize ? ` · ${model.parameterSize}` : ""}
-                  {model.quantization ? ` · ${model.quantization}` : ""}
+          <div className="model-primary-control">
+            <label>
+              <span>Modelo local</span>
+              <select
+                value={phase.selectedModelRef ?? ""}
+                disabled={!modelsAvailable}
+                onChange={(event) => {
+                  if (event.target.value) {
+                    void invoke("select_phase_one_model", {
+                      agentId: currentPhase.agent.id,
+                      modelRef: event.target.value,
+                    }).then(load);
+                  }
+                }}
+              >
+                <option value="">
+                  {modelsAvailable
+                    ? "Selecione um modelo"
+                    : "Nenhum modelo disponível"}
                 </option>
-              ))}
-              {phase.selectedModelRef !== null &&
-              !phase.selectedModelAvailable ? (
-                <option value={phase.selectedModelRef}>
-                  Modelo salvo (indisponível)
-                </option>
+                {phase.provider.models.map((model) => (
+                  <option value={model.ref} key={model.ref}>
+                    {model.displayName}
+                    {model.parameterSize ? ` · ${model.parameterSize}` : ""}
+                    {model.quantization ? ` · ${model.quantization}` : ""}
+                  </option>
+                ))}
+                {phase.selectedModelRef !== null &&
+                !phase.selectedModelAvailable ? (
+                  <option value={phase.selectedModelRef}>
+                    Modelo salvo (indisponível)
+                  </option>
+                ) : null}
+              </select>
+            </label>
+            <button type="button" onClick={() => void refreshModels()}>
+              Atualizar
+            </button>
+          </div>
+          {providerRecovery ? (
+            <p className="provider-recovery" role="status">
+              {providerRecovery}
+            </p>
+          ) : null}
+          <details className="model-advanced-controls">
+            <summary>Opções do modelo</summary>
+            <div>
+              {!temporary ? (
+                <label>
+                  <span>Modelo desta conversa</span>
+                  <select
+                    disabled={!modelsAvailable}
+                    value={phase.modelOverrideRef ?? ""}
+                    onChange={(event) =>
+                      void invoke("set_main_conversation_model_override", {
+                        agentId: currentPhase.agent.id,
+                        modelRef: event.target.value || null,
+                      }).then(load)
+                    }
+                  >
+                    <option value="">Usar modelo padrão do agente</option>
+                    {phase.provider.models.map((model) => (
+                      <option value={model.ref} key={`override-${model.ref}`}>
+                        {model.displayName}
+                      </option>
+                    ))}
+                    {phase.modelOverrideRef !== null &&
+                    !phase.selectedModelAvailable ? (
+                      <option value={phase.modelOverrideRef}>
+                        Modelo salvo (indisponível)
+                      </option>
+                    ) : null}
+                  </select>
+                </label>
               ) : null}
-            </select>
-          </label>
-          {!temporary ? <label>
-            <span>Modelo desta conversa</span>
-            <select value={phase.modelOverrideRef ?? ""} onChange={(event) => void invoke("set_main_conversation_model_override", { agentId: currentPhase.agent.id, modelRef: event.target.value || null }).then(load)}>
-              <option value="">Usar modelo padrão do agente</option>
-              {phase.provider.models.map((model) => <option value={model.ref} key={`override-${model.ref}`}>{model.displayName}</option>)}
-              {phase.modelOverrideRef !== null && !phase.selectedModelAvailable ? <option value={phase.modelOverrideRef}>Modelo salvo (indisponível)</option> : null}
-            </select>
-          </label> : null}
-          <label>
-            <span>Manter modelo carregado</span>
-            <select
-              value={phase.keepAliveMinutes}
-              onChange={(event) =>
-                void invoke("update_keep_alive", {
-                  agentId: currentPhase.agent.id,
-                  minutes: Number(event.target.value),
-                }).then(load)
-              }
-            >
-              <option value={0}>Descarregar imediatamente</option>
-              <option value={5}>5 minutos</option>
-              <option value={15}>15 minutos</option>
-              <option value={30}>30 minutos</option>
-              <option value={60}>60 minutos</option>
-              <option value={120}>120 minutos</option>
-            </select>
-          </label>
-          <button type="button" onClick={() => void refreshModels()}>
-            Atualizar modelos
-          </button>
+              <label>
+                <span>Manter modelo carregado</span>
+                <select
+                  value={phase.keepAliveMinutes}
+                  onChange={(event) =>
+                    void invoke("update_keep_alive", {
+                      agentId: currentPhase.agent.id,
+                      minutes: Number(event.target.value),
+                    }).then(load)
+                  }
+                >
+                  <option value={0}>Descarregar imediatamente</option>
+                  <option value={5}>5 minutos</option>
+                  <option value={15}>15 minutos</option>
+                  <option value={30}>30 minutos</option>
+                  <option value={60}>60 minutos</option>
+                  <option value={120}>120 minutos</option>
+                </select>
+              </label>
+            </div>
+          </details>
         </div>
       </header>
 
@@ -316,111 +373,371 @@ function ConversationSurface({ agentId, temporary }: { agentId: string; temporar
   );
 }
 
-function ProfileFields({ draft, onChange }: { draft: ProvisionalAgent; onChange: (next: ProvisionalAgent) => void }) {
-  return <>
-    <label>Nome<input value={draft.name} onChange={(event) => onChange({ ...draft, name: event.target.value })} /></label>
-    <label>Data de aniversário<input type="date" value={draft.birthday} onChange={(event) => onChange({ ...draft, birthday: event.target.value })} /></label>
-    <label>Idade fictícia<input type="number" min="0" max="10000" value={draft.fictiveAge} onChange={(event) => onChange({ ...draft, fictiveAge: Number(event.target.value) })} /></label>
-    <label>Categoria de idade<input value={draft.ageCategory} onChange={(event) => onChange({ ...draft, ageCategory: event.target.value })} /></label>
-    <label>Espécie<input value={draft.species} onChange={(event) => onChange({ ...draft, species: event.target.value })} /></label>
-    <label>Pronomes<input value={draft.pronouns} onChange={(event) => onChange({ ...draft, pronouns: event.target.value })} /></label>
-    <label>Descrição<input value={draft.personalitySummary} onChange={(event) => onChange({ ...draft, personalitySummary: event.target.value })} /></label>
-    <label>Traços (JSON)<input value={draft.traitsJson} onChange={(event) => onChange({ ...draft, traitsJson: event.target.value })} /></label>
-  </>;
+function ProfileFields({
+  draft,
+  onChange,
+}: {
+  draft: ProvisionalAgent;
+  onChange: (next: ProvisionalAgent) => void;
+}) {
+  return (
+    <>
+      <label>
+        Nome
+        <input
+          value={draft.name}
+          onChange={(event) => onChange({ ...draft, name: event.target.value })}
+        />
+      </label>
+      <label>
+        Data de aniversário
+        <input
+          type="date"
+          value={draft.birthday}
+          onChange={(event) =>
+            onChange({ ...draft, birthday: event.target.value })
+          }
+        />
+      </label>
+      <label>
+        Idade fictícia
+        <input
+          type="number"
+          min="0"
+          max="10000"
+          value={draft.fictiveAge}
+          onChange={(event) =>
+            onChange({ ...draft, fictiveAge: Number(event.target.value) })
+          }
+        />
+      </label>
+      <label>
+        Categoria de idade
+        <input
+          value={draft.ageCategory}
+          onChange={(event) =>
+            onChange({ ...draft, ageCategory: event.target.value })
+          }
+        />
+      </label>
+      <label>
+        Espécie
+        <input
+          value={draft.species}
+          onChange={(event) =>
+            onChange({ ...draft, species: event.target.value })
+          }
+        />
+      </label>
+      <label>
+        Pronomes
+        <input
+          value={draft.pronouns}
+          onChange={(event) =>
+            onChange({ ...draft, pronouns: event.target.value })
+          }
+        />
+      </label>
+      <label>
+        Descrição
+        <input
+          value={draft.personalitySummary}
+          onChange={(event) =>
+            onChange({ ...draft, personalitySummary: event.target.value })
+          }
+        />
+      </label>
+      <label>
+        Traços (JSON)
+        <input
+          value={draft.traitsJson}
+          onChange={(event) =>
+            onChange({ ...draft, traitsJson: event.target.value })
+          }
+        />
+      </label>
+    </>
+  );
 }
 
-function ProfileForm({ agent, done }: { agent: ProvisionalAgent; done: () => void }) {
+function ProfileForm({
+  agent,
+  done,
+}: {
+  agent: ProvisionalAgent;
+  done: () => void;
+}) {
   const [draft, setDraft] = useState(agent);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => setDraft(agent), [agent]);
   async function save() {
-    if (!draft.name.trim() || !draft.birthday || !draft.species.trim() || !draft.pronouns.trim()) {
-      setError("Preencha nome, data, espécie e pronomes."); return;
+    if (
+      !draft.name.trim() ||
+      !draft.birthday ||
+      !draft.species.trim() ||
+      !draft.pronouns.trim()
+    ) {
+      setError("Preencha nome, data, espécie e pronomes.");
+      return;
     }
     try {
       await invoke("update_agent_profile", { agent: draft });
       done();
-    } catch { setError("Não foi possível salvar o perfil."); }
+    } catch {
+      setError("Não foi possível salvar o perfil.");
+    }
   }
-  return <section className="conversation-empty" aria-label="Perfil do agente">
-    <h1>{`Perfil de ${agent.name}`}</h1>
-    <ProfileFields draft={draft} onChange={setDraft} />
-    {error ? <p role="alert">{error}</p> : null}<button type="button" onClick={() => void save()}>Salvar perfil</button>
-  </section>;
+  return (
+    <section className="conversation-empty" aria-label="Perfil do agente">
+      <h1>{`Perfil de ${agent.name}`}</h1>
+      <ProfileFields draft={draft} onChange={setDraft} />
+      {error ? <p role="alert">{error}</p> : null}
+      <button type="button" onClick={() => void save()}>
+        Salvar perfil
+      </button>
+    </section>
+  );
 }
 
-function OnboardingForm({ agents, done }: { agents: ProvisionalAgent[]; done: () => void }) {
+function OnboardingForm({
+  agents,
+  done,
+}: {
+  agents: ProvisionalAgent[];
+  done: () => void;
+}) {
   const [drafts, setDrafts] = useState(agents);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => setDrafts(agents), [agents]);
-  const update = (index: number, next: ProvisionalAgent) => setDrafts((current) => current.map((agent, currentIndex) => currentIndex === index ? next : agent));
+  const update = (index: number, next: ProvisionalAgent) =>
+    setDrafts((current) =>
+      current.map((agent, currentIndex) =>
+        currentIndex === index ? next : agent,
+      ),
+    );
   async function save() {
-    if (drafts.length !== 2 || drafts.some((agent) => !agent.name.trim() || !agent.birthday || !agent.ageCategory.trim() || !agent.species.trim() || !agent.pronouns.trim())) {
-      setError("Preencha os campos obrigatórios dos dois agentes."); return;
+    if (
+      drafts.length !== 2 ||
+      drafts.some(
+        (agent) =>
+          !agent.name.trim() ||
+          !agent.birthday ||
+          !agent.ageCategory.trim() ||
+          !agent.species.trim() ||
+          !agent.pronouns.trim(),
+      )
+    ) {
+      setError("Preencha os campos obrigatórios dos dois agentes.");
+      return;
     }
     try {
       await invoke("complete_phase_two_onboarding", { agents: drafts });
       done();
-    } catch { setError("Não foi possível concluir a criação dos perfis."); }
+    } catch {
+      setError("Não foi possível concluir a criação dos perfis.");
+    }
   }
-  return <section className="conversation-empty" aria-label="Criação dos perfis">
-    <h1>Crie os dois perfis</h1>
-    {drafts.map((agent, index) => <fieldset key={agent.id}><legend>{agent.name}</legend><ProfileFields draft={agent} onChange={(next) => update(index, next)} /></fieldset>)}
-    {error ? <p role="alert">{error}</p> : null}<button type="button" onClick={() => void save()}>Concluir criação</button>
-  </section>;
+  return (
+    <section className="conversation-empty" aria-label="Criação dos perfis">
+      <h1>Crie os dois perfis</h1>
+      {drafts.map((agent, index) => (
+        <fieldset key={agent.id}>
+          <legend>{agent.name}</legend>
+          <ProfileFields
+            draft={agent}
+            onChange={(next) => update(index, next)}
+          />
+        </fieldset>
+      ))}
+      {error ? <p role="alert">{error}</p> : null}
+      <button type="button" onClick={() => void save()}>
+        Concluir criação
+      </button>
+    </section>
+  );
 }
 
-function ConversationList({ agentId, changed }: { agentId: string; changed: () => void }) {
+function ConversationList({
+  agentId,
+  changed,
+}: {
+  agentId: string;
+  changed: () => void;
+}) {
   const [items, setItems] = useState<PhaseOneConversation[]>([]);
   const [archived, setArchived] = useState<PhaseOneConversation[]>([]);
   const [title, setTitle] = useState("");
-  const load = useCallback(() => void Promise.all([
-    invoke<PhaseOneConversation[]>("list_agent_conversations", { agentId }),
-    invoke<PhaseOneConversation[]>("list_archived_agent_conversations", { agentId }),
-  ]).then(([current, previous]) => { setItems(current); setArchived(previous); }), [agentId]);
-  useEffect(() => { load(); }, [load]);
+  const load = useCallback(
+    () =>
+      void Promise.all([
+        invoke<PhaseOneConversation[]>("list_agent_conversations", { agentId }),
+        invoke<PhaseOneConversation[]>("list_archived_agent_conversations", {
+          agentId,
+        }),
+      ]).then(([current, previous]) => {
+        setItems(current);
+        setArchived(previous);
+      }),
+    [agentId],
+  );
+  useEffect(() => {
+    load();
+  }, [load]);
   async function create() {
     if (!title.trim()) return;
     await invoke("create_agent_conversation", { agentId, title });
-    setTitle(""); load();
+    setTitle("");
+    load();
   }
   async function select(conversationId: string) {
     await invoke("set_active_agent_conversation", { agentId, conversationId });
     changed();
   }
-  return <div className="conversation-list" aria-label="Conversas do agente">
-    {items.map((item) => <div key={item.id}><button type="button" onClick={() => void select(item.id)}>{item.title}{item.id === items[0]?.id ? " · Principal" : ""}</button>{item.id !== items[0]?.id ? <button type="button" onClick={() => void invoke("archive_agent_conversation", { agentId, conversationId: item.id }).then(load)}>Arquivar</button> : null}</div>)}
-    {archived.length > 0 ? <details><summary>Arquivadas ({archived.length})</summary>{archived.map((item) => <div key={item.id}><span>{item.title}</span><button type="button" onClick={() => void invoke("restore_agent_conversation", { agentId, conversationId: item.id }).then(load)}>Restaurar</button></div>)}</details> : null}
-    <input value={title} placeholder="Nova conversa" onChange={(event) => setTitle(event.target.value)} />
-    <button type="button" onClick={() => void create()}>Criar conversa</button>
-  </div>;
+  return (
+    <div className="conversation-list" aria-label="Conversas do agente">
+      {items.map((item) => (
+        <div key={item.id}>
+          <button type="button" onClick={() => void select(item.id)}>
+            {item.title}
+            {item.id === items[0]?.id ? " · Principal" : ""}
+          </button>
+          {item.id !== items[0]?.id ? (
+            <button
+              type="button"
+              onClick={() =>
+                void invoke("archive_agent_conversation", {
+                  agentId,
+                  conversationId: item.id,
+                }).then(load)
+              }
+            >
+              Arquivar
+            </button>
+          ) : null}
+        </div>
+      ))}
+      {archived.length > 0 ? (
+        <details>
+          <summary>Arquivadas ({archived.length})</summary>
+          {archived.map((item) => (
+            <div key={item.id}>
+              <span>{item.title}</span>
+              <button
+                type="button"
+                onClick={() =>
+                  void invoke("restore_agent_conversation", {
+                    agentId,
+                    conversationId: item.id,
+                  }).then(load)
+                }
+              >
+                Restaurar
+              </button>
+            </div>
+          ))}
+        </details>
+      ) : null}
+      <input
+        value={title}
+        placeholder="Nova conversa"
+        onChange={(event) => setTitle(event.target.value)}
+      />
+      <button type="button" onClick={() => void create()}>
+        Criar conversa
+      </button>
+    </div>
+  );
 }
 
 function MemoryList({ agentId }: { agentId: string }) {
   const [items, setItems] = useState<AgentMemory[]>([]);
   const [content, setContent] = useState("");
   const [category, setCategory] = useState("preference");
-  const load = useCallback(() => void invoke<AgentMemory[]>("list_agent_memories", { agentId }).then(setItems), [agentId]);
-  useEffect(() => { load(); }, [load]);
+  const load = useCallback(
+    () =>
+      void invoke<AgentMemory[]>("list_agent_memories", { agentId }).then(
+        setItems,
+      ),
+    [agentId],
+  );
+  useEffect(() => {
+    load();
+  }, [load]);
   async function save(confirmed = true) {
     if (!content.trim()) return;
-    await invoke("create_agent_memory", { agentId, category, content, confirmed });
-    setContent(""); load();
+    await invoke("create_agent_memory", {
+      agentId,
+      category,
+      content,
+      confirmed,
+    });
+    setContent("");
+    load();
   }
   async function updateStatus(memoryId: string, status: string) {
     await invoke("set_agent_memory_status", { agentId, memoryId, status });
     load();
   }
-  return <div className="memory-list" aria-label="Memórias do agente">
-    <strong>Memórias</strong>
-    {items.filter((item) => item.status === "active").map((item) => <div className="memory-item" key={item.id}><p><small>{item.category} · {item.confirmationStatus === "pending" ? "pendente" : "confirmada"}</small> {item.content}</p>{item.confirmationStatus === "pending" ? <><button type="button" onClick={() => void updateStatus(item.id, "active")}>Confirmar</button><button type="button" onClick={() => void updateStatus(item.id, "candidate_rejected")}>Rejeitar</button></> : null}<button type="button" onClick={() => void updateStatus(item.id, "archived")}>Arquivar</button></div>)}
-    <input value={category} onChange={(event) => setCategory(event.target.value)} aria-label="Categoria da memória" />
-    <input value={content} onChange={(event) => setContent(event.target.value)} placeholder="Nova memória" />
-    <button type="button" onClick={() => void save()}>Salvar memória</button>
-    <button type="button" onClick={() => void save(false)}>
-      Propor memória
-    </button>
-  </div>;
+  return (
+    <div className="memory-list" aria-label="Memórias do agente">
+      <strong>Memórias</strong>
+      {items
+        .filter((item) => item.status === "active")
+        .map((item) => (
+          <div className="memory-item" key={item.id}>
+            <p>
+              <small>
+                {item.category} ·{" "}
+                {item.confirmationStatus === "pending"
+                  ? "pendente"
+                  : "confirmada"}
+              </small>{" "}
+              {item.content}
+            </p>
+            {item.confirmationStatus === "pending" ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => void updateStatus(item.id, "active")}
+                >
+                  Confirmar
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void updateStatus(item.id, "candidate_rejected")
+                  }
+                >
+                  Rejeitar
+                </button>
+              </>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void updateStatus(item.id, "archived")}
+            >
+              Arquivar
+            </button>
+          </div>
+        ))}
+      <input
+        value={category}
+        onChange={(event) => setCategory(event.target.value)}
+        aria-label="Categoria da memória"
+      />
+      <input
+        value={content}
+        onChange={(event) => setContent(event.target.value)}
+        placeholder="Nova memória"
+      />
+      <button type="button" onClick={() => void save()}>
+        Salvar memória
+      </button>
+      <button type="button" onClick={() => void save(false)}>
+        Propor memória
+      </button>
+    </div>
+  );
 }
 
 function AgentStateControls({ agentId }: { agentId: string }) {
@@ -507,7 +824,11 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
   const [color, setColor] = useState("#57d8bd");
   const [tool, setTool] = useState<"pencil" | "eraser">("pencil");
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  useEffect(() => { void invoke<string>("load_pixel_document", { agentId }).then(setSource).catch(() => setError("Não foi possível abrir a arte.")); }, [agentId]);
+  useEffect(() => {
+    void invoke<string>("load_pixel_document", { agentId })
+      .then(setSource)
+      .catch(() => setError("Não foi possível abrir a arte."));
+  }, [agentId]);
   useEffect(() => {
     const canvas = canvasRef.current;
     if (canvas === null) return;
@@ -516,33 +837,120 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
     context.fillStyle = "#10151c";
     context.fillRect(0, 0, 256, 256);
     try {
-      const document = JSON.parse(source) as { layers?: Array<{ visible?: boolean; pixels?: Array<[number, number, string]> }> };
-      for (const layer of document.layers ?? []) for (const [x, y, pixelColor] of layer.pixels ?? []) {
-        if (layer.visible !== false && Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < 64 && y < 64) { context.fillStyle = pixelColor; context.fillRect(x * 4, y * 4, 4, 4); }
-      }
-    } catch { /* Invalid source stays editable in the raw document field. */ }
+      const document = JSON.parse(source) as {
+        layers?: Array<{
+          visible?: boolean;
+          pixels?: Array<[number, number, string]>;
+        }>;
+      };
+      for (const layer of document.layers ?? [])
+        for (const [x, y, pixelColor] of layer.pixels ?? []) {
+          if (
+            layer.visible !== false &&
+            Number.isInteger(x) &&
+            Number.isInteger(y) &&
+            x >= 0 &&
+            y >= 0 &&
+            x < 64 &&
+            y < 64
+          ) {
+            context.fillStyle = pixelColor;
+            context.fillRect(x * 4, y * 4, 4, 4);
+          }
+        }
+    } catch {
+      /* Invalid source stays editable in the raw document field. */
+    }
   }, [source]);
   function paint(event: React.PointerEvent<HTMLCanvasElement>) {
     const canvas = canvasRef.current;
     if (canvas === null) return;
-    const x = Math.max(0, Math.min(63, Math.floor((event.nativeEvent.offsetX * 64) / canvas.clientWidth)));
-    const y = Math.max(0, Math.min(63, Math.floor((event.nativeEvent.offsetY * 64) / canvas.clientHeight)));
+    const x = Math.max(
+      0,
+      Math.min(
+        63,
+        Math.floor((event.nativeEvent.offsetX * 64) / canvas.clientWidth),
+      ),
+    );
+    const y = Math.max(
+      0,
+      Math.min(
+        63,
+        Math.floor((event.nativeEvent.offsetY * 64) / canvas.clientHeight),
+      ),
+    );
     try {
-      const document = JSON.parse(source) as { layers: Array<{ pixels?: Array<[number, number, string]> }> };
+      const document = JSON.parse(source) as {
+        layers: Array<{ pixels?: Array<[number, number, string]> }>;
+      };
       const layer = document.layers?.[0];
       if (layer === undefined) throw new Error("missing layer");
-      const pixels = (layer.pixels ?? []).filter(([pixelX, pixelY]) => pixelX !== x || pixelY !== y);
+      const pixels = (layer.pixels ?? []).filter(
+        ([pixelX, pixelY]) => pixelX !== x || pixelY !== y,
+      );
       if (tool === "pencil") pixels.push([x, y, color]);
       layer.pixels = pixels;
       setSource(JSON.stringify(document));
       setError(null);
-    } catch { setError("Arte inválida: use uma camada com pixels."); }
+    } catch {
+      setError("Arte inválida: use uma camada com pixels.");
+    }
   }
   async function save() {
-    try { await invoke("save_pixel_document", { agentId, sourceJson: source }); setError(null); }
-    catch { setError("A arte precisa ter camadas e pontos de encaixe válidos."); }
+    try {
+      await invoke("save_pixel_document", { agentId, sourceJson: source });
+      setError(null);
+    } catch {
+      setError("A arte precisa ter camadas e pontos de encaixe válidos.");
+    }
   }
-  return <details className="pixel-editor"><summary>Editor de pixel art (64×64)</summary><div className="pixel-tools"><input type="color" value={color} onChange={(event) => setColor(event.target.value)} aria-label="Cor" /><button type="button" className={tool === "pencil" ? "active" : ""} onClick={() => setTool("pencil")}>Lápis</button><button type="button" className={tool === "eraser" ? "active" : ""} onClick={() => setTool("eraser")}>Borracha</button></div><canvas ref={canvasRef} width="256" height="256" className="pixel-canvas" onPointerDown={paint} onPointerMove={(event) => { if (event.buttons === 1) paint(event); }} aria-label="Grade de pixel art" /><textarea value={source} onChange={(event) => setSource(event.target.value)} aria-label="Documento de pixel art" /><button type="button" onClick={() => void save()}>Salvar arte</button>{error ? <p role="alert">{error}</p> : null}</details>;
+  return (
+    <details className="pixel-editor">
+      <summary>Editor de pixel art (64×64)</summary>
+      <div className="pixel-tools">
+        <input
+          type="color"
+          value={color}
+          onChange={(event) => setColor(event.target.value)}
+          aria-label="Cor"
+        />
+        <button
+          type="button"
+          className={tool === "pencil" ? "active" : ""}
+          onClick={() => setTool("pencil")}
+        >
+          Lápis
+        </button>
+        <button
+          type="button"
+          className={tool === "eraser" ? "active" : ""}
+          onClick={() => setTool("eraser")}
+        >
+          Borracha
+        </button>
+      </div>
+      <canvas
+        ref={canvasRef}
+        width="256"
+        height="256"
+        className="pixel-canvas"
+        onPointerDown={paint}
+        onPointerMove={(event) => {
+          if (event.buttons === 1) paint(event);
+        }}
+        aria-label="Grade de pixel art"
+      />
+      <textarea
+        value={source}
+        onChange={(event) => setSource(event.target.value)}
+        aria-label="Documento de pixel art"
+      />
+      <button type="button" onClick={() => void save()}>
+        Salvar arte
+      </button>
+      {error ? <p role="alert">{error}</p> : null}
+    </details>
+  );
 }
 
 function App() {
@@ -608,12 +1016,34 @@ function App() {
             />
           ))}
         </div>
-        {activeAgentId ? <ConversationList agentId={activeAgentId} changed={() => setConversationRevision((value) => value + 1)} /> : null}
-        {activeAgentId ? <button type="button" onClick={() => setTemporaryChat((current) => !current)}>{temporaryChat ? "Voltar à conversa salva" : "Abrir conversa temporária"}</button> : null}
+        {activeAgentId ? (
+          <ConversationList
+            agentId={activeAgentId}
+            changed={() => setConversationRevision((value) => value + 1)}
+          />
+        ) : null}
+        {activeAgentId ? (
+          <button
+            type="button"
+            onClick={() => setTemporaryChat((current) => !current)}
+          >
+            {temporaryChat
+              ? "Voltar à conversa salva"
+              : "Abrir conversa temporária"}
+          </button>
+        ) : null}
         {activeAgentId ? <MemoryList agentId={activeAgentId} /> : null}
         {activeAgentId ? <AgentStateControls agentId={activeAgentId} /> : null}
         {activeAgentId ? <PixelDocumentEditor agentId={activeAgentId} /> : null}
-        {snapshot?.agents.map((agent) => <button key={`profile-${agent.id}`} type="button" onClick={() => setEditingAgentId(agent.id)}>Perfil de {agent.name}</button>)}
+        {snapshot?.agents.map((agent) => (
+          <button
+            key={`profile-${agent.id}`}
+            type="button"
+            onClick={() => setEditingAgentId(agent.id)}
+          >
+            Perfil de {agent.name}
+          </button>
+        ))}
         <button
           className={snapshot?.safeMode ? "mode-button active" : "mode-button"}
           type="button"
@@ -646,13 +1076,32 @@ function App() {
           </div>
         ) : null}
         {snapshot?.onboardingRequired && snapshot.agents.length === 2 ? (
-          <OnboardingForm agents={snapshot.agents} done={() => { setEditingAgentId(null); void loadSnapshot(); }} />
-        ) : editingAgentId !== null && snapshot?.agents.find((agent) => agent.id === editingAgentId) ? (
-          <ProfileForm agent={snapshot.agents.find((agent) => agent.id === editingAgentId)!} done={() => { setEditingAgentId(null); void loadSnapshot(); }} />
+          <OnboardingForm
+            agents={snapshot.agents}
+            done={() => {
+              setEditingAgentId(null);
+              void loadSnapshot();
+            }}
+          />
+        ) : editingAgentId !== null &&
+          snapshot?.agents.find((agent) => agent.id === editingAgentId) ? (
+          <ProfileForm
+            agent={snapshot.agents.find(
+              (agent) => agent.id === editingAgentId,
+            )!}
+            done={() => {
+              setEditingAgentId(null);
+              void loadSnapshot();
+            }}
+          />
         ) : activeAgentId === null ? (
           <section className="conversation-empty">Carregando agentes…</section>
         ) : (
-          <ConversationSurface key={`${activeAgentId}-${conversationRevision}-${temporaryChat}`} agentId={activeAgentId} temporary={temporaryChat} />
+          <ConversationSurface
+            key={`${activeAgentId}-${conversationRevision}-${temporaryChat}`}
+            agentId={activeAgentId}
+            temporary={temporaryChat}
+          />
         )}
       </main>
     </div>
