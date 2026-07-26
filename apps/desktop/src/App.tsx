@@ -862,7 +862,9 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
   const [tool, setTool] = useState<"pencil" | "eraser" | "fill" | "eyedropper" | "select">("pencil");
   const [mirror, setMirror] = useState(false);
   const [selection, setSelection] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const [zoom, setZoom] = useState(4);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const importRef = useRef<HTMLInputElement>(null);
   const undoRef = useRef<string[]>([]);
   const redoRef = useRef<string[]>([]);
   const document = parsePixelDocument(source);
@@ -1008,6 +1010,53 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
     updateLayers(updatePixelLayer(document, activeLayer.id, (layer) => ({ ...layer, pixels: moved })));
     setSelection((current) => current === null ? null : { ...current, x: Math.max(0, Math.min(63 - current.width + 1, current.x + dx)), y: Math.max(0, Math.min(63 - current.height + 1, current.y + dy)) });
   }
+  async function importPng(file: File | undefined) {
+    if (file === undefined) return;
+    if (file.type !== "image/png" || file.size > 1_000_000 || document === null) {
+      setError("Use um PNG de até 1 MB.");
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    try {
+      const image = new Image();
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error("invalid_png"));
+        image.src = url;
+      });
+      const imported = globalThis.document.createElement("canvas");
+      imported.width = 64;
+      imported.height = 64;
+      const context = imported.getContext("2d", { willReadFrequently: true });
+      if (context === null) throw new Error("canvas_unavailable");
+      context.drawImage(image, 0, 0, 64, 64);
+      const pixels = Array.from(context.getImageData(0, 0, 64, 64).data).reduce<[number, number, string][]>((result, _, index, data) => {
+        const alpha = data[index + 3] ?? 0;
+        if (index % 4 !== 0 || alpha < 128) return result;
+        const x = (index / 4) % 64;
+        const y = Math.floor(index / 256);
+        const color = `#${[data[index], data[index + 1], data[index + 2]].map((value) => (value ?? 0).toString(16).padStart(2, "0")).join("")}`;
+        result.push([x, y, color]);
+        return result;
+      }, []);
+      const id = nextLayerId(document);
+      updateLayers({ ...document, layers: [...document.layers, { id, name: "PNG importado", visible: true, locked: false, pixels }] }, id);
+      setError(null);
+    } catch {
+      setError("Não foi possível importar este PNG.");
+    } finally {
+      URL.revokeObjectURL(url);
+      if (importRef.current !== null) importRef.current.value = "";
+    }
+  }
+  function updateBubbleAttachment(axis: "x" | "y", value: number) {
+    if (document === null) return;
+    const current = document.attachmentPoints.bubble ?? { x: 32, y: 8 };
+    updateLayers({
+      ...document,
+      attachmentPoints: { ...document.attachmentPoints, bubble: { ...current, [axis]: Math.max(0, Math.min(63, value || 0)) } },
+    });
+  }
   return (
     <details className="pixel-editor">
       <summary>Editor de pixel art (64×64)</summary>
@@ -1044,6 +1093,13 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         <label>
           <input type="checkbox" checked={mirror} onChange={(event) => setMirror(event.target.checked)} /> Espelhar
         </label>
+        <label>
+          Zoom
+          <select value={zoom} onChange={(event) => setZoom(Number(event.target.value))}>
+            {[2, 4, 6, 8].map((value) => <option key={value} value={value}>{value}×</option>)}
+          </select>
+        </label>
+        <input ref={importRef} type="file" accept="image/png" aria-label="Importar PNG" onChange={(event) => void importPng(event.currentTarget.files?.[0])} />
         <button type="button" disabled={undoRef.current.length === 0} onClick={() => {
           const previous = undoRef.current.pop();
           if (previous !== undefined) { redoRef.current.push(source); setSource(previous); }
@@ -1105,11 +1161,19 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
           ))}
         </div>
       ) : null}
+      {document ? (
+        <div className="pixel-attachment">
+          <strong>Encaixe do balão</strong>
+          <label>X <input type="number" min="0" max="63" value={document.attachmentPoints.bubble?.x ?? 32} onChange={(event) => updateBubbleAttachment("x", Number(event.target.value))} /></label>
+          <label>Y <input type="number" min="0" max="63" value={document.attachmentPoints.bubble?.y ?? 8} onChange={(event) => updateBubbleAttachment("y", Number(event.target.value))} /></label>
+        </div>
+      ) : null}
       <canvas
         ref={canvasRef}
         width="256"
         height="256"
         className="pixel-canvas"
+        style={{ width: `${64 * zoom}px`, height: `${64 * zoom}px` }}
         onPointerDown={paint}
         onPointerMove={(event) => {
           if (event.buttons === 1) paint(event);
