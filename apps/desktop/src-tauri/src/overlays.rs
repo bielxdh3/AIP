@@ -332,6 +332,15 @@ pub fn reset_native_regions(app: &AppHandle) {
     }
 }
 
+pub fn close_all(app: &AppHandle, input_state: &OverlayInputState) {
+    clear_native_regions(app, input_state);
+    for label in OVERLAY_LABELS {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.destroy();
+        }
+    }
+}
+
 pub fn install_regions(
     window: &WebviewWindow,
     label: &str,
