@@ -77,7 +77,7 @@ frontend, build, and security gates are required before the local commit. The ph
 pending until real Windows and Ollama discovery, streaming, restart, queue, cancellation,
 provider interruption, bubble, and click-through checks pass against the exact commit.
 
-## Phase 2: two-agent creation and isolation `[BLOCKED BY PHASE 1 VALIDATION]`
+## Phase 2: two-agent creation and isolation `[IMPLEMENTED — MANUAL VALIDATION PENDING]`
 
 Goal: create and persist two independent agents under the implicit Owner.
 
@@ -94,7 +94,7 @@ Deliverables:
 
 Expected commit: `feat: add two-agent creation and isolation`
 
-## Phase 3: memory and temporary chat
+## Phase 3: memory and temporary chat `[IMPLEMENTED — MANUAL VALIDATION PENDING]`
 
 Goal: add initial learning without deep personality evolution.
 
@@ -112,7 +112,7 @@ Deliverables:
 
 Expected commit: `feat: add initial memory and temporary chat`
 
-## Phase 4: states, modes, and scheduling
+## Phase 4: states and modes `[IMPLEMENTED — MANUAL VALIDATION PENDING]`
 
 Goal: introduce deterministic fictional state and robust application modes.
 
@@ -127,9 +127,11 @@ Deliverables:
 - queue priority and basic resource settings;
 - clear UI status.
 
+Local scheduling is intentionally deferred because calendar integration is outside v0.1.
+
 Expected commit: `feat: add agent states and application modes`
 
-## Phase 5: pixel editor and overlay behavior
+## Phase 5: pixel editor and overlay behavior `[IMPLEMENTED — MANUAL VALIDATION PENDING]`
 
 Goal: replace provisional appearance handling with the initial complete visual toolset.
 
@@ -150,7 +152,7 @@ Deliverables:
 
 Expected commit: `feat: add pixel editor and overlay physics`
 
-## Phase 6: v0.1 stabilization and packaging
+## Phase 6: v0.1 stabilization and packaging `[CANDIDATE PREPARED — MANUAL VALIDATION PENDING]`
 
 Goal: produce a testable public Windows v0.1 package.
 
@@ -281,6 +283,3 @@ After every phase:
 5. select the next phase only after the current one is approved.
 
 Use `.agents/skills/aip-phase-review/SKILL.md` for phase review.
-# Phase 3 foundation
-
-Persistent multi-conversation and memory storage work is in progress. Manual Windows validation remains pending.
