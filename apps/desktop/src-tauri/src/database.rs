@@ -451,15 +451,6 @@ impl Database {
             .map_or_else(|| self.main_conversation(agent_id), Ok)
     }
 
-    pub fn conversation(
-        &self,
-        agent_id: &str,
-        conversation_id: &str,
-    ) -> Result<PhaseOneConversation, DatabaseError> {
-        let connection = self.open()?;
-        connection.query_row("SELECT id, agent_id, title, model_override_ref FROM conversations WHERE id = ?1 AND agent_id = ?2 AND archived_at IS NULL", params![conversation_id, agent_id], |row| Ok(PhaseOneConversation { id: row.get(0)?, agent_id: row.get(1)?, title: row.get(2)?, model_override_ref: row.get(3)? })).optional()?.ok_or(DatabaseError::OwnershipMismatch)
-    }
-
     pub fn archive_conversation(
         &self,
         agent_id: &str,
@@ -1082,7 +1073,7 @@ impl Database {
             if changed != 1 {
                 return Err(DatabaseError::NotFound);
             }
-            transaction.execute(
+            let identity_changed = transaction.execute(
                 "UPDATE agent_identity_profiles SET birthday = ?1, fictive_age = ?2,
                  age_category = ?3, species = ?4, pronouns = ?5, personality_summary = ?6,
                  traits_json = ?7, appearance_preset = ?8, updated_at = ?9 WHERE agent_id = ?10",
@@ -1099,6 +1090,9 @@ impl Database {
                     agent.id
                 ],
             )?;
+            if identity_changed != 1 {
+                return Err(DatabaseError::NotFound);
+            }
         }
         transaction.execute(
             "INSERT INTO app_settings (key, value_json, updated_at)
@@ -1883,6 +1877,46 @@ mod tests {
     }
 
     #[test]
+    fn onboarding_rolls_back_when_an_identity_profile_is_missing() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let mut agents = database.snapshot().unwrap().agents;
+        let original_names = agents
+            .iter()
+            .map(|agent| (agent.id.clone(), agent.name.clone()))
+            .collect::<std::collections::HashMap<_, _>>();
+        for agent in &mut agents {
+            agent.name = format!("Updated {}", agent.name);
+        }
+        database
+            .open()
+            .unwrap()
+            .execute(
+                "DELETE FROM agent_identity_profiles WHERE agent_id = ?1",
+                params![ASTRA_ID],
+            )
+            .unwrap();
+
+        assert_eq!(
+            database.complete_onboarding(&agents),
+            Err(DatabaseError::NotFound)
+        );
+        let connection = database.open().unwrap();
+        for (agent_id, original_name) in original_names {
+            let name: String = connection
+                .query_row(
+                    "SELECT name FROM agents WHERE id = ?1",
+                    params![agent_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(name, original_name);
+        }
+        assert!(database.snapshot().unwrap().onboarding_required);
+        cleanup(&path);
+    }
+
+    #[test]
     fn profile_edits_preserve_conversations_and_agent_settings() {
         let path = test_path();
         let database = Database::initialize(&path).unwrap();
@@ -1977,7 +2011,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             database
-                .conversation(ASTRA_ID, &secondary.id)
+                .conversations(ASTRA_ID)
+                .unwrap()
+                .into_iter()
+                .find(|conversation| conversation.id == secondary.id)
                 .unwrap()
                 .model_override_ref
                 .as_deref(),
@@ -1985,7 +2022,10 @@ mod tests {
         );
         assert_eq!(
             database
-                .conversation(ASTRA_ID, &main.id)
+                .conversations(ASTRA_ID)
+                .unwrap()
+                .into_iter()
+                .find(|conversation| conversation.id == main.id)
                 .unwrap()
                 .model_override_ref,
             None
@@ -1999,7 +2039,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             database
-                .conversation(ASTRA_ID, &secondary.id)
+                .conversations(ASTRA_ID)
+                .unwrap()
+                .into_iter()
+                .find(|conversation| conversation.id == secondary.id)
                 .unwrap()
                 .model_override_ref,
             None
