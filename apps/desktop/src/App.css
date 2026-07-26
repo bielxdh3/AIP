@@ -1142,6 +1142,18 @@ h3 {
   color: #57d8bd;
 }
 
+.pixel-attachment {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.pixel-attachment input {
+  width: 52px;
+}
+
 .pixel-canvas {
   display: block;
   width: min(256px, 100%);
