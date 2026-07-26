@@ -16,6 +16,8 @@ It is not published, tagged, signed, or pushed by this validation record.
 - The MSI was administratively extracted into a temporary directory for inspection.
   The extracted payload contained the application executable and MSI metadata only;
   no database, logs, models, media, exports, or credentials were found.
+- The NSIS package was silently installed into a temporary directory, its installed
+  executable was started successfully, and the temporary installation was removed.
 - The temporary inspection directory was removed after the check.
 
 ## Manual gate still required
