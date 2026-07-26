@@ -184,6 +184,11 @@ Temporary conversations are not stored here.
 | `archived_at` | integer nullable | Archive time |
 | `trashed_at` | integer nullable | Trash time |
 
+Normal conversations may create a pending candidate only from an explicit Owner
+instruction (`lembre que`, `lembra que`, or `anote que`) after the associated
+assistant response completes. The candidate retains its message and conversation
+source; implicit inferences do not become memories automatically.
+
 ### `memory_conflicts`
 
 | Field | Type | Notes |

@@ -895,6 +895,13 @@ impl ChatCoordinator {
         };
         let persisted = self.finish_job(&job, status, error_code);
         if persisted.is_ok() {
+            if status == MessageStatus::Complete && !job.temporary {
+                let _ = self.inner.database.create_explicit_memory_candidate(
+                    &job.agent_id,
+                    &job.conversation_id,
+                    &job.assistant_message_id,
+                );
+            }
             self.trace(request_id, "terminal_persisted", event.sequence, error_code);
             self.emit(event);
         } else {
