@@ -118,6 +118,19 @@ fn list_agent_conversations(
 }
 
 #[tauri::command]
+fn list_archived_agent_conversations(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<PhaseOneConversation>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .archived_conversations(&agent_id)
+        .map_err(|_| "operation_unavailable")
+}
+
+#[tauri::command]
 fn create_agent_conversation(
     state: State<'_, AppState>,
     agent_id: String,
@@ -595,6 +608,7 @@ pub fn run() {
             get_temporary_phase_one_state,
             load_phase_one_messages,
             list_agent_conversations,
+            list_archived_agent_conversations,
             create_agent_conversation,
             set_active_agent_conversation,
             rename_agent_conversation,
