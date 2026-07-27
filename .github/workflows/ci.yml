@@ -70,6 +70,7 @@ jobs:
             $annotation = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
             Write-Output "::error title=Rust and Tauri validation failed::$annotation"
             exit $exitCode
+          }
 
   package:
     needs: phase-zero
