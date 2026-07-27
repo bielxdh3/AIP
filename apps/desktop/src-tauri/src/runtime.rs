@@ -26,6 +26,8 @@ const HANDSHAKE_ID: &str = "phase1-health";
 const DIAGNOSTIC_PREFIX: &str = "AIP_RUNTIME_DIAGNOSTIC ";
 const MAX_DIAGNOSTIC_LINE_BYTES: usize = 96;
 const MAX_DIAGNOSTIC_CODES: usize = 16;
+const DEVELOPMENT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
+const PACKAGED_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
 const PYTHON_DIAGNOSTIC_CODES: &[&str] = &[
     "ollama_cancel_close_failed",
@@ -276,15 +278,41 @@ fn run_runtime_process(
         return;
     }
 
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + handshake_timeout(!cfg!(debug_assertions));
+    let mut handshake_failure = "runtime_handshake_timeout";
     let handshake_valid = loop {
-        if stop.load(Ordering::SeqCst) || Instant::now() >= deadline {
+        if stop.load(Ordering::SeqCst) {
+            handshake_failure = "runtime_handshake_stopped";
+            break false;
+        }
+        if let Some(exit_status) = child.try_wait().ok().flatten() {
+            record_exit(&diagnostics, Some(exit_status));
+            handshake_failure = "runtime_exit_before_handshake";
+            break false;
+        }
+        if Instant::now() >= deadline {
             break false;
         }
         match line_receiver.recv_timeout(Duration::from_millis(75)) {
-            Ok(ReaderItem::Line(line)) => break parse_health_response(&line, HANDSHAKE_ID).is_ok(),
-            Ok(ReaderItem::Invalid | ReaderItem::Closed)
-            | Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Ok(ReaderItem::Line(line)) => match parse_health_response(&line, HANDSHAKE_ID) {
+                Ok(()) => break true,
+                Err(()) => {
+                    handshake_failure = "runtime_handshake_malformed";
+                    break false;
+                }
+            },
+            Ok(ReaderItem::Invalid) => {
+                handshake_failure = "runtime_handshake_malformed";
+                break false;
+            }
+            Ok(ReaderItem::Closed) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if let Some(exit_status) = child_exit_within(&mut child, Duration::from_millis(200))
+                {
+                    record_exit(&diagnostics, Some(exit_status));
+                    handshake_failure = "runtime_exit_before_handshake";
+                } else {
+                    handshake_failure = "runtime_handshake_closed";
+                }
                 break false;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
@@ -295,8 +323,8 @@ fn run_runtime_process(
         let _ = child.wait();
         let _ = reader.join();
         let _ = stderr_reader.join();
-        record_lifecycle(&diagnostics, "runtime_handshake_failed");
-        unavailable(&status, &subscribers, "runtime_handshake_failed");
+        record_lifecycle(&diagnostics, handshake_failure);
+        unavailable(&status, &subscribers, handshake_failure);
         return;
     }
 
@@ -378,11 +406,12 @@ fn run_runtime_process(
                 );
             }
             Ok(ReaderItem::Closed) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let detail_code = if child_exited_within(&mut child, Duration::from_millis(200)) {
-                    "runtime_process_exit_unexpected"
-                } else {
-                    "runtime_stdout_closed"
-                };
+                let detail_code =
+                    if child_exit_within(&mut child, Duration::from_millis(200)).is_some() {
+                        "runtime_process_exit_unexpected"
+                    } else {
+                        "runtime_stdout_closed"
+                    };
                 return crashed(
                     &mut child,
                     reader,
@@ -418,14 +447,22 @@ fn run_runtime_process(
     }
 }
 
-fn child_exited_within(child: &mut std::process::Child, timeout: Duration) -> bool {
+fn handshake_timeout(packaged_runtime: bool) -> Duration {
+    if packaged_runtime {
+        PACKAGED_HANDSHAKE_TIMEOUT
+    } else {
+        DEVELOPMENT_HANDSHAKE_TIMEOUT
+    }
+}
+
+fn child_exit_within(child: &mut std::process::Child, timeout: Duration) -> Option<ExitStatus> {
     let deadline = Instant::now() + timeout;
     loop {
-        if child.try_wait().ok().flatten().is_some() {
-            return true;
+        if let Some(exit_status) = child.try_wait().ok().flatten() {
+            return Some(exit_status);
         }
         if Instant::now() >= deadline {
-            return false;
+            return None;
         }
         thread::sleep(Duration::from_millis(10));
     }
@@ -707,11 +744,15 @@ for raw in sys.stdin:
 "#;
 
     fn fixture_source_root() -> PathBuf {
+        fixture_source_root_with_runtime(FIXTURE_RUNTIME)
+    }
+
+    fn fixture_source_root_with_runtime(runtime: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!("aip-runtime-fixture-{}", Uuid::now_v7()));
         let package = root.join("aip_runtime");
         fs::create_dir_all(&package).unwrap();
         fs::write(package.join("__init__.py"), "").unwrap();
-        fs::write(package.join("__main__.py"), FIXTURE_RUNTIME).unwrap();
+        fs::write(package.join("__main__.py"), runtime).unwrap();
         root
     }
 
@@ -779,6 +820,67 @@ for raw in sys.stdin:
     fn unavailable_session_rejects_commands() {
         let controller = RuntimeController::new(PathBuf::from("unused"), false);
         assert_eq!(controller.send("{}".into()), Err("runtime_unavailable"));
+    }
+
+    #[test]
+    fn packaged_runtime_handshake_budget_allows_cold_startup() {
+        assert_eq!(super::handshake_timeout(false), Duration::from_secs(3));
+        assert_eq!(super::handshake_timeout(true), Duration::from_secs(15));
+    }
+
+    #[test]
+    fn exit_before_handshake_reports_actionable_detail() {
+        let root = fixture_source_root_with_runtime("import sys\nraise SystemExit(23)\n");
+        let controller = RuntimeController::new(root.clone(), false);
+        controller.start();
+        wait_for_state(&controller, RuntimeState::Unavailable);
+        assert_eq!(
+            controller.snapshot().detail_code,
+            "runtime_exit_before_handshake"
+        );
+        assert_eq!(controller.diagnostics().exit_code, Some(23));
+        cleanup(controller, &root);
+    }
+
+    #[test]
+    fn malformed_handshake_reports_actionable_detail() {
+        let root = fixture_source_root_with_runtime(
+            "import sys\nfor _ in sys.stdin:\n print('not-json', flush=True)\n break\n",
+        );
+        let controller = RuntimeController::new(root.clone(), false);
+        controller.start();
+        wait_for_state(&controller, RuntimeState::Unavailable);
+        assert_eq!(
+            controller.snapshot().detail_code,
+            "runtime_handshake_malformed"
+        );
+        cleanup(controller, &root);
+    }
+
+    #[test]
+    fn handshake_timeout_reports_actionable_detail() {
+        let root = fixture_source_root_with_runtime(
+            "import sys\nimport time\nfor _ in sys.stdin:\n time.sleep(4)\n",
+        );
+        let controller = RuntimeController::new(root.clone(), false);
+        controller.start();
+        wait_for_state(&controller, RuntimeState::Unavailable);
+        assert_eq!(
+            controller.snapshot().detail_code,
+            "runtime_handshake_timeout"
+        );
+        cleanup(controller, &root);
+    }
+
+    #[test]
+    fn clean_shutdown_stops_runtime_after_successful_handshake() {
+        let root = fixture_source_root();
+        let controller = RuntimeController::new(root.clone(), false);
+        controller.start();
+        wait_for_state(&controller, RuntimeState::Ready);
+        controller.shutdown();
+        assert_eq!(controller.snapshot().state, RuntimeState::Stopped);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
