@@ -1768,16 +1768,20 @@ function SettingsSurface({
   changingMode: boolean;
   onToggleSafeMode: () => void;
 }) {
+  const [activeSection, setActiveSection] = useState("Geral");
+  const sections = ["Geral", "Perfil do Owner", "Agentes", "Modelos", "Segurança", "Dados e backup", "Diagnóstico e Sobre"];
   return (
     <section className="settings-surface">
       <header className="workspace-heading"><div><p className="eyebrow">A.I.P.</p><h1>Configurações</h1><span>Preferências locais e diagnóstico do aplicativo.</span></div></header>
-      <section className="settings-card"><h2>Geral</h2><p>Este computador usa um Owner local implícito. Contas adicionais ainda não estão disponíveis.</p></section>
-      <section className="settings-card"><h2>Perfil do Owner</h2><p>Administrador local do A.I.P.</p></section>
-      <section className="settings-card"><h2>Agentes</h2><p>Edite cada perfil pelo botão Perfil no espaço do agente.</p></section>
-      <section className="settings-card"><h2>Modelos</h2><p>O modelo padrão é configurado por agente. Cada conversa pode ter uma substituição própria.</p></section>
-      <section className="settings-card"><h2>Segurança</h2><button className={snapshot?.safeMode ? "mode-button active" : "mode-button"} type="button" disabled={!snapshot || changingMode} onClick={onToggleSafeMode}>{snapshot?.safeMode ? "Sair do modo seguro" : "Ativar modo seguro"}</button></section>
-      <section className="settings-card"><h2>Dados e backup</h2><p>Exportação e backup automático ainda não estão disponíveis nesta versão.</p></section>
-      <section className="settings-card"><h2>Diagnóstico e Sobre</h2><dl><dt>Versão</dt><dd>{snapshot?.appVersion ?? "—"}</dd><dt>Commit</dt><dd>{snapshot?.buildSha ?? "—"}</dd><dt>Build</dt><dd>{snapshot?.buildTimestamp ?? "—"}</dd><dt>Pacote</dt><dd>{snapshot?.runtimePackagingMode ?? "—"}</dd><dt>Runtime</dt><dd>{snapshot ? runtimeLabels[snapshot.runtime.state] : "—"}</dd><dt>Banco local</dt><dd>{snapshot?.databaseReady ? "Disponível" : "Indisponível"}</dd></dl></section>
+      <div className="settings-layout"><nav className="settings-nav" aria-label="Seções de configurações">{sections.map((section) => <button key={section} className={activeSection === section ? "active" : undefined} type="button" onClick={() => setActiveSection(section)}>{section}</button>)}</nav><div>
+      {activeSection === "Geral" ? <section className="settings-card"><h2>Geral</h2><p>Este computador usa um Owner local implícito. Contas adicionais ainda não estão disponíveis.</p></section> : null}
+      {activeSection === "Perfil do Owner" ? <section className="settings-card"><h2>Perfil do Owner</h2><p>Administrador local do A.I.P. A edição do nome do Owner ainda não está disponível.</p></section> : null}
+      {activeSection === "Agentes" ? <section className="settings-card"><h2>Agentes</h2><p>Edite cada perfil pelo botão Perfil no espaço do agente.</p></section> : null}
+      {activeSection === "Modelos" ? <section className="settings-card"><h2>Modelos</h2><p>O modelo padrão é configurado por agente. Cada conversa pode ter uma substituição própria.</p></section> : null}
+      {activeSection === "Segurança" ? <section className="settings-card"><h2>Segurança</h2><p>O modo seguro desativa runtime, gerações e overlays.</p><button className={snapshot?.safeMode ? "mode-button active" : "mode-button"} type="button" disabled={!snapshot || changingMode} onClick={onToggleSafeMode}>{snapshot?.safeMode ? "Sair do modo seguro" : "Ativar modo seguro"}</button></section> : null}
+      {activeSection === "Dados e backup" ? <section className="settings-card"><h2>Dados e backup</h2><p>Exportação e backup automático ainda não estão disponíveis nesta versão.</p><button type="button" disabled>Exportar dados (indisponível)</button></section> : null}
+      {activeSection === "Diagnóstico e Sobre" ? <section className="settings-card"><h2>Diagnóstico e Sobre</h2><dl><dt>Versão</dt><dd>{snapshot?.appVersion ?? "—"}</dd><dt>Commit</dt><dd>{snapshot?.buildSha ?? "—"}</dd><dt>Build</dt><dd>{snapshot?.buildTimestamp ?? "—"}</dd><dt>Pacote</dt><dd>{snapshot?.runtimePackagingMode ?? "—"}</dd><dt>Runtime</dt><dd>{snapshot ? runtimeLabels[snapshot.runtime.state] : "—"}</dd><dt>Detalhe</dt><dd>{snapshot?.runtime.detailCode ?? "—"}</dd><dt>Protocolo</dt><dd>{snapshot?.runtime.protocolVersion ?? "—"}</dd><dt>Banco local</dt><dd>{snapshot?.databaseReady ? "Disponível" : "Indisponível"}</dd><dt>Migração</dt><dd>{snapshot?.migrationVersion ?? "—"}</dd></dl><div className="message-actions"><button type="button" onClick={() => void navigator.clipboard?.writeText(JSON.stringify({ version: snapshot?.appVersion, build: snapshot?.buildSha, runtime: snapshot?.runtime, databaseReady: snapshot?.databaseReady, migrationVersion: snapshot?.migrationVersion, safeMode: snapshot?.safeMode }))}>Copiar diagnóstico</button><button type="button" onClick={() => void invoke("retry_phase_one_runtime")}>Reiniciar runtime</button></div></section> : null}
+      </div></div>
     </section>
   );
 }
@@ -2003,7 +2007,7 @@ function App() {
               type="button"
               onClick={() => void invoke("retry_phase_one_runtime")}
             >
-              Tentar novamente
+              Reiniciar runtime
             </button>
           </div>
         ) : null}
@@ -2029,7 +2033,7 @@ function App() {
         ) : activeAgentId === null ? (
           <section className="conversation-empty">Carregando agentes…</section>
         ) : workspace === "settings" ? (
-          <SettingsSurface snapshot={snapshot} changingMode={changingMode} onToggleSafeMode={() => void toggleSafeMode()} />
+          <section className="workspace-panel"><SettingsSurface snapshot={snapshot} changingMode={changingMode} onToggleSafeMode={() => void toggleSafeMode()} /></section>
         ) : workspace === "memories" ? (
           <section className="workspace-panel">
             <MemoryWorkspace agentId={activeAgentId} />
