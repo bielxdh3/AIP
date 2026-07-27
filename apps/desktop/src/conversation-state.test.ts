@@ -187,6 +187,20 @@ describe("conversation event reducer", () => {
     ).toEqual([]);
   });
 
+  it("settles cancellation when a racing chunk was intentionally suppressed", () => {
+    const initial = createConversationViewState(phase());
+    const chunked = applyPhaseOneEvent(
+      initial,
+      event("generation.chunk", 1, "parte"),
+    );
+    const cancelled = applyPhaseOneEvent(
+      chunked,
+      event("generation.cancelled", 2, null),
+    );
+    expect(cancelled.phase.messages[0]?.status).toBe("cancelled");
+    expect(cancelled.phase.queue).toEqual([]);
+  });
+
   it("finalizes an inactive agent view without changing the active agent", () => {
     const astra = createConversationViewState(phase("astra"));
     const luma = createConversationViewState(phase("luma"));
