@@ -69,6 +69,9 @@ impl RuntimeStatus {
 #[serde(rename_all = "camelCase")]
 pub struct AppSnapshot {
     pub app_version: String,
+    pub build_sha: String,
+    pub build_timestamp: String,
+    pub runtime_packaging_mode: String,
     pub safe_mode: bool,
     pub database_ready: bool,
     pub migration_version: i64,
@@ -278,6 +281,7 @@ pub struct PhaseOneState {
     pub selected_model_ref: Option<String>,
     pub default_model_ref: Option<String>,
     pub model_override_ref: Option<String>,
+    pub effective_model_source: String,
     pub selected_model_available: bool,
     pub keep_alive_minutes: u32,
     pub queue: Vec<QueueEntrySnapshot>,

@@ -22,7 +22,8 @@ const MIGRATION_0004: &str = include_str!("../migrations/0004_phase2_identity.sq
 const MIGRATION_0005: &str = include_str!("../migrations/0005_phase3_conversations_memory.sql");
 const MIGRATION_0006: &str = include_str!("../migrations/0006_phase4_agent_state.sql");
 const MIGRATION_0007: &str = include_str!("../migrations/0007_phase5_pixel_documents.sql");
-const MIGRATIONS: [(i64, &str); 7] = [
+const MIGRATION_0008: &str = include_str!("../migrations/0008_global_safe_mode.sql");
+const MIGRATIONS: [(i64, &str); 8] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
@@ -30,6 +31,7 @@ const MIGRATIONS: [(i64, &str); 7] = [
     (5, MIGRATION_0005),
     (6, MIGRATION_0006),
     (7, MIGRATION_0007),
+    (8, MIGRATION_0008),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -605,7 +607,7 @@ impl Database {
     }
 
     pub fn set_agent_mode(&self, agent_id: &str, mode: &str) -> Result<(), DatabaseError> {
-        if !matches!(mode, "normal" | "voice_muted" | "silent" | "safe") {
+        if !matches!(mode, "normal" | "voice_muted" | "silent") {
             return Err(DatabaseError::InvalidValue);
         }
         let connection = self.open()?;
@@ -1606,7 +1608,7 @@ mod tests {
         let first = Database::initialize(&path).expect("database should initialize");
         let second = Database::initialize(&path).expect("database should reinitialize");
         let snapshot = second.snapshot().expect("snapshot should load");
-        assert_eq!(snapshot.migration_version, 7);
+        assert_eq!(snapshot.migration_version, 8);
         assert_eq!(snapshot.agents.len(), 2);
         for agent in &snapshot.agents {
             assert_eq!(
@@ -1635,7 +1637,7 @@ mod tests {
         drop(connection);
 
         let database = Database::initialize(&path).expect("v1 database should upgrade");
-        assert_eq!(database.snapshot().unwrap().migration_version, 7);
+        assert_eq!(database.snapshot().unwrap().migration_version, 8);
         let connection = Connection::open(&path).unwrap();
         let preserved: String = connection
             .query_row(
@@ -2364,6 +2366,29 @@ mod tests {
             .unwrap();
         assert_eq!(updated.position.x, 412.0);
         assert!(snapshot.safe_mode);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn legacy_agent_safe_mode_upgrades_to_normal() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let connection = database.open().unwrap();
+        connection
+            .execute(
+                "UPDATE agent_simulated_states SET mode = 'safe' WHERE agent_id = ?1",
+                params![ASTRA_ID],
+            )
+            .unwrap();
+        connection
+            .execute("DELETE FROM schema_migrations WHERE version = 8", [])
+            .unwrap();
+        drop(connection);
+        drop(database);
+
+        let upgraded = Database::initialize(&path).unwrap();
+        assert_eq!(upgraded.simulated_state(ASTRA_ID).unwrap().mode, "normal");
+        assert_eq!(upgraded.snapshot().unwrap().migration_version, 8);
         cleanup(&path);
     }
 }

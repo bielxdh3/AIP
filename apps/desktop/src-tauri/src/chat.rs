@@ -48,6 +48,7 @@ struct TemporaryChatStore {
 struct TemporaryConversation {
     conversation: crate::domain::PhaseOneConversation,
     messages: Vec<crate::domain::ConversationMessage>,
+    model_override_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -394,6 +395,11 @@ impl ChatCoordinator {
             .clone()
             .or(default_model_ref.clone());
         let model_override_ref = conversation.model_override_ref.clone();
+        let effective_model_source = if model_override_ref.is_some() {
+            "conversation_override"
+        } else {
+            "agent_default"
+        };
         let selected_model_available = selected_model_ref.as_ref().is_some_and(|selected| {
             provider
                 .models
@@ -412,7 +418,6 @@ impl ChatCoordinator {
             selected_model_available,
             queue.len(),
             simulated_state.suspended,
-            simulated_state.mode.as_str(),
         );
         Ok(PhaseOneState {
             agent,
@@ -422,6 +427,7 @@ impl ChatCoordinator {
             selected_model_ref,
             default_model_ref,
             model_override_ref,
+            effective_model_source: effective_model_source.into(),
             selected_model_available,
             keep_alive_minutes: settings.keep_alive_minutes,
             queue,
@@ -455,15 +461,36 @@ impl ChatCoordinator {
 
     pub fn temporary_state(&self, agent_id: &str) -> Result<PhaseOneState, &'static str> {
         let mut state = self.state(agent_id)?;
-        let conversation = temporary_conversation(agent_id);
+        let conversation = {
+            let mut chats = lock(&self.inner.temporary_chats);
+            chats
+                .conversations
+                .entry(agent_id.to_string())
+                .or_insert_with(|| TemporaryConversation {
+                    conversation: temporary_conversation(agent_id),
+                    messages: Vec::new(),
+                    model_override_ref: None,
+                })
+                .conversation
+                .clone()
+        };
         state.conversation = conversation.clone();
         state.messages = lock(&self.inner.temporary_chats)
             .conversations
             .get(agent_id)
             .map(|chat| chat.messages.clone())
             .unwrap_or_default();
-        state.model_override_ref = None;
-        state.selected_model_ref = state.default_model_ref.clone();
+        let temporary_model_override = lock(&self.inner.temporary_chats)
+            .conversations
+            .get(agent_id)
+            .and_then(|chat| chat.model_override_ref.clone());
+        state.model_override_ref = temporary_model_override.clone();
+        state.selected_model_ref = temporary_model_override.or(state.default_model_ref.clone());
+        state.effective_model_source = if state.model_override_ref.is_some() {
+            "temporary_override".into()
+        } else {
+            "agent_default".into()
+        };
         state.selected_model_available =
             state.selected_model_ref.as_ref().is_some_and(|selected| {
                 state
@@ -484,7 +511,6 @@ impl ChatCoordinator {
                 state.selected_model_available,
                 state.queue.len(),
                 simulated_state.suspended,
-                simulated_state.mode.as_str(),
             )
             .map(str::to_string);
         state.can_send = state.send_blocked_code.is_none();
@@ -551,6 +577,31 @@ impl ChatCoordinator {
         Ok(())
     }
 
+    pub fn set_temporary_model(
+        &self,
+        agent_id: &str,
+        model_ref: Option<&str>,
+    ) -> Result<(), &'static str> {
+        if let Some(model) = model_ref {
+            if !lock(&self.inner.provider)
+                .models
+                .iter()
+                .any(|candidate| candidate.model_ref == model)
+            {
+                return Err("model_unavailable");
+            }
+        }
+        let _ = self.temporary_state(agent_id)?;
+        let mut chats = lock(&self.inner.temporary_chats);
+        let chat = chats
+            .conversations
+            .get_mut(agent_id)
+            .ok_or("operation_unavailable")?;
+        chat.model_override_ref = model_ref.map(str::to_string);
+        self.emit_refresh(Some(agent_id));
+        Ok(())
+    }
+
     pub fn send_message(
         &self,
         agent_id: &str,
@@ -569,7 +620,6 @@ impl ChatCoordinator {
             return Err(match code {
                 "queue_full" => "queue_full",
                 "safe_mode_active" => "safe_mode_active",
-                "agent_safe_mode" => "agent_safe_mode",
                 "agent_suspended" => "agent_suspended",
                 "model_not_selected" | "selected_model_unavailable" => "model_unavailable",
                 _ => "runtime_unavailable",
@@ -612,7 +662,6 @@ impl ChatCoordinator {
             return Err(match code {
                 "queue_full" => "queue_full",
                 "safe_mode_active" => "safe_mode_active",
-                "agent_safe_mode" => "agent_safe_mode",
                 "agent_suspended" => "agent_suspended",
                 "model_not_selected" | "selected_model_unavailable" => "model_unavailable",
                 _ => "runtime_unavailable",
@@ -623,16 +672,13 @@ impl ChatCoordinator {
         let request_id = uuid::Uuid::now_v7().to_string();
         let user_message_id = uuid::Uuid::now_v7().to_string();
         let assistant_message_id = uuid::Uuid::now_v7().to_string();
-        let conversation = temporary_conversation(agent_id);
+        let conversation = state.conversation.clone();
         {
             let mut chats = lock(&self.inner.temporary_chats);
             let chat = chats
                 .conversations
-                .entry(agent_id.to_string())
-                .or_insert_with(|| TemporaryConversation {
-                    conversation: conversation.clone(),
-                    messages: Vec::new(),
-                });
+                .get_mut(agent_id)
+                .ok_or("operation_unavailable")?;
             chat.messages.push(crate::domain::ConversationMessage {
                 id: user_message_id.clone(),
                 conversation_id: conversation.id.clone(),
@@ -724,7 +770,13 @@ impl ChatCoordinator {
     }
 
     pub fn reset_temporary(&self, agent_id: &str) -> Result<(), &'static str> {
-        let conversation_id = temporary_conversation(agent_id).id;
+        let Some(conversation_id) = lock(&self.inner.temporary_chats)
+            .conversations
+            .get(agent_id)
+            .map(|chat| chat.conversation.id.clone())
+        else {
+            return Ok(());
+        };
         let mut queue = lock(&self.inner.queue);
         let cancelled_active = queue.take_temporary_active(agent_id, &conversation_id);
         queue.discard_temporary_pending(agent_id, &conversation_id);
@@ -756,7 +808,6 @@ impl ChatCoordinator {
         selected_available: bool,
         queue_length: usize,
         suspended: bool,
-        agent_mode: &str,
     ) -> Option<&'static str> {
         if self.inner.safe_mode.load(Ordering::SeqCst) {
             Some("safe_mode_active")
@@ -774,8 +825,6 @@ impl ChatCoordinator {
             Some("selected_model_unavailable")
         } else if suspended {
             Some("agent_suspended")
-        } else if agent_mode == "safe" {
-            Some("agent_safe_mode")
         } else if queue_length >= MAX_QUEUE_LENGTH {
             Some("queue_full")
         } else {
@@ -1270,7 +1319,7 @@ fn job_from_attempt(
 
 fn temporary_conversation(agent_id: &str) -> crate::domain::PhaseOneConversation {
     crate::domain::PhaseOneConversation {
-        id: format!("temporary-{agent_id}"),
+        id: format!("temporary-{agent_id}-{}", uuid::Uuid::now_v7()),
         agent_id: agent_id.to_string(),
         title: "Conversa temporária".into(),
         model_override_ref: None,
@@ -1395,8 +1444,8 @@ mod tests {
     fn temporary_conversations_are_distinct_from_persisted_conversation_ids() {
         let astra = temporary_conversation("astra");
         let luma = temporary_conversation("luma");
-        assert_eq!(astra.id, "temporary-astra");
-        assert_eq!(luma.id, "temporary-luma");
+        assert!(astra.id.starts_with("temporary-astra-"));
+        assert!(luma.id.starts_with("temporary-luma-"));
         assert_ne!(astra.id, luma.id);
         assert_eq!(astra.model_override_ref, None);
     }
@@ -1421,6 +1470,7 @@ mod tests {
                     completed_at: None,
                     error_code: None,
                 }],
+                model_override_ref: None,
             },
         );
         let mut queue = GenerationQueue::default();
@@ -1469,6 +1519,7 @@ mod tests {
             TemporaryConversation {
                 conversation: temporary_conversation.clone(),
                 messages: Vec::new(),
+                model_override_ref: None,
             },
         );
         assert!(temporary.conversations["astra"].messages.is_empty());

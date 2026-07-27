@@ -51,6 +51,9 @@ export type ProvisionalAgent = {
 
 export type AppSnapshot = {
   appVersion: string;
+  buildSha: string;
+  buildTimestamp: string;
+  runtimePackagingMode: string;
   safeMode: boolean;
   databaseReady: boolean;
   migrationVersion: number;
@@ -130,7 +133,7 @@ export type AgentSimulatedState = {
   focus: number;
   curiosity: number;
   socialFatigue: number;
-  mode: "normal" | "voice_muted" | "silent" | "safe";
+  mode: "normal" | "voice_muted" | "silent";
   suspended: boolean;
   wakeNowUntil: number | null;
   lastSimulatedAt: number;
@@ -154,6 +157,7 @@ export type PhaseOneState = {
   selectedModelRef: string | null;
   defaultModelRef: string | null;
   modelOverrideRef: string | null;
+  effectiveModelSource: "agent_default" | "conversation_override" | "temporary_override";
   selectedModelAvailable: boolean;
   keepAliveMinutes: number;
   queue: QueueEntry[];

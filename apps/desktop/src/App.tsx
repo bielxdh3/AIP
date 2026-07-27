@@ -273,24 +273,31 @@ function ConversationSurface({
         <div className="conversation-controls">
           <div className="model-primary-control">
             <label>
-              <span>Modelo local</span>
+              <span>
+                Modelo em uso: {phase.selectedModelRef ?? "Nenhum modelo"}
+                {phase.effectiveModelSource === "agent_default"
+                  ? " · padrão do agente"
+                  : " · específico desta conversa"}
+              </span>
               <select
-                value={phase.selectedModelRef ?? ""}
+                value={phase.modelOverrideRef ?? ""}
                 disabled={!modelsAvailable}
                 onChange={(event) => {
-                  if (event.target.value) {
-                    void invoke("select_phase_one_model", {
-                      agentId: currentPhase.agent.id,
-                      modelRef: event.target.value,
-                    }).then(load);
-                  }
+                  const modelRef = event.target.value || null;
+                  const command = temporary
+                    ? "set_temporary_phase_one_model"
+                    : "set_conversation_model_override";
+                  const argumentsForCommand = temporary
+                    ? { agentId: currentPhase.agent.id, modelRef }
+                    : conversationOverrideArguments(
+                        currentPhase.agent.id,
+                        currentPhase.conversation.id,
+                        modelRef ?? "",
+                      );
+                  void invoke(command, argumentsForCommand).then(load);
                 }}
               >
-                <option value="">
-                  {modelsAvailable
-                    ? "Selecione um modelo"
-                    : "Nenhum modelo disponível"}
-                </option>
+                <option value="">Usar padrão do agente</option>
                 {phase.provider.models.map((model) => (
                   <option value={model.ref} key={model.ref}>
                     {model.displayName}
@@ -298,9 +305,9 @@ function ConversationSurface({
                     {model.quantization ? ` · ${model.quantization}` : ""}
                   </option>
                 ))}
-                {phase.selectedModelRef !== null &&
+                {phase.modelOverrideRef !== null &&
                 !phase.selectedModelAvailable ? (
-                  <option value={phase.selectedModelRef}>
+                  <option value={phase.modelOverrideRef}>
                     Modelo salvo (indisponível)
                   </option>
                 ) : null}
@@ -318,38 +325,6 @@ function ConversationSurface({
           <details className="model-advanced-controls">
             <summary>Opções do modelo</summary>
             <div>
-              {!temporary ? (
-                <label>
-                  <span>Modelo desta conversa</span>
-                  <select
-                    disabled={!modelsAvailable}
-                    value={phase.modelOverrideRef ?? ""}
-                    onChange={(event) =>
-                      void invoke(
-                        "set_conversation_model_override",
-                        conversationOverrideArguments(
-                          currentPhase.agent.id,
-                          currentPhase.conversation.id,
-                          event.target.value,
-                        ),
-                      ).then(load)
-                    }
-                  >
-                    <option value="">Usar modelo padrão do agente</option>
-                    {phase.provider.models.map((model) => (
-                      <option value={model.ref} key={`override-${model.ref}`}>
-                        {model.displayName}
-                      </option>
-                    ))}
-                    {phase.modelOverrideRef !== null &&
-                    !phase.selectedModelAvailable ? (
-                      <option value={phase.modelOverrideRef}>
-                        Modelo salvo (indisponível)
-                      </option>
-                    ) : null}
-                  </select>
-                </label>
-              ) : null}
               <label>
                 <span>Manter modelo carregado</span>
                 <select
@@ -562,8 +537,15 @@ function ProfileForm({
   done: () => void;
 }) {
   const [draft, setDraft] = useState(agent);
+  const [persisted, setPersisted] = useState(agent);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => setDraft(agent), [agent]);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    setDraft(agent);
+    setPersisted(agent);
+    setError(null);
+    setSaved(false);
+  }, [agent.id]);
   async function save() {
     const prepared = withInitialTraitDefaults(draft);
     const validation = profileValidationError(prepared);
@@ -582,6 +564,9 @@ function ProfileForm({
     }
     try {
       await invoke("update_agent_profile", { agent: prepared });
+      setDraft(prepared);
+      setPersisted(prepared);
+      setSaved(true);
       done();
     } catch {
       setError("Não foi possível salvar o perfil.");
@@ -592,8 +577,20 @@ function ProfileForm({
       <h1>{`Perfil de ${agent.name}`}</h1>
       <ProfileFields draft={draft} onChange={setDraft} />
       {error ? <p role="alert">{error}</p> : null}
+      {saved ? <p role="status">Perfil salvo.</p> : null}
       <button type="button" onClick={() => void save()}>
-        Salvar perfil
+        Salvar
+      </button>
+      <button
+        type="button"
+        disabled={JSON.stringify(draft) === JSON.stringify(persisted)}
+        onClick={() => {
+          setDraft(persisted);
+          setError(null);
+          setSaved(false);
+        }}
+      >
+        Cancelar
       </button>
     </section>
   );
@@ -607,8 +604,16 @@ function OnboardingForm({
   done: () => void;
 }) {
   const [drafts, setDrafts] = useState(agents);
+  const [persisted, setPersisted] = useState(agents);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => setDrafts(agents), [agents]);
+  const [saved, setSaved] = useState(false);
+  const onboardingIds = agents.map((agent) => agent.id).join("|");
+  useEffect(() => {
+    setDrafts(agents);
+    setPersisted(agents);
+    setError(null);
+    setSaved(false);
+  }, [onboardingIds]);
   const update = (index: number, next: ProvisionalAgent) =>
     setDrafts((current) =>
       current.map((agent, currentIndex) =>
@@ -637,6 +642,9 @@ function OnboardingForm({
     }
     try {
       await invoke("complete_phase_two_onboarding", { agents: prepared });
+      setDrafts(prepared);
+      setPersisted(prepared);
+      setSaved(true);
       done();
     } catch {
       setError("Não foi possível concluir a criação dos perfis.");
@@ -655,8 +663,20 @@ function OnboardingForm({
         </fieldset>
       ))}
       {error ? <p role="alert">{error}</p> : null}
+      {saved ? <p role="status">Perfis salvos.</p> : null}
       <button type="button" onClick={() => void save()}>
-        Concluir criação
+        Salvar
+      </button>
+      <button
+        type="button"
+        disabled={JSON.stringify(drafts) === JSON.stringify(persisted)}
+        onClick={() => {
+          setDrafts(persisted);
+          setError(null);
+          setSaved(false);
+        }}
+      >
+        Cancelar
       </button>
     </section>
   );
@@ -1092,7 +1112,6 @@ function AgentStateControls({ agentId }: { agentId: string }) {
           <option value="normal">Normal</option>
           <option value="voice_muted">Sem voz</option>
           <option value="silent">Silencioso</option>
-          <option value="safe">Seguro</option>
         </select>
       </label>
       <small>
@@ -1734,9 +1753,16 @@ function App() {
     }
   }
 
-  function openWorkspace(next: "chat" | "memories" | "state" | "appearance") {
+  async function openWorkspace(next: "chat" | "memories" | "state" | "appearance") {
+    await leaveTemporaryChat();
     setEditingAgentId(null);
     setWorkspace(next);
+  }
+
+  async function openProfile(agentId: string) {
+    await leaveTemporaryChat();
+    setWorkspace("chat");
+    setEditingAgentId(agentId);
   }
 
   async function leaveTemporaryChat() {
@@ -1788,10 +1814,11 @@ function App() {
           <ConversationList
             agentId={activeAgentId}
             changed={() => {
-              setConversationRevision((value) => value + 1);
-              setTemporaryChat(false);
-              setEditingAgentId(null);
-              setWorkspace("chat");
+              void leaveTemporaryChat().then(() => {
+                setConversationRevision((value) => value + 1);
+                setEditingAgentId(null);
+                setWorkspace("chat");
+              });
             }}
           />
         ) : null}
@@ -1822,7 +1849,7 @@ function App() {
               <button
                 key={`profile-${agent.id}`}
                 type="button"
-                onClick={() => setEditingAgentId(agent.id)}
+                onClick={() => void openProfile(agent.id)}
               >
                 Perfil de {agent.name}
               </button>
@@ -1850,28 +1877,28 @@ function App() {
             <button
               className={workspace === "chat" ? "active" : undefined}
               type="button"
-              onClick={() => openWorkspace("chat")}
+              onClick={() => void openWorkspace("chat")}
             >
               Conversa
             </button>
             <button
               className={workspace === "memories" ? "active" : undefined}
               type="button"
-              onClick={() => openWorkspace("memories")}
+              onClick={() => void openWorkspace("memories")}
             >
               Memórias
             </button>
             <button
               className={workspace === "state" ? "active" : undefined}
               type="button"
-              onClick={() => openWorkspace("state")}
+              onClick={() => void openWorkspace("state")}
             >
               Estado
             </button>
             <button
               className={workspace === "appearance" ? "active" : undefined}
               type="button"
-              onClick={() => openWorkspace("appearance")}
+              onClick={() => void openWorkspace("appearance")}
             >
               Aparência
             </button>
@@ -1879,7 +1906,7 @@ function App() {
             <button
               className="workspace-profile"
               type="button"
-              onClick={() => setEditingAgentId(activeAgentId)}
+              onClick={() => void openProfile(activeAgentId)}
             >
               Perfil
             </button>
@@ -1892,7 +1919,7 @@ function App() {
               type="button"
               onClick={() => void toggleTemporaryChat()}
             >
-              {temporaryChat ? "Conversa salva" : "Temporária"}
+              {temporaryChat ? "Encerrar e apagar" : "Temporária"}
             </button>
           </nav>
         ) : null}
