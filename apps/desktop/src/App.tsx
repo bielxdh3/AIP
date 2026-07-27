@@ -216,6 +216,18 @@ function ConversationSurface({
     conversationIdRef.current = conversationId;
   }, [phase?.conversation.id, phase?.messages]);
 
+  useEffect(() => {
+    const activeRequest = phase
+      ? requestForAgent(phase.queue, phase.agent.id)
+      : null;
+    if (
+      cancellingRequestId !== null &&
+      activeRequest?.requestId !== cancellingRequestId
+    ) {
+      setCancellingRequestId(null);
+    }
+  }, [cancellingRequestId, phase]);
+
   if (error) {
     return (
       <section className="conversation-empty" role="alert">
@@ -279,7 +291,7 @@ function ConversationSurface({
         requestId: request.requestId,
       });
       void load();
-    } finally {
+    } catch {
       setCancellingRequestId(null);
     }
   }

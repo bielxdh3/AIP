@@ -86,7 +86,13 @@ export function applyPhaseOneEvent(
     });
   }
   const lastSequence = state.lastSequenceByRequest[event.requestId] ?? 0;
-  if (event.sequence !== lastSequence) return state;
+  const cancellationSequenceCanAdvance =
+    event.eventType === "generation.cancelled" &&
+    event.sequence !== null &&
+    event.sequence >= lastSequence;
+  if (!cancellationSequenceCanAdvance && event.sequence !== lastSequence) {
+    return state;
+  }
   return updateMessage(
     {
       ...state,

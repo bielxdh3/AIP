@@ -28,6 +28,8 @@ use crate::{
 const EVENT_NAME: &str = "phase-one-event";
 const MAX_REQUEST_TRACE_ENTRIES: usize = 24;
 const MAX_RETAINED_REQUEST_TRACES: usize = 16;
+const CANCELLATION_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
+const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GenerationJob {
@@ -212,6 +214,12 @@ impl GenerationQueue {
         CancellationDecision::Requested
     }
 
+    fn cancellation_is_pending(&self, request_id: &str) -> bool {
+        self.active.as_ref().is_some_and(|active| {
+            active.job.request_id == request_id && active.cancellation_requested
+        })
+    }
+
     fn matches_event(&self, event: &PhaseOneEvent) -> bool {
         self.active.as_ref().is_some_and(|active| {
             event.request_id.as_deref() == Some(active.job.request_id.as_str())
@@ -228,7 +236,17 @@ impl GenerationQueue {
 
     fn accepts_terminal(&self, event: &PhaseOneEvent) -> bool {
         self.active.as_ref().is_some_and(|active| {
-            self.matches_event(event) && event.sequence == Some(active.last_sequence)
+            if !self.matches_event(event) {
+                return false;
+            }
+            let Some(sequence) = event.sequence else {
+                return false;
+            };
+            if active.cancellation_requested {
+                return event.event_type == "generation.cancelled"
+                    && sequence >= active.last_sequence;
+            }
+            sequence == active.last_sequence
         })
     }
 
@@ -241,10 +259,14 @@ impl GenerationQueue {
         let Some(active) = self.active.as_mut() else {
             return ChunkDecision::Ignored;
         };
-        if active.job.request_id != request_id
-            || active.cancellation_requested
-            || sequence != active.last_sequence + 1
-        {
+        if active.job.request_id != request_id || sequence != active.last_sequence + 1 {
+            return ChunkDecision::Ignored;
+        }
+        if active.cancellation_requested {
+            // A chunk can already be in flight when cancellation is requested. Advance the
+            // sequence without persisting content so its following cancellation terminal is
+            // still attributable to this request.
+            active.last_sequence = sequence;
             return ChunkDecision::Ignored;
         }
         let next_size = active.output_bytes.saturating_add(content_bytes);
@@ -329,6 +351,7 @@ struct ChatInner {
     queue: Mutex<GenerationQueue>,
     request_traces: Mutex<RequestTraceStore>,
     temporary_chats: Mutex<TemporaryChatStore>,
+    cancellation_recovery: AtomicBool,
 }
 
 #[derive(Clone)]
@@ -357,6 +380,7 @@ impl ChatCoordinator {
                 queue: Mutex::new(GenerationQueue::default()),
                 request_traces: Mutex::new(RequestTraceStore::default()),
                 temporary_chats: Mutex::new(TemporaryChatStore::default()),
+                cancellation_recovery: AtomicBool::new(false),
             }),
         };
         let listener = coordinator.clone();
@@ -458,6 +482,9 @@ impl ChatCoordinator {
             self.emit_refresh(None);
             return Err("runtime_unavailable");
         }
+        if !lock(&self.inner.discovery_requests).is_empty() {
+            return Ok(());
+        }
         *lock(&self.inner.provider) = ProviderSnapshot::checking();
         let request_id = format!("discover-{}", uuid::Uuid::now_v7());
         lock(&self.inner.discovery_requests).insert(request_id.clone());
@@ -468,6 +495,11 @@ impl ChatCoordinator {
             self.emit_refresh(None);
             return Err(error);
         }
+        let coordinator = self.clone();
+        thread::spawn(move || {
+            thread::sleep(DISCOVERY_TIMEOUT);
+            coordinator.expire_discovery(&request_id);
+        });
         self.emit_refresh(None);
         Ok(())
     }
@@ -855,6 +887,13 @@ impl ChatCoordinator {
             self.fail_active(request_id, code);
             return Err(code);
         }
+        self.trace(request_id, "cancel_sent", None, None);
+        let coordinator = self.clone();
+        let request_id = request_id.to_string();
+        thread::spawn(move || {
+            thread::sleep(CANCELLATION_GRACE_PERIOD);
+            coordinator.recover_stalled_cancellation(&request_id);
+        });
         Ok(())
     }
 
@@ -900,10 +939,61 @@ impl ChatCoordinator {
 
     pub fn retry_runtime(&self) {
         if !self.inner.safe_mode.load(Ordering::SeqCst) {
+            lock(&self.inner.discovery_requests).clear();
             self.inner.runtime.start();
             *lock(&self.inner.provider) = ProviderSnapshot::checking();
             self.emit_refresh(None);
         }
+    }
+
+    fn expire_discovery(&self, request_id: &str) {
+        if lock(&self.inner.discovery_requests).remove(request_id) {
+            *lock(&self.inner.provider) = provider_error_snapshot("provider_timeout");
+            self.trace(
+                request_id,
+                "discovery_timed_out",
+                None,
+                Some("provider_timeout"),
+            );
+            self.emit_refresh(None);
+        }
+    }
+
+    fn recover_stalled_cancellation(&self, request_id: &str) {
+        let job = {
+            let mut queue = lock(&self.inner.queue);
+            if !queue.cancellation_is_pending(request_id) {
+                return;
+            }
+            queue.finish_active(request_id)
+        };
+        let Some(job) = job else {
+            return;
+        };
+        self.trace(
+            request_id,
+            "cancellation_watchdog",
+            None,
+            Some("generation_cancel_timeout"),
+        );
+        let _ = self.finish_job(
+            &job,
+            MessageStatus::Cancelled,
+            Some("generation_cancel_timeout"),
+        );
+        self.emit_terminal(
+            &job,
+            "generation.cancelled",
+            Some("generation_cancel_timeout"),
+        );
+        self.inner
+            .cancellation_recovery
+            .store(true, Ordering::SeqCst);
+        lock(&self.inner.discovery_requests).clear();
+        *lock(&self.inner.provider) = ProviderSnapshot::unavailable("runtime_restarting");
+        self.inner.runtime.shutdown();
+        self.inner.runtime.start();
+        self.emit_refresh(Some(&job.agent_id));
     }
 
     fn send_blocked_code(
@@ -979,12 +1069,23 @@ impl ChatCoordinator {
                 self.handle_generation_event(event)
             }
             RuntimeNotice::Disconnected { detail_code } => {
+                lock(&self.inner.discovery_requests).clear();
                 *lock(&self.inner.provider) = ProviderSnapshot::unavailable(detail_code);
-                self.fail_all("runtime_interrupted");
+                if !self
+                    .inner
+                    .cancellation_recovery
+                    .swap(false, Ordering::SeqCst)
+                {
+                    self.fail_all("runtime_interrupted");
+                }
                 self.emit_refresh(None);
             }
             RuntimeNotice::Output(RuntimeOutput::HealthReady { .. }) => {
+                self.inner
+                    .cancellation_recovery
+                    .store(false, Ordering::SeqCst);
                 let _ = self.refresh_models();
+                self.dispatch_next();
             }
             RuntimeNotice::Output(RuntimeOutput::Accepted { .. }) => {}
         }
@@ -1711,11 +1812,15 @@ mod tests {
             agent_id: Some(active.agent_id.clone()),
             conversation_id: Some(active.conversation_id.clone()),
             assistant_message_id: Some(active.assistant_message_id.clone()),
-            sequence: Some(0),
+            sequence: Some(1),
             content: None,
             error_code: None,
         };
         assert!(queue.accepts_terminal(&cancelled));
+        assert!(!queue.accepts_terminal(&PhaseOneEvent {
+            event_type: "generation.complete".into(),
+            ..cancelled.clone()
+        }));
         assert!(queue.finish_active("one").is_some());
         assert_eq!(queue.activate_next().unwrap().request_id, "two");
         assert!(queue.accepts_terminal(&PhaseOneEvent {
