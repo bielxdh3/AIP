@@ -660,17 +660,17 @@ fn snapshot(state: &AppState) -> Result<AppSnapshot, &'static str> {
     })
 }
 
-fn runtime_source_root() -> PathBuf {
+fn runtime_source_root(_app: &AppHandle) -> PathBuf {
     #[cfg(debug_assertions)]
     {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../services/runtime/src")
     }
     #[cfg(not(debug_assertions))]
     {
-        std::env::current_exe()
-            .ok()
-            .and_then(|path| path.parent().map(|parent| parent.join("aip-runtime.exe")))
-            .unwrap_or_else(|| PathBuf::from("aip-runtime.exe"))
+        _app.path()
+            .resource_dir()
+            .map(|path| path.join("aip-runtime-x86_64-pc-windows-msvc.exe"))
+            .unwrap_or_else(|_| PathBuf::from("aip-runtime-x86_64-pc-windows-msvc.exe"))
     }
 }
 
@@ -701,7 +701,7 @@ pub fn run() {
                 Err(_) => (None, true),
             };
             let safe_mode = Arc::new(AtomicBool::new(stored_safe_mode));
-            let runtime = RuntimeController::new(runtime_source_root(), stored_safe_mode);
+            let runtime = RuntimeController::new(runtime_source_root(app.handle()), stored_safe_mode);
             let overlay_input = OverlayInputState::default();
             let chat = database.as_ref().map(|database| {
                 ChatCoordinator::new(
