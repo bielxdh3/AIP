@@ -383,6 +383,16 @@ impl ChatCoordinator {
             .database
             .messages(agent_id, &conversation.id)
             .map_err(|_| "operation_failed")?;
+        let branches = self
+            .inner
+            .database
+            .branches(agent_id, &conversation.id)
+            .map_err(|_| "operation_failed")?;
+        let active_branch_id = self
+            .inner
+            .database
+            .active_branch_id(agent_id, &conversation.id)
+            .map_err(|_| "operation_failed")?;
         let settings = self
             .inner
             .database
@@ -423,6 +433,8 @@ impl ChatCoordinator {
             agent,
             conversation,
             messages,
+            branches,
+            active_branch_id: Some(active_branch_id),
             provider,
             selected_model_ref,
             default_model_ref,
@@ -480,6 +492,8 @@ impl ChatCoordinator {
             .get(agent_id)
             .map(|chat| chat.messages.clone())
             .unwrap_or_default();
+        state.branches.clear();
+        state.active_branch_id = None;
         let temporary_model_override = lock(&self.inner.temporary_chats)
             .conversations
             .get(agent_id)
@@ -648,6 +662,93 @@ impl ChatCoordinator {
         Ok(result)
     }
 
+    pub fn regenerate_message(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        assistant_message_id: &str,
+    ) -> Result<SendMessageResult, &'static str> {
+        self.send_branch_attempt(agent_id, conversation_id, |database, model| {
+            database.create_regeneration_attempt(
+                agent_id,
+                conversation_id,
+                assistant_message_id,
+                model,
+            )
+        })
+    }
+
+    pub fn edit_message(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        user_message_id: &str,
+        content: &str,
+    ) -> Result<SendMessageResult, &'static str> {
+        if content.is_empty() || content.len() > MAX_USER_MESSAGE_BYTES {
+            return Err("invalid_message");
+        }
+        self.send_branch_attempt(agent_id, conversation_id, |database, model| {
+            database.create_edited_attempt(
+                agent_id,
+                conversation_id,
+                user_message_id,
+                content,
+                model,
+            )
+        })
+    }
+
+    fn send_branch_attempt<F>(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        create_attempt: F,
+    ) -> Result<SendMessageResult, &'static str>
+    where
+        F: FnOnce(&Database, &str) -> Result<MessageAttempt, crate::database::DatabaseError>,
+    {
+        let _send_guard = lock(&self.inner.send_lock);
+        let state = self.state(agent_id)?;
+        if state.conversation.id != conversation_id {
+            return Err("operation_unavailable");
+        }
+        if state.send_blocked_code.is_some() {
+            return Err("runtime_unavailable");
+        }
+        let model_ref = state.selected_model_ref.ok_or("model_unavailable")?;
+        let attempt =
+            create_attempt(&self.inner.database, &model_ref).map_err(|_| "operation_failed")?;
+        let job = job_from_attempt(agent_id, conversation_id, &model_ref, &attempt);
+        if let Err(code) = lock(&self.inner.queue).enqueue(job.clone()) {
+            let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
+            return Err(code);
+        }
+        self.trace(&attempt.request_id, "request_enqueued", None, None);
+        self.emit_refresh(Some(agent_id));
+        self.dispatch_next();
+        Ok(SendMessageResult {
+            request_id: attempt.request_id,
+            conversation_id: conversation_id.into(),
+            user_message_id: attempt.user_message_id,
+            assistant_message_id: attempt.assistant_message_id,
+        })
+    }
+
+    pub fn select_branch(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        branch_id: &str,
+    ) -> Result<(), &'static str> {
+        self.inner
+            .database
+            .set_active_branch(agent_id, conversation_id, branch_id)
+            .map_err(|_| "operation_failed")?;
+        self.emit_refresh(Some(agent_id));
+        Ok(())
+    }
+
     pub fn send_temporary_message(
         &self,
         agent_id: &str,
@@ -690,6 +791,7 @@ impl ChatCoordinator {
                 created_at: now,
                 completed_at: Some(now),
                 error_code: None,
+                branch_id: conversation.id.clone(),
             });
             chat.messages.push(crate::domain::ConversationMessage {
                 id: assistant_message_id.clone(),
@@ -702,6 +804,7 @@ impl ChatCoordinator {
                 created_at: now + 1,
                 completed_at: None,
                 error_code: None,
+                branch_id: conversation.id.clone(),
             });
         }
         let job = GenerationJob {
@@ -1469,6 +1572,7 @@ mod tests {
                     created_at: now_millis(),
                     completed_at: None,
                     error_code: None,
+                    branch_id: temporary_conversation.id.clone(),
                 }],
                 model_override_ref: None,
             },
@@ -1875,6 +1979,7 @@ mod tests {
             created_at: 1,
             completed_at: None,
             error_code: None,
+            branch_id: "branch".into(),
         };
         assert!(serde_json::to_string(&message).unwrap().contains("pending"));
     }

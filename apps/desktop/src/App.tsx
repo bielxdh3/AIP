@@ -135,7 +135,17 @@ function AgentButton({
   );
 }
 
-function MessageItem({ message }: { message: ConversationMessage }) {
+function MessageItem({
+  message,
+  onRegenerate,
+  onEdit,
+}: {
+  message: ConversationMessage;
+  onRegenerate: (message: ConversationMessage) => void;
+  onEdit: (message: ConversationMessage, content: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(message.content);
   return (
     <article
       className={`chat-message ${message.author}`}
@@ -145,10 +155,22 @@ function MessageItem({ message }: { message: ConversationMessage }) {
         <strong>{message.author === "user" ? "Você" : "Agente"}</strong>
         <span>{messageStatusCopy(message)}</span>
       </div>
-      {message.content ? <p>{message.content}</p> : null}
+      {editing ? (
+        <div className="message-editor">
+          <textarea value={draft} onChange={(event) => setDraft(event.target.value)} />
+          <button type="button" onClick={() => { setEditing(false); setDraft(message.content); }}>Cancelar</button>
+          <button type="button" disabled={!draft.trim()} onClick={() => { onEdit(message, draft.trim()); setEditing(false); }}>Salvar e enviar</button>
+        </div>
+      ) : message.content ? <p>{message.content}</p> : null}
       {message.status === "failed" ? (
         <small>{messageFailureCopy(message.errorCode)}</small>
       ) : null}
+      <div className="message-actions">
+        <button type="button" onClick={() => void navigator.clipboard?.writeText(message.content)}>Copiar</button>
+        {message.author === "user" ? <button type="button" onClick={() => setEditing(true)}>Editar</button> : null}
+        {message.author === "agent" ? <button type="button" onClick={() => onRegenerate(message)}>{message.status === "failed" ? "Tentar novamente" : "Gerar novamente"}</button> : null}
+        {message.author === "agent" && message.modelRef ? <details><summary>Modelo</summary><span>{message.modelRef}</span></details> : null}
+      </div>
     </article>
   );
 }
@@ -253,6 +275,18 @@ function ConversationSurface({
     } finally {
       setCancellingRequestId(null);
     }
+  }
+
+  async function regenerate(message: ConversationMessage) {
+    if (temporary || message.status === "pending" || message.status === "streaming") return;
+    await invoke("regenerate_phase_one_message", { agentId: currentPhase.agent.id, conversationId: currentPhase.conversation.id, assistantMessageId: message.id });
+    void load();
+  }
+
+  async function edit(message: ConversationMessage, content: string) {
+    if (temporary) return;
+    await invoke("edit_phase_one_message", { agentId: currentPhase.agent.id, conversationId: currentPhase.conversation.id, userMessageId: message.id, content });
+    void load();
   }
 
   return (
@@ -360,6 +394,9 @@ function ConversationSurface({
           }
         }}
       >
+        {!temporary && currentPhase.branches.length > 1 ? (
+          <label className="branch-picker"><span>Alternativa</span><select value={currentPhase.activeBranchId ?? ""} onChange={(event) => void invoke("set_active_conversation_branch", { agentId: currentPhase.agent.id, conversationId: currentPhase.conversation.id, branchId: event.target.value }).then(load)}>{currentPhase.branches.map((branch, index) => <option value={branch.id} key={branch.id}>‹ {index + 1}/{currentPhase.branches.length} ›</option>)}</select></label>
+        ) : null}
         {phase.messages.length === 0 ? (
           <div className="history-placeholder">
             <strong>Esta conversa ainda está vazia.</strong>
@@ -369,7 +406,7 @@ function ConversationSurface({
           </div>
         ) : (
           phase.messages.map((message) => (
-            <MessageItem key={message.id} message={message} />
+            <MessageItem key={message.id} message={message} onRegenerate={(message) => void regenerate(message)} onEdit={(message, content) => void edit(message, content)} />
           ))
         )}
       </div>

@@ -23,7 +23,8 @@ const MIGRATION_0005: &str = include_str!("../migrations/0005_phase3_conversatio
 const MIGRATION_0006: &str = include_str!("../migrations/0006_phase4_agent_state.sql");
 const MIGRATION_0007: &str = include_str!("../migrations/0007_phase5_pixel_documents.sql");
 const MIGRATION_0008: &str = include_str!("../migrations/0008_global_safe_mode.sql");
-const MIGRATIONS: [(i64, &str); 8] = [
+const MIGRATION_0009: &str = include_str!("../migrations/0009_conversation_branches.sql");
+const MIGRATIONS: [(i64, &str); 9] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
@@ -32,6 +33,7 @@ const MIGRATIONS: [(i64, &str); 8] = [
     (6, MIGRATION_0006),
     (7, MIGRATION_0007),
     (8, MIGRATION_0008),
+    (9, MIGRATION_0009),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -221,6 +223,18 @@ impl Database {
                 params![agent_id, now],
             )?;
             transaction.execute(
+                "INSERT OR IGNORE INTO conversation_branches
+                 (id, conversation_id, agent_id, created_at, updated_at)
+                 SELECT id || ':main', id, agent_id, ?2, ?2 FROM conversations WHERE agent_id = ?1",
+                params![agent_id, now],
+            )?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO conversation_active_branches
+                 (conversation_id, agent_id, branch_id, updated_at)
+                 SELECT id, agent_id, id || ':main', ?2 FROM conversations WHERE agent_id = ?1",
+                params![agent_id, now],
+            )?;
+            transaction.execute(
                 "INSERT OR IGNORE INTO agent_simulated_states
                  (agent_id, sleep, energy, mood, focus, curiosity, social_fatigue, mode, suspended, last_simulated_at, updated_at)
                  VALUES (?1, 20, 80, 70, 70, 70, 20, 'normal', 0, ?2, ?2)",
@@ -401,6 +415,16 @@ impl Database {
         let now = now_millis();
         connection.execute("INSERT INTO conversations (id, agent_id, owner_user_id, title, kind, is_main, created_at, updated_at)
             VALUES (?1, ?2, ?3, ?4, 'normal', 0, ?5, ?5)", params![conversation.id, agent_id, OWNER_ID, title, now])?;
+        connection.execute(
+            "INSERT INTO conversation_branches (id, conversation_id, agent_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![format!("{}:main", conversation.id), conversation.id, agent_id, now],
+        )?;
+        connection.execute(
+            "INSERT INTO conversation_active_branches (conversation_id, agent_id, branch_id, updated_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![conversation.id, agent_id, format!("{}:main", conversation.id), now],
+        )?;
         Ok(conversation)
     }
 
@@ -690,34 +714,28 @@ impl Database {
         assistant_message_id: &str,
     ) -> Result<Option<AgentMemory>, DatabaseError> {
         self.verify_conversation(agent_id, conversation_id)?;
-        let connection = self.open()?;
-        let source = connection
-            .query_row(
-                "SELECT user_message.id, user_message.content
-                 FROM conversation_messages AS assistant_message
-                 JOIN conversation_messages AS user_message
-                   ON user_message.conversation_id = assistant_message.conversation_id
-                  AND user_message.agent_id = assistant_message.agent_id
-                 WHERE assistant_message.id = ?1
-                   AND assistant_message.agent_id = ?2
-                   AND assistant_message.conversation_id = ?3
-                   AND assistant_message.author_type = 'agent'
-                   AND assistant_message.status = 'complete'
-                   AND user_message.author_type = 'user'
-                   AND user_message.status = 'complete'
-                   AND user_message.created_at < assistant_message.created_at
-                 ORDER BY user_message.created_at DESC, user_message.id DESC
-                 LIMIT 1",
-                params![assistant_message_id, agent_id, conversation_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()?;
+        let visible = self.messages(agent_id, conversation_id)?;
+        let source = visible
+            .iter()
+            .position(|message| {
+                message.id == assistant_message_id
+                    && message.author == MessageAuthor::Agent
+                    && message.status == MessageStatus::Complete
+            })
+            .and_then(|index| {
+                visible[..index].iter().rev().find(|message| {
+                    message.author == MessageAuthor::User
+                        && message.status == MessageStatus::Complete
+                })
+            })
+            .map(|message| (message.id.clone(), message.content.clone()));
         let Some((source_message_id, source_content)) = source else {
             return Ok(None);
         };
         let Some(content) = explicit_memory_content(&source_content) else {
             return Ok(None);
         };
+        let connection = self.open()?;
         let already_exists = connection
             .query_row(
                 "SELECT 1 FROM agent_memories
@@ -823,18 +841,70 @@ impl Database {
     ) -> Result<Vec<ConversationMessage>, DatabaseError> {
         self.verify_conversation(agent_id, conversation_id)?;
         let connection = self.open()?;
-        let mut statement = connection.prepare(
-            "SELECT id, conversation_id, agent_id, author_type, content,
-                    actual_model_ref, status, created_at, completed_at, terminal_error_code
-             FROM conversation_messages
-             WHERE conversation_id = ?1 AND agent_id = ?2
-             ORDER BY created_at ASC, id ASC",
-        )?;
+        let branch_id = active_branch_id(&connection, agent_id, conversation_id)?;
+        let mut statement = connection.prepare(visible_messages_sql())?;
         let messages = statement
-            .query_map(params![conversation_id, agent_id], map_message)?
+            .query_map(params![conversation_id, agent_id, branch_id], map_message)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(DatabaseError::from)?;
         Ok(messages)
+    }
+
+    pub fn branches(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+    ) -> Result<Vec<crate::domain::ConversationBranch>, DatabaseError> {
+        self.verify_conversation(agent_id, conversation_id)?;
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT id, parent_branch_id, parent_message_id, created_at
+             FROM conversation_branches
+             WHERE conversation_id = ?1 AND agent_id = ?2
+             ORDER BY created_at ASC, id ASC",
+        )?;
+        let branches = statement
+            .query_map(params![conversation_id, agent_id], |row| {
+                Ok(crate::domain::ConversationBranch {
+                    id: row.get(0)?,
+                    parent_branch_id: row.get(1)?,
+                    parent_message_id: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DatabaseError::from)?;
+        Ok(branches)
+    }
+
+    pub fn active_branch_id(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+    ) -> Result<String, DatabaseError> {
+        self.verify_conversation(agent_id, conversation_id)?;
+        active_branch_id(&self.open()?, agent_id, conversation_id)
+    }
+
+    pub fn set_active_branch(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        branch_id: &str,
+    ) -> Result<(), DatabaseError> {
+        let connection = self.open()?;
+        let changed = connection.execute(
+            "UPDATE conversation_active_branches SET branch_id = ?1, updated_at = ?2
+             WHERE conversation_id = ?3 AND agent_id = ?4
+               AND EXISTS (SELECT 1 FROM conversation_branches
+                           WHERE id = ?1 AND conversation_id = ?3 AND agent_id = ?4)",
+            params![branch_id, now_millis(), conversation_id, agent_id],
+        )?;
+        if changed == 1 {
+            Ok(())
+        } else {
+            Err(DatabaseError::OwnershipMismatch)
+        }
     }
 
     fn confirmed_memory_context(
@@ -862,6 +932,11 @@ impl Database {
         conversation_id: &str,
     ) -> Result<(), DatabaseError> {
         self.verify_conversation(agent_id, conversation_id)?;
+        // Branches make a conversation transcript non-linear. Until summaries carry an explicit
+        // branch identifier, omit them from prompt assembly rather than leaking an inactive path.
+        if self.active_branch_id(agent_id, conversation_id).is_ok() {
+            return Ok(());
+        }
         let connection = self.open()?;
         let mut statement = connection.prepare(
             "WITH ordered AS (
@@ -938,6 +1013,10 @@ impl Database {
         agent_id: &str,
         conversation_id: &str,
     ) -> Result<Vec<ContextMessage>, DatabaseError> {
+        // See refresh_conversation_summary: branch-local summaries are intentionally deferred.
+        if self.active_branch_id(agent_id, conversation_id).is_ok() {
+            return Ok(Vec::new());
+        }
         let connection = self.open()?;
         connection
             .query_row(
@@ -1144,6 +1223,7 @@ impl Database {
         let mut connection = self.open()?;
         let transaction = connection.transaction()?;
         verify_conversation_tx(&transaction, agent_id, conversation_id)?;
+        let branch_id = active_branch_id_tx(&transaction, agent_id, conversation_id)?;
         let now = now_millis();
         let attempt = MessageAttempt {
             request_id: Uuid::now_v7().to_string(),
@@ -1153,33 +1233,164 @@ impl Database {
         transaction.execute(
             "INSERT INTO conversation_messages
              (id, conversation_id, agent_id, author_type, content, status,
-              created_at, completed_at)
-             VALUES (?1, ?2, ?3, 'user', ?4, 'complete', ?5, ?5)",
+              created_at, completed_at, branch_id)
+             VALUES (?1, ?2, ?3, 'user', ?4, 'complete', ?5, ?5, ?6)",
             params![
                 attempt.user_message_id,
                 conversation_id,
                 agent_id,
                 content,
-                now
+                now,
+                branch_id
             ],
         )?;
         transaction.execute(
             "INSERT INTO conversation_messages
              (id, conversation_id, agent_id, author_type, content, actual_model_ref,
-              status, generation_request_id, created_at)
-             VALUES (?1, ?2, ?3, 'agent', '', ?4, 'pending', ?5, ?6)",
+              status, generation_request_id, created_at, branch_id)
+             VALUES (?1, ?2, ?3, 'agent', '', ?4, 'pending', ?5, ?6, ?7)",
             params![
                 attempt.assistant_message_id,
                 conversation_id,
                 agent_id,
                 model_ref,
                 attempt.request_id,
-                now + 1
+                now + 1,
+                branch_id
             ],
         )?;
         transaction.execute(
             "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
             params![now + 1, conversation_id],
+        )?;
+        transaction.commit()?;
+        Ok(attempt)
+    }
+
+    pub fn create_regeneration_attempt(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        assistant_message_id: &str,
+        model_ref: &str,
+    ) -> Result<MessageAttempt, DatabaseError> {
+        self.create_branch_attempt(
+            agent_id,
+            conversation_id,
+            assistant_message_id,
+            None,
+            model_ref,
+        )
+    }
+
+    pub fn create_edited_attempt(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        user_message_id: &str,
+        content: &str,
+        model_ref: &str,
+    ) -> Result<MessageAttempt, DatabaseError> {
+        if content.is_empty()
+            || content.len() > MAX_USER_MESSAGE_BYTES
+            || !valid_model_ref(model_ref)
+        {
+            return Err(DatabaseError::InvalidValue);
+        }
+        self.create_branch_attempt(
+            agent_id,
+            conversation_id,
+            user_message_id,
+            Some(content),
+            model_ref,
+        )
+    }
+
+    fn create_branch_attempt(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        source_message_id: &str,
+        edited_content: Option<&str>,
+        model_ref: &str,
+    ) -> Result<MessageAttempt, DatabaseError> {
+        if !valid_model_ref(model_ref) {
+            return Err(DatabaseError::InvalidValue);
+        }
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        verify_conversation_tx(&transaction, agent_id, conversation_id)?;
+        let active_branch = active_branch_id_tx(&transaction, agent_id, conversation_id)?;
+        let source = visible_message_in_branch_tx(
+            &transaction,
+            agent_id,
+            conversation_id,
+            &active_branch,
+            source_message_id,
+        )?;
+        let source_author = source.0;
+        let parent_message_id = if edited_content.is_some() {
+            if source_author != "user" {
+                return Err(DatabaseError::InvalidValue);
+            }
+            previous_visible_message_id_tx(
+                &transaction,
+                agent_id,
+                conversation_id,
+                &active_branch,
+                source_message_id,
+            )?
+        } else {
+            if source_author != "agent" {
+                return Err(DatabaseError::InvalidValue);
+            }
+            previous_visible_user_id_tx(
+                &transaction,
+                agent_id,
+                conversation_id,
+                &active_branch,
+                source_message_id,
+            )?
+            .ok_or(DatabaseError::InvalidValue)?
+            .into()
+        };
+        let now = now_millis();
+        let branch_id = Uuid::now_v7().to_string();
+        transaction.execute(
+            "INSERT INTO conversation_branches
+             (id, conversation_id, agent_id, parent_branch_id, parent_message_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+            params![branch_id, conversation_id, agent_id, active_branch, parent_message_id, now],
+        )?;
+        transaction.execute(
+            "UPDATE conversation_active_branches SET branch_id = ?1, updated_at = ?2
+             WHERE conversation_id = ?3 AND agent_id = ?4",
+            params![branch_id, now, conversation_id, agent_id],
+        )?;
+        let attempt = MessageAttempt {
+            request_id: Uuid::now_v7().to_string(),
+            user_message_id: edited_content
+                .map(|_| Uuid::now_v7().to_string())
+                .unwrap_or_else(|| source_message_id.to_string()),
+            assistant_message_id: Uuid::now_v7().to_string(),
+        };
+        if let Some(content) = edited_content {
+            transaction.execute(
+                "INSERT INTO conversation_messages
+                 (id, conversation_id, agent_id, author_type, content, status, created_at, completed_at, branch_id)
+                 VALUES (?1, ?2, ?3, 'user', ?4, 'complete', ?5, ?5, ?6)",
+                params![attempt.user_message_id, conversation_id, agent_id, content, now + 1, branch_id],
+            )?;
+        }
+        transaction.execute(
+            "INSERT INTO conversation_messages
+             (id, conversation_id, agent_id, author_type, content, actual_model_ref, status, generation_request_id, created_at, branch_id)
+             VALUES (?1, ?2, ?3, 'agent', '', ?4, 'pending', ?5, ?6, ?7)",
+            params![attempt.assistant_message_id, conversation_id, agent_id, model_ref, attempt.request_id, now + 2, branch_id],
+        )?;
+        transaction.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![now + 2, conversation_id],
         )?;
         transaction.commit()?;
         Ok(attempt)
@@ -1193,13 +1404,24 @@ impl Database {
     ) -> Result<Vec<ContextMessage>, DatabaseError> {
         self.verify_conversation(agent_id, conversation_id)?;
         let connection = self.open()?;
+        let branch_id = active_branch_id(&connection, agent_id, conversation_id)?;
         let mut statement = connection.prepare(
-            "WITH ordered AS (
+            "WITH RECURSIVE lineage(branch_id, parent_branch_id, parent_message_id, cutoff_message_id) AS (
+               SELECT id, parent_branch_id, parent_message_id, CAST(NULL AS TEXT) FROM conversation_branches WHERE id = ?3
+               UNION ALL
+               SELECT parent.id, parent.parent_branch_id, parent.parent_message_id, child.parent_message_id
+               FROM lineage AS child
+               JOIN conversation_branches AS parent ON parent.id = child.parent_branch_id
+             ), ordered AS (
                SELECT author_type, content, status, created_at, id,
                       LEAD(author_type) OVER (ORDER BY created_at, id) AS next_author,
                       LEAD(status) OVER (ORDER BY created_at, id) AS next_status
-               FROM conversation_messages
-               WHERE conversation_id = ?1 AND agent_id = ?2
+               FROM conversation_messages AS message
+               JOIN lineage ON lineage.branch_id = message.branch_id
+               WHERE message.conversation_id = ?1 AND message.agent_id = ?2
+                 AND (lineage.cutoff_message_id IS NULL OR (message.created_at, message.id) <= (
+                   SELECT created_at, id FROM conversation_messages WHERE id = lineage.cutoff_message_id
+                 ))
              )
              SELECT author_type, content FROM (
                SELECT author_type, content, created_at, id
@@ -1208,23 +1430,26 @@ impl Database {
                  AND (author_type = 'agent' OR next_author IS NULL
                       OR next_author != 'agent'
                       OR next_status IN ('pending', 'streaming', 'complete'))
-               ORDER BY created_at DESC, id DESC LIMIT ?3
+               ORDER BY created_at DESC, id DESC LIMIT ?4
              ) ORDER BY created_at ASC, id ASC",
         )?;
         let messages = statement
-            .query_map(params![conversation_id, agent_id, limit as i64], |row| {
-                let author_raw: String = row.get(0)?;
-                Ok(ContextMessage {
-                    author: MessageAuthor::try_from(author_raw.as_str()).map_err(|()| {
-                        rusqlite::Error::InvalidColumnType(
-                            0,
-                            "author_type".into(),
-                            rusqlite::types::Type::Text,
-                        )
-                    })?,
-                    content: row.get(1)?,
-                })
-            })?
+            .query_map(
+                params![conversation_id, agent_id, branch_id, limit as i64],
+                |row| {
+                    let author_raw: String = row.get(0)?;
+                    Ok(ContextMessage {
+                        author: MessageAuthor::try_from(author_raw.as_str()).map_err(|()| {
+                            rusqlite::Error::InvalidColumnType(
+                                0,
+                                "author_type".into(),
+                                rusqlite::types::Type::Text,
+                            )
+                        })?,
+                        content: row.get(1)?,
+                    })
+                },
+            )?
             .collect::<Result<Vec<_>, _>>()
             .map_err(DatabaseError::from)?;
         let mut context = self.current_summary_context(agent_id, conversation_id)?;
@@ -1404,6 +1629,132 @@ fn verify_conversation_tx(
     }
 }
 
+fn active_branch_id(
+    connection: &Connection,
+    agent_id: &str,
+    conversation_id: &str,
+) -> Result<String, DatabaseError> {
+    connection
+        .query_row(
+            "SELECT branch_id FROM conversation_active_branches
+             WHERE conversation_id = ?1 AND agent_id = ?2",
+            params![conversation_id, agent_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or(DatabaseError::NotFound)
+}
+
+fn active_branch_id_tx(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    conversation_id: &str,
+) -> Result<String, DatabaseError> {
+    transaction
+        .query_row(
+            "SELECT branch_id FROM conversation_active_branches
+             WHERE conversation_id = ?1 AND agent_id = ?2",
+            params![conversation_id, agent_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or(DatabaseError::NotFound)
+}
+
+fn visible_message_in_branch_tx(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    conversation_id: &str,
+    branch_id: &str,
+    message_id: &str,
+) -> Result<(String, i64), DatabaseError> {
+    transaction
+        .query_row(
+            "WITH RECURSIVE lineage(branch_id, parent_branch_id, parent_message_id, cutoff_message_id) AS (
+                   SELECT id, parent_branch_id, parent_message_id, CAST(NULL AS TEXT) FROM conversation_branches WHERE id = ?3
+                   UNION ALL
+                   SELECT parent.id, parent.parent_branch_id, parent.parent_message_id, child.parent_message_id
+                   FROM lineage AS child JOIN conversation_branches AS parent ON parent.id = child.parent_branch_id
+                 )
+                 SELECT message.author_type, message.created_at
+                 FROM conversation_messages AS message JOIN lineage ON lineage.branch_id = message.branch_id
+                 WHERE message.id = ?4 AND message.conversation_id = ?1 AND message.agent_id = ?2
+                   AND (lineage.cutoff_message_id IS NULL OR (message.created_at, message.id) <= (
+                     SELECT created_at, id FROM conversation_messages WHERE id = lineage.cutoff_message_id
+                   ))",
+            params![conversation_id, agent_id, branch_id, message_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(DatabaseError::from)
+}
+
+fn previous_visible_message_id_tx(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    conversation_id: &str,
+    branch_id: &str,
+    message_id: &str,
+) -> Result<Option<String>, DatabaseError> {
+    previous_visible_message_tx(
+        transaction,
+        agent_id,
+        conversation_id,
+        branch_id,
+        message_id,
+        None,
+    )
+}
+
+fn previous_visible_user_id_tx(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    conversation_id: &str,
+    branch_id: &str,
+    message_id: &str,
+) -> Result<Option<String>, DatabaseError> {
+    previous_visible_message_tx(
+        transaction,
+        agent_id,
+        conversation_id,
+        branch_id,
+        message_id,
+        Some("user"),
+    )
+}
+
+fn previous_visible_message_tx(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    conversation_id: &str,
+    branch_id: &str,
+    message_id: &str,
+    author: Option<&str>,
+) -> Result<Option<String>, DatabaseError> {
+    transaction
+        .query_row(
+            "WITH RECURSIVE lineage(branch_id, parent_branch_id, parent_message_id, cutoff_message_id) AS (
+               SELECT id, parent_branch_id, parent_message_id, CAST(NULL AS TEXT) FROM conversation_branches WHERE id = ?3
+               UNION ALL
+               SELECT parent.id, parent.parent_branch_id, parent.parent_message_id, child.parent_message_id
+               FROM lineage AS child JOIN conversation_branches AS parent ON parent.id = child.parent_branch_id
+             )
+             SELECT candidate.id FROM conversation_messages AS candidate
+             JOIN lineage ON lineage.branch_id = candidate.branch_id
+             JOIN conversation_messages AS source ON source.id = ?4
+             WHERE candidate.conversation_id = ?1 AND candidate.agent_id = ?2
+               AND (candidate.created_at, candidate.id) < (source.created_at, source.id)
+               AND (?5 IS NULL OR candidate.author_type = ?5)
+               AND (lineage.cutoff_message_id IS NULL OR (candidate.created_at, candidate.id) <= (
+                 SELECT created_at, id FROM conversation_messages WHERE id = lineage.cutoff_message_id
+               ))
+             ORDER BY candidate.created_at DESC, candidate.id DESC LIMIT 1",
+            params![conversation_id, agent_id, branch_id, message_id, author],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(DatabaseError::from)
+}
+
 fn valid_model_ref(value: &str) -> bool {
     let Some(model_id) = value.strip_prefix("ollama:") else {
         return false;
@@ -1572,7 +1923,28 @@ fn map_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConversationMessage>
         created_at: row.get(7)?,
         completed_at: row.get(8)?,
         error_code: row.get(9)?,
+        branch_id: row.get(10)?,
     })
+}
+
+fn visible_messages_sql() -> &'static str {
+    "WITH RECURSIVE lineage(branch_id, parent_branch_id, parent_message_id, cutoff_message_id) AS (
+       SELECT id, parent_branch_id, parent_message_id, CAST(NULL AS TEXT) FROM conversation_branches WHERE id = ?3
+       UNION ALL
+       SELECT parent.id, parent.parent_branch_id, parent.parent_message_id, child.parent_message_id
+       FROM lineage AS child
+       JOIN conversation_branches AS parent ON parent.id = child.parent_branch_id
+     )
+     SELECT message.id, message.conversation_id, message.agent_id, message.author_type,
+            message.content, message.actual_model_ref, message.status, message.created_at,
+            message.completed_at, message.terminal_error_code, message.branch_id
+     FROM conversation_messages AS message
+     JOIN lineage ON lineage.branch_id = message.branch_id
+     WHERE message.conversation_id = ?1 AND message.agent_id = ?2
+       AND (lineage.cutoff_message_id IS NULL OR (message.created_at, message.id) <= (
+         SELECT created_at, id FROM conversation_messages WHERE id = lineage.cutoff_message_id
+       ))
+     ORDER BY message.created_at ASC, message.id ASC"
 }
 
 pub fn now_millis() -> i64 {
@@ -1588,7 +1960,7 @@ mod tests {
     use rusqlite::{params, Connection};
     use uuid::Uuid;
 
-    use crate::domain::MessageStatus;
+    use crate::domain::{MessageAuthor, MessageStatus};
 
     use super::{Database, DatabaseError, PhaseOneSettings, ASTRA_ID, LUMA_ID, MIGRATION_0001};
 
@@ -1608,7 +1980,7 @@ mod tests {
         let first = Database::initialize(&path).expect("database should initialize");
         let second = Database::initialize(&path).expect("database should reinitialize");
         let snapshot = second.snapshot().expect("snapshot should load");
-        assert_eq!(snapshot.migration_version, 8);
+        assert_eq!(snapshot.migration_version, 9);
         assert_eq!(snapshot.agents.len(), 2);
         for agent in &snapshot.agents {
             assert_eq!(
@@ -1637,7 +2009,7 @@ mod tests {
         drop(connection);
 
         let database = Database::initialize(&path).expect("v1 database should upgrade");
-        assert_eq!(database.snapshot().unwrap().migration_version, 8);
+        assert_eq!(database.snapshot().unwrap().migration_version, 9);
         let connection = Connection::open(&path).unwrap();
         let preserved: String = connection
             .query_row(
@@ -1716,6 +2088,64 @@ mod tests {
             .unwrap();
         assert_eq!(messages[0].content, "Synthetic message");
         assert_eq!(messages[1].content, "Synthetic reply");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn regeneration_creates_a_branch_without_duplicate_user_message() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let agent = database.agent(ASTRA_ID).unwrap();
+        let conversation = database.main_conversation(ASTRA_ID).unwrap();
+        let original = database
+            .create_message_attempt(&agent.id, &conversation.id, "hello", "ollama:model-a")
+            .unwrap();
+        database
+            .mark_streaming(&original.assistant_message_id, &original.request_id)
+            .unwrap();
+        database
+            .append_assistant_chunk(
+                &original.assistant_message_id,
+                &original.request_id,
+                "first",
+            )
+            .unwrap();
+        database
+            .finish_assistant(
+                &original.assistant_message_id,
+                &original.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+        let retry = database
+            .create_regeneration_attempt(
+                &agent.id,
+                &conversation.id,
+                &original.assistant_message_id,
+                "ollama:model-b",
+            )
+            .unwrap();
+        let active = database.messages(&agent.id, &conversation.id).unwrap();
+        assert_eq!(
+            active
+                .iter()
+                .filter(|message| message.author == MessageAuthor::User)
+                .count(),
+            1
+        );
+        assert_eq!(active.last().unwrap().id, retry.assistant_message_id);
+        assert_eq!(
+            active.last().unwrap().model_ref.as_deref(),
+            Some("ollama:model-b")
+        );
+        assert_eq!(
+            database
+                .branches(&agent.id, &conversation.id)
+                .unwrap()
+                .len(),
+            2
+        );
         cleanup(&path);
     }
 
@@ -2388,7 +2818,7 @@ mod tests {
 
         let upgraded = Database::initialize(&path).unwrap();
         assert_eq!(upgraded.simulated_state(ASTRA_ID).unwrap().mode, "normal");
-        assert_eq!(upgraded.snapshot().unwrap().migration_version, 8);
+        assert_eq!(upgraded.snapshot().unwrap().migration_version, 9);
         cleanup(&path);
     }
 }
