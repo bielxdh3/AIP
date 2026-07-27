@@ -722,6 +722,7 @@ impl Database {
         assistant_message_id: &str,
     ) -> Result<Option<AgentMemory>, DatabaseError> {
         self.verify_conversation(agent_id, conversation_id)?;
+        self.verify_branch(agent_id, conversation_id, branch_id)?;
         let visible = self.messages_for_branch(agent_id, conversation_id, branch_id)?;
         let source = visible
             .iter()
@@ -865,6 +866,7 @@ impl Database {
         branch_id: &str,
     ) -> Result<Vec<ConversationMessage>, DatabaseError> {
         self.verify_conversation(agent_id, conversation_id)?;
+        self.verify_branch(agent_id, conversation_id, branch_id)?;
         let connection = self.open()?;
         let mut statement = connection.prepare(visible_messages_sql())?;
         let messages = statement
@@ -957,6 +959,7 @@ impl Database {
         branch_id: &str,
     ) -> Result<(), DatabaseError> {
         self.verify_conversation(agent_id, conversation_id)?;
+        self.verify_branch(agent_id, conversation_id, branch_id)?;
         let connection = self.open()?;
         let mut statement = connection.prepare(
             "WITH ordered AS (
@@ -972,7 +975,7 @@ impl Database {
                     OR next_status IN ('pending', 'streaming', 'complete'))
              ORDER BY created_at ASC, id ASC",
         )?;
-        let rows = statement
+        let _legacy_rows = statement
             .query_map(params![agent_id, conversation_id, branch_id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -981,6 +984,22 @@ impl Database {
                 ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
+        let rows = self
+            .messages_for_branch(agent_id, conversation_id, branch_id)?
+            .into_iter()
+            .filter(|message| message.status == MessageStatus::Complete)
+            .map(|message| {
+                (
+                    message.id,
+                    if message.author == MessageAuthor::User {
+                        "user".to_string()
+                    } else {
+                        "agent".to_string()
+                    },
+                    message.content,
+                )
+            })
+            .collect::<Vec<_>>();
         const RECENT_MESSAGES: usize = 8;
         if rows.len() <= RECENT_MESSAGES {
             return Ok(());
@@ -1437,6 +1456,7 @@ impl Database {
         limit: usize,
     ) -> Result<Vec<ContextMessage>, DatabaseError> {
         self.verify_conversation(agent_id, conversation_id)?;
+        self.verify_branch(agent_id, conversation_id, branch_id)?;
         let connection = self.open()?;
         let mut statement = connection.prepare(
             "WITH RECURSIVE lineage(branch_id, parent_branch_id, parent_message_id, cutoff_message_id) AS (
@@ -1632,6 +1652,25 @@ impl Database {
                WHERE id = ?1 AND agent_id = ?2 AND archived_at IS NULL
              )",
             params![conversation_id, agent_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if exists {
+            Ok(())
+        } else {
+            Err(DatabaseError::OwnershipMismatch)
+        }
+    }
+
+    fn verify_branch(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        branch_id: &str,
+    ) -> Result<(), DatabaseError> {
+        let connection = self.open()?;
+        let exists = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM conversation_branches WHERE id = ?1 AND conversation_id = ?2 AND agent_id = ?3)",
+            params![branch_id, conversation_id, agent_id],
             |row| row.get::<_, bool>(0),
         )?;
         if exists {
@@ -1990,12 +2029,16 @@ pub fn now_millis() -> i64 {
 mod tests {
     use std::fs;
 
-    use rusqlite::{params, Connection};
+    use rusqlite::{params, Connection, OptionalExtension};
     use uuid::Uuid;
 
     use crate::domain::{MessageAuthor, MessageStatus};
 
-    use super::{Database, DatabaseError, PhaseOneSettings, ASTRA_ID, LUMA_ID, MIGRATION_0001};
+    use super::{
+        Database, DatabaseError, PhaseOneSettings, ASTRA_ID, LUMA_ID, MIGRATION_0001,
+        MIGRATION_0002, MIGRATION_0003, MIGRATION_0004, MIGRATION_0005, MIGRATION_0006,
+        MIGRATION_0007, MIGRATION_0008, MIGRATION_0009,
+    };
 
     fn test_path() -> std::path::PathBuf {
         std::env::temp_dir()
@@ -2054,6 +2097,50 @@ mod tests {
         assert_eq!(preserved, "Preserved");
         drop(connection);
         drop(database);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn version_nine_mixed_summary_is_retired_without_assigning_a_branch() {
+        let path = test_path();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut connection = Connection::open(&path).unwrap();
+        for migration in [
+            MIGRATION_0001,
+            MIGRATION_0002,
+            MIGRATION_0003,
+            MIGRATION_0004,
+            MIGRATION_0005,
+            MIGRATION_0006,
+            MIGRATION_0007,
+            MIGRATION_0008,
+            MIGRATION_0009,
+        ] {
+            connection.execute_batch(migration).unwrap();
+        }
+        Database::seed_phase_zero(&mut connection).unwrap();
+        Database::seed_phase_one(&mut connection).unwrap();
+        let conversation_id: String = connection
+            .query_row(
+                "SELECT id FROM conversations WHERE agent_id = ?1 LIMIT 1",
+                params![ASTRA_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        connection.execute("INSERT INTO conversation_messages (id, conversation_id, agent_id, author_type, content, status, created_at, completed_at, branch_id) VALUES ('legacy-message', ?1, ?2, 'user', 'legacy', 'complete', 1, 1, ?1 || ':main')", params![conversation_id, ASTRA_ID]).unwrap();
+        connection.execute("INSERT INTO conversation_summaries (id, conversation_id, agent_id, through_message_id, content, created_at) VALUES ('mixed', ?1, ?2, 'legacy-message', 'mixed branches', 1)", params![conversation_id, ASTRA_ID]).unwrap();
+        drop(connection);
+        let upgraded = Database::initialize(&path).unwrap();
+        let connection = upgraded.open().unwrap();
+        let retired: Option<i64> = connection
+            .query_row(
+                "SELECT superseded_at FROM conversation_summaries WHERE id = 'mixed'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(retired.is_some_and(|value| value > 0));
         cleanup(&path);
     }
 
@@ -2794,6 +2881,24 @@ mod tests {
         assert!(!original_context
             .iter()
             .any(|message| message.content.starts_with("Resumo local")));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn branch_references_must_match_the_agent_and_conversation() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let astra = database.main_conversation(ASTRA_ID).unwrap();
+        let luma = database.main_conversation(LUMA_ID).unwrap();
+        let astra_branch = database.active_branch_id(ASTRA_ID, &astra.id).unwrap();
+        assert!(matches!(
+            database.context_messages_for_branch(LUMA_ID, &luma.id, &astra_branch, 8),
+            Err(DatabaseError::OwnershipMismatch)
+        ));
+        assert!(matches!(
+            database.refresh_conversation_summary_for_branch(LUMA_ID, &luma.id, &astra_branch),
+            Err(DatabaseError::OwnershipMismatch)
+        ));
         cleanup(&path);
     }
 
