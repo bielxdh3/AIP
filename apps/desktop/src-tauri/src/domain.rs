@@ -257,6 +257,16 @@ pub struct ConversationMessage {
     pub created_at: i64,
     pub completed_at: Option<i64>,
     pub error_code: Option<String>,
+    pub branch_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationBranch {
+    pub id: String,
+    pub parent_branch_id: Option<String>,
+    pub parent_message_id: Option<String>,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -277,6 +287,8 @@ pub struct PhaseOneState {
     pub agent: ProvisionalAgent,
     pub conversation: PhaseOneConversation,
     pub messages: Vec<ConversationMessage>,
+    pub branches: Vec<ConversationBranch>,
+    pub active_branch_id: Option<String>,
     pub provider: ProviderSnapshot,
     pub selected_model_ref: Option<String>,
     pub default_model_ref: Option<String>,

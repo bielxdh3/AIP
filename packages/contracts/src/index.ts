@@ -99,6 +99,14 @@ export type ConversationMessage = {
   createdAt: number;
   completedAt: number | null;
   errorCode: string | null;
+  branchId: string;
+};
+
+export type ConversationBranch = {
+  id: string;
+  parentBranchId: string | null;
+  parentMessageId: string | null;
+  createdAt: number;
 };
 
 export type PhaseOneConversation = {
@@ -153,6 +161,8 @@ export type PhaseOneState = {
   agent: ProvisionalAgent;
   conversation: PhaseOneConversation;
   messages: ConversationMessage[];
+  branches: ConversationBranch[];
+  activeBranchId: string | null;
   provider: ProviderSnapshot;
   selectedModelRef: string | null;
   defaultModelRef: string | null;

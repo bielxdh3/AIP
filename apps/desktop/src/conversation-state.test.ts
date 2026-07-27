@@ -50,8 +50,11 @@ function phase(agentId = "astra"): PhaseOneState {
         createdAt: 1,
         completedAt: null,
         errorCode: null,
+        branchId: "branch-main",
       },
     ],
+    branches: [],
+    activeBranchId: null,
     provider: {
       state: "available",
       detailCode: "provider_available",
@@ -61,6 +64,7 @@ function phase(agentId = "astra"): PhaseOneState {
     selectedModelRef: "ollama:test",
     defaultModelRef: "ollama:test",
     modelOverrideRef: null,
+    effectiveModelSource: "agent_default",
     selectedModelAvailable: true,
     keepAliveMinutes: 15,
     queue: [

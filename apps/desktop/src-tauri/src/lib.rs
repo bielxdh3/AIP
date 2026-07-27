@@ -493,6 +493,49 @@ fn send_phase_one_message(
 }
 
 #[tauri::command]
+fn regenerate_phase_one_message(
+    state: State<'_, AppState>,
+    agent_id: String,
+    conversation_id: String,
+    assistant_message_id: String,
+) -> Result<SendMessageResult, &'static str> {
+    state
+        .chat
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .regenerate_message(&agent_id, &conversation_id, &assistant_message_id)
+}
+
+#[tauri::command]
+fn edit_phase_one_message(
+    state: State<'_, AppState>,
+    agent_id: String,
+    conversation_id: String,
+    user_message_id: String,
+    content: String,
+) -> Result<SendMessageResult, &'static str> {
+    state
+        .chat
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .edit_message(&agent_id, &conversation_id, &user_message_id, &content)
+}
+
+#[tauri::command]
+fn set_active_conversation_branch(
+    state: State<'_, AppState>,
+    agent_id: String,
+    conversation_id: String,
+    branch_id: String,
+) -> Result<(), &'static str> {
+    state
+        .chat
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .select_branch(&agent_id, &conversation_id, &branch_id)
+}
+
+#[tauri::command]
 fn cancel_phase_one_generation(
     state: State<'_, AppState>,
     request_id: String,
@@ -709,6 +752,9 @@ pub fn run() {
             complete_phase_two_onboarding,
             set_conversation_model_override,
             send_phase_one_message,
+            regenerate_phase_one_message,
+            edit_phase_one_message,
+            set_active_conversation_branch,
             cancel_phase_one_generation,
             retry_phase_one_runtime,
             open_main_conversation,
