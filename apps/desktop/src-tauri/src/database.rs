@@ -106,6 +106,10 @@ impl Database {
         let database = Self { path };
         let mut connection = database.open()?;
         Self::apply_migrations(&mut connection)?;
+        connection.execute(
+            "UPDATE agent_simulated_states SET mode = 'normal' WHERE mode = 'safe'",
+            [],
+        )?;
         Self::seed_phase_zero(&mut connection)?;
         Self::seed_phase_one(&mut connection)?;
         Self::recover_interrupted(&connection)?;
@@ -932,11 +936,6 @@ impl Database {
         conversation_id: &str,
     ) -> Result<(), DatabaseError> {
         self.verify_conversation(agent_id, conversation_id)?;
-        // Branches make a conversation transcript non-linear. Until summaries carry an explicit
-        // branch identifier, omit them from prompt assembly rather than leaking an inactive path.
-        if self.active_branch_id(agent_id, conversation_id).is_ok() {
-            return Ok(());
-        }
         let connection = self.open()?;
         let mut statement = connection.prepare(
             "WITH ordered AS (
@@ -1013,10 +1012,6 @@ impl Database {
         agent_id: &str,
         conversation_id: &str,
     ) -> Result<Vec<ContextMessage>, DatabaseError> {
-        // See refresh_conversation_summary: branch-local summaries are intentionally deferred.
-        if self.active_branch_id(agent_id, conversation_id).is_ok() {
-            return Ok(Vec::new());
-        }
         let connection = self.open()?;
         connection
             .query_row(

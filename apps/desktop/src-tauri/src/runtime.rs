@@ -206,6 +206,8 @@ fn run_runtime_process(
     let mut command = Command::new("python");
     #[cfg(not(debug_assertions))]
     let mut command = Command::new(&source_root);
+    #[cfg(debug_assertions)]
+    command.args(["-m", "aip_runtime"]);
     let inherited_environment = ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR"]
         .into_iter()
         .filter_map(|key| std::env::var_os(key).map(|value| (key, value)))
@@ -221,9 +223,7 @@ fn run_runtime_process(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(debug_assertions)]
-    command
-        .args(["-m", "aip_runtime"])
-        .env("PYTHONPATH", source_root);
+    command.env("PYTHONPATH", source_root);
     #[cfg(target_os = "windows")]
     command.creation_flags(0x0800_0000);
 
