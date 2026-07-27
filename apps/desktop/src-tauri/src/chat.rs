@@ -34,6 +34,7 @@ struct GenerationJob {
     request_id: String,
     agent_id: String,
     conversation_id: String,
+    branch_id: String,
     assistant_message_id: String,
     model_ref: String,
     temporary: bool,
@@ -811,6 +812,7 @@ impl ChatCoordinator {
             request_id: request_id.clone(),
             agent_id: agent_id.into(),
             conversation_id: conversation.id.clone(),
+            branch_id: format!("{}:main", conversation.id),
             assistant_message_id: assistant_message_id.clone(),
             model_ref,
             temporary: true,
@@ -1111,15 +1113,20 @@ impl ChatCoordinator {
         let persisted = self.finish_job(&job, status, error_code);
         if persisted.is_ok() {
             if status == MessageStatus::Complete && !job.temporary {
+                let _ = self.inner.database.refresh_conversation_summary_for_branch(
+                    &job.agent_id,
+                    &job.conversation_id,
+                    &job.branch_id,
+                );
                 let _ = self
                     .inner
                     .database
-                    .refresh_conversation_summary(&job.agent_id, &job.conversation_id);
-                let _ = self.inner.database.create_explicit_memory_candidate(
-                    &job.agent_id,
-                    &job.conversation_id,
-                    &job.assistant_message_id,
-                );
+                    .create_explicit_memory_candidate_for_branch(
+                        &job.agent_id,
+                        &job.conversation_id,
+                        &job.branch_id,
+                        &job.assistant_message_id,
+                    );
             }
             self.trace(request_id, "terminal_persisted", event.sequence, error_code);
             self.emit(event);
@@ -1384,7 +1391,12 @@ fn build_generation_request_from_database(
         .settings(&job.agent_id)
         .map_err(|_| "persistence_failed")?;
     let context = database
-        .context_messages(&job.agent_id, &job.conversation_id, MAX_HISTORY_MESSAGES)
+        .context_messages_for_branch(
+            &job.agent_id,
+            &job.conversation_id,
+            &job.branch_id,
+            MAX_HISTORY_MESSAGES,
+        )
         .map_err(|_| "persistence_failed")?;
     let messages = assemble_context(&agent, context);
     let provider_model_id = job
@@ -1414,6 +1426,7 @@ fn job_from_attempt(
         request_id: attempt.request_id.clone(),
         agent_id: agent_id.to_string(),
         conversation_id: conversation_id.to_string(),
+        branch_id: attempt.branch_id.clone(),
         assistant_message_id: attempt.assistant_message_id.clone(),
         model_ref: model_ref.to_string(),
         temporary: false,
@@ -1519,6 +1532,7 @@ mod tests {
             request_id: id.into(),
             agent_id: agent.into(),
             conversation_id: format!("conversation-{agent}"),
+            branch_id: format!("conversation-{agent}:main"),
             assistant_message_id: format!("message-{id}"),
             model_ref: "ollama:test".into(),
             temporary: false,

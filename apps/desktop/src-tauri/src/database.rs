@@ -24,7 +24,8 @@ const MIGRATION_0006: &str = include_str!("../migrations/0006_phase4_agent_state
 const MIGRATION_0007: &str = include_str!("../migrations/0007_phase5_pixel_documents.sql");
 const MIGRATION_0008: &str = include_str!("../migrations/0008_global_safe_mode.sql");
 const MIGRATION_0009: &str = include_str!("../migrations/0009_conversation_branches.sql");
-const MIGRATIONS: [(i64, &str); 9] = [
+const MIGRATION_0010: &str = include_str!("../migrations/0010_branch_summaries.sql");
+const MIGRATIONS: [(i64, &str); 10] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
@@ -34,6 +35,7 @@ const MIGRATIONS: [(i64, &str); 9] = [
     (7, MIGRATION_0007),
     (8, MIGRATION_0008),
     (9, MIGRATION_0009),
+    (10, MIGRATION_0010),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -88,6 +90,7 @@ pub struct MessageAttempt {
     pub request_id: String,
     pub user_message_id: String,
     pub assistant_message_id: String,
+    pub branch_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -711,14 +714,15 @@ impl Database {
         Ok(memory)
     }
 
-    pub fn create_explicit_memory_candidate(
+    pub fn create_explicit_memory_candidate_for_branch(
         &self,
         agent_id: &str,
         conversation_id: &str,
+        branch_id: &str,
         assistant_message_id: &str,
     ) -> Result<Option<AgentMemory>, DatabaseError> {
         self.verify_conversation(agent_id, conversation_id)?;
-        let visible = self.messages(agent_id, conversation_id)?;
+        let visible = self.messages_for_branch(agent_id, conversation_id, branch_id)?;
         let source = visible
             .iter()
             .position(|message| {
@@ -854,6 +858,22 @@ impl Database {
         Ok(messages)
     }
 
+    pub fn messages_for_branch(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        branch_id: &str,
+    ) -> Result<Vec<ConversationMessage>, DatabaseError> {
+        self.verify_conversation(agent_id, conversation_id)?;
+        let connection = self.open()?;
+        let mut statement = connection.prepare(visible_messages_sql())?;
+        let messages = statement
+            .query_map(params![conversation_id, agent_id, branch_id], map_message)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DatabaseError::from)?;
+        Ok(messages)
+    }
+
     pub fn branches(
         &self,
         agent_id: &str,
@@ -930,10 +950,11 @@ impl Database {
         Ok(memories)
     }
 
-    pub fn refresh_conversation_summary(
+    pub fn refresh_conversation_summary_for_branch(
         &self,
         agent_id: &str,
         conversation_id: &str,
+        branch_id: &str,
     ) -> Result<(), DatabaseError> {
         self.verify_conversation(agent_id, conversation_id)?;
         let connection = self.open()?;
@@ -942,7 +963,7 @@ impl Database {
                SELECT id, author_type, content, status, created_at,
                       LEAD(author_type) OVER (ORDER BY created_at, id) AS next_author,
                       LEAD(status) OVER (ORDER BY created_at, id) AS next_status
-               FROM conversation_messages WHERE agent_id = ?1 AND conversation_id = ?2
+               FROM conversation_messages WHERE agent_id = ?1 AND conversation_id = ?2 AND branch_id = ?3
              )
              SELECT id, author_type, content FROM ordered
              WHERE status = 'complete' AND author_type IN ('user', 'agent')
@@ -952,7 +973,7 @@ impl Database {
              ORDER BY created_at ASC, id ASC",
         )?;
         let rows = statement
-            .query_map(params![agent_id, conversation_id], |row| {
+            .query_map(params![agent_id, conversation_id, branch_id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -988,20 +1009,21 @@ impl Database {
         let now = now_millis();
         connection.execute(
             "UPDATE conversation_summaries SET superseded_at = ?1
-             WHERE agent_id = ?2 AND conversation_id = ?3 AND superseded_at IS NULL",
-            params![now, agent_id, conversation_id],
+             WHERE agent_id = ?2 AND conversation_id = ?3 AND branch_id = ?4 AND superseded_at IS NULL",
+            params![now, agent_id, conversation_id, branch_id],
         )?;
         connection.execute(
             "INSERT INTO conversation_summaries
-             (id, conversation_id, agent_id, through_message_id, content, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (id, conversation_id, agent_id, through_message_id, content, created_at, branch_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 Uuid::now_v7().to_string(),
                 conversation_id,
                 agent_id,
                 through_message_id,
                 content,
-                now
+                now,
+                branch_id
             ],
         )?;
         Ok(())
@@ -1011,14 +1033,15 @@ impl Database {
         &self,
         agent_id: &str,
         conversation_id: &str,
+        branch_id: &str,
     ) -> Result<Vec<ContextMessage>, DatabaseError> {
         let connection = self.open()?;
         connection
             .query_row(
                 "SELECT content FROM conversation_summaries
-                 WHERE agent_id = ?1 AND conversation_id = ?2 AND superseded_at IS NULL
+                 WHERE agent_id = ?1 AND conversation_id = ?2 AND branch_id = ?3 AND superseded_at IS NULL
                  ORDER BY created_at DESC LIMIT 1",
-                params![agent_id, conversation_id],
+                params![agent_id, conversation_id, branch_id],
                 |row| {
                     Ok(ContextMessage {
                         author: MessageAuthor::System,
@@ -1224,6 +1247,7 @@ impl Database {
             request_id: Uuid::now_v7().to_string(),
             user_message_id: Uuid::now_v7().to_string(),
             assistant_message_id: Uuid::now_v7().to_string(),
+            branch_id: branch_id.clone(),
         };
         transaction.execute(
             "INSERT INTO conversation_messages
@@ -1368,6 +1392,7 @@ impl Database {
                 .map(|_| Uuid::now_v7().to_string())
                 .unwrap_or_else(|| source_message_id.to_string()),
             assistant_message_id: Uuid::now_v7().to_string(),
+            branch_id: branch_id.clone(),
         };
         if let Some(content) = edited_content {
             transaction.execute(
@@ -1391,6 +1416,7 @@ impl Database {
         Ok(attempt)
     }
 
+    #[allow(dead_code)]
     pub fn context_messages(
         &self,
         agent_id: &str,
@@ -1400,6 +1426,18 @@ impl Database {
         self.verify_conversation(agent_id, conversation_id)?;
         let connection = self.open()?;
         let branch_id = active_branch_id(&connection, agent_id, conversation_id)?;
+        self.context_messages_for_branch(agent_id, conversation_id, &branch_id, limit)
+    }
+
+    pub fn context_messages_for_branch(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        branch_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ContextMessage>, DatabaseError> {
+        self.verify_conversation(agent_id, conversation_id)?;
+        let connection = self.open()?;
         let mut statement = connection.prepare(
             "WITH RECURSIVE lineage(branch_id, parent_branch_id, parent_message_id, cutoff_message_id) AS (
                SELECT id, parent_branch_id, parent_message_id, CAST(NULL AS TEXT) FROM conversation_branches WHERE id = ?3
@@ -1447,7 +1485,7 @@ impl Database {
             )?
             .collect::<Result<Vec<_>, _>>()
             .map_err(DatabaseError::from)?;
-        let mut context = self.current_summary_context(agent_id, conversation_id)?;
+        let mut context = self.current_summary_context(agent_id, conversation_id, branch_id)?;
         context.extend(self.confirmed_memory_context(agent_id, 8)?);
         context.extend(messages);
         Ok(context)
@@ -1975,7 +2013,7 @@ mod tests {
         let first = Database::initialize(&path).expect("database should initialize");
         let second = Database::initialize(&path).expect("database should reinitialize");
         let snapshot = second.snapshot().expect("snapshot should load");
-        assert_eq!(snapshot.migration_version, 9);
+        assert_eq!(snapshot.migration_version, 10);
         assert_eq!(snapshot.agents.len(), 2);
         for agent in &snapshot.agents {
             assert_eq!(
@@ -2004,7 +2042,7 @@ mod tests {
         drop(connection);
 
         let database = Database::initialize(&path).expect("v1 database should upgrade");
-        assert_eq!(database.snapshot().unwrap().migration_version, 9);
+        assert_eq!(database.snapshot().unwrap().migration_version, 10);
         let connection = Connection::open(&path).unwrap();
         let preserved: String = connection
             .query_row(
@@ -2097,6 +2135,13 @@ mod tests {
             .unwrap();
         database
             .mark_streaming(&original.assistant_message_id, &original.request_id)
+            .unwrap();
+        database
+            .append_assistant_chunk(
+                &original.assistant_message_id,
+                &original.request_id,
+                "original answer",
+            )
             .unwrap();
         database
             .append_assistant_chunk(
@@ -2591,9 +2636,10 @@ mod tests {
             )
             .unwrap();
         let candidate = database
-            .create_explicit_memory_candidate(
+            .create_explicit_memory_candidate_for_branch(
                 ASTRA_ID,
                 &conversation.id,
+                &attempt.branch_id,
                 &attempt.assistant_message_id,
             )
             .unwrap()
@@ -2606,9 +2652,10 @@ mod tests {
             Some(conversation.id.as_str())
         );
         assert!(database
-            .create_explicit_memory_candidate(
+            .create_explicit_memory_candidate_for_branch(
                 ASTRA_ID,
                 &conversation.id,
+                &attempt.branch_id,
                 &attempt.assistant_message_id,
             )
             .unwrap()
@@ -2655,7 +2702,13 @@ mod tests {
             )
             .unwrap();
         database
-            .refresh_conversation_summary(ASTRA_ID, &conversation.id)
+            .refresh_conversation_summary_for_branch(
+                ASTRA_ID,
+                &conversation.id,
+                &database
+                    .active_branch_id(ASTRA_ID, &conversation.id)
+                    .unwrap(),
+            )
             .unwrap();
         let context = database
             .context_messages(ASTRA_ID, &conversation.id, 32)
@@ -2666,6 +2719,81 @@ mod tests {
             .unwrap();
         assert!(summary.content.contains("completed user"));
         assert!(!summary.content.contains("failed user"));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn branch_context_and_summary_are_isolated_after_switching_active_branch() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let conversation = database.main_conversation(ASTRA_ID).unwrap();
+        let original = database
+            .create_message_attempt(
+                ASTRA_ID,
+                &conversation.id,
+                "original context",
+                "ollama:test",
+            )
+            .unwrap();
+        database
+            .mark_streaming(&original.assistant_message_id, &original.request_id)
+            .unwrap();
+        database
+            .finish_assistant(
+                &original.assistant_message_id,
+                &original.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+        let alternative = database
+            .create_regeneration_attempt(
+                ASTRA_ID,
+                &conversation.id,
+                &original.assistant_message_id,
+                "ollama:test",
+            )
+            .unwrap();
+        database
+            .mark_streaming(&alternative.assistant_message_id, &alternative.request_id)
+            .unwrap();
+        database
+            .append_assistant_chunk(
+                &alternative.assistant_message_id,
+                &alternative.request_id,
+                "alternative answer",
+            )
+            .unwrap();
+        database
+            .finish_assistant(
+                &alternative.assistant_message_id,
+                &alternative.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+        database
+            .set_active_branch(ASTRA_ID, &conversation.id, &original.branch_id)
+            .unwrap();
+        let alternative_context = database
+            .context_messages_for_branch(ASTRA_ID, &conversation.id, &alternative.branch_id, 32)
+            .unwrap();
+        assert!(!alternative_context
+            .iter()
+            .any(|message| message.content == "original answer"));
+        database
+            .refresh_conversation_summary_for_branch(
+                ASTRA_ID,
+                &conversation.id,
+                &alternative.branch_id,
+            )
+            .unwrap();
+        let original_context = database
+            .context_messages_for_branch(ASTRA_ID, &conversation.id, &original.branch_id, 32)
+            .unwrap();
+        assert!(!original_context
+            .iter()
+            .any(|message| message.content.starts_with("Resumo local")));
         cleanup(&path);
     }
 
@@ -2813,7 +2941,7 @@ mod tests {
 
         let upgraded = Database::initialize(&path).unwrap();
         assert_eq!(upgraded.simulated_state(ASTRA_ID).unwrap().mode, "normal");
-        assert_eq!(upgraded.snapshot().unwrap().migration_version, 9);
+        assert_eq!(upgraded.snapshot().unwrap().migration_version, 10);
         cleanup(&path);
     }
 }
