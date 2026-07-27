@@ -42,7 +42,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install Python checks
-        run: python -m pip install --disable-pip-version-check -e ".\services\runtime[dev]"
+        run: python -m pip install --disable-pip-version-check pyinstaller -e ".\services\runtime[dev]"
 
       - name: Validate public repository
         run: pnpm secrets:scan
@@ -60,6 +60,7 @@ jobs:
       - name: Validate Rust and Tauri core
         shell: pwsh
         run: |
+          .\scripts\build-runtime.ps1
           $output = & pnpm tauri:check 2>&1
           $exitCode = $LASTEXITCODE
           $output | ForEach-Object { Write-Output $_ }
