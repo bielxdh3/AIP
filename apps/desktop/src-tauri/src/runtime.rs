@@ -202,7 +202,10 @@ fn run_runtime_process(
     subscribers: Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
     diagnostics: Arc<Mutex<RuntimeDiagnostics>>,
 ) {
+    #[cfg(debug_assertions)]
     let mut command = Command::new("python");
+    #[cfg(not(debug_assertions))]
+    let mut command = Command::new(&source_root);
     let inherited_environment = ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR"]
         .into_iter()
         .filter_map(|key| std::env::var_os(key).map(|value| (key, value)))
@@ -210,16 +213,17 @@ fn run_runtime_process(
     command
         .env_clear()
         .envs(inherited_environment)
-        .arg("-m")
-        .arg("aip_runtime")
         .arg("--stdio")
-        .env("PYTHONPATH", source_root)
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUNBUFFERED", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(debug_assertions)]
+    command
+        .args(["-m", "aip_runtime"])
+        .env("PYTHONPATH", source_root);
     #[cfg(target_os = "windows")]
     command.creation_flags(0x0800_0000);
 

@@ -661,7 +661,17 @@ fn snapshot(state: &AppState) -> Result<AppSnapshot, &'static str> {
 }
 
 fn runtime_source_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../services/runtime/src")
+    #[cfg(debug_assertions)]
+    {
+        return PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../services/runtime/src");
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(|parent| parent.join("aip-runtime.exe")))
+            .unwrap_or_else(|| PathBuf::from("aip-runtime.exe"))
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
