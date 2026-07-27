@@ -140,10 +140,14 @@ function MessageItem({
   message,
   onRegenerate,
   onEdit,
+  variants = [],
+  onSelectVariant,
 }: {
   message: ConversationMessage;
   onRegenerate: (message: ConversationMessage) => void;
   onEdit: (message: ConversationMessage, content: string) => void;
+  variants?: Array<{ id: string; active: boolean }>;
+  onSelectVariant?: (id: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
@@ -171,6 +175,7 @@ function MessageItem({
         {message.author === "user" ? <button type="button" onClick={() => setEditing(true)}>Editar</button> : null}
         {message.author === "agent" ? <button type="button" onClick={() => onRegenerate(message)}>{message.status === "failed" ? "Tentar novamente" : "Gerar novamente"}</button> : null}
         {message.author === "agent" && message.modelRef ? <details><summary>Modelo</summary><span>{message.modelRef}</span></details> : null}
+        {variants.length > 1 ? <span className="turn-variants"><button type="button" disabled={variants.findIndex((variant) => variant.active) <= 0} onClick={() => { const index = variants.findIndex((variant) => variant.active); if (index > 0) onSelectVariant?.(variants[index - 1]!.id); }}>‹</button><span>{variants.findIndex((variant) => variant.active) + 1}/{variants.length}</span><button type="button" disabled={variants.findIndex((variant) => variant.active) >= variants.length - 1} onClick={() => { const index = variants.findIndex((variant) => variant.active); if (index >= 0 && index < variants.length - 1) onSelectVariant?.(variants[index + 1]!.id); }}>›</button></span> : null}
       </div>
     </article>
   );
@@ -186,6 +191,7 @@ function ConversationSurface({
   const { phase, error, load } = usePhaseOne(agentId, temporary);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showLegacyBranchPicker] = useState(false);
   const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
     null,
   );
@@ -215,7 +221,7 @@ function ConversationSurface({
       <section className="conversation-empty" role="alert">
         <p>Não foi possível carregar a conversa local.</p>
         <button type="button" onClick={() => void load()}>
-          Tentar novamente
+          Reiniciar runtime
         </button>
       </section>
     );
@@ -395,7 +401,7 @@ function ConversationSurface({
           }
         }}
       >
-        {!temporary && currentPhase.branches.length > 1 ? (
+        {showLegacyBranchPicker && !temporary && currentPhase.branches.length > 1 ? (
           <label className="branch-picker"><span>Alternativa</span><select value={currentPhase.activeBranchId ?? ""} onChange={(event) => void invoke("set_active_conversation_branch", { agentId: currentPhase.agent.id, conversationId: currentPhase.conversation.id, branchId: event.target.value }).then(load)}>{currentPhase.branches.map((branch, index) => <option value={branch.id} key={branch.id}>‹ {index + 1}/{currentPhase.branches.length} ›</option>)}</select></label>
         ) : null}
         {phase.messages.length === 0 ? (
@@ -407,7 +413,7 @@ function ConversationSurface({
           </div>
         ) : (
           phase.messages.map((message) => (
-            <MessageItem key={message.id} message={message} onRegenerate={(message) => void regenerate(message)} onEdit={(message, content) => void edit(message, content)} />
+            <MessageItem key={message.id} message={message} onRegenerate={(message) => void regenerate(message)} onEdit={(message, content) => void edit(message, content)} variants={message.author === "agent" ? currentPhase.branches.map((branch) => ({ id: branch.id, active: branch.id === currentPhase.activeBranchId })) : []} onSelectVariant={(branchId) => void invoke("set_active_conversation_branch", { agentId: currentPhase.agent.id, conversationId: currentPhase.conversation.id, branchId }).then(load)} />
           ))
         )}
       </div>

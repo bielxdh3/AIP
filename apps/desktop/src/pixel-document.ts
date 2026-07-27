@@ -11,7 +11,15 @@ export type PixelLayer = {
 export type PixelDocument = {
   layers: PixelLayer[];
   attachmentPoints: Record<string, { x: number; y: number }>;
+  semanticParts: Record<string, { layerId: string; joints: Record<string, { x: number; y: number }> }>;
 };
+
+const defaultSemanticParts = (layers: PixelLayer[]) => Object.fromEntries(
+  ["head", "torso", "leftArm", "rightArm", "leftLeg", "rightLeg"].map((name, index) => [name, {
+    layerId: layers[index]?.id ?? layers[0]?.id ?? "",
+    joints: {},
+  }]),
+);
 
 export function parsePixelDocument(source: string): PixelDocument | null {
   try {
@@ -40,6 +48,10 @@ export function parsePixelDocument(source: string): PixelDocument | null {
         value.attachmentPoints && typeof value.attachmentPoints === "object"
           ? value.attachmentPoints
           : {},
+      semanticParts:
+        value.semanticParts && typeof value.semanticParts === "object"
+          ? value.semanticParts
+          : defaultSemanticParts(value.layers as PixelLayer[]),
     };
   } catch {
     return null;

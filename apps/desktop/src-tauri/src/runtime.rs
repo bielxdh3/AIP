@@ -208,10 +208,19 @@ fn run_runtime_process(
     let mut command = Command::new(&source_root);
     #[cfg(debug_assertions)]
     command.args(["-m", "aip_runtime"]);
-    let inherited_environment = ["PATH", "PATHEXT", "SYSTEMROOT", "WINDIR"]
-        .into_iter()
-        .filter_map(|key| std::env::var_os(key).map(|value| (key, value)))
-        .collect::<Vec<_>>();
+    let inherited_environment = [
+        "PATH",
+        "PATHEXT",
+        "SYSTEMROOT",
+        "WINDIR",
+        "TEMP",
+        "TMP",
+        "USERPROFILE",
+        "LOCALAPPDATA",
+    ]
+    .into_iter()
+    .filter_map(|key| std::env::var_os(key).map(|value| (key, value)))
+    .collect::<Vec<_>>();
     command
         .env_clear()
         .envs(inherited_environment)

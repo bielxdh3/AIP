@@ -70,4 +70,41 @@ jobs:
             $annotation = $tail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A")
             Write-Output "::error title=Rust and Tauri validation failed::$annotation"
             exit $exitCode
+
+  package:
+    needs: phase-zero
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build exact-SHA installers
+        shell: pwsh
+        run: |
+          pnpm install --frozen-lockfile
+          python -m pip install --disable-pip-version-check pyinstaller -e ".\services\runtime[dev]"
+          .\scripts\build-runtime.ps1
+          pnpm --filter @aip/desktop tauri build
+          $bundles = Get-ChildItem apps\desktop\src-tauri\target\release\bundle -Recurse -Include *.msi,*.exe
+          if ($bundles.Count -lt 2) { throw "Expected NSIS and MSI artifacts for $env:GITHUB_SHA" }
+          $bundles | ForEach-Object { Write-Output "$($_.Name) $($_.Length)" }
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: aip-windows-${{ github.sha }}
+          path: |
+            apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+            apps/desktop/src-tauri/target/release/bundle/msi/*.msi
           }
