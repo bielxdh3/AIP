@@ -663,7 +663,7 @@ fn snapshot(state: &AppState) -> Result<AppSnapshot, &'static str> {
 fn runtime_source_root() -> PathBuf {
     #[cfg(debug_assertions)]
     {
-        return PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../services/runtime/src");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../services/runtime/src")
     }
     #[cfg(not(debug_assertions))]
     {
