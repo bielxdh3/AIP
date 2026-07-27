@@ -1743,6 +1743,29 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
   );
 }
 
+function SettingsSurface({
+  snapshot,
+  changingMode,
+  onToggleSafeMode,
+}: {
+  snapshot: AppSnapshot | null;
+  changingMode: boolean;
+  onToggleSafeMode: () => void;
+}) {
+  return (
+    <section className="settings-surface">
+      <header className="workspace-heading"><div><p className="eyebrow">A.I.P.</p><h1>Configurações</h1><span>Preferências locais e diagnóstico do aplicativo.</span></div></header>
+      <section className="settings-card"><h2>Geral</h2><p>Este computador usa um Owner local implícito. Contas adicionais ainda não estão disponíveis.</p></section>
+      <section className="settings-card"><h2>Perfil do Owner</h2><p>Administrador local do A.I.P.</p></section>
+      <section className="settings-card"><h2>Agentes</h2><p>Edite cada perfil pelo botão Perfil no espaço do agente.</p></section>
+      <section className="settings-card"><h2>Modelos</h2><p>O modelo padrão é configurado por agente. Cada conversa pode ter uma substituição própria.</p></section>
+      <section className="settings-card"><h2>Segurança</h2><button className={snapshot?.safeMode ? "mode-button active" : "mode-button"} type="button" disabled={!snapshot || changingMode} onClick={onToggleSafeMode}>{snapshot?.safeMode ? "Sair do modo seguro" : "Ativar modo seguro"}</button></section>
+      <section className="settings-card"><h2>Dados e backup</h2><p>Exportação e backup automático ainda não estão disponíveis nesta versão.</p></section>
+      <section className="settings-card"><h2>Diagnóstico e Sobre</h2><dl><dt>Versão</dt><dd>{snapshot?.appVersion ?? "—"}</dd><dt>Commit</dt><dd>{snapshot?.buildSha ?? "—"}</dd><dt>Build</dt><dd>{snapshot?.buildTimestamp ?? "—"}</dd><dt>Pacote</dt><dd>{snapshot?.runtimePackagingMode ?? "—"}</dd><dt>Runtime</dt><dd>{snapshot ? runtimeLabels[snapshot.runtime.state] : "—"}</dd><dt>Banco local</dt><dd>{snapshot?.databaseReady ? "Disponível" : "Indisponível"}</dd></dl></section>
+    </section>
+  );
+}
+
 function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
@@ -1751,7 +1774,7 @@ function App() {
   const [conversationRevision, setConversationRevision] = useState(0);
   const [temporaryChat, setTemporaryChat] = useState(false);
   const [workspace, setWorkspace] = useState<
-    "chat" | "memories" | "state" | "appearance"
+    "chat" | "memories" | "state" | "appearance" | "settings"
   >("chat");
 
   const loadSnapshot = useCallback(async () => {
@@ -1790,7 +1813,7 @@ function App() {
     }
   }
 
-  async function openWorkspace(next: "chat" | "memories" | "state" | "appearance") {
+  async function openWorkspace(next: "chat" | "memories" | "state" | "appearance" | "settings") {
     await leaveTemporaryChat();
     setEditingAgentId(null);
     setWorkspace(next);
@@ -1829,13 +1852,13 @@ function App() {
   return (
     <div className="app-shell conversation-layout">
       <aside className="sidebar" aria-label="Navegação principal">
-        <div className="brand-mark" aria-label="A.I.P.">
+        <button className="brand-mark" type="button" aria-label="Abrir configurações" onClick={() => void openWorkspace("settings")}>
           <span className="brand-glyph">AI</span>
           <div>
             <strong>A.I.P.</strong>
             <small>Conversa local</small>
           </div>
-        </div>
+        </button>
         <p className="sidebar-label">Conversas</p>
         <div className="agent-tabs">
           {snapshot?.agents.map((agent) => (
@@ -1893,14 +1916,6 @@ function App() {
             ))}
           </details>
         ) : null}
-        <button
-          className={snapshot?.safeMode ? "mode-button active" : "mode-button"}
-          type="button"
-          disabled={!snapshot || changingMode}
-          onClick={() => void toggleSafeMode()}
-        >
-          {snapshot?.safeMode ? "Sair do modo seguro" : "Ativar modo seguro"}
-        </button>
         <div className="sidebar-footer">
           <span className="local-dot" aria-hidden="true" />
           {snapshot
@@ -1947,6 +1962,7 @@ function App() {
             >
               Perfil
             </button>
+            <button className={workspace === "settings" ? "active" : undefined} type="button" onClick={() => void openWorkspace("settings")}>Configurações</button>
             <button
               className={
                 temporaryChat
@@ -1996,6 +2012,8 @@ function App() {
           />
         ) : activeAgentId === null ? (
           <section className="conversation-empty">Carregando agentes…</section>
+        ) : workspace === "settings" ? (
+          <SettingsSurface snapshot={snapshot} changingMode={changingMode} onToggleSafeMode={() => void toggleSafeMode()} />
         ) : workspace === "memories" ? (
           <section className="workspace-panel">
             <MemoryWorkspace agentId={activeAgentId} />

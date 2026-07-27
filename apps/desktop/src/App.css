@@ -944,6 +944,37 @@ a:focus-visible {
   padding: 0 8px 24px;
 }
 
+.brand-mark {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.settings-surface {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 32px;
+  display: grid;
+  gap: 16px;
+}
+
+.settings-card {
+  border: 1px solid var(--line, #2c3442);
+  border-radius: 14px;
+  padding: 18px;
+  background: var(--panel, #161b24);
+}
+
+.settings-card h2 { margin-top: 0; }
+.settings-card dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; margin: 0; }
+.settings-card dt { color: var(--muted, #a7afbe); }
+.settings-card dd { margin: 0; overflow-wrap: anywhere; }
+.message-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.message-editor textarea { width: 100%; min-height: 100px; }
+.branch-picker { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 0; }
+
 .brand-glyph {
   display: grid;
   width: 36px;
