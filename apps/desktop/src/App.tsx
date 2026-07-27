@@ -35,6 +35,7 @@ import { createListenerRegistration } from "./listener-lifecycle";
 import {
   nextLayerId,
   floodFillLayer,
+  rasterLine,
   parsePixelDocument,
   updatePixelLayer,
   type PixelDocument,
@@ -1199,6 +1200,7 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
   const importRef = useRef<HTMLInputElement>(null);
   const undoRef = useRef<string[]>([]);
   const redoRef = useRef<string[]>([]);
+  const strokeRef = useRef<{ x: number; y: number } | null>(null);
   const document = parsePixelDocument(source);
   const activeLayer =
     document?.layers.find((layer) => layer.id === activeLayerId) ??
@@ -1311,15 +1313,21 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         setError(null);
         return;
       }
-      const pixels = (layer.pixels ?? []).filter(
-        ([pixelX, pixelY]) =>
-          (pixelX !== x || pixelY !== y) &&
-          (!mirror || pixelX !== 63 - x || pixelY !== y),
-      );
-      if (tool === "pencil") {
-        pixels.push([x, y, color]);
-        if (mirror && x !== 63 - x) pixels.push([63 - x, y, color]);
+      const previous = strokeRef.current ?? { x, y };
+      const cells = rasterLine(previous.x, previous.y, x, y);
+      const changed = new Map((layer.pixels ?? []).map(([pixelX, pixelY, pixelColor]) => [`${pixelX},${pixelY}`, pixelColor]));
+      for (const [cellX, cellY] of cells) {
+        for (const targetX of mirror && cellX !== 63 - cellX ? [cellX, 63 - cellX] : [cellX]) {
+          const key = `${targetX},${cellY}`;
+          if (tool === "pencil") changed.set(key, color);
+          else changed.delete(key);
+        }
       }
+      const pixels = [...changed.entries()].map(([key, pixelColor]) => {
+        const [pixelX, pixelY] = key.split(",").map(Number);
+        return [pixelX, pixelY, pixelColor] as [number, number, string];
+      });
+      strokeRef.current = { x, y };
       layer.pixels = pixels;
       replaceSource(
         JSON.stringify(updatePixelLayer(document, layer.id, () => layer)),
@@ -1721,10 +1729,12 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         height="256"
         className="pixel-canvas"
         style={{ width: `${64 * zoom}px`, height: `${64 * zoom}px` }}
-        onPointerDown={paint}
+        onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); strokeRef.current = null; paint(event); }}
         onPointerMove={(event) => {
           if (event.buttons === 1) paint(event);
         }}
+        onPointerUp={(event) => { strokeRef.current = null; event.currentTarget.releasePointerCapture(event.pointerId); }}
+        onPointerCancel={() => { strokeRef.current = null; }}
         aria-label="Grade de pixel art"
       />
       <details className="pixel-source">

@@ -94,3 +94,27 @@ export function floodFillLayer(
     }),
   };
 }
+
+export function rasterLine(
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+): Array<[number, number]> {
+  const cells: Array<[number, number]> = [];
+  let x = fromX;
+  let y = fromY;
+  const dx = Math.abs(toX - fromX);
+  const sx = fromX < toX ? 1 : -1;
+  const dy = -Math.abs(toY - fromY);
+  const sy = fromY < toY ? 1 : -1;
+  let error = dx + dy;
+  while (true) {
+    if (x >= 0 && x < 64 && y >= 0 && y < 64) cells.push([x, y]);
+    if (x === toX && y === toY) break;
+    const twice = 2 * error;
+    if (twice >= dy) { error += dy; x += sx; }
+    if (twice <= dx) { error += dx; y += sy; }
+  }
+  return cells;
+}

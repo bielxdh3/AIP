@@ -974,6 +974,8 @@ a:focus-visible {
 .message-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .message-editor textarea { width: 100%; min-height: 100px; }
 .branch-picker { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 0; }
+.pixel-tools input[type="file"] { max-width: 190px; font-size: 12px; }
+.pixel-canvas { touch-action: none; user-select: none; }
 
 .brand-glyph {
   display: grid;
