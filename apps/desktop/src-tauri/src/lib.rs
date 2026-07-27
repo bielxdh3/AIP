@@ -279,6 +279,19 @@ fn close_temporary_phase_one_chat(
 }
 
 #[tauri::command]
+fn set_temporary_phase_one_model(
+    state: State<'_, AppState>,
+    agent_id: String,
+    model_ref: Option<String>,
+) -> Result<(), &'static str> {
+    state
+        .chat
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .set_temporary_model(&agent_id, model_ref.as_deref())
+}
+
+#[tauri::command]
 fn get_agent_simulated_state(
     state: State<'_, AppState>,
     agent_id: String,
@@ -578,6 +591,9 @@ fn snapshot(state: &AppState) -> Result<AppSnapshot, &'static str> {
     let Some(database) = state.database.as_ref() else {
         return Ok(AppSnapshot {
             app_version: env!("CARGO_PKG_VERSION").to_string(),
+            build_sha: env!("AIP_BUILD_SHA").to_string(),
+            build_timestamp: env!("AIP_BUILD_TIMESTAMP").to_string(),
+            runtime_packaging_mode: env!("AIP_RUNTIME_PACKAGING_MODE").to_string(),
             safe_mode: true,
             database_ready: false,
             migration_version: 0,
@@ -589,6 +605,9 @@ fn snapshot(state: &AppState) -> Result<AppSnapshot, &'static str> {
     let stored = database.snapshot().map_err(|_| "operation_failed")?;
     Ok(AppSnapshot {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
+        build_sha: env!("AIP_BUILD_SHA").to_string(),
+        build_timestamp: env!("AIP_BUILD_TIMESTAMP").to_string(),
+        runtime_packaging_mode: env!("AIP_RUNTIME_PACKAGING_MODE").to_string(),
         safe_mode: stored.safe_mode,
         database_ready: true,
         migration_version: stored.migration_version,
@@ -674,6 +693,7 @@ pub fn run() {
             create_agent_memory,
             send_temporary_phase_one_message,
             close_temporary_phase_one_chat,
+            set_temporary_phase_one_model,
             get_agent_simulated_state,
             set_agent_simulated_mode,
             set_agent_suspension,
