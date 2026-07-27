@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { floodFillLayer, nextLayerId, parsePixelDocument, updatePixelLayer } from "./pixel-document";
+import { floodFillLayer, nextLayerId, parsePixelDocument, rasterLine, updatePixelLayer } from "./pixel-document";
 
 describe("pixel documents", () => {
   it("normalizes layers and updates only the selected layer", () => {
@@ -13,6 +13,10 @@ describe("pixel documents", () => {
       layers: [{ id: "body", visible: true }, { id: "hair", visible: true, locked: true }],
     });
   });
+});
+
+it("rasterizes every cell crossed by a fast stroke", () => {
+  expect(rasterLine(1, 1, 5, 3)).toEqual([[1, 1], [2, 2], [3, 2], [4, 3], [5, 3]]);
 });
 
 describe("pixel flood fill", () => {
