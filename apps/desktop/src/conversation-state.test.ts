@@ -51,9 +51,11 @@ function phase(agentId = "astra"): PhaseOneState {
         completedAt: null,
         errorCode: null,
         branchId: "branch-main",
+        turnGroupId: "user-1",
       },
     ],
     branches: [],
+    turnVariants: [],
     activeBranchId: null,
     provider: {
       state: "available",
@@ -260,14 +262,20 @@ describe("conversation event reducer", () => {
     expect(complete.request).toBeNull();
   });
 
-  it("distinguishes provider failure from genuine runtime death", () => {
+  it("uses one terminal failure copy without exposing technical codes", () => {
     const current = phase();
     const failed = current.messages[0]!;
     failed.status = "failed";
     failed.errorCode = "provider_interrupted";
-    expect(messageStatusCopy(failed)).toContain("interrompida");
+    expect(messageStatusCopy(failed)).toBe("Não foi possível gerar a resposta");
+    failed.content = "texto parcial";
+    expect(messageStatusCopy(failed)).toBe("Resposta interrompida");
     failed.errorCode = "runtime_process_exit_unexpected";
-    expect(messageStatusCopy(failed)).toContain("runtime local");
+    expect(messageStatusCopy(failed)).toBe("Resposta interrompida");
+    failed.status = "cancelled";
+    expect(messageStatusCopy(failed)).toBe("Resposta cancelada");
+    failed.status = "complete";
+    expect(messageStatusCopy(failed)).toBe("Concluída");
     expect(messageFailureCopy("provider_stream_closed")).toContain(
       "interrompida",
     );

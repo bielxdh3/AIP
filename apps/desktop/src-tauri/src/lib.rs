@@ -498,12 +498,20 @@ fn regenerate_phase_one_message(
     agent_id: String,
     conversation_id: String,
     assistant_message_id: String,
+    model_ref: Option<String>,
+    request_id: String,
 ) -> Result<SendMessageResult, &'static str> {
     state
         .chat
         .as_ref()
         .ok_or("operation_unavailable")?
-        .regenerate_message(&agent_id, &conversation_id, &assistant_message_id)
+        .regenerate_message(
+            &agent_id,
+            &conversation_id,
+            &assistant_message_id,
+            model_ref.as_deref(),
+            &request_id,
+        )
 }
 
 #[tauri::command]

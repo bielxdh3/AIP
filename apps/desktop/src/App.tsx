@@ -20,7 +20,6 @@ import {
   blockedSendCopy,
   canRequestCancellation,
   conversationOverrideArguments,
-  messageFailureCopy,
   messageStatusCopy,
   providerRecoveryCopy,
   providerStatusCopy,
@@ -142,15 +141,23 @@ function MessageItem({
   onEdit,
   variants = [],
   onSelectVariant,
+  retrying,
+  models,
 }: {
   message: ConversationMessage;
-  onRegenerate: (message: ConversationMessage) => void;
+  onRegenerate: (message: ConversationMessage, modelRef?: string) => void;
   onEdit: (message: ConversationMessage, content: string) => void;
-  variants?: Array<{ id: string; active: boolean }>;
+  variants?: Array<{ id: string; branchId: string; active: boolean }>;
   onSelectVariant?: (id: string) => void;
+  retrying: boolean;
+  models: Array<{ ref: string }>;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
+  const [retryMenuOpen, setRetryMenuOpen] = useState(false);
+  const [advancedRetry, setAdvancedRetry] = useState(false);
+  const [retryModel, setRetryModel] = useState(message.modelRef ?? "");
+  const retryable = message.author === "agent" && message.status !== "pending" && message.status !== "streaming";
   return (
     <article
       className={`chat-message ${message.author}`}
@@ -167,15 +174,12 @@ function MessageItem({
           <button type="button" disabled={!draft.trim()} onClick={() => { onEdit(message, draft.trim()); setEditing(false); }}>Salvar e enviar</button>
         </div>
       ) : message.content ? <p>{message.content}</p> : null}
-      {message.status === "failed" ? (
-        <small>{messageFailureCopy(message.errorCode)}</small>
-      ) : null}
       <div className="message-actions">
         <button type="button" onClick={() => void navigator.clipboard?.writeText(message.content)}>Copiar</button>
         {message.author === "user" ? <button type="button" onClick={() => setEditing(true)}>Editar</button> : null}
-        {message.author === "agent" ? <button type="button" onClick={() => onRegenerate(message)}>{message.status === "failed" ? "Tentar novamente" : "Gerar novamente"}</button> : null}
+        {retryable ? <><button type="button" disabled={retrying} onClick={() => onRegenerate(message)}>Tentar novamente</button><button type="button" aria-label="Opções de tentativa" disabled={retrying} onClick={() => setRetryMenuOpen(!retryMenuOpen)}>⌄</button>{retryMenuOpen ? <div className="retry-menu"><button type="button" onClick={() => onRegenerate(message)}>Tentar novamente</button><button type="button" onClick={() => setAdvancedRetry(!advancedRetry)}>Avançado</button>{advancedRetry ? <div><small>Modelo usado: {message.modelRef ?? "indisponível"}</small><select value={retryModel} onChange={(event) => setRetryModel(event.target.value)}>{message.modelRef && !models.some((model) => model.ref === message.modelRef) ? <option value={message.modelRef}>{message.modelRef} (indisponível)</option> : null}{models.map((model) => <option value={model.ref} key={model.ref}>{model.ref}</option>)}</select><button type="button" disabled={retrying || !retryModel} onClick={() => onRegenerate(message, retryModel)}>Tentar com este modelo</button></div> : null}</div> : null}</> : null}
         {message.author === "agent" && message.modelRef ? <details><summary>Modelo</summary><span>{message.modelRef}</span></details> : null}
-        {variants.length > 1 ? <span className="turn-variants"><button type="button" disabled={variants.findIndex((variant) => variant.active) <= 0} onClick={() => { const index = variants.findIndex((variant) => variant.active); if (index > 0) onSelectVariant?.(variants[index - 1]!.id); }}>‹</button><span>{variants.findIndex((variant) => variant.active) + 1}/{variants.length}</span><button type="button" disabled={variants.findIndex((variant) => variant.active) >= variants.length - 1} onClick={() => { const index = variants.findIndex((variant) => variant.active); if (index >= 0 && index < variants.length - 1) onSelectVariant?.(variants[index + 1]!.id); }}>›</button></span> : null}
+        {variants.length > 1 ? <span className="turn-variants"><button type="button" disabled={variants.findIndex((variant) => variant.active) <= 0} onClick={() => { const index = variants.findIndex((variant) => variant.active); if (index > 0) onSelectVariant?.(variants[index - 1]!.branchId); }}>‹</button><span>{variants.findIndex((variant) => variant.active) + 1}/{variants.length}</span><button type="button" disabled={variants.findIndex((variant) => variant.active) >= variants.length - 1} onClick={() => { const index = variants.findIndex((variant) => variant.active); if (index >= 0 && index < variants.length - 1) onSelectVariant?.(variants[index + 1]!.branchId); }}>›</button></span> : null}
       </div>
     </article>
   );
@@ -296,10 +300,16 @@ function ConversationSurface({
     }
   }
 
-  async function regenerate(message: ConversationMessage) {
+  const [retryingMessageId, setRetryingMessageId] = useState<string | null>(null);
+  async function regenerate(message: ConversationMessage, modelRef?: string) {
     if (temporary || message.status === "pending" || message.status === "streaming") return;
-    await invoke("regenerate_phase_one_message", { agentId: currentPhase.agent.id, conversationId: currentPhase.conversation.id, assistantMessageId: message.id });
-    void load();
+    setRetryingMessageId(message.id);
+    try {
+      await invoke("regenerate_phase_one_message", { agentId: currentPhase.agent.id, conversationId: currentPhase.conversation.id, assistantMessageId: message.id, modelRef, requestId: crypto.randomUUID() });
+      void load();
+    } finally {
+      setRetryingMessageId(null);
+    }
   }
 
   async function edit(message: ConversationMessage, content: string) {
@@ -425,7 +435,7 @@ function ConversationSurface({
           </div>
         ) : (
           phase.messages.map((message) => (
-            <MessageItem key={message.id} message={message} onRegenerate={(message) => void regenerate(message)} onEdit={(message, content) => void edit(message, content)} variants={message.author === "agent" ? currentPhase.branches.map((branch) => ({ id: branch.id, active: branch.id === currentPhase.activeBranchId })) : []} onSelectVariant={(branchId) => void invoke("set_active_conversation_branch", { agentId: currentPhase.agent.id, conversationId: currentPhase.conversation.id, branchId }).then(load)} />
+            <MessageItem key={message.id} message={message} onRegenerate={(message, modelRef) => void regenerate(message, modelRef)} onEdit={(message, content) => void edit(message, content)} retrying={retryingMessageId === message.id} models={currentPhase.provider.models} variants={message.author === "agent" ? currentPhase.turnVariants.filter((variant) => variant.turnGroupId === message.turnGroupId).map((variant) => ({ id: variant.assistantMessageId, branchId: variant.branchId, active: variant.assistantMessageId === message.id })) : []} onSelectVariant={(branchId) => void invoke("set_active_conversation_branch", { agentId: currentPhase.agent.id, conversationId: currentPhase.conversation.id, branchId }).then(load)} />
           ))
         )}
       </div>

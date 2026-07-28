@@ -163,7 +163,7 @@ export function canRequestCancellation(
 
 export function messageStatusCopy(message: ConversationMessage): string {
   if (message.status === "failed") {
-    return messageFailureCopy(message.errorCode);
+    return message.content ? "Resposta interrompida" : "Não foi possível gerar a resposta";
   }
   const labels: Record<ConversationMessage["status"], string> = {
     pending: "Aguardando processamento…",
