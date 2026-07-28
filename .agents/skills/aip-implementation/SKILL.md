@@ -1,100 +1,36 @@
 ---
 name: aip-implementation
-description: Use for AIP repository bootstrap, phase-scoped implementation, feature work, refactors, tests, and implementation-linked documentation.
+description: Use for AIP bootstrap, phase-scoped implementation, feature work, refactors, tests, and implementation-linked documentation.
 ---
 
-# AIP Implementation Skill
+# AIP implementation
 
-Use this skill for implementing AIP phases.
+Load this skill before any implementation inspection or edit. Define acceptance criteria before editing.
 
-Keep output compact. Do not narrate routine inspection or progress.
+## Focused process
 
-## Required Process
+1. Read only the relevant specification and confirm branch/worktree state.
+2. Start with targeted searches for files, symbols, and references.
+3. Inspect only files related to the acceptance criteria; do not scan the repository without explicit need.
+4. Implement the smallest coherent change. Do not add future-phase work, opportunistic cleanup, or unrelated refactoring.
+5. Run only the smallest validation capable of proving the change; do not validate the whole workspace for an isolated change.
+6. Review the final diff for scope, secrets, generated files, and local data, then stop when acceptance criteria are met.
 
-1. Inspect `AGENTS.md` and the relevant specification documents.
-2. Confirm the current branch and repository state.
-3. Resolve the requested phase into explicit acceptance criteria.
-4. Inspect only files relevant to the phase.
-5. Implement the smallest coherent change that satisfies the acceptance criteria.
-6. Add or update tests for behavior that can be tested.
-7. Update documentation when architecture or user-visible behavior changes.
-8. Run the smallest relevant validation set.
-9. Inspect the final diff for scope creep, secrets, generated files, and accidental local data.
-10. Do not declare completion when required validation failed or was not run.
+## Output and inspection discipline
 
-## Architecture Constraints
+- Do not reread unchanged files without a concrete reason.
+- Use bounded excerpts instead of printing large files in full.
+- Never print lockfiles, generated files, builds, databases, or complete logs.
+- Examine command summaries, errors, and relevant lines only.
+- Do not repeat `git status`, `git diff`, searches, tests, builds, or equivalent inspections without new evidence.
+- Do not narrate routine actions or progress. Keep the final response short and factual.
 
-- AIP remains standalone until a later explicit BielOS integration phase.
-- Rust owns authoritative persistence, process management, and system integration.
-- React and TypeScript own the user interface.
-- Python is a replaceable inference runtime, not the source of truth for agent identity or persistence.
-- Runtime failure must not crash or block access to the UI, history, settings, or safe mode.
-- Agent identity and memory must remain model-independent.
-- Use versioned contracts between layers.
-- Keep temporary chat content in memory only.
-- Keep all user-facing UI text in Portuguese.
-- Keep source code, internal identifiers, comments, and documentation in English.
+## AIP invariants
 
-## Scope Control
+Preserve the repository rules: AIP remains separate from BielOS; Rust/Tauri owns authoritative persistence, process management, and system integration; React/TypeScript owns UI; Python is replaceable inference only; runtime failure must not block the UI; identity, memory, and contracts remain model-independent and versioned; temporary chat stays in memory; UI text is Portuguese and source/documentation are English; security, privacy, data-integrity, and accessibility safeguards remain intact.
 
-Do not implement later roadmap items because they seem convenient.
+Do not add remote access, Android, voice, autonomous conversations, destructive tools, marketplace, vision, export/import, multiple accounts, or other later-scope features unless explicitly requested.
 
-Do not add:
+## Completion
 
-- remote access;
-- Android code;
-- voice;
-- autonomous agent conversations;
-- destructive tools;
-- BielOS imports;
-- extension marketplace;
-- screen vision;
-- broad plugin systems;
-
-unless the requested phase explicitly includes them.
-
-## Dependency Rules
-
-- Prefer standard library or already approved workspace dependencies.
-- Explain any new dependency in the final response.
-- Avoid large frameworks for small deterministic behavior.
-- Pin or lock dependencies through the repository's normal package managers.
-
-## Validation Guidance
-
-Use relevant commands only. Expected commands after bootstrap include:
-
-```bash
-pnpm secrets:scan
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm build
-pnpm tauri:check
-```
-
-Run Python validations for runtime changes.
-
-For docs-only work, do not run build commands unless explicitly requested.
-
-## Commit Guidance
-
-Prefer one coherent commit per phase with a conventional message such as:
-
-- `chore: bootstrap AIP workspace`
-- `feat: add desktop agent overlay shell`
-- `feat: add local chat persistence`
-- `test: cover agent state transitions`
-
-Do not commit generated local databases, model files, build outputs, secrets, exports, or user data.
-
-## Final Response Format
-
-Use only:
-
-- Status
-- Files changed
-- Behavior changed
-- Validations run
-- Validations not run
-- Remaining limitations
+Do not declare completion when required validation failed or was not run. Do not claim tests or CI without evidence.
