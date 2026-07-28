@@ -258,6 +258,7 @@ pub struct ConversationMessage {
     pub completed_at: Option<i64>,
     pub error_code: Option<String>,
     pub branch_id: String,
+    pub turn_group_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -267,6 +268,14 @@ pub struct ConversationBranch {
     pub parent_branch_id: Option<String>,
     pub parent_message_id: Option<String>,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTurnVariant {
+    pub assistant_message_id: String,
+    pub branch_id: String,
+    pub turn_group_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -288,6 +297,7 @@ pub struct PhaseOneState {
     pub conversation: PhaseOneConversation,
     pub messages: Vec<ConversationMessage>,
     pub branches: Vec<ConversationBranch>,
+    pub turn_variants: Vec<ConversationTurnVariant>,
     pub active_branch_id: Option<String>,
     pub provider: ProviderSnapshot,
     pub selected_model_ref: Option<String>,

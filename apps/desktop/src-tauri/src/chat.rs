@@ -413,6 +413,11 @@ impl ChatCoordinator {
             .database
             .branches(agent_id, &conversation.id)
             .map_err(|_| "operation_failed")?;
+        let turn_variants = self
+            .inner
+            .database
+            .turn_variants(agent_id, &conversation.id)
+            .map_err(|_| "operation_failed")?;
         let active_branch_id = self
             .inner
             .database
@@ -459,6 +464,7 @@ impl ChatCoordinator {
             conversation,
             messages,
             branches,
+            turn_variants,
             active_branch_id: Some(active_branch_id),
             provider,
             selected_model_ref,
@@ -700,15 +706,33 @@ impl ChatCoordinator {
         agent_id: &str,
         conversation_id: &str,
         assistant_message_id: &str,
+        model_ref: Option<&str>,
+        request_id: &str,
     ) -> Result<SendMessageResult, &'static str> {
-        self.send_branch_attempt(agent_id, conversation_id, |database, model| {
-            database.create_regeneration_attempt(
-                agent_id,
-                conversation_id,
-                assistant_message_id,
-                model,
-            )
-        })
+        let model_ref = model_ref
+            .map(str::to_string)
+            .or_else(|| {
+                self.inner
+                    .database
+                    .message_model_ref(assistant_message_id)
+                    .ok()
+            })
+            .ok_or("model_unavailable")?;
+        self.send_branch_attempt(
+            agent_id,
+            conversation_id,
+            &model_ref,
+            request_id,
+            |database, model, request_id| {
+                database.create_regeneration_attempt(
+                    agent_id,
+                    conversation_id,
+                    assistant_message_id,
+                    model,
+                    request_id,
+                )
+            },
+        )
     }
 
     pub fn edit_message(
@@ -721,25 +745,39 @@ impl ChatCoordinator {
         if content.is_empty() || content.len() > MAX_USER_MESSAGE_BYTES {
             return Err("invalid_message");
         }
-        self.send_branch_attempt(agent_id, conversation_id, |database, model| {
-            database.create_edited_attempt(
-                agent_id,
-                conversation_id,
-                user_message_id,
-                content,
-                model,
-            )
-        })
+        let request_id = uuid::Uuid::now_v7().to_string();
+        let model_ref = self
+            .state(agent_id)?
+            .selected_model_ref
+            .ok_or("model_unavailable")?;
+        self.send_branch_attempt(
+            agent_id,
+            conversation_id,
+            &model_ref,
+            &request_id,
+            |database, model, request_id| {
+                database.create_edited_attempt(
+                    agent_id,
+                    conversation_id,
+                    user_message_id,
+                    content,
+                    model,
+                    request_id,
+                )
+            },
+        )
     }
 
     fn send_branch_attempt<F>(
         &self,
         agent_id: &str,
         conversation_id: &str,
+        model_ref: &str,
+        request_id: &str,
         create_attempt: F,
     ) -> Result<SendMessageResult, &'static str>
     where
-        F: FnOnce(&Database, &str) -> Result<MessageAttempt, crate::database::DatabaseError>,
+        F: FnOnce(&Database, &str, &str) -> Result<MessageAttempt, crate::database::DatabaseError>,
     {
         let _send_guard = lock(&self.inner.send_lock);
         let state = self.state(agent_id)?;
@@ -749,11 +787,18 @@ impl ChatCoordinator {
         if state.send_blocked_code.is_some() {
             return Err("runtime_unavailable");
         }
-        let model_ref = state.selected_model_ref.ok_or("model_unavailable")?;
-        let attempt =
-            create_attempt(&self.inner.database, &model_ref).map_err(|_| "operation_failed")?;
-        let job = job_from_attempt(agent_id, conversation_id, &model_ref, &attempt);
+        let attempt = create_attempt(&self.inner.database, model_ref, request_id)
+            .map_err(|_| "operation_failed")?;
+        let job = job_from_attempt(agent_id, conversation_id, model_ref, &attempt);
         if let Err(code) = lock(&self.inner.queue).enqueue(job.clone()) {
+            if code == "duplicate_request" {
+                return Ok(SendMessageResult {
+                    request_id: attempt.request_id,
+                    conversation_id: conversation_id.into(),
+                    user_message_id: attempt.user_message_id,
+                    assistant_message_id: attempt.assistant_message_id,
+                });
+            }
             let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
             return Err(code);
         }
@@ -825,6 +870,7 @@ impl ChatCoordinator {
                 completed_at: Some(now),
                 error_code: None,
                 branch_id: conversation.id.clone(),
+                turn_group_id: user_message_id.clone(),
             });
             chat.messages.push(crate::domain::ConversationMessage {
                 id: assistant_message_id.clone(),
@@ -838,6 +884,7 @@ impl ChatCoordinator {
                 completed_at: None,
                 error_code: None,
                 branch_id: conversation.id.clone(),
+                turn_group_id: user_message_id.clone(),
             });
         }
         let job = GenerationJob {
@@ -1688,6 +1735,7 @@ mod tests {
                     completed_at: None,
                     error_code: None,
                     branch_id: temporary_conversation.id.clone(),
+                    turn_group_id: "temporary-turn".into(),
                 }],
                 model_override_ref: None,
             },
@@ -2099,6 +2147,7 @@ mod tests {
             completed_at: None,
             error_code: None,
             branch_id: "branch".into(),
+            turn_group_id: "turn".into(),
         };
         assert!(serde_json::to_string(&message).unwrap().contains("pending"));
     }

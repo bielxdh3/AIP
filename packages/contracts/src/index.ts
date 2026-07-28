@@ -100,6 +100,7 @@ export type ConversationMessage = {
   completedAt: number | null;
   errorCode: string | null;
   branchId: string;
+  turnGroupId: string;
 };
 
 export type ConversationBranch = {
@@ -107,6 +108,12 @@ export type ConversationBranch = {
   parentBranchId: string | null;
   parentMessageId: string | null;
   createdAt: number;
+};
+
+export type ConversationTurnVariant = {
+  assistantMessageId: string;
+  branchId: string;
+  turnGroupId: string;
 };
 
 export type PhaseOneConversation = {
@@ -162,6 +169,7 @@ export type PhaseOneState = {
   conversation: PhaseOneConversation;
   messages: ConversationMessage[];
   branches: ConversationBranch[];
+  turnVariants: ConversationTurnVariant[];
   activeBranchId: string | null;
   provider: ProviderSnapshot;
   selectedModelRef: string | null;
