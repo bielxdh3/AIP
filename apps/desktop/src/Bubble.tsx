@@ -35,13 +35,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
         elementBounds(bubbleRef.current),
       ),
     }).catch(() => null);
-  }, [
-    agentId,
-    expanded,
-    phase?.messages.length,
-    phase?.queue.length,
-    safeMode,
-  ]);
+  }, [agentId, safeMode]);
 
   useEffect(() => {
     const refresh = () =>

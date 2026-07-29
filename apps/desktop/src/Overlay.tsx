@@ -71,7 +71,7 @@ export default function Overlay({ agentId }: { agentId: string }) {
     void invoke("set_overlay_interactive_regions", { agentId, regions }).catch(
       () => null,
     );
-  }, [agentId, overlayActive, spriteMask, thinking]);
+  }, [agentId, overlayActive, spriteMask]);
 
   useLayoutEffect(() => {
     let animationFrame: number | null = null;
