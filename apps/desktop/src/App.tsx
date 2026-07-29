@@ -75,7 +75,11 @@ function traitValues(source: string): Record<string, number> {
   return {};
 }
 
-function updateInitialTrait(agent: ProvisionalAgent, key: string, value: number) {
+function updateInitialTrait(
+  agent: ProvisionalAgent,
+  key: string,
+  value: number,
+) {
   const traits = traitValues(agent.traitsJson);
   traits[key] = Math.max(0, Math.min(100, value));
   return { ...agent, traitsJson: JSON.stringify(traits) };
@@ -95,18 +99,35 @@ function validCalendarDate(value: string): boolean {
   const month = Number(monthText);
   const day = Number(dayText);
   const date = new Date(Date.UTC(year, month - 1, day));
-  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
 }
 
 function profileValidationError(agent: ProvisionalAgent): string | null {
-  if (!agent.name.trim() || !agent.species.trim() || !agent.pronouns.trim()) return "Preencha nome, espécie e pronomes.";
-  if (!validCalendarDate(agent.birthday)) return "Informe uma data de aniversário válida.";
+  if (!agent.name.trim() || !agent.species.trim() || !agent.pronouns.trim())
+    return "Preencha nome, espécie e pronomes.";
+  if (!validCalendarDate(agent.birthday))
+    return "Informe uma data de aniversário válida.";
   if (!agent.ageCategory.trim()) return "Informe a categoria de idade.";
-  if (!Number.isFinite(agent.fictiveAge) || agent.fictiveAge < 0 || agent.fictiveAge > 10000) return "Informe uma idade fictícia entre 0 e 10000.";
-  if (initialTraits.some(([key]) => {
-    const value = traitValues(agent.traitsJson)[key];
-    return value !== undefined && (!Number.isFinite(value) || value < 0 || value > 100);
-  })) return "Cada traço deve ser um número entre 0 e 100.";
+  if (
+    !Number.isFinite(agent.fictiveAge) ||
+    agent.fictiveAge < 0 ||
+    agent.fictiveAge > 10000
+  )
+    return "Informe uma idade fictícia entre 0 e 10000.";
+  if (
+    initialTraits.some(([key]) => {
+      const value = traitValues(agent.traitsJson)[key];
+      return (
+        value !== undefined &&
+        (!Number.isFinite(value) || value < 0 || value > 100)
+      );
+    })
+  )
+    return "Cada traço deve ser um número entre 0 e 100.";
   return null;
 }
 
@@ -157,7 +178,10 @@ function MessageItem({
   const [retryMenuOpen, setRetryMenuOpen] = useState(false);
   const [advancedRetry, setAdvancedRetry] = useState(false);
   const [retryModel, setRetryModel] = useState(message.modelRef ?? "");
-  const retryable = message.author === "agent" && message.status !== "pending" && message.status !== "streaming";
+  const retryable =
+    message.author === "agent" &&
+    message.status !== "pending" &&
+    message.status !== "streaming";
   return (
     <article
       className={`chat-message ${message.author}`}
@@ -169,23 +193,153 @@ function MessageItem({
       </div>
       {editing ? (
         <div className="message-editor">
-          <textarea value={draft} onChange={(event) => setDraft(event.target.value)} />
-          <button type="button" onClick={() => { setEditing(false); setDraft(message.content); }}>Cancelar</button>
-          <button type="button" disabled={!draft.trim()} onClick={() => { onEdit(message, draft.trim()); setEditing(false); }}>Salvar e enviar</button>
+          <textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+          />
+          <button
+            type="button"
+            onClick={() => {
+              setEditing(false);
+              setDraft(message.content);
+            }}
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            disabled={!draft.trim()}
+            onClick={() => {
+              onEdit(message, draft.trim());
+              setEditing(false);
+            }}
+          >
+            Salvar e enviar
+          </button>
         </div>
-      ) : message.content ? <p>{message.content}</p> : null}
+      ) : message.content ? (
+        <p>{message.content}</p>
+      ) : null}
       <div className="message-actions">
-        <button type="button" onClick={() => void navigator.clipboard?.writeText(message.content)}>Copiar</button>
-        {message.author === "user" ? <button type="button" onClick={() => setEditing(true)}>Editar</button> : null}
-        {retryable ? <><button type="button" disabled={retrying} onClick={() => onRegenerate(message)}>Tentar novamente</button><button type="button" aria-label="Opções de tentativa" disabled={retrying} onClick={() => setRetryMenuOpen(!retryMenuOpen)}>⌄</button>{retryMenuOpen ? <div className="retry-menu"><button type="button" onClick={() => onRegenerate(message)}>Tentar novamente</button><button type="button" onClick={() => setAdvancedRetry(!advancedRetry)}>Avançado</button>{advancedRetry ? <div><small>Modelo usado: {message.modelRef ?? "indisponível"}</small><select value={retryModel} onChange={(event) => setRetryModel(event.target.value)}>{message.modelRef && !models.some((model) => model.ref === message.modelRef) ? <option value={message.modelRef}>{message.modelRef} (indisponível)</option> : null}{models.map((model) => <option value={model.ref} key={model.ref}>{model.ref}</option>)}</select><button type="button" disabled={retrying || !retryModel} onClick={() => onRegenerate(message, retryModel)}>Tentar com este modelo</button></div> : null}</div> : null}</> : null}
-        {message.author === "agent" && message.modelRef ? <details><summary>Modelo</summary><span>{message.modelRef}</span></details> : null}
-        {variants.length > 1 ? <span className="turn-variants"><button type="button" disabled={variants.findIndex((variant) => variant.active) <= 0} onClick={() => { const index = variants.findIndex((variant) => variant.active); if (index > 0) onSelectVariant?.(variants[index - 1]!.branchId); }}>‹</button><span>{variants.findIndex((variant) => variant.active) + 1}/{variants.length}</span><button type="button" disabled={variants.findIndex((variant) => variant.active) >= variants.length - 1} onClick={() => { const index = variants.findIndex((variant) => variant.active); if (index >= 0 && index < variants.length - 1) onSelectVariant?.(variants[index + 1]!.branchId); }}>›</button></span> : null}
+        <button
+          type="button"
+          onClick={() => void navigator.clipboard?.writeText(message.content)}
+        >
+          Copiar
+        </button>
+        {message.author === "user" ? (
+          <button type="button" onClick={() => setEditing(true)}>
+            Editar
+          </button>
+        ) : null}
+        {retryable ? (
+          <>
+            <button
+              type="button"
+              disabled={retrying}
+              onClick={() => onRegenerate(message)}
+            >
+              Tentar novamente
+            </button>
+            <button
+              type="button"
+              aria-label="Opções de tentativa"
+              disabled={retrying}
+              onClick={() => setRetryMenuOpen(!retryMenuOpen)}
+            >
+              ⌄
+            </button>
+            {retryMenuOpen ? (
+              <div className="retry-menu">
+                <button type="button" onClick={() => onRegenerate(message)}>
+                  Tentar novamente
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAdvancedRetry(!advancedRetry)}
+                >
+                  Avançado
+                </button>
+                {advancedRetry ? (
+                  <div>
+                    <small>
+                      Modelo usado: {message.modelRef ?? "indisponível"}
+                    </small>
+                    <select
+                      value={retryModel}
+                      onChange={(event) => setRetryModel(event.target.value)}
+                    >
+                      {message.modelRef &&
+                      !models.some(
+                        (model) => model.ref === message.modelRef,
+                      ) ? (
+                        <option value={message.modelRef}>
+                          {message.modelRef} (indisponível)
+                        </option>
+                      ) : null}
+                      {models.map((model) => (
+                        <option value={model.ref} key={model.ref}>
+                          {model.ref}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={retrying || !retryModel}
+                      onClick={() => onRegenerate(message, retryModel)}
+                    >
+                      Tentar com este modelo
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+        {message.author === "agent" && message.modelRef ? (
+          <details>
+            <summary>Modelo</summary>
+            <span>{message.modelRef}</span>
+          </details>
+        ) : null}
+        {variants.length > 1 ? (
+          <span className="turn-variants">
+            <button
+              type="button"
+              disabled={variants.findIndex((variant) => variant.active) <= 0}
+              onClick={() => {
+                const index = variants.findIndex((variant) => variant.active);
+                if (index > 0) onSelectVariant?.(variants[index - 1]!.branchId);
+              }}
+            >
+              ‹
+            </button>
+            <span>
+              {variants.findIndex((variant) => variant.active) + 1}/
+              {variants.length}
+            </span>
+            <button
+              type="button"
+              disabled={
+                variants.findIndex((variant) => variant.active) >=
+                variants.length - 1
+              }
+              onClick={() => {
+                const index = variants.findIndex((variant) => variant.active);
+                if (index >= 0 && index < variants.length - 1)
+                  onSelectVariant?.(variants[index + 1]!.branchId);
+              }}
+            >
+              ›
+            </button>
+          </span>
+        ) : null}
       </div>
     </article>
   );
 }
 
-function ConversationSurface({
+export function ConversationSurface({
   agentId,
   temporary,
 }: {
@@ -197,6 +351,9 @@ function ConversationSurface({
   const [busy, setBusy] = useState(false);
   const [showLegacyBranchPicker] = useState(false);
   const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
+    null,
+  );
+  const [retryingMessageId, setRetryingMessageId] = useState<string | null>(
     null,
   );
   const historyRef = useRef<HTMLDivElement>(null);
@@ -300,12 +457,22 @@ function ConversationSurface({
     }
   }
 
-  const [retryingMessageId, setRetryingMessageId] = useState<string | null>(null);
   async function regenerate(message: ConversationMessage, modelRef?: string) {
-    if (temporary || message.status === "pending" || message.status === "streaming") return;
+    if (
+      temporary ||
+      message.status === "pending" ||
+      message.status === "streaming"
+    )
+      return;
     setRetryingMessageId(message.id);
     try {
-      await invoke("regenerate_phase_one_message", { agentId: currentPhase.agent.id, conversationId: currentPhase.conversation.id, assistantMessageId: message.id, modelRef, requestId: crypto.randomUUID() });
+      await invoke("regenerate_phase_one_message", {
+        agentId: currentPhase.agent.id,
+        conversationId: currentPhase.conversation.id,
+        assistantMessageId: message.id,
+        modelRef,
+        requestId: crypto.randomUUID(),
+      });
       void load();
     } finally {
       setRetryingMessageId(null);
@@ -314,7 +481,12 @@ function ConversationSurface({
 
   async function edit(message: ConversationMessage, content: string) {
     if (temporary) return;
-    await invoke("edit_phase_one_message", { agentId: currentPhase.agent.id, conversationId: currentPhase.conversation.id, userMessageId: message.id, content });
+    await invoke("edit_phase_one_message", {
+      agentId: currentPhase.agent.id,
+      conversationId: currentPhase.conversation.id,
+      userMessageId: message.id,
+      content,
+    });
     void load();
   }
 
@@ -423,8 +595,28 @@ function ConversationSurface({
           }
         }}
       >
-        {showLegacyBranchPicker && !temporary && currentPhase.branches.length > 1 ? (
-          <label className="branch-picker"><span>Alternativa</span><select value={currentPhase.activeBranchId ?? ""} onChange={(event) => void invoke("set_active_conversation_branch", { agentId: currentPhase.agent.id, conversationId: currentPhase.conversation.id, branchId: event.target.value }).then(load)}>{currentPhase.branches.map((branch, index) => <option value={branch.id} key={branch.id}>‹ {index + 1}/{currentPhase.branches.length} ›</option>)}</select></label>
+        {showLegacyBranchPicker &&
+        !temporary &&
+        currentPhase.branches.length > 1 ? (
+          <label className="branch-picker">
+            <span>Alternativa</span>
+            <select
+              value={currentPhase.activeBranchId ?? ""}
+              onChange={(event) =>
+                void invoke("set_active_conversation_branch", {
+                  agentId: currentPhase.agent.id,
+                  conversationId: currentPhase.conversation.id,
+                  branchId: event.target.value,
+                }).then(load)
+              }
+            >
+              {currentPhase.branches.map((branch, index) => (
+                <option value={branch.id} key={branch.id}>
+                  ‹ {index + 1}/{currentPhase.branches.length} ›
+                </option>
+              ))}
+            </select>
+          </label>
         ) : null}
         {phase.messages.length === 0 ? (
           <div className="history-placeholder">
@@ -435,7 +627,37 @@ function ConversationSurface({
           </div>
         ) : (
           phase.messages.map((message) => (
-            <MessageItem key={message.id} message={message} onRegenerate={(message, modelRef) => void regenerate(message, modelRef)} onEdit={(message, content) => void edit(message, content)} retrying={retryingMessageId === message.id} models={currentPhase.provider.models} variants={message.author === "agent" ? currentPhase.turnVariants.filter((variant) => variant.turnGroupId === message.turnGroupId).map((variant) => ({ id: variant.assistantMessageId, branchId: variant.branchId, active: variant.assistantMessageId === message.id })) : []} onSelectVariant={(branchId) => void invoke("set_active_conversation_branch", { agentId: currentPhase.agent.id, conversationId: currentPhase.conversation.id, branchId }).then(load)} />
+            <MessageItem
+              key={message.id}
+              message={message}
+              onRegenerate={(message, modelRef) =>
+                void regenerate(message, modelRef)
+              }
+              onEdit={(message, content) => void edit(message, content)}
+              retrying={retryingMessageId === message.id}
+              models={currentPhase.provider.models}
+              variants={
+                message.author === "agent"
+                  ? currentPhase.turnVariants
+                      .filter(
+                        (variant) =>
+                          variant.turnGroupId === message.turnGroupId,
+                      )
+                      .map((variant) => ({
+                        id: variant.assistantMessageId,
+                        branchId: variant.branchId,
+                        active: variant.assistantMessageId === message.id,
+                      }))
+                  : []
+              }
+              onSelectVariant={(branchId) =>
+                void invoke("set_active_conversation_branch", {
+                  agentId: currentPhase.agent.id,
+                  conversationId: currentPhase.conversation.id,
+                  branchId,
+                }).then(load)
+              }
+            />
           ))
         )}
       </div>
@@ -584,7 +806,9 @@ function ProfileFields({
                 step="1"
                 value={traitValues(draft.traitsJson)[key] ?? 50}
                 onChange={(event) =>
-                  onChange(updateInitialTrait(draft, key, Number(event.target.value)))
+                  onChange(
+                    updateInitialTrait(draft, key, Number(event.target.value)),
+                  )
                 }
               />
             </label>
@@ -611,7 +835,7 @@ function ProfileForm({
     setPersisted(agent);
     setError(null);
     setSaved(false);
-  }, [agent.id]);
+  }, [agent]);
   async function save() {
     const prepared = withInitialTraitDefaults(draft);
     const validation = profileValidationError(prepared);
@@ -673,13 +897,12 @@ function OnboardingForm({
   const [persisted, setPersisted] = useState(agents);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  const onboardingIds = agents.map((agent) => agent.id).join("|");
   useEffect(() => {
     setDrafts(agents);
     setPersisted(agents);
     setError(null);
     setSaved(false);
-  }, [onboardingIds]);
+  }, [agents]);
   const update = (index: number, next: ProvisionalAgent) =>
     setDrafts((current) =>
       current.map((agent, currentIndex) =>
@@ -1343,9 +1566,16 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
       }
       const previous = strokeRef.current ?? { x, y };
       const cells = rasterLine(previous.x, previous.y, x, y);
-      const changed = new Map((layer.pixels ?? []).map(([pixelX, pixelY, pixelColor]) => [`${pixelX},${pixelY}`, pixelColor]));
+      const changed = new Map(
+        (layer.pixels ?? []).map(([pixelX, pixelY, pixelColor]) => [
+          `${pixelX},${pixelY}`,
+          pixelColor,
+        ]),
+      );
       for (const [cellX, cellY] of cells) {
-        for (const targetX of mirror && cellX !== 63 - cellX ? [cellX, 63 - cellX] : [cellX]) {
+        for (const targetX of mirror && cellX !== 63 - cellX
+          ? [cellX, 63 - cellX]
+          : [cellX]) {
           const key = `${targetX},${cellY}`;
           if (tool === "pencil") changed.set(key, color);
           else changed.delete(key);
@@ -1757,12 +1987,21 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         height="256"
         className="pixel-canvas"
         style={{ width: `${64 * zoom}px`, height: `${64 * zoom}px` }}
-        onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); strokeRef.current = null; paint(event); }}
+        onPointerDown={(event) => {
+          event.currentTarget.setPointerCapture(event.pointerId);
+          strokeRef.current = null;
+          paint(event);
+        }}
         onPointerMove={(event) => {
           if (event.buttons === 1) paint(event);
         }}
-        onPointerUp={(event) => { strokeRef.current = null; event.currentTarget.releasePointerCapture(event.pointerId); }}
-        onPointerCancel={() => { strokeRef.current = null; }}
+        onPointerUp={(event) => {
+          strokeRef.current = null;
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onPointerCancel={() => {
+          strokeRef.current = null;
+        }}
         aria-label="Grade de pixel art"
       />
       <details className="pixel-source">
@@ -1791,19 +2030,157 @@ function SettingsSurface({
   onToggleSafeMode: () => void;
 }) {
   const [activeSection, setActiveSection] = useState("Geral");
-  const sections = ["Geral", "Perfil do Owner", "Agentes", "Modelos", "Segurança", "Dados e backup", "Diagnóstico e Sobre"];
+  const sections = [
+    "Geral",
+    "Perfil do Owner",
+    "Agentes",
+    "Modelos",
+    "Segurança",
+    "Dados e backup",
+    "Diagnóstico e Sobre",
+  ];
   return (
     <section className="settings-surface">
-      <header className="workspace-heading"><div><p className="eyebrow">A.I.P.</p><h1>Configurações</h1><span>Preferências locais e diagnóstico do aplicativo.</span></div></header>
-      <div className="settings-layout"><nav className="settings-nav" aria-label="Seções de configurações">{sections.map((section) => <button key={section} className={activeSection === section ? "active" : undefined} type="button" onClick={() => setActiveSection(section)}>{section}</button>)}</nav><div>
-      {activeSection === "Geral" ? <section className="settings-card"><h2>Geral</h2><p>Este computador usa um Owner local implícito. Contas adicionais ainda não estão disponíveis.</p></section> : null}
-      {activeSection === "Perfil do Owner" ? <section className="settings-card"><h2>Perfil do Owner</h2><p>Administrador local do A.I.P. A edição do nome do Owner ainda não está disponível.</p></section> : null}
-      {activeSection === "Agentes" ? <section className="settings-card"><h2>Agentes</h2><p>Edite cada perfil pelo botão Perfil no espaço do agente.</p></section> : null}
-      {activeSection === "Modelos" ? <section className="settings-card"><h2>Modelos</h2><p>O modelo padrão é configurado por agente. Cada conversa pode ter uma substituição própria.</p></section> : null}
-      {activeSection === "Segurança" ? <section className="settings-card"><h2>Segurança</h2><p>O modo seguro desativa runtime, gerações e overlays.</p><button className={snapshot?.safeMode ? "mode-button active" : "mode-button"} type="button" disabled={!snapshot || changingMode} onClick={onToggleSafeMode}>{snapshot?.safeMode ? "Sair do modo seguro" : "Ativar modo seguro"}</button></section> : null}
-      {activeSection === "Dados e backup" ? <section className="settings-card"><h2>Dados e backup</h2><p>Exportação e backup automático ainda não estão disponíveis nesta versão.</p><button type="button" disabled>Exportar dados (indisponível)</button></section> : null}
-      {activeSection === "Diagnóstico e Sobre" ? <section className="settings-card"><h2>Diagnóstico e Sobre</h2><dl><dt>Versão</dt><dd>{snapshot?.appVersion ?? "—"}</dd><dt>Commit</dt><dd>{snapshot?.buildSha ?? "—"}</dd><dt>Build</dt><dd>{snapshot?.buildTimestamp ?? "—"}</dd><dt>Pacote</dt><dd>{snapshot?.runtimePackagingMode ?? "—"}</dd><dt>Runtime</dt><dd>{snapshot ? runtimeLabels[snapshot.runtime.state] : "—"}</dd><dt>Detalhe</dt><dd>{snapshot?.runtime.detailCode ?? "—"}</dd><dt>Protocolo</dt><dd>{snapshot?.runtime.protocolVersion ?? "—"}</dd><dt>Banco local</dt><dd>{snapshot?.databaseReady ? "Disponível" : "Indisponível"}</dd><dt>Migração</dt><dd>{snapshot?.migrationVersion ?? "—"}</dd></dl><div className="message-actions"><button type="button" onClick={() => void navigator.clipboard?.writeText(JSON.stringify({ version: snapshot?.appVersion, build: snapshot?.buildSha, runtime: snapshot?.runtime, databaseReady: snapshot?.databaseReady, migrationVersion: snapshot?.migrationVersion, safeMode: snapshot?.safeMode }))}>Copiar diagnóstico</button><button type="button" onClick={() => void invoke("retry_phase_one_runtime")}>Reiniciar runtime</button></div></section> : null}
-      </div></div>
+      <header className="workspace-heading">
+        <div>
+          <p className="eyebrow">A.I.P.</p>
+          <h1>Configurações</h1>
+          <span>Preferências locais e diagnóstico do aplicativo.</span>
+        </div>
+      </header>
+      <div className="settings-layout">
+        <nav className="settings-nav" aria-label="Seções de configurações">
+          {sections.map((section) => (
+            <button
+              key={section}
+              className={activeSection === section ? "active" : undefined}
+              type="button"
+              onClick={() => setActiveSection(section)}
+            >
+              {section}
+            </button>
+          ))}
+        </nav>
+        <div>
+          {activeSection === "Geral" ? (
+            <section className="settings-card">
+              <h2>Geral</h2>
+              <p>
+                Este computador usa um Owner local implícito. Contas adicionais
+                ainda não estão disponíveis.
+              </p>
+            </section>
+          ) : null}
+          {activeSection === "Perfil do Owner" ? (
+            <section className="settings-card">
+              <h2>Perfil do Owner</h2>
+              <p>
+                Administrador local do A.I.P. A edição do nome do Owner ainda
+                não está disponível.
+              </p>
+            </section>
+          ) : null}
+          {activeSection === "Agentes" ? (
+            <section className="settings-card">
+              <h2>Agentes</h2>
+              <p>Edite cada perfil pelo botão Perfil no espaço do agente.</p>
+            </section>
+          ) : null}
+          {activeSection === "Modelos" ? (
+            <section className="settings-card">
+              <h2>Modelos</h2>
+              <p>
+                O modelo padrão é configurado por agente. Cada conversa pode ter
+                uma substituição própria.
+              </p>
+            </section>
+          ) : null}
+          {activeSection === "Segurança" ? (
+            <section className="settings-card">
+              <h2>Segurança</h2>
+              <p>O modo seguro desativa runtime, gerações e overlays.</p>
+              <button
+                className={
+                  snapshot?.safeMode ? "mode-button active" : "mode-button"
+                }
+                type="button"
+                disabled={!snapshot || changingMode}
+                onClick={onToggleSafeMode}
+              >
+                {snapshot?.safeMode
+                  ? "Sair do modo seguro"
+                  : "Ativar modo seguro"}
+              </button>
+            </section>
+          ) : null}
+          {activeSection === "Dados e backup" ? (
+            <section className="settings-card">
+              <h2>Dados e backup</h2>
+              <p>
+                Exportação e backup automático ainda não estão disponíveis nesta
+                versão.
+              </p>
+              <button type="button" disabled>
+                Exportar dados (indisponível)
+              </button>
+            </section>
+          ) : null}
+          {activeSection === "Diagnóstico e Sobre" ? (
+            <section className="settings-card">
+              <h2>Diagnóstico e Sobre</h2>
+              <dl>
+                <dt>Versão</dt>
+                <dd>{snapshot?.appVersion ?? "—"}</dd>
+                <dt>Commit</dt>
+                <dd>{snapshot?.buildSha ?? "—"}</dd>
+                <dt>Build</dt>
+                <dd>{snapshot?.buildTimestamp ?? "—"}</dd>
+                <dt>Pacote</dt>
+                <dd>{snapshot?.runtimePackagingMode ?? "—"}</dd>
+                <dt>Runtime</dt>
+                <dd>
+                  {snapshot ? runtimeLabels[snapshot.runtime.state] : "—"}
+                </dd>
+                <dt>Detalhe</dt>
+                <dd>{snapshot?.runtime.detailCode ?? "—"}</dd>
+                <dt>Protocolo</dt>
+                <dd>{snapshot?.runtime.protocolVersion ?? "—"}</dd>
+                <dt>Banco local</dt>
+                <dd>
+                  {snapshot?.databaseReady ? "Disponível" : "Indisponível"}
+                </dd>
+                <dt>Migração</dt>
+                <dd>{snapshot?.migrationVersion ?? "—"}</dd>
+              </dl>
+              <div className="message-actions">
+                <button
+                  type="button"
+                  onClick={() =>
+                    void navigator.clipboard?.writeText(
+                      JSON.stringify({
+                        version: snapshot?.appVersion,
+                        build: snapshot?.buildSha,
+                        runtime: snapshot?.runtime,
+                        databaseReady: snapshot?.databaseReady,
+                        migrationVersion: snapshot?.migrationVersion,
+                        safeMode: snapshot?.safeMode,
+                      }),
+                    )
+                  }
+                >
+                  Copiar diagnóstico
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void invoke("retry_phase_one_runtime")}
+                >
+                  Reiniciar runtime
+                </button>
+              </div>
+            </section>
+          ) : null}
+        </div>
+      </div>
     </section>
   );
 }
@@ -1855,7 +2232,9 @@ function App() {
     }
   }
 
-  async function openWorkspace(next: "chat" | "memories" | "state" | "appearance" | "settings") {
+  async function openWorkspace(
+    next: "chat" | "memories" | "state" | "appearance" | "settings",
+  ) {
     await leaveTemporaryChat();
     setEditingAgentId(null);
     setWorkspace(next);
@@ -1869,7 +2248,9 @@ function App() {
 
   async function leaveTemporaryChat() {
     if (temporaryChat && activeAgentId !== null) {
-      await invoke("close_temporary_phase_one_chat", { agentId: activeAgentId });
+      await invoke("close_temporary_phase_one_chat", {
+        agentId: activeAgentId,
+      });
     }
     setTemporaryChat(false);
   }
@@ -1894,7 +2275,12 @@ function App() {
   return (
     <div className="app-shell conversation-layout">
       <aside className="sidebar" aria-label="Navegação principal">
-        <button className="brand-mark" type="button" aria-label="Abrir configurações" onClick={() => void openWorkspace("settings")}>
+        <button
+          className="brand-mark"
+          type="button"
+          aria-label="Abrir configurações"
+          onClick={() => void openWorkspace("settings")}
+        >
           <span className="brand-glyph">AI</span>
           <div>
             <strong>A.I.P.</strong>
@@ -1927,10 +2313,7 @@ function App() {
         {activeAgentId ? (
           <details className="agent-tools">
             <summary>Ferramentas do agente</summary>
-            <button
-              type="button"
-              onClick={() => void toggleTemporaryChat()}
-            >
+            <button type="button" onClick={() => void toggleTemporaryChat()}>
               {temporaryChat
                 ? "Voltar à conversa salva"
                 : "Abrir conversa temporária"}
@@ -2004,7 +2387,13 @@ function App() {
             >
               Perfil
             </button>
-            <button className={workspace === "settings" ? "active" : undefined} type="button" onClick={() => void openWorkspace("settings")}>Configurações</button>
+            <button
+              className={workspace === "settings" ? "active" : undefined}
+              type="button"
+              onClick={() => void openWorkspace("settings")}
+            >
+              Configurações
+            </button>
             <button
               className={
                 temporaryChat
@@ -2055,7 +2444,13 @@ function App() {
         ) : activeAgentId === null ? (
           <section className="conversation-empty">Carregando agentes…</section>
         ) : workspace === "settings" ? (
-          <section className="workspace-panel"><SettingsSurface snapshot={snapshot} changingMode={changingMode} onToggleSafeMode={() => void toggleSafeMode()} /></section>
+          <section className="workspace-panel">
+            <SettingsSurface
+              snapshot={snapshot}
+              changingMode={changingMode}
+              onToggleSafeMode={() => void toggleSafeMode()}
+            />
+          </section>
         ) : workspace === "memories" ? (
           <section className="workspace-panel">
             <MemoryWorkspace agentId={activeAgentId} />
