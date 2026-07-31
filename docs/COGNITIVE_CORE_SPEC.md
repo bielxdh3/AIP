@@ -18,7 +18,7 @@ Evolvable state includes non-protected trait tendencies, preferences, opinions, 
 
 A trait event contains `delta`, not a replacement value. The deterministic projector clamps the result to `[0,1]`, records confidence in `[0,1]`, and applies at most `0.05` per event and `0.10` in any rolling 30-day window per trait. It rejects duplicate evidence, discounts repeated equivalent evidence, and applies recency weighting only to eligible non-protected traits. A reversal needs distinct counter-evidence; equal and opposite events cannot oscillate a trait more than once per seven days. The model supplies only candidate evidence and confidence; Rust computes eligibility and the final delta independently of the active model.
 
-Owner correction emits an `owner_correction` event with a reason and optional replacement baseline. It does not erase prior events. The owner-facing history shows the source, applied delta, policy decision, and resulting value.
+An owner may set a recorded replacement baseline only for an evolvable, non-protected trait. The correction requires an explicit reason, creates a typed `owner_correction` event, preserves the previous value and event history, and is reversible through rollback. Protected identity fields and protected traits are ineligible; silent replacement or deletion of history is prohibited. The owner-facing history shows the source, applied delta, policy decision, and resulting value.
 
 ## 4. Opinion model
 
@@ -28,19 +28,19 @@ Opinions may be `active`, `disputed`, `superseded`, `archived`, or `rejected`. T
 
 ## 5. Relationship model
 
-Relationships are per owning agent and stable subject, never shared global facts. Their bounded dimensions are `familiarity`, `trust`, `affinity`, `admiration`, `irritation`, and `reliability_expectation`, each normalized to `[0,1]`. Updates are typed, evidence-backed events with positive or negative direction, confidence, source, configured per-event/window limits, and optional product-approved decay. Decay is disabled by default except for explicitly configured fictional interaction signals.
+Relationships are per owning agent and stable subject, never shared global facts. Their bounded dimensions are `familiarity`, `trust`, `affinity`, `admiration`, `irritation`, and `reliability_expectation`, each normalized to `[0,1]`. Updates are typed, evidence-backed events with positive or negative direction, confidence, source, and configured per-event/window limits. Automatic relationship decay and background time-based degradation are disabled: values change only through eligible sourced bounded events or explicit Owner correction/reset. Any future decay policy requires a separate reviewed product decision and clear user-visible explanations.
 
 The product must not use relationships for punitive manipulation, guilt tactics, threats, exclusivity pressure, or dependency engineering. Owners can inspect values and history, set limits, reset an allowed relationship, or roll back an event. Fictional relationship state is clearly labeled as product state, not a claim about real human emotion.
 
 ## 6. Goals, hobbies, and fictional activities
 
-Owner-created durable goals are permitted. Agent-proposed durable or resource-consuming goals require owner approval. Short-lived intentions expire and are not durable goals. Goals contain priority, status, origin, budget, due/expiry policy, completion evidence, and cancellation or suspension state. Status is `proposed`, `active`, `suspended`, `completed`, `cancelled`, `archived`, or `rejected`.
+Owner-created durable goals are permitted. In the current local phase, an agent may propose only explicitly fictional, zero-external-action durable goals; every such proposal requires Owner approval before activation. Goals may not operate files, applications, accounts, devices, networks, calendars, messages, or external services, and may not claim that real-world work occurred. Broader categories remain blocked until the supervised-tools permission layer exists. Short-lived intentions expire and are not durable goals. Goals contain priority, status, origin, budget, due/expiry policy, completion evidence, and cancellation or suspension state. Status is `proposed`, `active`, `suspended`, `completed`, `cancelled`, `archived`, or `rejected`.
 
 Goals never cause external action until a future supervised-tools permission layer exists. Fictional activities only update fictional state and must plainly say that no external work occurred. They have bounded duration and budget, can be paused, and cannot recursively create goals or an infinite self-generated task loop.
 
 ## 7. Agent-to-agent interaction contract
 
-This is a design contract, not Phase 7 implementation. Both owners can inspect public agent-to-agent conversations; there is no hidden private agent channel. Every interaction has an explicit purpose, participants, initiator, consent/mode decision, and turn, token, time, repetition, and resource budgets. It terminates on a completed purpose, budget exhaustion, owner interruption, silent/safe/suspension enforcement, loop/echo detection, or an error.
+This is a design contract, not Phase 7 implementation. Both owners can inspect public agent-to-agent conversations; there is no hidden private agent channel. Agent-to-agent initiation requires explicit opt-in for each interaction purpose from the owner of each participating agent; it is not blanket authorization. While both initial agents remain under the same local Owner, that Owner explicitly approves participation for each agent and stated purpose. Approval specifies the purpose and applicable turn, token, time, repetition, and resource budgets. Silent mode, safe mode, suspension, or later owner revocation blocks initiation. Every interaction records its participants and initiator, and terminates on a completed purpose, budget exhaustion, owner interruption, mode enforcement, loop/echo detection, or an error.
 
 Reference hardware permits one heavy model generation at a time. Memory and personality candidates are generated only after a conversation completes and remain attributable to it. Silent and safe modes prevent autonomous initiation; direct owner chat has the highest priority and preempts queued autonomous work.
 
@@ -118,11 +118,11 @@ Manual validation must verify understandable Portuguese explanations, owner cont
 | 7E | Bounded public agent-to-agent conversations using 7A–7D candidates. | Hidden channels, voice, tools, remote access. | Priority, budgets, loop termination, safe/silent enforcement, deferred attribution; inspect both-owner visibility. | Conversation metadata/checkpoint additions only as required. | `feat: add bounded agent conversations` |
 | 7F | Integrated validation, Portuguese UX hardening, recovery and documentation. | New capabilities. | Full automated matrix and restart/manual checks. | Corrective only. | `test: validate cognitive core boundaries` |
 
-## 18. Open product decisions
+## 18. Resolved product decisions
 
-| Decision | Safe default recommendation | Consequences | Blocking status |
-|---|---|---|---|
-| May owner corrections set a replacement trait baseline, or only add bounded counter-events? | Allow a recorded replacement baseline with reason and rollback. | Baselines are clearer for correction; counter-events preserve stricter gradualism but may be slow. | Blocks 7A. |
-| Which durable agent-proposed goal categories may be approved in v0.1-era local use? | Allow only explicitly fictional, zero-external-action goals. | Broader categories need supervised-tools and resource policy. | Blocks 7D, not 7A. |
-| May relationship decay run automatically? | Disable automatic decay initially. | Decay can make fictional state feel responsive; it adds scheduling and explainability risk. | Blocks 7C, not 7A. |
-| What owner approval is required before agent-to-agent initiation? | Both owners opt in per interaction purpose. | Persistent opt-in is simpler; per-interaction approval has stronger control and more friction. | Blocks 7E, not 7A. |
+| Decision | Resolved policy | Status |
+|---|---|---|
+| Owner trait correction | An owner may set a reasoned, rollbackable replacement baseline only for an evolvable, non-protected trait through a typed `owner_correction` event. Prior value and history remain visible. | Resolved for 7A. |
+| Agent-proposed durable goals | Only explicitly fictional, zero-external-action goals may be proposed; each requires Owner approval before activation. Broader categories await supervised tools. | Resolved for 7D. |
+| Relationship decay | Automatic decay and background time-based degradation are disabled. Future decay needs a separate reviewed decision and clear user-visible explanations. | Resolved for 7C. |
+| Agent-to-agent initiation | Each interaction purpose requires explicit opt-in from each participating agent's owner, with stated turn, token, time, repetition, and resource budgets. | Resolved for 7E. |
