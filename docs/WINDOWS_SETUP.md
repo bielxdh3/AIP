@@ -54,6 +54,17 @@ handshake fails, the main panel remains available and reports a degraded state.
 Safe mode persists locally, does not start Python, and hides both overlays.
 The native executable also accepts `--safe-mode` for a forced recovery startup.
 
+Phase 1 additionally checks the fixed loopback Ollama API at `127.0.0.1:11434`. Ollama is
+optional: the panel and stored histories remain available while it is stopped. A model must be
+installed outside AIP and explicitly selected in the Portuguese conversation surface; AIP does
+not pull, create, copy, or delete models. The initial keep-alive is 15 minutes and can be changed
+or set to immediate unload.
+
+The two speech bubbles are separate transparent, taskbar-free windows linked to the agent
+overlays. Their native interactive region exists only while the visible bubble is open. Closing
+a bubble removes that region; full-screen and safe mode hide it and restore only bubbles that
+were previously open.
+
 ## Manual Windows checks
 
 Perform these checks on a disposable Phase 0 database:

@@ -5,25 +5,13 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .protocol import MAX_MESSAGE_BYTES, encode_message, handle_line, health_document
+from .diagnostics import emit_diagnostic
+from .protocol import encode_message, health_document
+from .server import RuntimeServer
 
 
 def _serve_stdio() -> int:
-    while raw_line := sys.stdin.buffer.readline(MAX_MESSAGE_BYTES + 2):
-        if len(raw_line) > MAX_MESSAGE_BYTES:
-            response, should_stop = handle_line(" " * (MAX_MESSAGE_BYTES + 1))
-        else:
-            try:
-                line = raw_line.decode("utf-8", errors="strict").rstrip("\r\n")
-            except UnicodeDecodeError:
-                line = "{invalid-utf8"
-            response, should_stop = handle_line(line)
-
-        sys.stdout.write(encode_message(response) + "\n")
-        sys.stdout.flush()
-        if should_stop:
-            return 0
-    return 0
+    return RuntimeServer(sys.stdout).serve(sys.stdin.buffer)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -36,7 +24,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.health:
         sys.stdout.write(encode_message(health_document()) + "\n")
         return 0
-    return _serve_stdio()
+    try:
+        return _serve_stdio()
+    except Exception:
+        emit_diagnostic("runtime_server_exception")
+        return 2
 
 
 if __name__ == "__main__":

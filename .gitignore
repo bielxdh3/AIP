@@ -59,6 +59,8 @@ Thumbs.db
 Desktop.ini
 
 # Generated packages
+apps/desktop/src-tauri/binaries/
+.runtime-build/
 *.msi
 *.exe
 *.appx

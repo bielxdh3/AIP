@@ -1,7 +1,44 @@
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSnapshot, ProvisionalAgent } from "@aip/contracts";
+import { listen } from "@tauri-apps/api/event";
+import type {
+  AppSnapshot,
+  AgentMemory,
+  AgentSimulatedState,
+  ConversationMessage,
+  PhaseOneConversation,
+  ProvisionalAgent,
+} from "@aip/contracts";
 import AgentSprite from "./components/AgentSprite";
+import {
+  blockedSendCopy,
+  canRequestCancellation,
+  conversationOverrideArguments,
+  messageStatusCopy,
+  providerRecoveryCopy,
+  providerStatusCopy,
+  requestForAgent,
+} from "./conversation-state";
+import {
+  isNearConversationBottom,
+  shouldScrollConversationToBottom,
+} from "./conversation-scroll";
+import { usePhaseOne } from "./use-phase-one";
+import { createListenerRegistration } from "./listener-lifecycle";
+import {
+  nextLayerId,
+  floodFillLayer,
+  rasterLine,
+  parsePixelDocument,
+  updatePixelLayer,
+  type PixelDocument,
+} from "./pixel-document";
 import "./App.css";
 
 const runtimeLabels: Record<AppSnapshot["runtime"]["state"], string> = {
@@ -13,55 +50,2156 @@ const runtimeLabels: Record<AppSnapshot["runtime"]["state"], string> = {
   safe_mode: "Runtime desativado pelo modo seguro",
 };
 
-function AgentCard({ agent }: { agent: ProvisionalAgent }) {
+const initialTraits = [
+  ["curiosity", "Curiosidade"],
+  ["sociability", "Sociabilidade"],
+  ["criticality", "Criticidade"],
+  ["spontaneity", "Espontaneidade"],
+  ["affection", "Afetividade"],
+  ["autonomy", "Autonomia"],
+] as const;
+
+function traitValues(source: string): Record<string, number> {
+  try {
+    const value: unknown = JSON.parse(source);
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+      return Object.fromEntries(
+        Object.entries(value).filter(
+          ([, trait]) => typeof trait === "number" && Number.isFinite(trait),
+        ),
+      );
+    }
+  } catch {
+    /* Rust remains the authoritative validator. */
+  }
+  return {};
+}
+
+function updateInitialTrait(
+  agent: ProvisionalAgent,
+  key: string,
+  value: number,
+) {
+  const traits = traitValues(agent.traitsJson);
+  traits[key] = Math.max(0, Math.min(100, value));
+  return { ...agent, traitsJson: JSON.stringify(traits) };
+}
+
+function withInitialTraitDefaults(agent: ProvisionalAgent): ProvisionalAgent {
+  const traits = traitValues(agent.traitsJson);
+  for (const [key] of initialTraits) traits[key] ??= 50;
+  return { ...agent, traitsJson: JSON.stringify(traits) };
+}
+
+function validCalendarDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (match === null) return false;
+  const [, yearText = "", monthText = "", dayText = ""] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const date = new Date(Date.UTC(year, month - 1, day));
   return (
-    <article className="agent-card">
-      <div className="agent-portrait" aria-hidden="true">
-        <AgentSprite spriteKey={agent.spriteKey} name={agent.name} />
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
+function profileValidationError(agent: ProvisionalAgent): string | null {
+  if (!agent.name.trim() || !agent.species.trim() || !agent.pronouns.trim())
+    return "Preencha nome, espécie e pronomes.";
+  if (!validCalendarDate(agent.birthday))
+    return "Informe uma data de aniversário válida.";
+  if (!agent.ageCategory.trim()) return "Informe a categoria de idade.";
+  if (
+    !Number.isFinite(agent.fictiveAge) ||
+    agent.fictiveAge < 0 ||
+    agent.fictiveAge > 10000
+  )
+    return "Informe uma idade fictícia entre 0 e 10000.";
+  if (
+    initialTraits.some(([key]) => {
+      const value = traitValues(agent.traitsJson)[key];
+      return (
+        value !== undefined &&
+        (!Number.isFinite(value) || value < 0 || value > 100)
+      );
+    })
+  )
+    return "Cada traço deve ser um número entre 0 e 100.";
+  return null;
+}
+
+function AgentButton({
+  agent,
+  active,
+  onSelect,
+}: {
+  agent: ProvisionalAgent;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      className={active ? "agent-tab active" : "agent-tab"}
+      type="button"
+      onClick={onSelect}
+    >
+      <AgentSprite
+        agentId={agent.id}
+        spriteKey={agent.spriteKey}
+        name={agent.name}
+      />
+      <span>{agent.name}</span>
+    </button>
+  );
+}
+
+function MessageItem({
+  message,
+  onRegenerate,
+  onEdit,
+  variants = [],
+  onSelectVariant,
+  retrying,
+  models,
+}: {
+  message: ConversationMessage;
+  onRegenerate: (message: ConversationMessage, modelRef?: string) => void;
+  onEdit: (message: ConversationMessage, content: string) => void;
+  variants?: Array<{ id: string; branchId: string; active: boolean }>;
+  onSelectVariant?: (id: string) => void;
+  retrying: boolean;
+  models: Array<{ ref: string }>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(message.content);
+  const [retryMenuOpen, setRetryMenuOpen] = useState(false);
+  const [advancedRetry, setAdvancedRetry] = useState(false);
+  const [retryModel, setRetryModel] = useState(message.modelRef ?? "");
+  const retryable =
+    message.author === "agent" &&
+    message.status !== "pending" &&
+    message.status !== "streaming";
+  return (
+    <article
+      className={`chat-message ${message.author}`}
+      data-status={message.status}
+    >
+      <div className="message-heading">
+        <strong>{message.author === "user" ? "Você" : "Agente"}</strong>
+        <span>{messageStatusCopy(message)}</span>
       </div>
-      <div className="agent-copy">
-        <div className="agent-heading">
-          <div>
-            <p className="eyebrow">Agente provisório</p>
-            <h3>{agent.name}</h3>
-          </div>
-          <span className="status-pill">Em espera</span>
+      {editing ? (
+        <div className="message-editor">
+          <textarea
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+          />
+          <button
+            type="button"
+            onClick={() => {
+              setEditing(false);
+              setDraft(message.content);
+            }}
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            disabled={!draft.trim()}
+            onClick={() => {
+              onEdit(message, draft.trim());
+              setEditing(false);
+            }}
+          >
+            Salvar e enviar
+          </button>
         </div>
-        <p className="agent-description">
-          {agent.profileKey === "owner"
-            ? "Perfil técnico inicial, separado do runtime de IA."
-            : "Perfil expressivo inicial, separado do runtime de IA."}
-        </p>
-        <dl className="agent-meta">
-          <div>
-            <dt>Posição</dt>
-            <dd>
-              {Math.round(agent.position.x)}, {Math.round(agent.position.y)}
-            </dd>
-          </div>
-          <div>
-            <dt>Animação</dt>
-            <dd>Ocioso</dd>
-          </div>
-        </dl>
+      ) : message.content ? (
+        <p>{message.content}</p>
+      ) : null}
+      <div className="message-actions">
+        <button
+          type="button"
+          onClick={() => void navigator.clipboard?.writeText(message.content)}
+        >
+          Copiar
+        </button>
+        {message.author === "user" ? (
+          <button type="button" onClick={() => setEditing(true)}>
+            Editar
+          </button>
+        ) : null}
+        {retryable ? (
+          <>
+            <button
+              type="button"
+              disabled={retrying}
+              onClick={() => onRegenerate(message)}
+            >
+              Tentar novamente
+            </button>
+            <button
+              type="button"
+              aria-label="Opções de tentativa"
+              disabled={retrying}
+              onClick={() => setRetryMenuOpen(!retryMenuOpen)}
+            >
+              ⌄
+            </button>
+            {retryMenuOpen ? (
+              <div className="retry-menu">
+                <button type="button" onClick={() => onRegenerate(message)}>
+                  Tentar novamente
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAdvancedRetry(!advancedRetry)}
+                >
+                  Avançado
+                </button>
+                {advancedRetry ? (
+                  <div>
+                    <small>
+                      Modelo usado: {message.modelRef ?? "indisponível"}
+                    </small>
+                    <select
+                      value={retryModel}
+                      onChange={(event) => setRetryModel(event.target.value)}
+                    >
+                      {message.modelRef &&
+                      !models.some(
+                        (model) => model.ref === message.modelRef,
+                      ) ? (
+                        <option value={message.modelRef}>
+                          {message.modelRef} (indisponível)
+                        </option>
+                      ) : null}
+                      {models.map((model) => (
+                        <option value={model.ref} key={model.ref}>
+                          {model.ref}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={retrying || !retryModel}
+                      onClick={() => onRegenerate(message, retryModel)}
+                    >
+                      Tentar com este modelo
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+        {message.author === "agent" && message.modelRef ? (
+          <details>
+            <summary>Modelo</summary>
+            <span>{message.modelRef}</span>
+          </details>
+        ) : null}
+        {variants.length > 1 ? (
+          <span className="turn-variants">
+            <button
+              type="button"
+              disabled={variants.findIndex((variant) => variant.active) <= 0}
+              onClick={() => {
+                const index = variants.findIndex((variant) => variant.active);
+                if (index > 0) onSelectVariant?.(variants[index - 1]!.branchId);
+              }}
+            >
+              ‹
+            </button>
+            <span>
+              {variants.findIndex((variant) => variant.active) + 1}/
+              {variants.length}
+            </span>
+            <button
+              type="button"
+              disabled={
+                variants.findIndex((variant) => variant.active) >=
+                variants.length - 1
+              }
+              onClick={() => {
+                const index = variants.findIndex((variant) => variant.active);
+                if (index >= 0 && index < variants.length - 1)
+                  onSelectVariant?.(variants[index + 1]!.branchId);
+              }}
+            >
+              ›
+            </button>
+          </span>
+        ) : null}
       </div>
     </article>
   );
 }
 
+export function ConversationSurface({
+  agentId,
+  temporary,
+}: {
+  agentId: string;
+  temporary: boolean;
+}) {
+  const { phase, error, load } = usePhaseOne(agentId, temporary);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [showLegacyBranchPicker] = useState(false);
+  const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
+    null,
+  );
+  const [retryingMessageId, setRetryingMessageId] = useState<string | null>(
+    null,
+  );
+  const historyRef = useRef<HTMLDivElement>(null);
+  const conversationIdRef = useRef<string | null>(null);
+  const followsBottomRef = useRef(true);
+
+  useLayoutEffect(() => {
+    const history = historyRef.current;
+    const conversationId = phase?.conversation.id;
+    if (history === null || conversationId === undefined) return;
+    const conversationChanged = conversationIdRef.current !== conversationId;
+    if (
+      shouldScrollConversationToBottom(
+        conversationChanged,
+        followsBottomRef.current,
+      )
+    ) {
+      history.scrollTop = history.scrollHeight;
+      followsBottomRef.current = true;
+    }
+    conversationIdRef.current = conversationId;
+  }, [phase?.conversation.id, phase?.messages]);
+
+  useEffect(() => {
+    const activeRequest = phase
+      ? requestForAgent(phase.queue, phase.agent.id)
+      : null;
+    if (
+      cancellingRequestId !== null &&
+      activeRequest?.requestId !== cancellingRequestId
+    ) {
+      setCancellingRequestId(null);
+    }
+  }, [cancellingRequestId, phase]);
+
+  if (error) {
+    return (
+      <section className="conversation-empty" role="alert">
+        <p>Não foi possível carregar a conversa local.</p>
+        <button type="button" onClick={() => void load()}>
+          Reiniciar runtime
+        </button>
+      </section>
+    );
+  }
+  if (phase === null)
+    return (
+      <section className="conversation-empty">Carregando conversa…</section>
+    );
+
+  const currentPhase = phase;
+  const request = requestForAgent(phase.queue, phase.agent.id);
+  const blocked = blockedSendCopy(phase.sendBlockedCode);
+  const providerRecovery = providerRecoveryCopy(phase);
+  const modelsAvailable = phase.provider.models.length > 0;
+
+  async function send() {
+    const content = draft.trim();
+    if (!content || busy || !currentPhase.canSend) return;
+    followsBottomRef.current = true;
+    setBusy(true);
+    try {
+      await invoke(
+        temporary
+          ? "send_temporary_phase_one_message"
+          : "send_phase_one_message",
+        temporary
+          ? { agentId: currentPhase.agent.id, content }
+          : {
+              agentId: currentPhase.agent.id,
+              conversationId: currentPhase.conversation.id,
+              content,
+            },
+      );
+      setDraft("");
+      void load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function refreshModels() {
+    await invoke("refresh_ollama_models").catch(() => null);
+    await load();
+  }
+
+  async function cancelCurrentRequest() {
+    if (
+      request === null ||
+      !canRequestCancellation(request, cancellingRequestId)
+    )
+      return;
+    setCancellingRequestId(request.requestId);
+    try {
+      await invoke("cancel_phase_one_generation", {
+        requestId: request.requestId,
+      });
+      void load();
+    } catch {
+      setCancellingRequestId(null);
+    }
+  }
+
+  async function regenerate(message: ConversationMessage, modelRef?: string) {
+    if (
+      temporary ||
+      message.status === "pending" ||
+      message.status === "streaming"
+    )
+      return;
+    setRetryingMessageId(message.id);
+    try {
+      await invoke("regenerate_phase_one_message", {
+        agentId: currentPhase.agent.id,
+        conversationId: currentPhase.conversation.id,
+        assistantMessageId: message.id,
+        modelRef,
+        requestId: crypto.randomUUID(),
+      });
+      void load();
+    } finally {
+      setRetryingMessageId(null);
+    }
+  }
+
+  async function edit(message: ConversationMessage, content: string) {
+    if (temporary) return;
+    await invoke("edit_phase_one_message", {
+      agentId: currentPhase.agent.id,
+      conversationId: currentPhase.conversation.id,
+      userMessageId: message.id,
+      content,
+    });
+    void load();
+  }
+
+  return (
+    <section
+      className="conversation-surface"
+      aria-label={`Conversa com ${phase.agent.name}`}
+    >
+      <header className="conversation-header">
+        <div>
+          <p className="eyebrow">
+            {temporary ? "Conversa temporária" : "Conversa principal"}
+          </p>
+          <h1>{phase.agent.name}</h1>
+          <span className={`provider-state ${phase.provider.state}`}>
+            {providerStatusCopy(phase)}
+          </span>
+        </div>
+        <div className="conversation-controls">
+          <div className="model-primary-control">
+            <label>
+              <span>
+                Modelo em uso: {phase.selectedModelRef ?? "Nenhum modelo"}
+                {phase.effectiveModelSource === "agent_default"
+                  ? " · padrão do agente"
+                  : " · específico desta conversa"}
+              </span>
+              <select
+                value={phase.modelOverrideRef ?? ""}
+                disabled={!modelsAvailable}
+                onChange={(event) => {
+                  const modelRef = event.target.value || null;
+                  const command = temporary
+                    ? "set_temporary_phase_one_model"
+                    : "set_conversation_model_override";
+                  const argumentsForCommand = temporary
+                    ? { agentId: currentPhase.agent.id, modelRef }
+                    : conversationOverrideArguments(
+                        currentPhase.agent.id,
+                        currentPhase.conversation.id,
+                        modelRef ?? "",
+                      );
+                  void invoke(command, argumentsForCommand).then(load);
+                }}
+              >
+                <option value="">Usar padrão do agente</option>
+                {phase.provider.models.map((model) => (
+                  <option value={model.ref} key={model.ref}>
+                    {model.displayName}
+                    {model.parameterSize ? ` · ${model.parameterSize}` : ""}
+                    {model.quantization ? ` · ${model.quantization}` : ""}
+                  </option>
+                ))}
+                {phase.modelOverrideRef !== null &&
+                !phase.selectedModelAvailable ? (
+                  <option value={phase.modelOverrideRef}>
+                    Modelo salvo (indisponível)
+                  </option>
+                ) : null}
+              </select>
+            </label>
+            <button type="button" onClick={() => void refreshModels()}>
+              Atualizar
+            </button>
+          </div>
+          {providerRecovery ? (
+            <p className="provider-recovery" role="status">
+              {providerRecovery}
+            </p>
+          ) : null}
+          <details className="model-advanced-controls">
+            <summary>Opções do modelo</summary>
+            <div>
+              <label>
+                <span>Manter modelo carregado</span>
+                <select
+                  value={phase.keepAliveMinutes}
+                  onChange={(event) =>
+                    void invoke("update_keep_alive", {
+                      agentId: currentPhase.agent.id,
+                      minutes: Number(event.target.value),
+                    }).then(load)
+                  }
+                >
+                  <option value={0}>Descarregar imediatamente</option>
+                  <option value={5}>5 minutos</option>
+                  <option value={15}>15 minutos</option>
+                  <option value={30}>30 minutos</option>
+                  <option value={60}>60 minutos</option>
+                  <option value={120}>120 minutos</option>
+                </select>
+              </label>
+            </div>
+          </details>
+        </div>
+      </header>
+
+      <div
+        className="message-history"
+        ref={historyRef}
+        aria-live="polite"
+        onScroll={() => {
+          const history = historyRef.current;
+          if (history !== null) {
+            followsBottomRef.current = isNearConversationBottom(history);
+          }
+        }}
+      >
+        {showLegacyBranchPicker &&
+        !temporary &&
+        currentPhase.branches.length > 1 ? (
+          <label className="branch-picker">
+            <span>Alternativa</span>
+            <select
+              value={currentPhase.activeBranchId ?? ""}
+              onChange={(event) =>
+                void invoke("set_active_conversation_branch", {
+                  agentId: currentPhase.agent.id,
+                  conversationId: currentPhase.conversation.id,
+                  branchId: event.target.value,
+                }).then(load)
+              }
+            >
+              {currentPhase.branches.map((branch, index) => (
+                <option value={branch.id} key={branch.id}>
+                  ‹ {index + 1}/{currentPhase.branches.length} ›
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+        {phase.messages.length === 0 ? (
+          <div className="history-placeholder">
+            <strong>Esta conversa ainda está vazia.</strong>
+            <span>
+              Escolha um modelo local e envie uma mensagem para começar.
+            </span>
+          </div>
+        ) : (
+          phase.messages.map((message) => (
+            <MessageItem
+              key={message.id}
+              message={message}
+              onRegenerate={(message, modelRef) =>
+                void regenerate(message, modelRef)
+              }
+              onEdit={(message, content) => void edit(message, content)}
+              retrying={retryingMessageId === message.id}
+              models={currentPhase.provider.models}
+              variants={
+                message.author === "agent"
+                  ? currentPhase.turnVariants
+                      .filter(
+                        (variant) =>
+                          variant.turnGroupId === message.turnGroupId,
+                      )
+                      .map((variant) => ({
+                        id: variant.assistantMessageId,
+                        branchId: variant.branchId,
+                        active: variant.assistantMessageId === message.id,
+                      }))
+                  : []
+              }
+              onSelectVariant={(branchId) =>
+                void invoke("set_active_conversation_branch", {
+                  agentId: currentPhase.agent.id,
+                  conversationId: currentPhase.conversation.id,
+                  branchId,
+                }).then(load)
+              }
+            />
+          ))
+        )}
+      </div>
+
+      <footer className="composer">
+        {request !== null ? (
+          <div className="queue-banner">
+            <span>
+              {request.active
+                ? request.cancellationRequested
+                  ? "Cancelando resposta…"
+                  : "Gerando resposta…"
+                : "Aguardando processamento…"}
+            </span>
+            <button
+              type="button"
+              disabled={!canRequestCancellation(request, cancellingRequestId)}
+              onClick={() => void cancelCurrentRequest()}
+            >
+              {request.cancellationRequested ||
+              cancellingRequestId === request.requestId
+                ? "Cancelando…"
+                : "Cancelar"}
+            </button>
+          </div>
+        ) : null}
+        <textarea
+          value={draft}
+          maxLength={16_384}
+          placeholder={blocked ?? `Escreva para ${phase.agent.name}`}
+          disabled={!phase.canSend || busy}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              void send();
+            }
+          }}
+        />
+        <div className="composer-footer">
+          <span>{blocked ?? "Enter envia · Shift+Enter cria uma linha"}</span>
+          <button
+            type="button"
+            disabled={!phase.canSend || !draft.trim() || busy}
+            onClick={() => void send()}
+          >
+            Enviar
+          </button>
+        </div>
+      </footer>
+    </section>
+  );
+}
+
+function ProfileFields({
+  draft,
+  onChange,
+}: {
+  draft: ProvisionalAgent;
+  onChange: (next: ProvisionalAgent) => void;
+}) {
+  return (
+    <>
+      <label>
+        Nome
+        <input
+          value={draft.name}
+          onChange={(event) => onChange({ ...draft, name: event.target.value })}
+        />
+      </label>
+      <label>
+        Data de aniversário
+        <input
+          type="date"
+          value={draft.birthday}
+          onChange={(event) =>
+            onChange({ ...draft, birthday: event.target.value })
+          }
+        />
+      </label>
+      <label>
+        Idade fictícia
+        <input
+          type="number"
+          min="0"
+          max="10000"
+          value={draft.fictiveAge}
+          onChange={(event) =>
+            onChange({ ...draft, fictiveAge: Number(event.target.value) })
+          }
+        />
+      </label>
+      <label>
+        Categoria de idade
+        <input
+          value={draft.ageCategory}
+          onChange={(event) =>
+            onChange({ ...draft, ageCategory: event.target.value })
+          }
+        />
+      </label>
+      <label>
+        Espécie
+        <input
+          value={draft.species}
+          onChange={(event) =>
+            onChange({ ...draft, species: event.target.value })
+          }
+        />
+      </label>
+      <label>
+        Pronomes
+        <input
+          value={draft.pronouns}
+          onChange={(event) =>
+            onChange({ ...draft, pronouns: event.target.value })
+          }
+        />
+      </label>
+      <label>
+        Descrição
+        <input
+          value={draft.personalitySummary}
+          onChange={(event) =>
+            onChange({ ...draft, personalitySummary: event.target.value })
+          }
+        />
+      </label>
+      <fieldset className="trait-controls">
+        <legend>Traços iniciais</legend>
+        <input
+          type="hidden"
+          value={draft.traitsJson}
+          onChange={(event) =>
+            onChange({ ...draft, traitsJson: event.target.value })
+          }
+        />
+        <div>
+          {initialTraits.map(([key, label]) => (
+            <label key={key}>
+              {label}
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="1"
+                value={traitValues(draft.traitsJson)[key] ?? 50}
+                onChange={(event) =>
+                  onChange(
+                    updateInitialTrait(draft, key, Number(event.target.value)),
+                  )
+                }
+              />
+            </label>
+          ))}
+        </div>
+      </fieldset>
+    </>
+  );
+}
+
+function ProfileForm({
+  agent,
+  done,
+}: {
+  agent: ProvisionalAgent;
+  done: () => void;
+}) {
+  const [draft, setDraft] = useState(agent);
+  const [persisted, setPersisted] = useState(agent);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    setDraft(agent);
+    setPersisted(agent);
+    setError(null);
+    setSaved(false);
+  }, [agent]);
+  async function save() {
+    const prepared = withInitialTraitDefaults(draft);
+    const validation = profileValidationError(prepared);
+    if (validation !== null) {
+      setError(validation);
+      return;
+    }
+    if (
+      !draft.name.trim() ||
+      !draft.birthday ||
+      !draft.species.trim() ||
+      !draft.pronouns.trim()
+    ) {
+      setError("Preencha nome, data, espécie e pronomes.");
+      return;
+    }
+    try {
+      await invoke("update_agent_profile", { agent: prepared });
+      setDraft(prepared);
+      setPersisted(prepared);
+      setSaved(true);
+      done();
+    } catch {
+      setError("Não foi possível salvar o perfil.");
+    }
+  }
+  return (
+    <section className="conversation-empty" aria-label="Perfil do agente">
+      <h1>{`Perfil de ${agent.name}`}</h1>
+      <ProfileFields draft={draft} onChange={setDraft} />
+      {error ? <p role="alert">{error}</p> : null}
+      {saved ? <p role="status">Perfil salvo.</p> : null}
+      <button type="button" onClick={() => void save()}>
+        Salvar
+      </button>
+      <button
+        type="button"
+        disabled={JSON.stringify(draft) === JSON.stringify(persisted)}
+        onClick={() => {
+          setDraft(persisted);
+          setError(null);
+          setSaved(false);
+        }}
+      >
+        Cancelar
+      </button>
+    </section>
+  );
+}
+
+function OnboardingForm({
+  agents,
+  done,
+}: {
+  agents: ProvisionalAgent[];
+  done: () => void;
+}) {
+  const [drafts, setDrafts] = useState(agents);
+  const [persisted, setPersisted] = useState(agents);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    setDrafts(agents);
+    setPersisted(agents);
+    setError(null);
+    setSaved(false);
+  }, [agents]);
+  const update = (index: number, next: ProvisionalAgent) =>
+    setDrafts((current) =>
+      current.map((agent, currentIndex) =>
+        currentIndex === index ? next : agent,
+      ),
+    );
+  async function save() {
+    const prepared = drafts.map(withInitialTraitDefaults);
+    if (prepared.some((agent) => profileValidationError(agent) !== null)) {
+      setError("Revise a data, a idade e os traços dos dois agentes.");
+      return;
+    }
+    if (
+      drafts.length !== 2 ||
+      drafts.some(
+        (agent) =>
+          !agent.name.trim() ||
+          !agent.birthday ||
+          !agent.ageCategory.trim() ||
+          !agent.species.trim() ||
+          !agent.pronouns.trim(),
+      )
+    ) {
+      setError("Preencha os campos obrigatórios dos dois agentes.");
+      return;
+    }
+    try {
+      await invoke("complete_phase_two_onboarding", { agents: prepared });
+      setDrafts(prepared);
+      setPersisted(prepared);
+      setSaved(true);
+      done();
+    } catch {
+      setError("Não foi possível concluir a criação dos perfis.");
+    }
+  }
+  return (
+    <section className="conversation-empty" aria-label="Criação dos perfis">
+      <h1>Crie os dois perfis</h1>
+      {drafts.map((agent, index) => (
+        <fieldset key={agent.id}>
+          <legend>{agent.name}</legend>
+          <ProfileFields
+            draft={agent}
+            onChange={(next) => update(index, next)}
+          />
+        </fieldset>
+      ))}
+      {error ? <p role="alert">{error}</p> : null}
+      {saved ? <p role="status">Perfis salvos.</p> : null}
+      <button type="button" onClick={() => void save()}>
+        Salvar
+      </button>
+      <button
+        type="button"
+        disabled={JSON.stringify(drafts) === JSON.stringify(persisted)}
+        onClick={() => {
+          setDrafts(persisted);
+          setError(null);
+          setSaved(false);
+        }}
+      >
+        Cancelar
+      </button>
+    </section>
+  );
+}
+
+function ConversationList({
+  agentId,
+  changed,
+}: {
+  agentId: string;
+  changed: () => void;
+}) {
+  const [items, setItems] = useState<PhaseOneConversation[]>([]);
+  const [archived, setArchived] = useState<PhaseOneConversation[]>([]);
+  const [title, setTitle] = useState("");
+  const load = useCallback(
+    () =>
+      void Promise.all([
+        invoke<PhaseOneConversation[]>("list_agent_conversations", { agentId }),
+        invoke<PhaseOneConversation[]>("list_archived_agent_conversations", {
+          agentId,
+        }),
+      ]).then(([current, previous]) => {
+        setItems(current);
+        setArchived(previous);
+      }),
+    [agentId],
+  );
+  useEffect(() => {
+    load();
+  }, [load]);
+  async function create() {
+    if (!title.trim()) return;
+    await invoke("create_agent_conversation", { agentId, title });
+    setTitle("");
+    load();
+  }
+  async function select(conversationId: string) {
+    await invoke("set_active_agent_conversation", { agentId, conversationId });
+    changed();
+  }
+  return (
+    <div className="conversation-list" aria-label="Conversas do agente">
+      {items.map((item) => (
+        <div key={item.id}>
+          <button type="button" onClick={() => void select(item.id)}>
+            {item.title}
+            {item.id === items[0]?.id ? " · Principal" : ""}
+          </button>
+          {item.id !== items[0]?.id ? (
+            <button
+              type="button"
+              onClick={() =>
+                void invoke("archive_agent_conversation", {
+                  agentId,
+                  conversationId: item.id,
+                }).then(load)
+              }
+            >
+              Arquivar
+            </button>
+          ) : null}
+        </div>
+      ))}
+      {archived.length > 0 ? (
+        <details>
+          <summary>Arquivadas ({archived.length})</summary>
+          {archived.map((item) => (
+            <div key={item.id}>
+              <span>{item.title}</span>
+              <button
+                type="button"
+                onClick={() =>
+                  void invoke("restore_agent_conversation", {
+                    agentId,
+                    conversationId: item.id,
+                  }).then(load)
+                }
+              >
+                Restaurar
+              </button>
+            </div>
+          ))}
+        </details>
+      ) : null}
+      <input
+        value={title}
+        placeholder="Nova conversa"
+        onChange={(event) => setTitle(event.target.value)}
+      />
+      <button type="button" onClick={() => void create()}>
+        Criar conversa
+      </button>
+    </div>
+  );
+}
+
+function MemoryList({ agentId }: { agentId: string }) {
+  const [items, setItems] = useState<AgentMemory[]>([]);
+  const [content, setContent] = useState("");
+  const [category, setCategory] = useState("preference");
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("active");
+  const load = useCallback(
+    () =>
+      void invoke<AgentMemory[]>("search_agent_memories", {
+        agentId,
+        query: query || null,
+        status: status === "all" ? null : status,
+        category: null,
+        sourceType: null,
+      }).then(setItems),
+    [agentId, query, status],
+  );
+  useEffect(() => {
+    load();
+  }, [load]);
+  async function save(confirmed = true) {
+    if (!content.trim()) return;
+    await invoke("create_agent_memory", {
+      agentId,
+      category,
+      content,
+      confirmed,
+    });
+    setContent("");
+    load();
+  }
+  async function updateStatus(memoryId: string, status: string) {
+    await invoke("set_agent_memory_status", { agentId, memoryId, status });
+    load();
+  }
+  return (
+    <div className="memory-list" aria-label="Memórias do agente">
+      <strong>Memórias</strong>
+      <input
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Buscar memórias"
+        aria-label="Buscar memórias"
+      />
+      <select
+        value={status}
+        onChange={(event) => setStatus(event.target.value)}
+        aria-label="Estado das memórias"
+      >
+        <option value="active">Ativas</option>
+        <option value="archived">Arquivadas</option>
+        <option value="trashed">Lixeira</option>
+        <option value="candidate_rejected">Rejeitadas</option>
+        <option value="all">Todas</option>
+      </select>
+      {items.map((item) => (
+        <div className="memory-item" key={item.id}>
+          <p>
+            <small>
+              {item.category} ·{" "}
+              {item.confirmationStatus === "pending"
+                ? "pendente"
+                : "confirmada"}
+            </small>{" "}
+            {item.content}
+          </p>
+          {item.confirmationStatus === "pending" ? (
+            <>
+              <button
+                type="button"
+                onClick={() => void updateStatus(item.id, "active")}
+              >
+                Confirmar
+              </button>
+              <button
+                type="button"
+                onClick={() => void updateStatus(item.id, "candidate_rejected")}
+              >
+                Rejeitar
+              </button>
+            </>
+          ) : null}
+          {item.status === "active" ? (
+            <button
+              type="button"
+              onClick={() => void updateStatus(item.id, "archived")}
+            >
+              Arquivar
+            </button>
+          ) : item.status === "archived" || item.status === "trashed" ? (
+            <button
+              type="button"
+              onClick={() => void updateStatus(item.id, "active")}
+            >
+              Restaurar
+            </button>
+          ) : null}
+        </div>
+      ))}
+      <input
+        value={category}
+        onChange={(event) => setCategory(event.target.value)}
+        aria-label="Categoria da memória"
+      />
+      <input
+        value={content}
+        onChange={(event) => setContent(event.target.value)}
+        placeholder="Nova memória"
+      />
+      <button type="button" onClick={() => void save()}>
+        Salvar memória
+      </button>
+      <button type="button" onClick={() => void save(false)}>
+        Propor memória
+      </button>
+    </div>
+  );
+}
+
+function MemoryWorkspace({ agentId }: { agentId: string }) {
+  const [items, setItems] = useState<AgentMemory[]>([]);
+  const [content, setContent] = useState("");
+  const [category, setCategory] = useState("preference");
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("active");
+  const load = useCallback(
+    () =>
+      void invoke<AgentMemory[]>("search_agent_memories", {
+        agentId,
+        query: query || null,
+        status: status === "all" ? null : status,
+        category: null,
+        sourceType: null,
+      }).then(setItems),
+    [agentId, query, status],
+  );
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function save(confirmed = true) {
+    if (!content.trim()) return;
+    await invoke("create_agent_memory", {
+      agentId,
+      category,
+      content,
+      confirmed,
+    });
+    setContent("");
+    load();
+  }
+
+  async function updateStatus(memoryId: string, nextStatus: string) {
+    await invoke("set_agent_memory_status", {
+      agentId,
+      memoryId,
+      status: nextStatus,
+    });
+    load();
+  }
+
+  return (
+    <section className="memory-workspace" aria-label="Memórias do agente">
+      <header className="workspace-heading">
+        <div>
+          <p className="eyebrow">Conhecimento do agente</p>
+          <h2>Memórias</h2>
+          <span>Fatos, preferências e regras ficam separados por agente.</span>
+        </div>
+        <span className="workspace-count">{items.length}</span>
+      </header>
+      <div className="memory-filters">
+        <label>
+          Buscar
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Buscar memórias"
+          />
+        </label>
+        <label>
+          Mostrar
+          <select
+            value={status}
+            onChange={(event) => setStatus(event.target.value)}
+          >
+            <option value="active">Ativas</option>
+            <option value="archived">Arquivadas</option>
+            <option value="trashed">Lixeira</option>
+            <option value="candidate_rejected">Rejeitadas</option>
+            <option value="all">Todas</option>
+          </select>
+        </label>
+      </div>
+      <div className="memory-records">
+        {items.map((item) => (
+          <article className="memory-card" key={item.id}>
+            <div className="memory-card-heading">
+              <span>{item.category}</span>
+              <small>
+                {item.confirmationStatus === "pending"
+                  ? "Pendente"
+                  : "Confirmada"}
+              </small>
+            </div>
+            <p>{item.content}</p>
+            <div className="memory-card-actions">
+              {item.confirmationStatus === "pending" ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void updateStatus(item.id, "active")}
+                  >
+                    Confirmar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void updateStatus(item.id, "candidate_rejected")
+                    }
+                  >
+                    Rejeitar
+                  </button>
+                </>
+              ) : null}
+              {item.status === "active" ? (
+                <button
+                  type="button"
+                  onClick={() => void updateStatus(item.id, "archived")}
+                >
+                  Arquivar
+                </button>
+              ) : item.status === "archived" || item.status === "trashed" ? (
+                <button
+                  type="button"
+                  onClick={() => void updateStatus(item.id, "active")}
+                >
+                  Restaurar
+                </button>
+              ) : null}
+            </div>
+          </article>
+        ))}
+        {items.length === 0 ? (
+          <p className="workspace-empty">Nenhuma memória encontrada aqui.</p>
+        ) : null}
+      </div>
+      <form
+        className="memory-composer"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void save();
+        }}
+      >
+        <div>
+          <p className="eyebrow">Adicionar</p>
+          <h3>Nova memória</h3>
+        </div>
+        <label>
+          Categoria
+          <select
+            value={category}
+            onChange={(event) => setCategory(event.target.value)}
+          >
+            <option value="fact">Fato</option>
+            <option value="preference">Preferência</option>
+            <option value="rule">Regra</option>
+            <option value="emotional">Lembrança afetiva</option>
+            <option value="permanent">Permanente</option>
+          </select>
+        </label>
+        <label className="memory-content-field">
+          Conteúdo
+          <textarea
+            value={content}
+            onChange={(event) => setContent(event.target.value)}
+            placeholder="O que este agente deve lembrar?"
+            maxLength={4000}
+          />
+        </label>
+        <div className="memory-composer-actions">
+          <button type="submit">Salvar memória</button>
+          <button type="button" onClick={() => void save(false)}>
+            Propor memória
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function AgentStateControls({ agentId }: { agentId: string }) {
+  const [state, setState] = useState<AgentSimulatedState | null>(null);
+  const [saving, setSaving] = useState(false);
+  const load = useCallback(
+    () =>
+      void invoke<AgentSimulatedState>("get_agent_simulated_state", { agentId })
+        .then(setState)
+        .catch(() => setState(null)),
+    [agentId],
+  );
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function update(action: () => Promise<unknown>) {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await action();
+      load();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (state === null) return null;
+  return (
+    <section className="agent-state-controls" aria-label="Estado do agente">
+      <strong>Estado</strong>
+      <label>
+        Modo
+        <select
+          value={state.mode}
+          disabled={saving}
+          onChange={(event) =>
+            void update(() =>
+              invoke("set_agent_simulated_mode", {
+                agentId,
+                mode: event.target.value,
+              }),
+            )
+          }
+        >
+          <option value="normal">Normal</option>
+          <option value="voice_muted">Sem voz</option>
+          <option value="silent">Silencioso</option>
+        </select>
+      </label>
+      <small>
+        Energia {state.energy}% · Humor {state.mood}% · Sono {state.sleep}%
+      </small>
+      <button
+        type="button"
+        disabled={saving}
+        onClick={() =>
+          void update(() =>
+            invoke("set_agent_suspension", {
+              agentId,
+              suspended: !state.suspended,
+            }),
+          )
+        }
+      >
+        {state.suspended ? "Retomar agente" : "Suspender agente"}
+      </button>
+      <button
+        type="button"
+        disabled={saving || !state.suspended}
+        onClick={() => void update(() => invoke("wake_agent_now", { agentId }))}
+      >
+        Acordar agora
+      </button>
+    </section>
+  );
+}
+
+function PixelDocumentEditor({ agentId }: { agentId: string }) {
+  const [source, setSource] = useState("");
+  const [activeLayerId, setActiveLayerId] = useState("body");
+  const [error, setError] = useState<string | null>(null);
+  const [color, setColor] = useState("#57d8bd");
+  const [tool, setTool] = useState<
+    "pencil" | "eraser" | "fill" | "eyedropper" | "select"
+  >("pencil");
+  const [mirror, setMirror] = useState(false);
+  const [selection, setSelection] = useState<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [zoom, setZoom] = useState(4);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const importRef = useRef<HTMLInputElement>(null);
+  const undoRef = useRef<string[]>([]);
+  const redoRef = useRef<string[]>([]);
+  const strokeRef = useRef<{ x: number; y: number } | null>(null);
+  const document = parsePixelDocument(source);
+  const activeLayer =
+    document?.layers.find((layer) => layer.id === activeLayerId) ??
+    document?.layers[0];
+  function replaceSource(next: string) {
+    if (next === source) return;
+    undoRef.current = [...undoRef.current.slice(-49), source];
+    redoRef.current = [];
+    setSource(next);
+  }
+  useEffect(() => {
+    void invoke<string>("load_pixel_document", { agentId })
+      .then((loaded) => {
+        setSource(loaded);
+        setActiveLayerId(parsePixelDocument(loaded)?.layers[0]?.id ?? "body");
+      })
+      .catch(() => setError("Não foi possível abrir a arte."));
+  }, [agentId]);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (canvas === null) return;
+    const context = canvas.getContext("2d");
+    if (context === null) return;
+    context.fillStyle = "#10151c";
+    context.fillRect(0, 0, 256, 256);
+    try {
+      for (const layer of document?.layers ?? [])
+        for (const [x, y, pixelColor] of layer.pixels ?? []) {
+          if (
+            layer.visible !== false &&
+            Number.isInteger(x) &&
+            Number.isInteger(y) &&
+            x >= 0 &&
+            y >= 0 &&
+            x < 64 &&
+            y < 64
+          ) {
+            context.fillStyle = pixelColor;
+            context.fillRect(x * 4, y * 4, 4, 4);
+          }
+        }
+      if (selection !== null) {
+        context.strokeStyle = "#57d8bd";
+        context.lineWidth = 1;
+        context.strokeRect(
+          selection.x * 4 + 0.5,
+          selection.y * 4 + 0.5,
+          selection.width * 4 - 1,
+          selection.height * 4 - 1,
+        );
+      }
+    } catch {
+      /* Invalid source stays editable in the raw document field. */
+    }
+  }, [document, selection, source]);
+  function paint(event: React.PointerEvent<HTMLCanvasElement>) {
+    const canvas = canvasRef.current;
+    if (canvas === null) return;
+    const x = Math.max(
+      0,
+      Math.min(
+        63,
+        Math.floor((event.nativeEvent.offsetX * 64) / canvas.clientWidth),
+      ),
+    );
+    const y = Math.max(
+      0,
+      Math.min(
+        63,
+        Math.floor((event.nativeEvent.offsetY * 64) / canvas.clientHeight),
+      ),
+    );
+    if (tool === "select") {
+      setSelection((current) =>
+        current === null
+          ? { x, y, width: 1, height: 1 }
+          : {
+              x: Math.min(current.x, x),
+              y: Math.min(current.y, y),
+              width: Math.abs(current.x - x) + 1,
+              height: Math.abs(current.y - y) + 1,
+            },
+      );
+      return;
+    }
+    try {
+      if (
+        document === null ||
+        activeLayer === undefined ||
+        activeLayer.locked
+      ) {
+        throw new Error("missing layer");
+      }
+      const layer = activeLayer;
+      const existingColor = layer.pixels?.find(
+        ([pixelX, pixelY]) => pixelX === x && pixelY === y,
+      )?.[2];
+      if (tool === "eyedropper") {
+        setColor(existingColor ?? "#10151c");
+        return;
+      }
+      if (tool === "fill") {
+        replaceSource(
+          JSON.stringify(
+            updatePixelLayer(document, layer.id, (current) =>
+              floodFillLayer(current, x, y, color),
+            ),
+          ),
+        );
+        setError(null);
+        return;
+      }
+      const previous = strokeRef.current ?? { x, y };
+      const cells = rasterLine(previous.x, previous.y, x, y);
+      const changed = new Map(
+        (layer.pixels ?? []).map(([pixelX, pixelY, pixelColor]) => [
+          `${pixelX},${pixelY}`,
+          pixelColor,
+        ]),
+      );
+      for (const [cellX, cellY] of cells) {
+        for (const targetX of mirror && cellX !== 63 - cellX
+          ? [cellX, 63 - cellX]
+          : [cellX]) {
+          const key = `${targetX},${cellY}`;
+          if (tool === "pencil") changed.set(key, color);
+          else changed.delete(key);
+        }
+      }
+      const pixels = [...changed.entries()].map(([key, pixelColor]) => {
+        const [pixelX, pixelY] = key.split(",").map(Number);
+        return [pixelX, pixelY, pixelColor] as [number, number, string];
+      });
+      strokeRef.current = { x, y };
+      layer.pixels = pixels;
+      replaceSource(
+        JSON.stringify(updatePixelLayer(document, layer.id, () => layer)),
+      );
+      setError(null);
+    } catch {
+      setError("Arte inválida: use uma camada com pixels.");
+    }
+  }
+  async function save() {
+    try {
+      await invoke("save_pixel_document", { agentId, sourceJson: source });
+      setError(null);
+    } catch {
+      setError("A arte precisa ter camadas e pontos de encaixe válidos.");
+    }
+  }
+  function updateLayers(next: PixelDocument, nextActive = activeLayerId) {
+    setActiveLayerId(nextActive);
+    replaceSource(JSON.stringify(next));
+  }
+  function moveSelection(dx: number, dy: number) {
+    if (
+      document === null ||
+      activeLayer === undefined ||
+      selection === null ||
+      activeLayer.locked
+    )
+      return;
+    const inside = (x: number, y: number) =>
+      x >= selection.x &&
+      x < selection.x + selection.width &&
+      y >= selection.y &&
+      y < selection.y + selection.height;
+    const moved = activeLayer.pixels.flatMap(([x, y, pixelColor]) => {
+      if (!inside(x, y))
+        return [[x, y, pixelColor] as [number, number, string]];
+      const nextX = x + dx;
+      const nextY = y + dy;
+      return nextX >= 0 && nextX < 64 && nextY >= 0 && nextY < 64
+        ? [[nextX, nextY, pixelColor] as [number, number, string]]
+        : [];
+    });
+    updateLayers(
+      updatePixelLayer(document, activeLayer.id, (layer) => ({
+        ...layer,
+        pixels: moved,
+      })),
+    );
+    setSelection((current) =>
+      current === null
+        ? null
+        : {
+            ...current,
+            x: Math.max(0, Math.min(63 - current.width + 1, current.x + dx)),
+            y: Math.max(0, Math.min(63 - current.height + 1, current.y + dy)),
+          },
+    );
+  }
+  async function importPng(file: File | undefined) {
+    if (file === undefined) return;
+    if (
+      file.type !== "image/png" ||
+      file.size > 1_000_000 ||
+      document === null
+    ) {
+      setError("Use um PNG de até 1 MB.");
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    try {
+      const image = new Image();
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error("invalid_png"));
+        image.src = url;
+      });
+      const imported = globalThis.document.createElement("canvas");
+      imported.width = 64;
+      imported.height = 64;
+      const context = imported.getContext("2d", { willReadFrequently: true });
+      if (context === null) throw new Error("canvas_unavailable");
+      context.drawImage(image, 0, 0, 64, 64);
+      const pixels = Array.from(context.getImageData(0, 0, 64, 64).data).reduce<
+        [number, number, string][]
+      >((result, _, index, data) => {
+        const alpha = data[index + 3] ?? 0;
+        if (index % 4 !== 0 || alpha < 128) return result;
+        const x = (index / 4) % 64;
+        const y = Math.floor(index / 256);
+        const color = `#${[data[index], data[index + 1], data[index + 2]].map((value) => (value ?? 0).toString(16).padStart(2, "0")).join("")}`;
+        result.push([x, y, color]);
+        return result;
+      }, []);
+      const id = nextLayerId(document);
+      updateLayers(
+        {
+          ...document,
+          layers: [
+            ...document.layers,
+            { id, name: "PNG importado", visible: true, locked: false, pixels },
+          ],
+        },
+        id,
+      );
+      setError(null);
+    } catch {
+      setError("Não foi possível importar este PNG.");
+    } finally {
+      URL.revokeObjectURL(url);
+      if (importRef.current !== null) importRef.current.value = "";
+    }
+  }
+  function updateBubbleAttachment(axis: "x" | "y", value: number) {
+    if (document === null) return;
+    const current = document.attachmentPoints.bubble ?? { x: 32, y: 8 };
+    updateLayers({
+      ...document,
+      attachmentPoints: {
+        ...document.attachmentPoints,
+        bubble: { ...current, [axis]: Math.max(0, Math.min(63, value || 0)) },
+      },
+    });
+  }
+  return (
+    <details className="pixel-editor" open>
+      <summary>Editor de pixel art (64×64)</summary>
+      <div className="pixel-tools">
+        <input
+          type="color"
+          value={color}
+          onChange={(event) => setColor(event.target.value)}
+          aria-label="Cor"
+        />
+        <button
+          type="button"
+          className={tool === "pencil" ? "active" : ""}
+          onClick={() => setTool("pencil")}
+        >
+          Lápis
+        </button>
+        <button
+          type="button"
+          className={tool === "eraser" ? "active" : ""}
+          onClick={() => setTool("eraser")}
+        >
+          Borracha
+        </button>
+        <button
+          type="button"
+          className={tool === "fill" ? "active" : ""}
+          onClick={() => setTool("fill")}
+        >
+          Preencher
+        </button>
+        <button
+          type="button"
+          className={tool === "eyedropper" ? "active" : ""}
+          onClick={() => setTool("eyedropper")}
+        >
+          Conta-gotas
+        </button>
+        <button
+          type="button"
+          className={tool === "select" ? "active" : ""}
+          onClick={() => setTool("select")}
+        >
+          Selecionar
+        </button>
+        <label>
+          <input
+            type="checkbox"
+            checked={mirror}
+            onChange={(event) => setMirror(event.target.checked)}
+          />{" "}
+          Espelhar
+        </label>
+        <label>
+          Zoom
+          <select
+            value={zoom}
+            onChange={(event) => setZoom(Number(event.target.value))}
+          >
+            {[2, 4, 6, 8].map((value) => (
+              <option key={value} value={value}>
+                {value}×
+              </option>
+            ))}
+          </select>
+        </label>
+        <input
+          ref={importRef}
+          type="file"
+          accept="image/png"
+          aria-label="Importar PNG"
+          onChange={(event) => void importPng(event.currentTarget.files?.[0])}
+        />
+        <button
+          type="button"
+          disabled={undoRef.current.length === 0}
+          onClick={() => {
+            const previous = undoRef.current.pop();
+            if (previous !== undefined) {
+              redoRef.current.push(source);
+              setSource(previous);
+            }
+          }}
+        >
+          Desfazer
+        </button>
+        <button
+          type="button"
+          disabled={redoRef.current.length === 0}
+          onClick={() => {
+            const next = redoRef.current.pop();
+            if (next !== undefined) {
+              undoRef.current.push(source);
+              setSource(next);
+            }
+          }}
+        >
+          Refazer
+        </button>
+        <button
+          type="button"
+          disabled={selection === null || activeLayer?.locked}
+          onClick={() => moveSelection(-1, 0)}
+        >
+          ←
+        </button>
+        <button
+          type="button"
+          disabled={selection === null || activeLayer?.locked}
+          onClick={() => moveSelection(1, 0)}
+        >
+          →
+        </button>
+        <button
+          type="button"
+          disabled={selection === null || activeLayer?.locked}
+          onClick={() => moveSelection(0, -1)}
+        >
+          ↑
+        </button>
+        <button
+          type="button"
+          disabled={selection === null || activeLayer?.locked}
+          onClick={() => moveSelection(0, 1)}
+        >
+          ↓
+        </button>
+      </div>
+      {document ? (
+        <div className="pixel-layers" aria-label="Camadas">
+          <div>
+            <strong>Camadas</strong>
+            <button
+              type="button"
+              onClick={() => {
+                const id = nextLayerId(document);
+                updateLayers(
+                  {
+                    ...document,
+                    layers: [
+                      ...document.layers,
+                      {
+                        id,
+                        name: `Camada ${document.layers.length + 1}`,
+                        visible: true,
+                        locked: false,
+                        pixels: [],
+                      },
+                    ],
+                  },
+                  id,
+                );
+              }}
+            >
+              Nova camada
+            </button>
+          </div>
+          {document.layers.map((layer, index) => (
+            <div
+              key={layer.id}
+              className={
+                layer.id === activeLayer?.id
+                  ? "pixel-layer active"
+                  : "pixel-layer"
+              }
+            >
+              <button type="button" onClick={() => setActiveLayerId(layer.id)}>
+                {layer.name}
+              </button>
+              <input
+                value={layer.name}
+                aria-label={`Nome da camada ${layer.name}`}
+                onChange={(event) =>
+                  updateLayers(
+                    updatePixelLayer(document, layer.id, (current) => ({
+                      ...current,
+                      name: event.target.value.slice(0, 64) || "Camada",
+                    })),
+                  )
+                }
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  updateLayers(
+                    updatePixelLayer(document, layer.id, (current) => ({
+                      ...current,
+                      visible: !current.visible,
+                    })),
+                  )
+                }
+              >
+                {layer.visible ? "Ocultar" : "Mostrar"}
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  updateLayers(
+                    updatePixelLayer(document, layer.id, (current) => ({
+                      ...current,
+                      locked: !current.locked,
+                    })),
+                  )
+                }
+              >
+                {layer.locked ? "Desbloquear" : "Bloquear"}
+              </button>
+              <button
+                type="button"
+                disabled={index === 0}
+                onClick={() => {
+                  const layers = [...document.layers];
+                  const previous = layers[index - 1];
+                  const current = layers[index];
+                  if (previous === undefined || current === undefined) return;
+                  [layers[index - 1], layers[index]] = [current, previous];
+                  updateLayers({ ...document, layers });
+                }}
+              >
+                Subir
+              </button>
+              <button
+                type="button"
+                disabled={document.layers.length === 1}
+                onClick={() => {
+                  if (!window.confirm(`Excluir a camada ${layer.name}?`))
+                    return;
+                  const layers = document.layers.filter(
+                    (current) => current.id !== layer.id,
+                  );
+                  updateLayers(
+                    { ...document, layers },
+                    layers[0]?.id ?? "body",
+                  );
+                }}
+              >
+                Excluir
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {document ? (
+        <div className="pixel-attachment">
+          <strong>Encaixe do balão</strong>
+          <label>
+            X{" "}
+            <input
+              type="number"
+              min="0"
+              max="63"
+              value={document.attachmentPoints.bubble?.x ?? 32}
+              onChange={(event) =>
+                updateBubbleAttachment("x", Number(event.target.value))
+              }
+            />
+          </label>
+          <label>
+            Y{" "}
+            <input
+              type="number"
+              min="0"
+              max="63"
+              value={document.attachmentPoints.bubble?.y ?? 8}
+              onChange={(event) =>
+                updateBubbleAttachment("y", Number(event.target.value))
+              }
+            />
+          </label>
+        </div>
+      ) : null}
+      <canvas
+        ref={canvasRef}
+        width="256"
+        height="256"
+        className="pixel-canvas"
+        style={{ width: `${64 * zoom}px`, height: `${64 * zoom}px` }}
+        onPointerDown={(event) => {
+          event.currentTarget.setPointerCapture(event.pointerId);
+          strokeRef.current = null;
+          paint(event);
+        }}
+        onPointerMove={(event) => {
+          if (event.buttons === 1) paint(event);
+        }}
+        onPointerUp={(event) => {
+          strokeRef.current = null;
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onPointerCancel={() => {
+          strokeRef.current = null;
+        }}
+        aria-label="Grade de pixel art"
+      />
+      <details className="pixel-source">
+        <summary>Avançado: documento da arte</summary>
+        <textarea
+          value={source}
+          onChange={(event) => replaceSource(event.target.value)}
+          aria-label="Documento de pixel art"
+        />
+      </details>
+      <button type="button" onClick={() => void save()}>
+        Salvar arte
+      </button>
+      {error ? <p role="alert">{error}</p> : null}
+    </details>
+  );
+}
+
+function SettingsSurface({
+  snapshot,
+  changingMode,
+  onToggleSafeMode,
+}: {
+  snapshot: AppSnapshot | null;
+  changingMode: boolean;
+  onToggleSafeMode: () => void;
+}) {
+  const [activeSection, setActiveSection] = useState("Geral");
+  const sections = [
+    "Geral",
+    "Perfil do Owner",
+    "Agentes",
+    "Modelos",
+    "Segurança",
+    "Dados e backup",
+    "Diagnóstico e Sobre",
+  ];
+  return (
+    <section className="settings-surface">
+      <header className="workspace-heading">
+        <div>
+          <p className="eyebrow">A.I.P.</p>
+          <h1>Configurações</h1>
+          <span>Preferências locais e diagnóstico do aplicativo.</span>
+        </div>
+      </header>
+      <div className="settings-layout">
+        <nav className="settings-nav" aria-label="Seções de configurações">
+          {sections.map((section) => (
+            <button
+              key={section}
+              className={activeSection === section ? "active" : undefined}
+              type="button"
+              onClick={() => setActiveSection(section)}
+            >
+              {section}
+            </button>
+          ))}
+        </nav>
+        <div>
+          {activeSection === "Geral" ? (
+            <section className="settings-card">
+              <h2>Geral</h2>
+              <p>
+                Este computador usa um Owner local implícito. Contas adicionais
+                ainda não estão disponíveis.
+              </p>
+            </section>
+          ) : null}
+          {activeSection === "Perfil do Owner" ? (
+            <section className="settings-card">
+              <h2>Perfil do Owner</h2>
+              <p>
+                Administrador local do A.I.P. A edição do nome do Owner ainda
+                não está disponível.
+              </p>
+            </section>
+          ) : null}
+          {activeSection === "Agentes" ? (
+            <section className="settings-card">
+              <h2>Agentes</h2>
+              <p>Edite cada perfil pelo botão Perfil no espaço do agente.</p>
+            </section>
+          ) : null}
+          {activeSection === "Modelos" ? (
+            <section className="settings-card">
+              <h2>Modelos</h2>
+              <p>
+                O modelo padrão é configurado por agente. Cada conversa pode ter
+                uma substituição própria.
+              </p>
+            </section>
+          ) : null}
+          {activeSection === "Segurança" ? (
+            <section className="settings-card">
+              <h2>Segurança</h2>
+              <p>O modo seguro desativa runtime, gerações e overlays.</p>
+              <button
+                className={
+                  snapshot?.safeMode ? "mode-button active" : "mode-button"
+                }
+                type="button"
+                disabled={!snapshot || changingMode}
+                onClick={onToggleSafeMode}
+              >
+                {snapshot?.safeMode
+                  ? "Sair do modo seguro"
+                  : "Ativar modo seguro"}
+              </button>
+            </section>
+          ) : null}
+          {activeSection === "Dados e backup" ? (
+            <section className="settings-card">
+              <h2>Dados e backup</h2>
+              <p>
+                Exportação e backup automático ainda não estão disponíveis nesta
+                versão.
+              </p>
+              <button type="button" disabled>
+                Exportar dados (indisponível)
+              </button>
+            </section>
+          ) : null}
+          {activeSection === "Diagnóstico e Sobre" ? (
+            <section className="settings-card">
+              <h2>Diagnóstico e Sobre</h2>
+              <dl>
+                <dt>Versão</dt>
+                <dd>{snapshot?.appVersion ?? "—"}</dd>
+                <dt>Commit</dt>
+                <dd>{snapshot?.buildSha ?? "—"}</dd>
+                <dt>Build</dt>
+                <dd>{snapshot?.buildTimestamp ?? "—"}</dd>
+                <dt>Pacote</dt>
+                <dd>{snapshot?.runtimePackagingMode ?? "—"}</dd>
+                <dt>Runtime</dt>
+                <dd>
+                  {snapshot ? runtimeLabels[snapshot.runtime.state] : "—"}
+                </dd>
+                <dt>Detalhe</dt>
+                <dd>{snapshot?.runtime.detailCode ?? "—"}</dd>
+                <dt>Protocolo</dt>
+                <dd>{snapshot?.runtime.protocolVersion ?? "—"}</dd>
+                <dt>Banco local</dt>
+                <dd>
+                  {snapshot?.databaseReady ? "Disponível" : "Indisponível"}
+                </dd>
+                <dt>Migração</dt>
+                <dd>{snapshot?.migrationVersion ?? "—"}</dd>
+              </dl>
+              <div className="message-actions">
+                <button
+                  type="button"
+                  onClick={() =>
+                    void navigator.clipboard?.writeText(
+                      JSON.stringify({
+                        version: snapshot?.appVersion,
+                        build: snapshot?.buildSha,
+                        runtime: snapshot?.runtime,
+                        databaseReady: snapshot?.databaseReady,
+                        migrationVersion: snapshot?.migrationVersion,
+                        safeMode: snapshot?.safeMode,
+                      }),
+                    )
+                  }
+                >
+                  Copiar diagnóstico
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void invoke("retry_phase_one_runtime")}
+                >
+                  Reiniciar runtime
+                </button>
+              </div>
+            </section>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
-  const [error, setError] = useState(false);
+  const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   const [changingMode, setChangingMode] = useState(false);
+  const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
+  const [conversationRevision, setConversationRevision] = useState(0);
+  const [temporaryChat, setTemporaryChat] = useState(false);
+  const [workspace, setWorkspace] = useState<
+    "chat" | "memories" | "state" | "appearance" | "settings"
+  >("chat");
 
   const loadSnapshot = useCallback(async () => {
-    try {
-      const next = await invoke<AppSnapshot>("get_app_snapshot");
-      setSnapshot(next);
-      setError(false);
-    } catch {
-      setError(true);
-    }
+    const next = await invoke<AppSnapshot>("get_app_snapshot");
+    setSnapshot(next);
+    setActiveAgentId((current) => current ?? next.agents[0]?.id ?? null);
   }, []);
 
   useEffect(() => {
@@ -70,164 +2208,288 @@ function App() {
     return () => window.clearInterval(timer);
   }, [loadSnapshot]);
 
+  useEffect(() => {
+    const registration = createListenerRegistration();
+    void listen<string>("open-conversation", (event) => {
+      setActiveAgentId(event.payload);
+      setEditingAgentId(null);
+      setWorkspace("chat");
+    }).then(registration.register);
+    return registration.dispose;
+  }, []);
+
   async function toggleSafeMode() {
     if (!snapshot || changingMode) return;
     setChangingMode(true);
     try {
-      const next = await invoke<AppSnapshot>("set_safe_mode", {
-        enabled: !snapshot.safeMode,
-      });
-      setSnapshot(next);
-      setError(false);
-    } catch {
-      setError(true);
+      setSnapshot(
+        await invoke<AppSnapshot>("set_safe_mode", {
+          enabled: !snapshot.safeMode,
+        }),
+      );
     } finally {
       setChangingMode(false);
     }
   }
 
+  async function openWorkspace(
+    next: "chat" | "memories" | "state" | "appearance" | "settings",
+  ) {
+    await leaveTemporaryChat();
+    setEditingAgentId(null);
+    setWorkspace(next);
+  }
+
+  async function openProfile(agentId: string) {
+    await leaveTemporaryChat();
+    setWorkspace("chat");
+    setEditingAgentId(agentId);
+  }
+
+  async function leaveTemporaryChat() {
+    if (temporaryChat && activeAgentId !== null) {
+      await invoke("close_temporary_phase_one_chat", {
+        agentId: activeAgentId,
+      });
+    }
+    setTemporaryChat(false);
+  }
+
+  async function toggleTemporaryChat() {
+    if (temporaryChat) {
+      await leaveTemporaryChat();
+      return;
+    }
+    setEditingAgentId(null);
+    setWorkspace("chat");
+    setTemporaryChat(true);
+  }
+
+  async function selectAgent(agentId: string) {
+    await leaveTemporaryChat();
+    setActiveAgentId(agentId);
+    setEditingAgentId(null);
+    setWorkspace("chat");
+  }
+
   return (
-    <div className="app-shell">
+    <div className="app-shell conversation-layout">
       <aside className="sidebar" aria-label="Navegação principal">
-        <div className="brand-mark" aria-label="A.I.P.">
+        <button
+          className="brand-mark"
+          type="button"
+          aria-label="Abrir configurações"
+          onClick={() => void openWorkspace("settings")}
+        >
           <span className="brand-glyph">AI</span>
           <div>
             <strong>A.I.P.</strong>
-            <small>Fundação local</small>
+            <small>Conversa local</small>
           </div>
+        </button>
+        <p className="sidebar-label">Conversas</p>
+        <div className="agent-tabs">
+          {snapshot?.agents.map((agent) => (
+            <AgentButton
+              key={agent.id}
+              agent={agent}
+              active={agent.id === activeAgentId}
+              onSelect={() => void selectAgent(agent.id)}
+            />
+          ))}
         </div>
-        <nav>
-          <a className="nav-item active" href="#inicio" aria-current="page">
-            <span aria-hidden="true">01</span> Início
-          </a>
-          <a className="nav-item" href="#agentes">
-            <span aria-hidden="true">02</span> Agentes
-          </a>
-          <a className="nav-item" href="#diagnostico">
-            <span aria-hidden="true">03</span> Diagnóstico
-          </a>
-        </nav>
+        {activeAgentId ? (
+          <ConversationList
+            agentId={activeAgentId}
+            changed={() => {
+              void leaveTemporaryChat().then(() => {
+                setConversationRevision((value) => value + 1);
+                setEditingAgentId(null);
+                setWorkspace("chat");
+              });
+            }}
+          />
+        ) : null}
+        {activeAgentId ? (
+          <details className="agent-tools">
+            <summary>Ferramentas do agente</summary>
+            <button type="button" onClick={() => void toggleTemporaryChat()}>
+              {temporaryChat
+                ? "Voltar à conversa salva"
+                : "Abrir conversa temporária"}
+            </button>
+            <details>
+              <summary>Memórias</summary>
+              <MemoryList agentId={activeAgentId} />
+            </details>
+            <details>
+              <summary>Estado</summary>
+              <AgentStateControls agentId={activeAgentId} />
+            </details>
+            <details>
+              <summary>Aparência</summary>
+              <PixelDocumentEditor agentId={activeAgentId} />
+            </details>
+            {snapshot?.agents.map((agent) => (
+              <button
+                key={`profile-${agent.id}`}
+                type="button"
+                onClick={() => void openProfile(agent.id)}
+              >
+                Perfil de {agent.name}
+              </button>
+            ))}
+          </details>
+        ) : null}
         <div className="sidebar-footer">
           <span className="local-dot" aria-hidden="true" />
-          Execução local
+          {snapshot
+            ? runtimeLabels[snapshot.runtime.state]
+            : "Verificando runtime"}
         </div>
       </aside>
-
-      <main className="main-panel" id="inicio">
-        <header className="page-header">
-          <div>
-            <p className="eyebrow">Agentes Independentes Personalizáveis</p>
-            <h1>Visão geral</h1>
-            <p className="page-summary">
-              Shell inicial para dois agentes locais e limites de runtime
-              resilientes.
-            </p>
-          </div>
-          <button
-            className={
-              snapshot?.safeMode ? "mode-button active" : "mode-button"
-            }
-            type="button"
-            disabled={!snapshot || changingMode}
-            onClick={() => void toggleSafeMode()}
-          >
-            <span className="mode-indicator" aria-hidden="true" />
-            {snapshot?.safeMode ? "Sair do modo seguro" : "Ativar modo seguro"}
-          </button>
-        </header>
-
-        {error ? (
-          <section className="notice notice-error" role="alert">
-            Não foi possível consultar o núcleo local. Reinicie o aplicativo em
-            modo seguro.
-          </section>
+      <main className="conversation-main">
+        {activeAgentId ? (
+          <nav className="workspace-tabs" aria-label="Área do agente">
+            <button
+              className={workspace === "chat" ? "active" : undefined}
+              type="button"
+              onClick={() => void openWorkspace("chat")}
+            >
+              Conversa
+            </button>
+            <button
+              className={workspace === "memories" ? "active" : undefined}
+              type="button"
+              onClick={() => void openWorkspace("memories")}
+            >
+              Memórias
+            </button>
+            <button
+              className={workspace === "state" ? "active" : undefined}
+              type="button"
+              onClick={() => void openWorkspace("state")}
+            >
+              Estado
+            </button>
+            <button
+              className={workspace === "appearance" ? "active" : undefined}
+              type="button"
+              onClick={() => void openWorkspace("appearance")}
+            >
+              Aparência
+            </button>
+            <span className="workspace-spacer" />
+            <button
+              className="workspace-profile"
+              type="button"
+              onClick={() => void openProfile(activeAgentId)}
+            >
+              Perfil
+            </button>
+            <button
+              className={workspace === "settings" ? "active" : undefined}
+              type="button"
+              onClick={() => void openWorkspace("settings")}
+            >
+              Configurações
+            </button>
+            <button
+              className={
+                temporaryChat
+                  ? "workspace-temporary active"
+                  : "workspace-temporary"
+              }
+              type="button"
+              onClick={() => void toggleTemporaryChat()}
+            >
+              {temporaryChat ? "Encerrar e apagar" : "Temporária"}
+            </button>
+          </nav>
         ) : null}
-
-        {snapshot && snapshot.runtime.state !== "ready" ? (
-          <section className="notice" role="status">
-            <strong>{runtimeLabels[snapshot.runtime.state]}.</strong>
+        {snapshot?.runtime.state === "unavailable" ||
+        snapshot?.runtime.state === "crashed" ? (
+          <div className="runtime-banner" role="status">
             <span>
-              O painel e os dados locais continuam disponíveis; nenhum modelo
-              foi iniciado.
+              {runtimeLabels[snapshot.runtime.state]}. O histórico continua
+              disponível.
             </span>
-          </section>
+            <button
+              type="button"
+              onClick={() => void invoke("retry_phase_one_runtime")}
+            >
+              Reiniciar runtime
+            </button>
+          </div>
         ) : null}
-
-        {snapshot && !snapshot.databaseReady ? (
-          <section className="notice notice-error" role="alert">
-            A base local não pôde ser inicializada. O aplicativo permanece em
-            modo seguro.
+        {snapshot?.onboardingRequired && snapshot.agents.length === 2 ? (
+          <OnboardingForm
+            agents={snapshot.agents}
+            done={() => {
+              setEditingAgentId(null);
+              void loadSnapshot();
+            }}
+          />
+        ) : editingAgentId !== null &&
+          snapshot?.agents.find((agent) => agent.id === editingAgentId) ? (
+          <ProfileForm
+            agent={snapshot.agents.find(
+              (agent) => agent.id === editingAgentId,
+            )!}
+            done={() => {
+              setEditingAgentId(null);
+              void loadSnapshot();
+            }}
+          />
+        ) : activeAgentId === null ? (
+          <section className="conversation-empty">Carregando agentes…</section>
+        ) : workspace === "settings" ? (
+          <section className="workspace-panel">
+            <SettingsSurface
+              snapshot={snapshot}
+              changingMode={changingMode}
+              onToggleSafeMode={() => void toggleSafeMode()}
+            />
           </section>
-        ) : null}
-
-        <section className="status-grid" aria-label="Estado da fundação">
-          <article className="status-card">
-            <p>Aplicativo</p>
-            <strong>Fase 0</strong>
-            <span>Versão {snapshot?.appVersion ?? "0.1.0"}</span>
-          </article>
-          <article className="status-card">
-            <p>Dados locais</p>
-            <strong>
-              {snapshot
-                ? snapshot.databaseReady
-                  ? "Disponíveis"
-                  : "Indisponíveis"
-                : "Verificando"}
-            </strong>
-            <span>Migração {snapshot?.migrationVersion ?? 0}</span>
-          </article>
-          <article className="status-card">
-            <p>Runtime Python</p>
-            <strong>
-              {snapshot ? runtimeLabels[snapshot.runtime.state] : "Verificando"}
-            </strong>
-            <span>Protocolo {snapshot?.runtime.protocolVersion ?? "—"}</span>
-          </article>
-          <article className="status-card">
-            <p>Modo atual</p>
-            <strong>{snapshot?.safeMode ? "Seguro" : "Normal"}</strong>
-            <span>
-              {snapshot?.safeMode ? "Overlays ocultos" : "Overlays ativos"}
-            </span>
-          </article>
-        </section>
-
-        <section className="section-block" id="agentes">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Identidades locais</p>
-              <h2>Agentes provisórios</h2>
-            </div>
-            <span className="section-count">
-              {snapshot?.agents.length ?? 0} de 2
-            </span>
-          </div>
-          <div className="agent-grid">
-            {snapshot?.agents.map((agent) => (
-              <AgentCard agent={agent} key={agent.id} />
-            ))}
-            {!snapshot ? (
-              <div
-                className="agent-card skeleton"
-                aria-label="Carregando agentes"
-              />
-            ) : null}
-          </div>
-        </section>
-
-        <section className="diagnostic-strip" id="diagnostico">
-          <div>
-            <p className="eyebrow">Diagnóstico</p>
-            <h2>Limites ativos</h2>
-          </div>
-          <ul>
-            <li>SQLite sob autoridade do núcleo Rust</li>
-            <li>Runtime isolado por entrada e saída gerenciadas</li>
-            <li>Nenhum servidor de rede local</li>
-            <li>Nenhum modelo ou conversa real nesta fase</li>
-          </ul>
-        </section>
+        ) : workspace === "memories" ? (
+          <section className="workspace-panel">
+            <MemoryWorkspace agentId={activeAgentId} />
+          </section>
+        ) : workspace === "state" ? (
+          <section className="workspace-panel">
+            <section className="state-workspace">
+              <header className="workspace-heading">
+                <div>
+                  <p className="eyebrow">Ritmo do agente</p>
+                  <h2>Estado</h2>
+                  <span>
+                    Escolha como este agente pode aparecer e responder.
+                  </span>
+                </div>
+              </header>
+              <AgentStateControls agentId={activeAgentId} />
+            </section>
+          </section>
+        ) : workspace === "appearance" ? (
+          <section className="workspace-panel">
+            <section className="appearance-workspace">
+              <header className="workspace-heading">
+                <div>
+                  <p className="eyebrow">Visual 64 × 64</p>
+                  <h2>Aparência</h2>
+                  <span>Edite em etapas: ferramenta, camada e grade.</span>
+                </div>
+              </header>
+              <PixelDocumentEditor agentId={activeAgentId} />
+            </section>
+          </section>
+        ) : (
+          <ConversationSurface
+            key={`${activeAgentId}-${conversationRevision}-${temporaryChat}`}
+            agentId={activeAgentId}
+            temporary={temporaryChat}
+          />
+        )}
       </main>
     </div>
   );

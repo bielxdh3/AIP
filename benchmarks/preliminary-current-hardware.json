@@ -1,0 +1,188 @@
+{
+  "schemaVersion": 1,
+  "kind": "preliminary_local_hardware",
+  "createdAt": "2026-07-26T03:34:49.334Z",
+  "endpoint": "local_ollama",
+  "promptPolicy": "One fixed Portuguese prompt, reasoning disabled when supported, and a 64-token output cap; response content is never recorded.",
+  "hardware": {
+    "cpu": {
+      "name": "AMD Ryzen 7 5700G with Radeon Graphics",
+      "cores": 8,
+      "logicalProcessors": 16
+    },
+    "memory": {
+      "totalBytes": 32056164352,
+      "freeBytesAtStart": 23458136064
+    },
+    "graphics": [
+      {
+        "name": "AMD Radeon(TM) Graphics",
+        "adapterRamBytes": 2147483648,
+        "driverVersion": "31.0.12002.92"
+      }
+    ],
+    "vram": {
+      "status": "not_available",
+      "bytes": null,
+      "note": "No supported dedicated-GPU telemetry was available to this preliminary harness."
+    }
+  },
+  "models": [
+    {
+      "model": "qwen3.5:9b",
+      "status": "completed",
+      "elapsedMs": 13902,
+      "firstContentMs": 7416,
+      "loadMs": 6662,
+      "promptTokens": 33,
+      "generatedTokens": 45,
+      "generationMs": 6490,
+      "tokensPerSecond": 6.93,
+      "runtime": {
+        "status": "reported",
+        "processor": "100% CPU",
+        "loadedModelBytes": 6657199309
+      },
+      "cpuSecondsDelta": 0.563,
+      "ram": {
+        "ollamaWorkingSetBytesBefore": 61132800,
+        "ollamaWorkingSetBytesAfter": 61169664,
+        "ollamaPeakWorkingSetBytesAfter": 87990272
+      },
+      "vram": {
+        "status": "not_available",
+        "bytes": null
+      }
+    },
+    {
+      "model": "qwen3.5:4b",
+      "status": "completed",
+      "elapsedMs": 7949,
+      "firstContentMs": 5568,
+      "loadMs": 5150,
+      "promptTokens": 33,
+      "generatedTokens": 30,
+      "generationMs": 2381,
+      "tokensPerSecond": 12.6,
+      "runtime": {
+        "status": "reported",
+        "processor": "100% CPU",
+        "loadedModelBytes": 3435973837
+      },
+      "cpuSecondsDelta": 0.438,
+      "ram": {
+        "ollamaWorkingSetBytesBefore": 65204224,
+        "ollamaWorkingSetBytesAfter": 61734912,
+        "ollamaPeakWorkingSetBytesAfter": 87990272
+      },
+      "vram": {
+        "status": "not_available",
+        "bytes": null
+      }
+    },
+    {
+      "model": "gemma3:4b",
+      "status": "completed",
+      "elapsedMs": 5222,
+      "firstContentMs": 3866,
+      "loadMs": 3538,
+      "promptTokens": 32,
+      "generatedTokens": 21,
+      "generationMs": 1357,
+      "tokensPerSecond": 15.48,
+      "runtime": {
+        "status": "reported",
+        "processor": "100% CPU",
+        "loadedModelBytes": 3113851290
+      },
+      "cpuSecondsDelta": 0.531,
+      "ram": {
+        "ollamaWorkingSetBytesBefore": 73523200,
+        "ollamaWorkingSetBytesAfter": 85086208,
+        "ollamaPeakWorkingSetBytesAfter": 88629248
+      },
+      "vram": {
+        "status": "not_available",
+        "bytes": null
+      }
+    },
+    {
+      "model": "llama3.2:1b",
+      "status": "completed",
+      "elapsedMs": 2720,
+      "firstContentMs": 1788,
+      "loadMs": 1502,
+      "promptTokens": 53,
+      "generatedTokens": 29,
+      "generationMs": 934,
+      "tokensPerSecond": 31.04,
+      "runtime": {
+        "status": "reported",
+        "processor": "100% CPU",
+        "loadedModelBytes": 1610612736
+      },
+      "cpuSecondsDelta": 0.406,
+      "ram": {
+        "ollamaWorkingSetBytesBefore": 80994304,
+        "ollamaWorkingSetBytesAfter": 63766528,
+        "ollamaPeakWorkingSetBytesAfter": 88629248
+      },
+      "vram": {
+        "status": "not_available",
+        "bytes": null
+      }
+    },
+    {
+      "model": "llama3.2:3b",
+      "status": "completed",
+      "elapsedMs": 5925,
+      "firstContentMs": 2646,
+      "loadMs": 2260,
+      "promptTokens": 53,
+      "generatedTokens": 64,
+      "generationMs": 3280,
+      "tokensPerSecond": 19.51,
+      "runtime": {
+        "status": "reported",
+        "processor": "100% CPU",
+        "loadedModelBytes": 2791728742
+      },
+      "cpuSecondsDelta": 0.313,
+      "ram": {
+        "ollamaWorkingSetBytesBefore": 63594496,
+        "ollamaWorkingSetBytesAfter": 64823296,
+        "ollamaPeakWorkingSetBytesAfter": 88629248
+      },
+      "vram": {
+        "status": "not_available",
+        "bytes": null
+      }
+    },
+    {
+      "model": "qwen3.5:0.8b",
+      "status": "completed",
+      "elapsedMs": 3667,
+      "firstContentMs": 2284,
+      "loadMs": 2139,
+      "promptTokens": 33,
+      "generatedTokens": 54,
+      "generationMs": 1383,
+      "tokensPerSecond": 39.03,
+      "runtime": {
+        "status": "reported",
+        "processor": "100% CPU",
+        "loadedModelBytes": 1181116006
+      },
+      "cpuSecondsDelta": 0.438,
+      "ram": {
+        "ollamaWorkingSetBytesBefore": 67076096,
+        "ollamaWorkingSetBytesAfter": 63406080,
+        "ollamaPeakWorkingSetBytesAfter": 88629248
+      },
+      "vram": {
+        "status": "not_available",
+        "bytes": null
+      }
+    }
+  ]
+}
