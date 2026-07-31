@@ -173,20 +173,31 @@ Expected commit: `release: prepare AIP v0.1`
 Installed-Windows manual validation was approved on 2026-07-30 for packaged SHA
 `6b5dc1a0a18d3e346d04c6bd89de13775c681434` (CI run `30474813207`).
 
-## Post-v0.1 Phase 7: deeper personality and relationships
+## Post-v0.1 baseline
 
-Potential scope:
+AIP v0.1.0 was published from commit `b6f74b3793437a647186dd52eeb950ff4b3fb228`.
+The release and its documented manual-validation record are the authoritative baseline for
+post-v0.1 work. Implemented v0.1 behavior remains subject to its published limitations;
+future work must not be represented as released behavior.
 
-- personality evolution;
-- opinions and evidence;
-- relationship values;
-- hobbies and goals;
-- autonomous fictional activities;
-- agent-to-agent conversations;
-- owner-configurable relationship limits;
-- gradual offline conceptual progression.
+## Post-v0.1 Phase 7: cognitive core
 
-This phase requires a separate cognitive-core specification before implementation.
+The implementation contract is [the cognitive-core specification](COGNITIVE_CORE_SPEC.md).
+The Phase 7 product decisions are resolved. Phase 7 implementation must not begin until
+PR #2 is merged; no Phase 7 slice has started or is complete.
+
+- **Phase 7A — cognitive event foundation and protected/evolvable boundaries:** typed,
+  owner-scoped event processing, trait limits, auditability, and temporary-chat exclusion.
+- **Phase 7B — opinions and evidence:** sourced, inspectable opinions with correction,
+  dispute, and supersession workflows.
+- **Phase 7C — relationships:** bounded per-subject relationship dimensions, event history,
+  limits, reset, and rollback.
+- **Phase 7D — goals and fictional activities:** approval-bound durable goals and explicitly
+  fictional, budgeted activity state with no external action.
+- **Phase 7E — bounded agent-to-agent conversation:** visible, purpose-bound interactions
+  with hard resource budgets and deferred candidate processing.
+- **Phase 7F — integrated validation and UX hardening:** Portuguese explanations, restart
+  behavior, safety controls, and full cross-boundary validation.
 
 ## Post-v0.1 Phase 8: voice
 

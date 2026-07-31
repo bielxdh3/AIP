@@ -8,8 +8,8 @@ integration. The visual product name is **A.I.P.**
 
 ## Status
 
-Phase 0 is approved and complete. Phases 1 through 5 are implemented locally; the v0.1
-candidate is prepared but remains pending the documented Windows and Ollama validation:
+AIP v0.1.0 was published from commit `b6f74b3793437a647186dd52eeb950ff4b3fb228`.
+It is the released and verified baseline. Phases 1 through 5 provide:
 
 - pnpm workspace;
 - React and TypeScript main panel in Portuguese;
@@ -30,21 +30,19 @@ candidate is prepared but remains pending the documented Windows and Ollama vali
   deterministic placeholder animation states, and best-effort full-screen detection;
 - automated TypeScript, Python, Rust, secret-scan, and CI definitions.
 
-Runtime commit `a6ccb1badf6aa8a1f317ea1818c247d87f311fe6` passed the recorded Windows 11
-manual test at 100% display scaling and its exact-SHA GitHub Actions run. Windows 10,
-non-100% real display scaling, multiple monitors, and installer behavior remain manual
-validation limitations. Phase 1 automated tests do not require Ollama, but real discovery,
-streaming, queue, cancellation, bubble, restart, and provider-interruption behavior still
-require the documented manual smoke test. No model is downloaded automatically. Scoped
-memory candidates, memory review, and bounded summaries are implemented; tools, voice,
-Android, autonomous behavior, scheduling, and BielOS integration are not implemented.
+The documented installed-Windows validation approval and accepted limitations are retained in
+[v0.1 manual validation](docs/V0_1_MANUAL_VALIDATION.md). Ollama must currently be started
+manually; installers are unsigned; and the functional visual design remains unfinished. No
+model is downloaded automatically. Scoped memory candidates, memory review, and bounded
+summaries are implemented; Android, voice, supervised external tools, extensions, screen
+vision, BielOS integration, and post-v0.1 cognitive-core behavior are future work.
 
 ## Supported platform
 
 - Windows 10 64-bit minimum
 - Windows 11 64-bit
 
-Linux, macOS, iOS, and Android are not supported by Phase 1.
+Linux, macOS, iOS, and Android are not supported by v0.1.0.
 
 ## Stack
 
@@ -97,6 +95,7 @@ listener.
 - [Local benchmark profiles](docs/BENCHMARKS.md)
 - [v0.1 manual validation](docs/V0_1_MANUAL_VALIDATION.md)
 - [Known limitations](docs/KNOWN_LIMITATIONS.md)
+- [Phase 7 cognitive-core specification](docs/COGNITIVE_CORE_SPEC.md)
 - [Candidate checklist](docs/RELEASE_CHECKLIST.md)
 
 ## License
