@@ -183,8 +183,8 @@ future work must not be represented as released behavior.
 ## Post-v0.1 Phase 7: cognitive core
 
 The implementation contract is [the cognitive-core specification](COGNITIVE_CORE_SPEC.md).
-Phase 7 implementation must not begin until this specification PR is reviewed and its
-blocking product decisions are resolved.
+The Phase 7 product decisions are resolved. Phase 7 implementation must not begin until
+PR #2 is merged; no Phase 7 slice has started or is complete.
 
 - **Phase 7A — cognitive event foundation and protected/evolvable boundaries:** typed,
   owner-scoped event processing, trait limits, auditability, and temporary-chat exclusion.
