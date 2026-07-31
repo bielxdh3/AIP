@@ -154,6 +154,75 @@ export type AgentSimulatedState = {
   lastSimulatedAt: number;
 };
 
+export type CognitiveTrait = {
+  key: string;
+  value: number;
+  isProtected: boolean;
+};
+export type CognitiveEventSummary = {
+  id: string;
+  agentId: string;
+  kind: "trait_delta" | "owner_correction" | "rollback";
+  traitKey: string;
+  sourceKind: string;
+  reason: string;
+  confidence: number;
+  requestedValue: number;
+  appliedDelta: number | null;
+  priorValue: number;
+  resultingValue: number;
+  status: "applied" | "rejected" | "rolled_back";
+  code: string | null;
+  rollbackOfEventId: string | null;
+  createdAt: number;
+};
+export type CognitiveEventExplanation = {
+  event: CognitiveEventSummary;
+  traitLabel: string;
+};
+export type OwnerCorrectionRequest = {
+  agentId: string;
+  traitKey: string;
+  value: number;
+  reason: string;
+  idempotencyKey: string;
+};
+export type RollbackRequest = {
+  agentId: string;
+  eventId: string;
+  idempotencyKey: string;
+};
+export type CognitiveErrorResponse = { code: string; message: string };
+
+function cognitiveNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+export function parseCognitiveTrait(value: unknown): CognitiveTrait | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Partial<CognitiveTrait>;
+  return typeof candidate.key === "string" &&
+    cognitiveNumber(candidate.value) &&
+    typeof candidate.isProtected === "boolean"
+    ? (candidate as CognitiveTrait)
+    : null;
+}
+export function parseCognitiveEvent(
+  value: unknown,
+): CognitiveEventSummary | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Partial<CognitiveEventSummary>;
+  return typeof candidate.id === "string" &&
+    typeof candidate.agentId === "string" &&
+    typeof candidate.traitKey === "string" &&
+    cognitiveNumber(candidate.priorValue) &&
+    cognitiveNumber(candidate.resultingValue) &&
+    cognitiveNumber(candidate.requestedValue) &&
+    cognitiveNumber(candidate.confidence) &&
+    typeof candidate.createdAt === "number"
+    ? (candidate as CognitiveEventSummary)
+    : null;
+}
+
 export type QueueEntry = {
   requestId: string;
   agentId: string;
@@ -175,7 +244,8 @@ export type PhaseOneState = {
   selectedModelRef: string | null;
   defaultModelRef: string | null;
   modelOverrideRef: string | null;
-  effectiveModelSource: "agent_default" | "conversation_override" | "temporary_override";
+  effectiveModelSource:
+    "agent_default" | "conversation_override" | "temporary_override";
   selectedModelAvailable: boolean;
   keepAliveMinutes: number;
   queue: QueueEntry[];

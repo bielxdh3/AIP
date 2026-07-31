@@ -52,13 +52,38 @@ pub struct CognitiveEvent {
     pub kind: String,
     pub trait_key: String,
     pub source_kind: String,
+    pub source_reference: Option<String>,
     pub reason: String,
     pub confidence: f64,
+    pub requested_value: f64,
+    pub applied_delta: Option<f64>,
     pub prior_value: f64,
     pub resulting_value: f64,
     pub status: String,
+    pub code: Option<String>,
     pub rollback_of_event_id: Option<String>,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CognitiveEventExplanation {
+    pub event: CognitiveEvent,
+    pub trait_label: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraitDeltaCandidate {
+    pub agent_id: String,
+    pub trait_key: String,
+    pub delta: f64,
+    pub confidence: f64,
+    pub source_kind: String,
+    pub source_reference: String,
+    pub reason: String,
+    pub idempotency_key: String,
+    pub schema_version: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

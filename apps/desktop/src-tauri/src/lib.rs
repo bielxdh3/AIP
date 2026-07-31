@@ -19,8 +19,8 @@ use std::{
 use chat::ChatCoordinator;
 use database::Database;
 use domain::{
-    AgentMemory, AgentSimulatedState, AppSnapshot, CognitiveEvent, CognitiveTrait,
-    ConversationMessage, PhaseOneConversation, PhaseOneState, SendMessageResult,
+    AgentMemory, AgentSimulatedState, AppSnapshot, CognitiveEvent, CognitiveEventExplanation,
+    CognitiveTrait, ConversationMessage, PhaseOneConversation, PhaseOneState, SendMessageResult,
 };
 use overlays::{InteractiveRegion, OverlayInputState};
 use runtime::RuntimeController;
@@ -44,7 +44,7 @@ fn list_cognitive_traits(
         .as_ref()
         .ok_or("operation_unavailable")?
         .cognitive_traits(&agent_id)
-        .map_err(|_| "cognitive_request_rejected")
+        .map_err(|error| error.code())
 }
 
 #[tauri::command]
@@ -57,7 +57,21 @@ fn list_cognitive_events(
         .as_ref()
         .ok_or("operation_unavailable")?
         .cognitive_events(&agent_id)
-        .map_err(|_| "cognitive_request_rejected")
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn explain_cognitive_event(
+    state: State<'_, AppState>,
+    agent_id: String,
+    event_id: String,
+) -> Result<CognitiveEventExplanation, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .cognitive_event_explanation(&agent_id, &event_id)
+        .map_err(|error| error.code())
 }
 
 #[tauri::command]
@@ -74,7 +88,22 @@ fn create_owner_trait_correction(
         .as_ref()
         .ok_or("operation_unavailable")?
         .owner_correct_trait(&agent_id, &trait_key, value, &reason, &idempotency_key)
-        .map_err(|_| "cognitive_request_rejected")
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn rollback_cognitive_event(
+    state: State<'_, AppState>,
+    agent_id: String,
+    event_id: String,
+    idempotency_key: String,
+) -> Result<CognitiveEvent, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .rollback_cognitive_event(&agent_id, &event_id, &idempotency_key)
+        .map_err(|error| error.code())
 }
 
 #[tauri::command]
@@ -784,7 +813,9 @@ pub fn run() {
             get_app_snapshot,
             list_cognitive_traits,
             list_cognitive_events,
+            explain_cognitive_event,
             create_owner_trait_correction,
+            rollback_cognitive_event,
             set_safe_mode,
             get_phase_one_state,
             get_temporary_phase_one_state,

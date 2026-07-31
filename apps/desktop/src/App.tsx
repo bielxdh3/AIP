@@ -11,6 +11,9 @@ import type {
   AppSnapshot,
   AgentMemory,
   AgentSimulatedState,
+  CognitiveEventExplanation,
+  CognitiveEventSummary,
+  CognitiveTrait,
   ConversationMessage,
   PhaseOneConversation,
   ProvisionalAgent,
@@ -1431,6 +1434,182 @@ function AgentStateControls({ agentId }: { agentId: string }) {
   );
 }
 
+const cognitiveErrorCopy: Record<string, string> = {
+  protected_trait: "Este traço é protegido.",
+  trait_not_found: "Traço não disponível.",
+  invalid_value: "Valor inválido.",
+  invalid_reason: "Informe um motivo válido.",
+  rate_limit_window: "Limite de alteração de 30 dias atingido.",
+  rate_limit_event: "Alteração acima do limite permitido.",
+  rollback_conflict: "A reversão conflita com uma alteração posterior.",
+  rollback_not_allowed: "Este evento não pode ser revertido.",
+  persistence_failed: "Não foi possível salvar a alteração.",
+  operation_unavailable: "Operação indisponível.",
+};
+
+function CognitivePanel({ agentId }: { agentId: string }) {
+  const [traits, setTraits] = useState<CognitiveTrait[]>([]);
+  const [events, setEvents] = useState<CognitiveEventSummary[]>([]);
+  const [selected, setSelected] = useState<CognitiveEventExplanation | null>(
+    null,
+  );
+  const [traitKey, setTraitKey] = useState("");
+  const [value, setValue] = useState("0.5");
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    const [nextTraits, nextEvents] = await Promise.all([
+      invoke<CognitiveTrait[]>("list_cognitive_traits", { agentId }),
+      invoke<CognitiveEventSummary[]>("list_cognitive_events", { agentId }),
+    ]);
+    setTraits(nextTraits);
+    setEvents(nextEvents);
+    setTraitKey(
+      (current) =>
+        current || nextTraits.find((trait) => !trait.isProtected)?.key || "",
+    );
+  }, [agentId]);
+  useEffect(() => {
+    void load().catch(() =>
+      setError("Não foi possível carregar os valores cognitivos."),
+    );
+    setSelected(null);
+  }, [load]);
+  async function correct() {
+    if (!reason.trim()) {
+      setError("Informe o motivo da correção.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("create_owner_trait_correction", {
+        agentId,
+        traitKey,
+        value: Number(value),
+        reason,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      setReason("");
+      await load();
+    } catch (cause) {
+      setError(cognitiveErrorCopy[String(cause)] || "A correção foi recusada.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function rollback(eventId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("rollback_cognitive_event", {
+        agentId,
+        eventId,
+        idempotencyKey: crypto.randomUUID(),
+      });
+      await load();
+    } catch (cause) {
+      setError(cognitiveErrorCopy[String(cause)] || "A reversão foi recusada.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <section
+      className="settings-card"
+      aria-label="Valores cognitivos simulados"
+    >
+      <h2>Valores cognitivos simulados</h2>
+      <p>
+        São valores de produto simulados; não representam emoções reais nem
+        diagnóstico psicológico.
+      </p>
+      <ul>
+        {traits.map((trait) => (
+          <li key={trait.key}>
+            {trait.key}: {trait.value.toFixed(2)} —{" "}
+            {trait.isProtected ? "protegido" : "evolutivo"}
+          </li>
+        ))}
+      </ul>
+      <label>
+        Traço{" "}
+        <select
+          value={traitKey}
+          onChange={(event) => setTraitKey(event.target.value)}
+        >
+          {traits
+            .filter((trait) => !trait.isProtected)
+            .map((trait) => (
+              <option key={trait.key} value={trait.key}>
+                {trait.key}
+              </option>
+            ))}
+        </select>
+      </label>
+      <label>
+        Valor (0 a 1)
+        <input
+          type="number"
+          min="0"
+          max="1"
+          step="0.01"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+        />
+      </label>
+      <label>
+        Motivo obrigatório
+        <textarea
+          value={reason}
+          maxLength={500}
+          onChange={(event) => setReason(event.target.value)}
+        />
+      </label>
+      <button type="button" disabled={busy} onClick={() => void correct()}>
+        Corrigir valor
+      </button>
+      {error ? <p role="alert">{error}</p> : null}
+      <h3>Histórico recente</h3>
+      <ul>
+        {events.map((event) => (
+          <li key={event.id}>
+            <button
+              type="button"
+              onClick={() =>
+                void invoke<CognitiveEventExplanation>(
+                  "explain_cognitive_event",
+                  { agentId, eventId: event.id },
+                )
+                  .then(setSelected)
+                  .catch(() => setError("Não foi possível abrir a explicação."))
+              }
+            >
+              {event.traitKey}: {event.resultingValue.toFixed(2)} ({event.kind})
+            </button>
+            {event.status === "applied" && event.kind !== "rollback" ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void rollback(event.id)}
+              >
+                Reverter
+              </button>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      {selected ? (
+        <p>
+          {selected.traitLabel}: {selected.event.priorValue.toFixed(2)} →{" "}
+          {selected.event.resultingValue.toFixed(2)}. {selected.event.reason}
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
 function PixelDocumentEditor({ agentId }: { agentId: string }) {
   const [source, setSource] = useState("");
   const [activeLayerId, setActiveLayerId] = useState("body");
@@ -2325,6 +2504,10 @@ function App() {
             <details>
               <summary>Estado</summary>
               <AgentStateControls agentId={activeAgentId} />
+            </details>
+            <details>
+              <summary>Valores cognitivos</summary>
+              <CognitivePanel agentId={activeAgentId} />
             </details>
             <details>
               <summary>Aparência</summary>

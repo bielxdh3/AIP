@@ -186,7 +186,7 @@ The implementation contract is [the cognitive-core specification](COGNITIVE_CORE
 The Phase 7 product decisions are resolved. Phase 7 implementation must not begin until
 PR #2 is merged; no Phase 7 slice has started or is complete.
 
-- **Phase 7A — cognitive event foundation and protected/evolvable boundaries [IMPLEMENTED — REVIEW/MANUAL VALIDATION PENDING]:** typed,
+- **Phase 7A — cognitive event foundation and protected/evolvable boundaries [IMPLEMENTED — REVIEW/MANUAL VALIDATION PENDING]:** typed, bounded ordinary candidates, owner correction, safe explanation, and latest-event compensating rollback. Live extraction and all Phase 7B–7E capabilities remain excluded.
   owner-scoped event processing, trait limits, auditability, and temporary-chat exclusion.
 - **Phase 7B — opinions and evidence:** sourced, inspectable opinions with correction,
   dispute, and supersession workflows.

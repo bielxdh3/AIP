@@ -11,8 +11,9 @@ use uuid::Uuid;
 
 use crate::domain::{
     can_transition_message, AgentMemory, AgentPosition, AgentSimulatedState, CognitiveEvent,
-    CognitiveTrait, ConversationMessage, MessageAuthor, MessageStatus, PhaseOneConversation,
-    ProvisionalAgent, DEFAULT_KEEP_ALIVE_MINUTES, MAX_KEEP_ALIVE_MINUTES, MAX_USER_MESSAGE_BYTES,
+    CognitiveEventExplanation, CognitiveTrait, ConversationMessage, MessageAuthor, MessageStatus,
+    PhaseOneConversation, ProvisionalAgent, TraitDeltaCandidate, DEFAULT_KEEP_ALIVE_MINUTES,
+    MAX_KEEP_ALIVE_MINUTES, MAX_USER_MESSAGE_BYTES,
 };
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_phase0.sql");
@@ -57,8 +58,21 @@ pub enum DatabaseError {
     InvalidValue,
     #[error("invalid state transition")]
     InvalidTransition,
-    #[error("cognitive policy rejected request")]
-    PolicyRejected,
+    #[error("cognitive error: {0}")]
+    Cognitive(&'static str),
+}
+
+impl DatabaseError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Unavailable => "persistence_failed",
+            Self::NotFound => "event_not_found",
+            Self::OwnershipMismatch => "ownership_mismatch",
+            Self::InvalidValue => "invalid_value",
+            Self::InvalidTransition => "operation_unavailable",
+            Self::Cognitive(code) => code,
+        }
+    }
 }
 
 impl From<rusqlite::Error> for DatabaseError {
@@ -1970,7 +1984,7 @@ impl Database {
             .into_iter()
             .filter_map(|(key, value)| {
                 value.as_f64().map(|value| CognitiveTrait {
-                    is_protected: key.starts_with("protected_"),
+                    is_protected: !evolvable_trait(&key),
                     key,
                     value: value / 100.0,
                 })
@@ -1980,26 +1994,136 @@ impl Database {
 
     pub fn cognitive_events(&self, agent_id: &str) -> Result<Vec<CognitiveEvent>, DatabaseError> {
         let connection = self.open()?;
-        let mut statement = connection.prepare("SELECT id, agent_id, kind, trait_key, source_kind, reason, confidence, prior_value, resulting_value, status, rollback_of_event_id, created_at FROM cognitive_events WHERE agent_id = ?1 ORDER BY created_at DESC, id DESC")?;
+        ensure_agent(&connection, agent_id)?;
+        let mut statement = connection.prepare(EVENT_SELECT)?;
         let events = statement
-            .query_map(params![agent_id], |row| {
-                Ok(CognitiveEvent {
-                    id: row.get(0)?,
-                    agent_id: row.get(1)?,
-                    kind: row.get(2)?,
-                    trait_key: row.get(3)?,
-                    source_kind: row.get(4)?,
-                    reason: row.get(5)?,
-                    confidence: row.get(6)?,
-                    prior_value: row.get(7)?,
-                    resulting_value: row.get(8)?,
-                    status: row.get(9)?,
-                    rollback_of_event_id: row.get(10)?,
-                    created_at: row.get(11)?,
-                })
-            })?
+            .query_map(params![agent_id], map_cognitive_event)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(events)
+    }
+
+    pub fn cognitive_event_explanation(
+        &self,
+        agent_id: &str,
+        event_id: &str,
+    ) -> Result<CognitiveEventExplanation, DatabaseError> {
+        let connection = self.open()?;
+        let event = connection
+            .query_row(
+                &format!("{EVENT_SELECT} AND id = ?2"),
+                params![agent_id, event_id],
+                map_cognitive_event,
+            )
+            .optional()?
+            .ok_or(DatabaseError::Cognitive("event_not_found"))?;
+        Ok(CognitiveEventExplanation {
+            trait_label: trait_label(&event.trait_key).to_owned(),
+            event,
+        })
+    }
+
+    #[allow(dead_code)]
+    pub fn apply_trait_delta(
+        &self,
+        candidate: TraitDeltaCandidate,
+    ) -> Result<CognitiveEvent, DatabaseError> {
+        validate_candidate(&candidate)?;
+        let mut connection = self.open()?;
+        let tx = connection.transaction()?;
+        let (owner_id, source) = agent_profile(&tx, &candidate.agent_id)?;
+        if owner_id != OWNER_ID {
+            return Err(DatabaseError::OwnershipMismatch);
+        }
+        if let Some(existing) =
+            existing_event(&tx, &candidate.agent_id, &candidate.idempotency_key)?
+        {
+            if existing.kind == "trait_delta"
+                && existing.trait_key == candidate.trait_key
+                && existing.requested_value == candidate.delta
+                && existing.source_kind == candidate.source_kind
+            {
+                return Ok(existing);
+            }
+            return Err(DatabaseError::Cognitive("idempotency_conflict"));
+        }
+        if !evolvable_trait(&candidate.trait_key) {
+            return Err(DatabaseError::Cognitive(
+                if protected_trait(&candidate.trait_key) {
+                    "protected_trait"
+                } else {
+                    "trait_not_found"
+                },
+            ));
+        }
+        if candidate.source_kind != "internal_test" || candidate.source_reference.is_empty() {
+            return Err(DatabaseError::Cognitive("source_ineligible"));
+        }
+        let mut traits = parse_traits(&source)?;
+        let prior = trait_value(&traits, &candidate.trait_key)?;
+        let now = now_millis();
+        if evidence_seen(
+            &tx,
+            &candidate.agent_id,
+            &candidate.trait_key,
+            &candidate.source_kind,
+            &candidate.source_reference,
+        )? {
+            return Err(DatabaseError::Cognitive("duplicate_evidence"));
+        }
+        let requested = candidate.delta;
+        let per_event = requested.clamp(-0.05, 0.05);
+        let used: f64 = tx.query_row("SELECT COALESCE(SUM(ABS(applied_delta)), 0.0) FROM cognitive_events WHERE agent_id = ?1 AND trait_key = ?2 AND kind = 'trait_delta' AND status = 'applied' AND created_at >= ?3", params![candidate.agent_id, candidate.trait_key, now - 30 * 86_400_000_i64], |row| row.get(0))?;
+        let remaining = 0.10 - used;
+        if remaining <= 1e-9 {
+            return Err(DatabaseError::Cognitive("rate_limit_window"));
+        }
+        if opposite_oscillation(
+            &tx,
+            &candidate.agent_id,
+            &candidate.trait_key,
+            per_event,
+            now,
+        )? {
+            return Err(DatabaseError::Cognitive("oscillation_blocked"));
+        }
+        let applied = per_event.signum() * per_event.abs().min(remaining);
+        if applied.abs() <= 1e-9 {
+            return Err(DatabaseError::Cognitive("rate_limit_event"));
+        }
+        let resulting = (prior + applied).clamp(0.0, 1.0);
+        traits.insert(
+            candidate.trait_key.clone(),
+            serde_json::json!(resulting * 100.0),
+        );
+        let event = CognitiveEvent {
+            id: Uuid::now_v7().to_string(),
+            agent_id: candidate.agent_id.clone(),
+            kind: "trait_delta".into(),
+            trait_key: candidate.trait_key.clone(),
+            source_kind: candidate.source_kind.clone(),
+            source_reference: Some(candidate.source_reference.clone()),
+            reason: candidate.reason.trim().to_owned(),
+            confidence: candidate.confidence,
+            requested_value: requested,
+            applied_delta: Some(resulting - prior),
+            prior_value: prior,
+            resulting_value: resulting,
+            status: "applied".into(),
+            code: None,
+            rollback_of_event_id: None,
+            created_at: now,
+        };
+        persist_event(
+            &tx,
+            &owner_id,
+            &event,
+            &candidate.idempotency_key,
+            candidate.schema_version,
+        )?;
+        save_projection(&tx, &event.agent_id, &traits, now)?;
+        audit(&tx, &owner_id, &event, "trait_delta")?;
+        tx.commit()?;
+        Ok(event)
     }
 
     pub fn owner_correct_trait(
@@ -2010,51 +2134,343 @@ impl Database {
         reason: &str,
         idempotency_key: &str,
     ) -> Result<CognitiveEvent, DatabaseError> {
-        if !value.is_finite()
-            || !(0.0..=1.0).contains(&value)
-            || reason.trim().is_empty()
-            || reason.len() > 500
-            || idempotency_key.is_empty()
-            || idempotency_key.len() > 128
-        {
-            return Err(DatabaseError::InvalidValue);
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err(DatabaseError::Cognitive("invalid_value"));
+        }
+        if reason.trim().is_empty() || reason.trim().len() > 500 {
+            return Err(DatabaseError::Cognitive("invalid_reason"));
+        }
+        if !valid_idempotency_key(idempotency_key) {
+            return Err(DatabaseError::Cognitive("invalid_idempotency_key"));
         }
         let mut connection = self.open()?;
         let tx = connection.transaction()?;
-        if let Some(existing) = tx.query_row("SELECT id, agent_id, kind, trait_key, source_kind, reason, confidence, prior_value, resulting_value, status, rollback_of_event_id, created_at FROM cognitive_events WHERE agent_id = ?1 AND idempotency_key = ?2", params![agent_id, idempotency_key], |row| Ok(CognitiveEvent { id: row.get(0)?, agent_id: row.get(1)?, kind: row.get(2)?, trait_key: row.get(3)?, source_kind: row.get(4)?, reason: row.get(5)?, confidence: row.get(6)?, prior_value: row.get(7)?, resulting_value: row.get(8)?, status: row.get(9)?, rollback_of_event_id: row.get(10)?, created_at: row.get(11)? })).optional()? { return Ok(existing); }
-        let (owner_id, source): (String, String) = tx.query_row("SELECT a.owner_user_id, i.traits_json FROM agents a JOIN agent_identity_profiles i ON i.agent_id = a.id WHERE a.id = ?1", params![agent_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?.ok_or(DatabaseError::OwnershipMismatch)?;
-        if trait_key.starts_with("protected_") {
-            return Err(DatabaseError::PolicyRejected);
+        let (owner_id, source) = agent_profile(&tx, agent_id)?;
+        if owner_id != OWNER_ID {
+            return Err(DatabaseError::OwnershipMismatch);
         }
-        let mut traits: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str(&source).map_err(|_| DatabaseError::InvalidValue)?;
-        let prior = traits
-            .get(trait_key)
-            .and_then(serde_json::Value::as_f64)
-            .ok_or(DatabaseError::PolicyRejected)?
-            / 100.0;
+        if let Some(existing) = existing_event(&tx, agent_id, idempotency_key)? {
+            if existing.kind == "owner_correction"
+                && existing.trait_key == trait_key
+                && existing.requested_value == value
+                && existing.reason == reason.trim()
+            {
+                return Ok(existing);
+            }
+            return Err(DatabaseError::Cognitive("idempotency_conflict"));
+        }
+        if !evolvable_trait(trait_key) {
+            return Err(DatabaseError::Cognitive(if protected_trait(trait_key) {
+                "protected_trait"
+            } else {
+                "trait_not_found"
+            }));
+        }
+        let mut traits = parse_traits(&source)?;
+        let prior = trait_value(&traits, trait_key)?;
         traits.insert(trait_key.to_owned(), serde_json::json!(value * 100.0));
-        let id = Uuid::now_v7().to_string();
         let now = now_millis();
-        tx.execute("UPDATE agent_identity_profiles SET traits_json = ?1, updated_at = ?2 WHERE agent_id = ?3", params![serde_json::to_string(&traits).map_err(|_| DatabaseError::InvalidValue)?, now, agent_id])?;
-        tx.execute("INSERT INTO cognitive_events (id,agent_id,owner_user_id,idempotency_key,kind,trait_key,source_kind,reason,confidence,requested_value,prior_value,resulting_value,status,policy_version,schema_version,created_at,terminal_at) VALUES (?1,?2,?3,?4,'owner_correction',?5,'owner_correction',?6,1.0,?7,?8,?7,'applied',1,1,?9,?9)", params![id, agent_id, owner_id, idempotency_key, trait_key, reason.trim(), value, prior, now])?;
-        tx.execute("INSERT INTO cognitive_processing_checkpoints (agent_id,processor_key,idempotency_key,event_id,terminal_status,updated_at) VALUES (?1,'phase7a_owner_correction',?2,?3,'applied',?4)", params![agent_id,idempotency_key,id,now])?;
-        tx.commit()?;
-        Ok(CognitiveEvent {
-            id,
+        let event = CognitiveEvent {
+            id: Uuid::now_v7().to_string(),
             agent_id: agent_id.to_owned(),
             kind: "owner_correction".into(),
             trait_key: trait_key.into(),
             source_kind: "owner_correction".into(),
+            source_reference: None,
             reason: reason.trim().into(),
             confidence: 1.0,
+            requested_value: value,
+            applied_delta: None,
             prior_value: prior,
             resulting_value: value,
             status: "applied".into(),
+            code: None,
             rollback_of_event_id: None,
             created_at: now,
-        })
+        };
+        persist_event(&tx, &owner_id, &event, idempotency_key, 1)?;
+        save_projection(&tx, agent_id, &traits, now)?;
+        audit(&tx, &owner_id, &event, "owner_correction")?;
+        tx.commit()?;
+        Ok(event)
     }
+
+    pub fn rollback_cognitive_event(
+        &self,
+        agent_id: &str,
+        event_id: &str,
+        idempotency_key: &str,
+    ) -> Result<CognitiveEvent, DatabaseError> {
+        if !valid_idempotency_key(idempotency_key) {
+            return Err(DatabaseError::Cognitive("invalid_idempotency_key"));
+        }
+        let mut connection = self.open()?;
+        let tx = connection.transaction()?;
+        let (owner_id, source) = agent_profile(&tx, agent_id)?;
+        if owner_id != OWNER_ID {
+            return Err(DatabaseError::OwnershipMismatch);
+        }
+        if let Some(existing) = existing_event(&tx, agent_id, idempotency_key)? {
+            if existing.kind == "rollback"
+                && existing.rollback_of_event_id.as_deref() == Some(event_id)
+            {
+                return Ok(existing);
+            }
+            return Err(DatabaseError::Cognitive("idempotency_conflict"));
+        }
+        let target = tx
+            .query_row(
+                &format!("{EVENT_SELECT} AND id = ?2"),
+                params![agent_id, event_id],
+                map_cognitive_event,
+            )
+            .optional()?
+            .ok_or(DatabaseError::Cognitive("event_not_found"))?;
+        if target.kind == "rollback" || target.status != "applied" {
+            return Err(DatabaseError::Cognitive("rollback_not_allowed"));
+        }
+        if tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM cognitive_events WHERE rollback_of_event_id = ?1)",
+            params![event_id],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Err(DatabaseError::Cognitive("rollback_not_allowed"));
+        }
+        let latest: String = tx.query_row("SELECT id FROM cognitive_events WHERE agent_id = ?1 AND trait_key = ?2 AND status = 'applied' AND kind != 'rollback' ORDER BY created_at DESC, id DESC LIMIT 1", params![agent_id, target.trait_key], |row| row.get(0))?;
+        if latest != event_id {
+            return Err(DatabaseError::Cognitive("rollback_conflict"));
+        }
+        let mut traits = parse_traits(&source)?;
+        let current = trait_value(&traits, &target.trait_key)?;
+        if (current - target.resulting_value).abs() > f64::EPSILON {
+            return Err(DatabaseError::Cognitive("rollback_conflict"));
+        }
+        let now = now_millis();
+        traits.insert(
+            target.trait_key.clone(),
+            serde_json::json!(target.prior_value * 100.0),
+        );
+        let event = CognitiveEvent {
+            id: Uuid::now_v7().to_string(),
+            agent_id: agent_id.into(),
+            kind: "rollback".into(),
+            trait_key: target.trait_key.clone(),
+            source_kind: "rollback".into(),
+            source_reference: None,
+            reason: "Reversão solicitada pelo Owner".into(),
+            confidence: 1.0,
+            requested_value: target.prior_value,
+            applied_delta: Some(target.prior_value - current),
+            prior_value: current,
+            resulting_value: target.prior_value,
+            status: "applied".into(),
+            code: None,
+            rollback_of_event_id: Some(event_id.into()),
+            created_at: now,
+        };
+        persist_event(&tx, &owner_id, &event, idempotency_key, 1)?;
+        tx.execute(
+            "UPDATE cognitive_events SET status = 'rolled_back', terminal_at = ?1 WHERE id = ?2",
+            params![now, event_id],
+        )?;
+        save_projection(&tx, agent_id, &traits, now)?;
+        audit(&tx, &owner_id, &event, "rollback")?;
+        tx.commit()?;
+        Ok(event)
+    }
+}
+
+const EVENT_SELECT: &str = "SELECT id, agent_id, kind, trait_key, source_kind, source_reference, reason, confidence, requested_value, applied_delta, prior_value, resulting_value, status, terminal_code, rollback_of_event_id, created_at FROM cognitive_events WHERE agent_id = ?1";
+const EVOLVABLE_TRAITS: [&str; 6] = [
+    "curiosity",
+    "sociability",
+    "criticality",
+    "spontaneity",
+    "affection",
+    "autonomy",
+];
+
+fn evolvable_trait(key: &str) -> bool {
+    EVOLVABLE_TRAITS.contains(&key)
+}
+fn protected_trait(key: &str) -> bool {
+    key.starts_with("protected_") || !evolvable_trait(key)
+}
+fn trait_label(key: &str) -> &'static str {
+    match key {
+        "curiosity" => "Curiosidade",
+        "sociability" => "Sociabilidade",
+        "criticality" => "Criticidade",
+        "spontaneity" => "Espontaneidade",
+        "affection" => "Afetividade",
+        "autonomy" => "Autonomia",
+        _ => "Traço protegido",
+    }
+}
+fn valid_idempotency_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 128
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':'))
+}
+fn parse_traits(source: &str) -> Result<serde_json::Map<String, serde_json::Value>, DatabaseError> {
+    serde_json::from_str(source).map_err(|_| DatabaseError::Cognitive("persistence_failed"))
+}
+fn trait_value(
+    traits: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<f64, DatabaseError> {
+    let value = traits
+        .get(key)
+        .and_then(serde_json::Value::as_f64)
+        .ok_or(DatabaseError::Cognitive("trait_not_found"))?
+        / 100.0;
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err(DatabaseError::Cognitive("invalid_value"))
+    }
+}
+fn ensure_agent(connection: &Connection, agent_id: &str) -> Result<(), DatabaseError> {
+    connection
+        .query_row(
+            "SELECT owner_user_id FROM agents WHERE id = ?1",
+            params![agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or(DatabaseError::Cognitive("agent_not_found"))
+        .and_then(|owner| {
+            if owner == OWNER_ID {
+                Ok(())
+            } else {
+                Err(DatabaseError::OwnershipMismatch)
+            }
+        })
+}
+fn agent_profile(tx: &Transaction<'_>, agent_id: &str) -> Result<(String, String), DatabaseError> {
+    tx.query_row("SELECT a.owner_user_id, i.traits_json FROM agents a JOIN agent_identity_profiles i ON i.agent_id = a.id WHERE a.id = ?1", params![agent_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?.ok_or(DatabaseError::Cognitive("agent_not_found"))
+}
+fn map_cognitive_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<CognitiveEvent> {
+    Ok(CognitiveEvent {
+        id: row.get(0)?,
+        agent_id: row.get(1)?,
+        kind: row.get(2)?,
+        trait_key: row.get(3)?,
+        source_kind: row.get(4)?,
+        source_reference: row.get(5)?,
+        reason: row.get(6)?,
+        confidence: row.get(7)?,
+        requested_value: row.get(8)?,
+        applied_delta: row.get(9)?,
+        prior_value: row.get(10)?,
+        resulting_value: row.get(11)?,
+        status: row.get(12)?,
+        code: row.get(13)?,
+        rollback_of_event_id: row.get(14)?,
+        created_at: row.get(15)?,
+    })
+}
+fn existing_event(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    key: &str,
+) -> Result<Option<CognitiveEvent>, DatabaseError> {
+    tx.query_row(
+        &format!("{EVENT_SELECT} AND idempotency_key = ?2"),
+        params![agent_id, key],
+        map_cognitive_event,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+fn save_projection(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    traits: &serde_json::Map<String, serde_json::Value>,
+    now: i64,
+) -> Result<(), DatabaseError> {
+    tx.execute(
+        "UPDATE agent_identity_profiles SET traits_json = ?1, updated_at = ?2 WHERE agent_id = ?3",
+        params![
+            serde_json::to_string(traits)
+                .map_err(|_| DatabaseError::Cognitive("persistence_failed"))?,
+            now,
+            agent_id
+        ],
+    )?;
+    Ok(())
+}
+fn persist_event(
+    tx: &Transaction<'_>,
+    owner_id: &str,
+    event: &CognitiveEvent,
+    idempotency_key: &str,
+    schema_version: i64,
+) -> Result<(), DatabaseError> {
+    tx.execute("INSERT INTO cognitive_events (id,agent_id,owner_user_id,idempotency_key,kind,trait_key,source_kind,source_reference,reason,confidence,requested_value,applied_delta,prior_value,resulting_value,status,terminal_code,policy_version,schema_version,rollback_of_event_id,created_at,terminal_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,1,?17,?18,?19,?19)", params![event.id,event.agent_id,owner_id,idempotency_key,event.kind,event.trait_key,event.source_kind,event.source_reference,event.reason,event.confidence,event.requested_value,event.applied_delta,event.prior_value,event.resulting_value,event.status,event.code,schema_version,event.rollback_of_event_id,event.created_at])?;
+    tx.execute("INSERT INTO cognitive_processing_checkpoints (agent_id,processor_key,idempotency_key,event_id,terminal_status,updated_at) VALUES (?1,'phase7a',?2,?3,?4,?5)", params![event.agent_id,idempotency_key,event.id,event.status,event.created_at])?;
+    Ok(())
+}
+fn audit(
+    tx: &Transaction<'_>,
+    owner_id: &str,
+    event: &CognitiveEvent,
+    action: &str,
+) -> Result<(), DatabaseError> {
+    tx.execute("INSERT INTO cognitive_audit_log (id,agent_id,owner_user_id,event_id,action,result,policy_version,code,created_at) VALUES (?1,?2,?3,?4,?5,?6,1,?7,?8)", params![Uuid::now_v7().to_string(),event.agent_id,owner_id,event.id,action,event.status,event.code,event.created_at])?;
+    Ok(())
+}
+#[allow(dead_code)]
+fn evidence_seen(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    trait_key: &str,
+    source_kind: &str,
+    source_reference: &str,
+) -> Result<bool, DatabaseError> {
+    tx.query_row("SELECT EXISTS(SELECT 1 FROM cognitive_events WHERE agent_id = ?1 AND trait_key = ?2 AND source_kind = ?3 AND source_reference = ?4 AND status = 'applied')", params![agent_id,trait_key,source_kind,source_reference], |row| row.get(0)).map_err(Into::into)
+}
+#[allow(dead_code)]
+fn opposite_oscillation(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    trait_key: &str,
+    delta: f64,
+    now: i64,
+) -> Result<bool, DatabaseError> {
+    let mut statement = tx.prepare("SELECT applied_delta FROM cognitive_events WHERE agent_id = ?1 AND trait_key = ?2 AND kind = 'trait_delta' AND status = 'applied' AND created_at >= ?3 ORDER BY created_at DESC")?;
+    let values = statement
+        .query_map(
+            params![agent_id, trait_key, now - 7 * 86_400_000_i64],
+            |row| row.get::<_, Option<f64>>(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(values
+        .into_iter()
+        .flatten()
+        .filter(|previous| previous.signum() != delta.signum())
+        .count()
+        >= 2)
+}
+#[allow(dead_code)]
+fn validate_candidate(candidate: &TraitDeltaCandidate) -> Result<(), DatabaseError> {
+    if !candidate.delta.is_finite()
+        || candidate.delta == 0.0
+        || !candidate.confidence.is_finite()
+        || !(0.0..=1.0).contains(&candidate.confidence)
+        || candidate.reason.trim().is_empty()
+        || candidate.reason.len() > 500
+        || candidate.source_reference.len() > 128
+        || candidate.schema_version != 1
+    {
+        return Err(DatabaseError::Cognitive("invalid_value"));
+    }
+    if !valid_idempotency_key(&candidate.idempotency_key) {
+        return Err(DatabaseError::Cognitive("invalid_idempotency_key"));
+    }
+    Ok(())
 }
 
 fn valid_traits(source: &str) -> bool {
@@ -2203,7 +2619,7 @@ mod tests {
     use rusqlite::{params, Connection, OptionalExtension};
     use uuid::Uuid;
 
-    use crate::domain::{MessageAuthor, MessageStatus};
+    use crate::domain::{MessageAuthor, MessageStatus, TraitDeltaCandidate};
 
     use super::{
         Database, DatabaseError, PhaseOneSettings, ASTRA_ID, LUMA_ID, MIGRATION_0001,
@@ -3220,6 +3636,111 @@ mod tests {
         let upgraded = Database::initialize(&path).unwrap();
         assert_eq!(upgraded.simulated_state(ASTRA_ID).unwrap().mode, "normal");
         assert_eq!(upgraded.snapshot().unwrap().migration_version, 12);
+        cleanup(&path);
+    }
+
+    fn candidate(agent_id: &str, key: &str, delta: f64, evidence: &str) -> TraitDeltaCandidate {
+        TraitDeltaCandidate {
+            agent_id: agent_id.into(),
+            trait_key: key.into(),
+            delta,
+            confidence: 0.8,
+            source_kind: "internal_test".into(),
+            source_reference: evidence.into(),
+            reason: "deterministic test evidence".into(),
+            idempotency_key: format!("test-{evidence}"),
+            schema_version: 1,
+        }
+    }
+
+    fn with_initial_traits(mut agent: super::ProvisionalAgent) -> super::ProvisionalAgent {
+        agent.traits_json = r#"{"curiosity":50,"sociability":50,"criticality":50,"spontaneity":50,"affection":50,"autonomy":50}"#.into();
+        agent
+    }
+
+    #[test]
+    fn cognitive_deltas_are_bounded_idempotent_and_rollbackable() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let agent = database
+            .snapshot()
+            .unwrap()
+            .agents
+            .into_iter()
+            .find(|agent| agent.id == ASTRA_ID)
+            .unwrap();
+        database
+            .update_profile(&with_initial_traits(agent))
+            .unwrap();
+        let event = database
+            .apply_trait_delta(candidate(ASTRA_ID, "curiosity", 0.2, "evidence-1"))
+            .unwrap();
+        assert!((event.applied_delta.unwrap() - 0.05).abs() < 1e-9);
+        assert_eq!(
+            database
+                .apply_trait_delta(candidate(ASTRA_ID, "curiosity", 0.2, "evidence-1"))
+                .unwrap()
+                .id,
+            event.id
+        );
+        assert_eq!(
+            database
+                .apply_trait_delta(candidate(
+                    ASTRA_ID,
+                    "protected_identity",
+                    0.01,
+                    "evidence-2"
+                ))
+                .unwrap_err(),
+            DatabaseError::Cognitive("protected_trait")
+        );
+        let rollback = database
+            .rollback_cognitive_event(ASTRA_ID, &event.id, "rollback-1")
+            .unwrap();
+        assert_eq!(rollback.resulting_value, event.prior_value);
+        assert_eq!(
+            database
+                .rollback_cognitive_event(ASTRA_ID, &event.id, "rollback-1")
+                .unwrap()
+                .id,
+            rollback.id
+        );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn cognitive_window_clamps_and_rejects_equivalent_evidence() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let agent = database
+            .snapshot()
+            .unwrap()
+            .agents
+            .into_iter()
+            .find(|agent| agent.id == ASTRA_ID)
+            .unwrap();
+        database
+            .update_profile(&with_initial_traits(agent))
+            .unwrap();
+        database
+            .apply_trait_delta(candidate(ASTRA_ID, "autonomy", 0.05, "one"))
+            .unwrap();
+        let second = database
+            .apply_trait_delta(candidate(ASTRA_ID, "autonomy", 0.05, "two"))
+            .unwrap();
+        assert!((second.applied_delta.unwrap() - 0.05).abs() < 1e-9);
+        assert_eq!(
+            database
+                .apply_trait_delta(candidate(ASTRA_ID, "autonomy", 0.01, "three"))
+                .unwrap_err(),
+            DatabaseError::Cognitive("rate_limit_window")
+        );
+        let mut duplicate = candidate(ASTRA_ID, "autonomy", 0.01, "two");
+        duplicate.idempotency_key = "test-duplicate-evidence".into();
+        assert_eq!(
+            database.apply_trait_delta(duplicate).unwrap_err(),
+            DatabaseError::Cognitive("duplicate_evidence")
+        );
         cleanup(&path);
     }
 }
