@@ -1,6 +1,11 @@
 # Known limitations
 
-Installed-Windows manual validation passed for the v0.1 package on 2026-07-30. A local Ollama integration test is skipped when its required model is not installed. No cloud synchronization, Android client, BielOS integration, voice, external tools, or public release is included.
+Installed-Windows manual validation passed for the v0.1 package on 2026-07-30. AIP v0.1.0 was published from commit `b6f74b3793437a647186dd52eeb950ff4b3fb228`. A local Ollama integration test is skipped when its required model is not installed. v0.1.0 has no cloud synchronization, Android client, BielOS integration, voice, supervised external tools, extensions, screen vision, or post-v0.1 cognitive-core behavior.
+
+## Distribution and platform
+
+- v0.1.0 installers are unsigned.
+- v0.1.0 targets Windows 10 and Windows 11 on x64 hardware.
 
 ## Ollama startup
 
