@@ -9,12 +9,15 @@ CREATE TABLE cognitive_events (
   kind TEXT NOT NULL CHECK(kind IN ('trait_delta', 'owner_correction', 'rollback')),
   trait_key TEXT NOT NULL,
   source_kind TEXT NOT NULL,
+  source_reference TEXT,
   reason TEXT NOT NULL,
   confidence REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),
   requested_value REAL NOT NULL,
+  applied_delta REAL,
   prior_value REAL NOT NULL CHECK(prior_value >= 0.0 AND prior_value <= 1.0),
   resulting_value REAL NOT NULL CHECK(resulting_value >= 0.0 AND resulting_value <= 1.0),
   status TEXT NOT NULL CHECK(status IN ('applied', 'rejected', 'rolled_back')),
+  terminal_code TEXT,
   policy_version INTEGER NOT NULL,
   schema_version INTEGER NOT NULL,
   rollback_of_event_id TEXT REFERENCES cognitive_events(id),
@@ -34,6 +37,19 @@ CREATE TABLE cognitive_processing_checkpoints (
   updated_at INTEGER NOT NULL,
   PRIMARY KEY(agent_id, processor_key, idempotency_key)
 );
+
+CREATE TABLE cognitive_audit_log (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL REFERENCES agents(id),
+  owner_user_id TEXT NOT NULL REFERENCES users(id),
+  event_id TEXT NOT NULL REFERENCES cognitive_events(id),
+  action TEXT NOT NULL,
+  result TEXT NOT NULL,
+  policy_version INTEGER NOT NULL,
+  code TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX cognitive_audit_log_event ON cognitive_audit_log(event_id);
 
 INSERT INTO schema_migrations (version, applied_at) VALUES (12, unixepoch('subsec') * 1000);
 COMMIT;

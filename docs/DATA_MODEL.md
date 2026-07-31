@@ -215,6 +215,8 @@ and source filters. Editing a memory preserves its stable ID and source metadata
 
 Migration `0012` adds the deterministic trait-event foundation. `cognitive_events` is append-only and owner/agent scoped: it records the event and idempotency IDs, kind, trait key, source category, reason, confidence, requested/prior/resulting normalized values, policy/schema versions, terminal status, rollback link, and timestamps. `(agent_id, idempotency_key)` is unique and indexes support per-agent history and trait-window checks.
 
+Phase 7A persists the requested value separately from the applied delta, a controlled source reference, sanitized terminal code, checkpoint, and minimal audit row. Only the six typed trait keys are evolvable; all other keys, including identity and explicitly protected fields, are protected by default. Ordinary candidates are internal-only and bounded to `0.05` per event and `0.10` absolute change per trait in a rolling 30-day window. A positive remaining allowance is applied partially; zero allowance is rejected. Reversal creates an immutable compensating event and is only permitted for the latest applied non-rollback event of that trait; otherwise it returns `rollback_conflict`.
+
 `cognitive_processing_checkpoints` records the terminal outcome of a processor/idempotency key for safe replay. Trait values remain in the existing identity-profile JSON projection; the migration does not modify existing Astra/Luma traits or add opinions, relationships, goals, activities, or model-generated learning.
 
 ### `model_providers`
