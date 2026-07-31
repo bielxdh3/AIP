@@ -13,9 +13,9 @@
 
 ## Implemented scope
 
-Phase 7A partially provides deterministic Rust/SQLite trait events, owner correction, safe explanation projection, compensating rollback, checkpoints, and minimal audit metadata. The frontend exposes Portuguese inspection, explanation, correction, and rollback controls for Astra and Luma. It does not connect live model extraction: ordinary candidates remain an internal typed boundary and model references never determine cognitive state.
+Phase 7A partially provides deterministic Rust/SQLite trait events, owner correction, safe explanation projection, compensating rollback, checkpoints, and minimal audit metadata. Ordinary candidates now use typed controlled-internal or persisted conversation-message sources; conversation messages are only validated as a future adapter boundary and do not trigger live model extraction. Evidence identity is deterministic and independent of idempotency; source identifiers, not conversation content or hidden reasoning, are retained. The frontend exposes Portuguese inspection, explanation, correction, and rollback controls for Astra and Luma.
 
-Automated validation is recorded with the change that completes this partial scope. Phase 7A remains incomplete: source eligibility coverage, the full test matrix, and additional frontend coverage still remain. Manual Windows validation has not been performed, and the phase is not approved.
+Focused backend source-eligibility, policy, persistence, rollback, and redaction tests are recorded with this change: the Rust suite has 69 passing tests and one intentionally ignored local-Ollama integration test. The global formatting baseline remains limited to unchanged `apps/desktop/src-tauri/gen/schemas/{acl-manifests,capabilities,desktop-schema,windows-schema}.json`, `apps/desktop/src/{App.css,components/AgentSprite.tsx,conversation-state.test.ts,conversation-state.ts,pixel-document.test.ts,pixel-document.ts,use-phase-one.ts}`, and `pnpm-lock.yaml`. Phase 7A remains incomplete: the full test matrix, additional frontend coverage, and manual Windows validation still remain. The phase is not approved.
 
 ## Not yet validated
 

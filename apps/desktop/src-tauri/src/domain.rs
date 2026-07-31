@@ -74,13 +74,50 @@ pub struct CognitiveEventExplanation {
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
+pub enum CognitiveSource {
+    ControlledInternal {
+        processor_key: String,
+        evidence_id: String,
+    },
+    ConversationMessage {
+        conversation_id: String,
+        message_id: String,
+    },
+    OwnerCorrection,
+}
+
+impl CognitiveSource {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::ControlledInternal { .. } => "controlled_internal",
+            Self::ConversationMessage { .. } => "conversation_message",
+            Self::OwnerCorrection => "owner_correction",
+        }
+    }
+
+    pub fn evidence_identity(&self) -> Option<String> {
+        match self {
+            Self::ControlledInternal {
+                processor_key,
+                evidence_id,
+            } => Some(format!("{processor_key}:{evidence_id}")),
+            Self::ConversationMessage {
+                conversation_id,
+                message_id,
+            } => Some(format!("{conversation_id}:{message_id}")),
+            Self::OwnerCorrection => None,
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TraitDeltaCandidate {
     pub agent_id: String,
     pub trait_key: String,
     pub delta: f64,
     pub confidence: f64,
-    pub source_kind: String,
-    pub source_reference: String,
+    pub source: CognitiveSource,
     pub reason: String,
     pub idempotency_key: String,
     pub schema_version: i64,

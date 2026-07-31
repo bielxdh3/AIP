@@ -192,7 +192,20 @@ export type RollbackRequest = {
   eventId: string;
   idempotencyKey: string;
 };
-export type CognitiveErrorResponse = { code: string; message: string };
+export type CognitiveErrorCode =
+  | "source_ineligible"
+  | "source_not_found"
+  | "ownership_mismatch"
+  | "trait_not_found"
+  | "protected_trait"
+  | "idempotency_conflict"
+  | "duplicate_evidence"
+  | "rollback_conflict"
+  | "persistence_failed";
+export type CognitiveErrorResponse = {
+  code: CognitiveErrorCode;
+  message: string;
+};
 
 function cognitiveNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
