@@ -18,7 +18,7 @@ Work in the currently opened `bielxdh3/AIP` repository.
 
 Do not assume a local AIP path. Confirm the repository root and current Git state before changing files.
 
-The BielOS repository may be available locally at `E:\BielOS`. Its `AGENTS.md` and `.agents/skills` were used as a behavioral baseline. The AIP repository now contains its own adapted `AGENTS.md` and skills. Follow the AIP files as authoritative. Do not modify BielOS and do not copy BielOS runtime code.
+The AIP repository contains its own authoritative `AGENTS.md` and skills. BielOS is a separate project: do not modify it or copy its runtime code.
 
 ## Source of truth
 
