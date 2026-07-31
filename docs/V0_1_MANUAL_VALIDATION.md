@@ -4,6 +4,17 @@ The automated release build does not replace Windows validation. Before approval
 
 The current candidate includes locally built NSIS and MSI packages. Python quality checks require the repository development dependency `ruff`; its absence is an environment prerequisite, not a runtime claim.
 
+## Approval record
+
+Manual Windows validation of the installed package was approved on 2026-07-30.
+
+- Tested packaged SHA: `6b5dc1a0a18d3e346d04c6bd89de13775c681434`
+- CI run: [30474813207](https://github.com/bielxdh3/AIP/actions/runs/30474813207) (successful)
+- Artifact: `aip-windows-6325dffdbaca951f6417310208da7e68148e13bc`
+- Result: the packaged application opened, remained usable, and closed and reopened successfully. The blank-screen hook-order crash was resolved.
+
+The accepted v0.1 limitations are that AIP does not start Ollama automatically, and the current visual design is functional but awaits a dedicated redesign phase.
+
 ## Generation cancellation and recovery
 
 1. Start Ollama and the installed AIP package, then confirm the runtime is ready.

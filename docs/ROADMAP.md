@@ -152,7 +152,7 @@ Deliverables:
 
 Expected commit: `feat: add pixel editor and overlay physics`
 
-## Phase 6: v0.1 stabilization and packaging `[CANDIDATE PREPARED — MANUAL VALIDATION PENDING]`
+## Phase 6: v0.1 stabilization and packaging `[DONE]`
 
 Goal: produce a testable public Windows v0.1 package.
 
@@ -169,6 +169,9 @@ Deliverables:
 - honest manual validation record.
 
 Expected commit: `release: prepare AIP v0.1`
+
+Installed-Windows manual validation was approved on 2026-07-30 for packaged SHA
+`6b5dc1a0a18d3e346d04c6bd89de13775c681434` (CI run `30474813207`).
 
 ## Post-v0.1 Phase 7: deeper personality and relationships
 
