@@ -1,0 +1,298 @@
+import { describe, expect, it } from "vitest";
+import type { PhaseOneEvent, PhaseOneState } from "@aip/contracts";
+import {
+  applyPhaseOneEvent,
+  blockedSendCopy,
+  bubblePresentation,
+  canRequestCancellation,
+  conversationOverrideArguments,
+  compactPreview,
+  createConversationViewState,
+  messageFailureCopy,
+  messageStatusCopy,
+  providerRecoveryCopy,
+  providerStatusCopy,
+  requestForAgent,
+} from "./conversation-state";
+
+function phase(agentId = "astra"): PhaseOneState {
+  return {
+    agent: {
+      id: agentId,
+      name: "Astra",
+      profileKey: "owner",
+      spriteKey: "astra",
+      position: { x: 0, y: 0 },
+      birthday: "2000-01-01",
+      fictiveAge: 18,
+      ageCategory: "adult",
+      species: "agent",
+      pronouns: "they/them",
+      personalitySummary: "",
+      traitsJson: "{}",
+      appearancePreset: "astra",
+    },
+    conversation: {
+      id: `conversation-${agentId}`,
+      agentId,
+      title: "Conversa principal",
+      modelOverrideRef: null,
+    },
+    messages: [
+      {
+        id: "assistant",
+        conversationId: `conversation-${agentId}`,
+        agentId,
+        author: "agent",
+        content: "",
+        modelRef: "ollama:test",
+        status: "streaming",
+        createdAt: 1,
+        completedAt: null,
+        errorCode: null,
+        branchId: "branch-main",
+        turnGroupId: "user-1",
+      },
+    ],
+    branches: [],
+    turnVariants: [],
+    activeBranchId: null,
+    provider: {
+      state: "available",
+      detailCode: "provider_available",
+      models: [],
+      refreshedAt: 1,
+    },
+    selectedModelRef: "ollama:test",
+    defaultModelRef: "ollama:test",
+    modelOverrideRef: null,
+    effectiveModelSource: "agent_default",
+    selectedModelAvailable: true,
+    keepAliveMinutes: 15,
+    queue: [
+      {
+        requestId: "request",
+        agentId,
+        conversationId: `conversation-${agentId}`,
+        assistantMessageId: "assistant",
+        position: 0,
+        active: true,
+        cancellationRequested: false,
+      },
+    ],
+    canSend: true,
+    sendBlockedCode: null,
+  };
+}
+
+function event(
+  eventType: PhaseOneEvent["eventType"],
+  sequence: number | null,
+  content: string | null,
+): PhaseOneEvent {
+  return {
+    protocolVersion: 1,
+    eventType,
+    requestId: "request",
+    agentId: "astra",
+    conversationId: "conversation-astra",
+    assistantMessageId: "assistant",
+    sequence,
+    content,
+    errorCode: null,
+  };
+}
+
+describe("conversation event reducer", () => {
+  it("scopes a model override command to the active agent and conversation", () => {
+    expect(conversationOverrideArguments("luma", "secondary", "ollama:test")).toEqual({
+      agentId: "luma",
+      conversationId: "secondary",
+      modelRef: "ollama:test",
+    });
+    expect(conversationOverrideArguments("astra", "main", "").modelRef).toBeNull();
+  });
+
+  it("appends each ordered streaming chunk exactly once", () => {
+    const initial = createConversationViewState(phase());
+    const first = applyPhaseOneEvent(
+      initial,
+      event("generation.chunk", 1, "Olá"),
+    );
+    const duplicate = applyPhaseOneEvent(
+      first,
+      event("generation.chunk", 1, "Olá"),
+    );
+    const outOfOrder = applyPhaseOneEvent(
+      first,
+      event("generation.chunk", 3, "!"),
+    );
+    const second = applyPhaseOneEvent(
+      first,
+      event("generation.chunk", 2, " mundo"),
+    );
+    expect(first.phase.messages[0]?.content).toBe("Olá");
+    expect(duplicate).toBe(first);
+    expect(outOfOrder).toBe(first);
+    expect(second.phase.messages[0]?.content).toBe("Olá mundo");
+  });
+
+  it("ignores another agent and keeps terminal state idempotent", () => {
+    const initial = createConversationViewState(phase());
+    const wrongAgent = {
+      ...event("generation.chunk", 1, "x"),
+      agentId: "luma",
+    };
+    expect(applyPhaseOneEvent(initial, wrongAgent)).toBe(initial);
+    const complete = applyPhaseOneEvent(
+      initial,
+      event("generation.complete", 0, null),
+    );
+    expect(complete.phase.messages[0]?.status).toBe("complete");
+    expect(complete.phase.queue).toEqual([]);
+    expect(
+      applyPhaseOneEvent(complete, event("generation.failed", 0, null)),
+    ).toBe(complete);
+    expect(
+      applyPhaseOneEvent(complete, event("generation.cancelled", 0, null)),
+    ).toBe(complete);
+  });
+
+  it("rejects a terminal event whose sequence does not match accepted chunks", () => {
+    const initial = createConversationViewState(phase());
+    const chunked = applyPhaseOneEvent(
+      initial,
+      event("generation.chunk", 1, "parte"),
+    );
+    expect(
+      applyPhaseOneEvent(chunked, event("generation.complete", 0, null)),
+    ).toBe(chunked);
+    expect(
+      applyPhaseOneEvent(chunked, event("generation.complete", 1, null)).phase
+        .messages[0]?.status,
+    ).toBe("complete");
+  });
+
+  it("accepts an immediate cancellation terminal with the final sequence", () => {
+    const initial = createConversationViewState(phase());
+    const chunked = applyPhaseOneEvent(
+      initial,
+      event("generation.chunk", 1, "parte"),
+    );
+    expect(
+      applyPhaseOneEvent(chunked, event("generation.cancelled", 1, null)).phase
+        .messages[0]?.status,
+    ).toBe("cancelled");
+    expect(
+      applyPhaseOneEvent(chunked, event("generation.cancelled", 1, null)).phase
+        .queue,
+    ).toEqual([]);
+  });
+
+  it("settles cancellation when a racing chunk was intentionally suppressed", () => {
+    const initial = createConversationViewState(phase());
+    const chunked = applyPhaseOneEvent(
+      initial,
+      event("generation.chunk", 1, "parte"),
+    );
+    const cancelled = applyPhaseOneEvent(
+      chunked,
+      event("generation.cancelled", 2, null),
+    );
+    expect(cancelled.phase.messages[0]?.status).toBe("cancelled");
+    expect(cancelled.phase.queue).toEqual([]);
+  });
+
+  it("finalizes an inactive agent view without changing the active agent", () => {
+    const astra = createConversationViewState(phase("astra"));
+    const luma = createConversationViewState(phase("luma"));
+    const lumaTerminal = {
+      ...event("generation.complete", 0, null),
+      agentId: "luma",
+      conversationId: "conversation-luma",
+    };
+    const finalizedLuma = applyPhaseOneEvent(luma, lumaTerminal);
+    expect(finalizedLuma.phase.messages[0]?.status).toBe("complete");
+    expect(finalizedLuma.phase.queue).toEqual([]);
+    expect(astra.phase.messages[0]?.status).toBe("streaming");
+    expect(astra.phase.queue).toHaveLength(1);
+  });
+
+  it("exposes provider, model, cancel and compact bubble states", () => {
+    const current = phase();
+    expect(providerStatusCopy(current)).toBe("Ollama disponível");
+    expect(blockedSendCopy("selected_model_unavailable")).toContain(
+      "indisponível",
+    );
+    expect(requestForAgent(current.queue, "astra")?.active).toBe(true);
+    expect(requestForAgent(current.queue, "luma")).toBeNull();
+    expect(compactPreview("um\ndois\ntrês\nquatro")).toBe("um\ndois\ntrês…");
+  });
+
+  it("reports unavailable persisted selection without switching it", () => {
+    const current = phase();
+    current.selectedModelAvailable = false;
+    expect(providerStatusCopy(current)).toBe("Modelo selecionado indisponível");
+    expect(current.selectedModelRef).toBe("ollama:test");
+  });
+
+  it("explains how to recover when the local Ollama service is unavailable", () => {
+    const current = phase();
+    current.provider.state = "unavailable";
+    expect(providerRecoveryCopy(current)).toContain("Ollama não está ativo");
+    current.provider.state = "available";
+    expect(providerRecoveryCopy(current)).toBeNull();
+  });
+
+  it("derives compact, expanded and cancel controls from authoritative state", () => {
+    const current = phase();
+    current.messages[0]!.content = "um\ndois\ntrês\nquatro";
+    const active = bubblePresentation(current);
+    expect(active.preview).toBe("Gerando resposta…");
+    expect(active.fullText).toBe("um\ndois\ntrês\nquatro");
+    expect(active.request?.requestId).toBe("request");
+    expect(canRequestCancellation(active.request, null)).toBe(true);
+    expect(canRequestCancellation(active.request, "request")).toBe(false);
+    current.queue[0]!.cancellationRequested = true;
+    expect(bubblePresentation(current).preview).toBe("Cancelando resposta…");
+    expect(canRequestCancellation(current.queue[0]!, null)).toBe(false);
+    current.queue = [];
+    const complete = bubblePresentation(current);
+    expect(complete.preview).toBe("um\ndois\ntrês…");
+    expect(complete.request).toBeNull();
+  });
+
+  it("uses one terminal failure copy without exposing technical codes", () => {
+    const current = phase();
+    const failed = current.messages[0]!;
+    failed.status = "failed";
+    failed.errorCode = "provider_interrupted";
+    expect(messageStatusCopy(failed)).toBe("Não foi possível gerar a resposta");
+    failed.content = "texto parcial";
+    expect(messageStatusCopy(failed)).toBe("Resposta interrompida");
+    failed.errorCode = "runtime_process_exit_unexpected";
+    expect(messageStatusCopy(failed)).toBe("Resposta interrompida");
+    failed.status = "cancelled";
+    expect(messageStatusCopy(failed)).toBe("Resposta cancelada");
+    failed.status = "complete";
+    expect(messageStatusCopy(failed)).toBe("Concluída");
+    expect(messageFailureCopy("provider_stream_closed")).toContain(
+      "interrompida",
+    );
+    expect(messageFailureCopy("persistence_failed")).toContain("salva");
+    expect(messageFailureCopy("protocol_decode_failed")).toContain(
+      "comunicação",
+    );
+  });
+
+  it("keeps simultaneous Astra and Luma bubble reducers isolated", () => {
+    const astra = createConversationViewState(phase("astra"));
+    const luma = createConversationViewState(phase("luma"));
+    const updatedAstra = applyPhaseOneEvent(
+      astra,
+      event("generation.chunk", 1, "Astra reply"),
+    );
+    expect(updatedAstra.phase.messages[0]?.content).toBe("Astra reply");
+    expect(luma.phase.messages[0]?.content).toBe("");
+  });
+});

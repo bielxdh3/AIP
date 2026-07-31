@@ -416,3 +416,31 @@ These require tests and explicit limitations in the final implementation report.
 - Runtime spawn, malformed handshake, and runtime exit produce fixed status codes without raw
   process output or local paths.
 - No TCP listener, shell command RPC, model, secret, remote access, or BielOS boundary exists.
+
+## 21. Phase 1 implemented controls
+
+- Production Ollama traffic is fixed to plain HTTP on `127.0.0.1:11434`; there is no endpoint
+  setting, listener, LAN binding, redirect following, proxy inheritance, authentication, or
+  cloud transport.
+- Python accepts only versioned, bounded discovery, show, generation, cancellation, health, and
+  shutdown methods. There is no shell or arbitrary-code RPC.
+- Provider payload size, model count and identifiers, request context, stream chunks, cumulative
+  output, queue length, and error codes are bounded and tested.
+- Raw provider errors, payloads, paths, digests, prompts, messages, model output, environment
+  values, and model reasoning are not logged. Ollama `thinking` is discarded.
+- Python stderr is drained to prevent pipe blocking, but Rust accepts only a 16-entry bounded
+  allowlist of stable diagnostic codes. Raw tracebacks and arbitrary stderr text are discarded;
+  only stable lifecycle codes and the child exit code may appear in developer diagnostics.
+- Tool calls are never executed. A tool-only response becomes a stable unsupported failure; tool
+  metadata accompanying valid plain text is ignored.
+- Rust validates agent/conversation ownership, selected-model availability, safe mode, request
+  correlation, monotonic chunk order, terminal-state races, and message persistence.
+- SQLite is still Rust-only. React cannot call Ollama and Python cannot read or write AIP data.
+- Safe mode clears active and queued work, stops Python, hides all agent/bubble windows, and keeps
+  local history available in the administrative panel.
+
+Phase 1 adds no filesystem tools, production network listener, custom endpoint, automatic model
+download, remote access, Android, voice, extension, memory, or BielOS integration.
+# Phase 3 foundation
+
+Conversation and memory ownership is enforced by agent ID in persistent database operations. A conversation belonging to one agent cannot be selected by another.

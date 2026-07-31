@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     error::Error,
     sync::{Arc, RwLock},
 };
@@ -17,9 +17,17 @@ use crate::{
 
 const OVERLAY_WIDTH: f64 = 180.0;
 const OVERLAY_HEIGHT: f64 = 192.0;
+const BUBBLE_WIDTH: f64 = 360.0;
+const BUBBLE_HEIGHT: f64 = 280.0;
 const MAX_INTERACTIVE_REGIONS: usize = 256;
 const MAX_REGION_COORDINATE: f64 = 4096.0;
-const OVERLAY_LABELS: [&str; 2] = ["agent-astra", "agent-luma"];
+const OVERLAY_LABELS: [&str; 4] = [
+    "agent-astra",
+    "agent-luma",
+    "agent-astra-bubble",
+    "agent-luma-bubble",
+];
+const AGENT_LABELS: [&str; 2] = ["agent-astra", "agent-luma"];
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -81,6 +89,7 @@ pub enum OverlayInputError {
 #[derive(Clone, Default)]
 pub struct OverlayInputState {
     regions: Arc<RwLock<HashMap<String, Vec<InteractiveRegion>>>>,
+    visible_bubbles: Arc<RwLock<HashSet<String>>>,
 }
 
 impl OverlayInputState {
@@ -129,6 +138,25 @@ impl OverlayInputState {
         }
     }
 
+    fn set_bubble_visible(&self, label: &str, visible: bool) {
+        let mut bubbles = self
+            .visible_bubbles
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if visible {
+            bubbles.insert(label.to_string());
+        } else {
+            bubbles.remove(label);
+        }
+    }
+
+    fn bubble_visible(&self, label: &str) -> bool {
+        self.visible_bubbles
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(label)
+    }
+
     fn remove_window(&self, label: &str) {
         self.regions
             .write()
@@ -141,6 +169,14 @@ pub fn window_label(agent_id: &str) -> Option<&'static str> {
     match agent_id {
         "agt_astra_provisional" => Some("agent-astra"),
         "agt_luma_provisional" => Some("agent-luma"),
+        _ => None,
+    }
+}
+
+pub fn bubble_window_label(agent_id: &str) -> Option<&'static str> {
+    match agent_id {
+        "agt_astra_provisional" => Some("agent-astra-bubble"),
+        "agt_luma_provisional" => Some("agent-luma-bubble"),
         _ => None,
     }
 }
@@ -176,27 +212,108 @@ pub fn create_windows(
         track_lifecycle(
             &window,
             database.clone(),
-            agent.id,
+            agent.id.clone(),
             input_state.clone(),
             label,
         );
         if !safe_mode {
             window.show()?;
         }
+
+        let Some(bubble_label) = bubble_window_label(&agent.id) else {
+            continue;
+        };
+        let bubble_url = WebviewUrl::App(format!("index.html?bubble={}", agent.id).into());
+        let bubble = WebviewWindowBuilder::new(app, bubble_label, bubble_url)
+            .title(format!("A.I.P. â€” conversa com {}", agent.name))
+            .inner_size(BUBBLE_WIDTH, BUBBLE_HEIGHT)
+            .transparent(true)
+            .decorations(false)
+            .shadow(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .focused(false)
+            .visible(false)
+            .build()?;
+        install_regions(&bubble, bubble_label, &input_state, Vec::new())?;
+        let bubble_state = input_state.clone();
+        bubble.on_window_event(move |event| {
+            if matches!(event, WindowEvent::Destroyed) {
+                bubble_state.remove_window(bubble_label);
+                bubble_state.set_bubble_visible(bubble_label, false);
+            }
+        });
     }
     Ok(())
 }
 
-pub fn set_visible(app: &AppHandle, visible: bool) {
-    for label in OVERLAY_LABELS {
+pub fn set_visible(app: &AppHandle, input_state: &OverlayInputState, visible: bool) {
+    for label in AGENT_LABELS {
         if let Some(window) = app.get_webview_window(label) {
-            let _ = if visible {
-                window.show()
+            if visible {
+                // Windows can leave a borderless overlay minimized after it is hidden.
+                // Restore it before showing so every tracked agent follows safe-mode changes.
+                let _ = window.unminimize();
+                let _ = window.show();
             } else {
-                window.hide()
-            };
+                let _ = window.hide();
+            }
         }
     }
+    for label in ["agent-astra-bubble", "agent-luma-bubble"] {
+        if let Some(window) = app.get_webview_window(label) {
+            if visible && input_state.bubble_visible(label) {
+                let _ = window.unminimize();
+                let _ = window.show();
+            } else {
+                let _ = window.hide();
+            }
+        }
+    }
+}
+
+pub fn set_bubble_visible(
+    app: &AppHandle,
+    input_state: &OverlayInputState,
+    agent_id: &str,
+    visible: bool,
+) -> Result<(), OverlayInputError> {
+    let bubble_label = bubble_window_label(agent_id).ok_or(OverlayInputError::UnknownWindow)?;
+    let bubble = app
+        .get_webview_window(bubble_label)
+        .ok_or(OverlayInputError::UnknownWindow)?;
+    if visible {
+        install_regions(
+            &bubble,
+            bubble_label,
+            input_state,
+            vec![InteractiveRegion {
+                x: 8.0,
+                y: 8.0,
+                width: BUBBLE_WIDTH - 16.0,
+                height: 108.0,
+            }],
+        )?;
+        if let Err(error) = position_bubble(app, agent_id) {
+            let _ = install_regions(&bubble, bubble_label, input_state, Vec::new());
+            return Err(error);
+        }
+        input_state.set_bubble_visible(bubble_label, true);
+        if bubble.show().is_err() {
+            input_state.set_bubble_visible(bubble_label, false);
+            let _ = install_regions(&bubble, bubble_label, input_state, Vec::new());
+            return Err(OverlayInputError::NativeRegionFailed);
+        }
+        let _ = bubble.set_focus();
+    } else {
+        input_state.set_bubble_visible(bubble_label, false);
+        install_regions(&bubble, bubble_label, input_state, Vec::new())?;
+        bubble
+            .hide()
+            .map_err(|_| OverlayInputError::NativeRegionFailed)?;
+    }
+    Ok(())
 }
 
 pub fn clear_native_regions(app: &AppHandle, input_state: &OverlayInputState) {
@@ -215,6 +332,15 @@ pub fn reset_native_regions(app: &AppHandle) {
             if let Ok(hwnd) = window.hwnd() {
                 let _ = reset_with(&PlatformRegionInstaller, hwnd.0 as isize);
             }
+        }
+    }
+}
+
+pub fn close_all(app: &AppHandle, input_state: &OverlayInputState) {
+    clear_native_regions(app, input_state);
+    for label in OVERLAY_LABELS {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.destroy();
         }
     }
 }
@@ -274,6 +400,7 @@ fn track_lifecycle(
     label: &'static str,
 ) {
     let tracked_window = window.clone();
+    let app = window.app_handle().clone();
     window.on_window_event(move |event| match event {
         WindowEvent::Moved(position) => {
             let scale = tracked_window.scale_factor().unwrap_or(1.0);
@@ -282,10 +409,60 @@ fn track_lifecycle(
                 f64::from(position.x) / scale,
                 f64::from(position.y) / scale,
             );
+            if input_state
+                .visible_bubbles
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|bubble| bubble_window_label(&agent_id) == Some(bubble.as_str()))
+            {
+                let _ = position_bubble(&app, &agent_id);
+            }
         }
         WindowEvent::Destroyed => input_state.remove_window(label),
         _ => {}
     });
+}
+
+fn position_bubble(app: &AppHandle, agent_id: &str) -> Result<(), OverlayInputError> {
+    let agent_label = window_label(agent_id).ok_or(OverlayInputError::UnknownWindow)?;
+    let bubble_label = bubble_window_label(agent_id).ok_or(OverlayInputError::UnknownWindow)?;
+    let agent = app
+        .get_webview_window(agent_label)
+        .ok_or(OverlayInputError::UnknownWindow)?;
+    let bubble = app
+        .get_webview_window(bubble_label)
+        .ok_or(OverlayInputError::UnknownWindow)?;
+    let agent_position = agent
+        .outer_position()
+        .map_err(|_| OverlayInputError::NativeRegionFailed)?;
+    let scale = agent
+        .scale_factor()
+        .map_err(|_| OverlayInputError::NativeRegionFailed)?;
+    let monitor = agent
+        .current_monitor()
+        .map_err(|_| OverlayInputError::NativeRegionFailed)?
+        .ok_or(OverlayInputError::NativeRegionFailed)?;
+    let monitor_position = monitor.position();
+    let monitor_size = monitor.size();
+    let bubble_width = (BUBBLE_WIDTH * scale).round() as i32;
+    let bubble_height = (BUBBLE_HEIGHT * scale).round() as i32;
+    let agent_width = (OVERLAY_WIDTH * scale).round() as i32;
+    let right = monitor_position.x + monitor_size.width as i32;
+    let bottom = monitor_position.y + monitor_size.height as i32;
+    let preferred_x = agent_position.x + agent_width;
+    let x = if preferred_x + bubble_width <= right {
+        preferred_x
+    } else {
+        (agent_position.x - bubble_width).max(monitor_position.x)
+    };
+    let y = agent_position.y.clamp(
+        monitor_position.y,
+        (bottom - bubble_height).max(monitor_position.y),
+    );
+    bubble
+        .set_position(tauri::PhysicalPosition::new(x, y))
+        .map_err(|_| OverlayInputError::NativeRegionFailed)
 }
 
 #[cfg(test)]
@@ -379,5 +556,17 @@ mod tests {
         assert!(state.regions("agent-luma").is_empty());
         state.remove_window("agent-astra");
         assert!(state.regions("agent-astra").is_empty());
+    }
+
+    #[test]
+    fn simultaneous_bubble_visibility_is_independent() {
+        let state = OverlayInputState::default();
+        state.set_bubble_visible("agent-astra-bubble", true);
+        state.set_bubble_visible("agent-luma-bubble", true);
+        assert!(state.bubble_visible("agent-astra-bubble"));
+        assert!(state.bubble_visible("agent-luma-bubble"));
+        state.set_bubble_visible("agent-astra-bubble", false);
+        assert!(!state.bubble_visible("agent-astra-bubble"));
+        assert!(state.bubble_visible("agent-luma-bubble"));
     }
 }

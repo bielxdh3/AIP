@@ -1,5 +1,12 @@
 # AIP Data Model
 
+## Phase 2 identity
+
+One implicit local Owner owns the two fixed initial agents. Migration `0004` adds a
+per-agent identity profile and a nullable main-conversation model override. Existing
+Astra and Luma records, positions, histories, main conversations, model defaults, and
+keep-alive settings are preserved; missing identity fields receive deterministic defaults.
+
 ## 1. Principles
 
 - SQLite is the authoritative local database.
@@ -153,6 +160,10 @@ Temporary conversations are not stored here.
 | `model_ref` | text nullable | Model used |
 | `created_at` | integer | UTC milliseconds |
 
+The current v0.1 implementation refreshes a bounded local summary from completed
+turns only. Failed and cancelled turns are excluded; replacing a summary marks the
+previous record superseded rather than rewriting message history.
+
 ## 5. Memory
 
 ### `memories`
@@ -176,6 +187,14 @@ Temporary conversations are not stored here.
 | `updated_at` | integer | UTC milliseconds |
 | `archived_at` | integer nullable | Archive time |
 | `trashed_at` | integer nullable | Trash time |
+
+Normal conversations may create a pending candidate only from an explicit Owner
+instruction (`lembre que`, `lembra que`, or `anote que`) after the associated
+assistant response completes. The candidate retains its message and conversation
+source; implicit inferences do not become memories automatically.
+
+Memory access is always scoped by agent ID and supports text, status, category,
+and source filters. Editing a memory preserves its stable ID and source metadata.
 
 ### `memory_conflicts`
 
@@ -373,4 +392,23 @@ two provisional `agents`, `agent_screen_preferences`, and bounded `app_settings`
 data layer seeds stable provisional identifiers, persists safe mode and positions, enables
 foreign keys on every connection, and applies the migration idempotently.
 
-Conversation, message, memory, model, audit, export, and multi-user tables remain design-only.
+Memory, model inventory, audit, export, and multi-user tables remain design-only.
+
+## 14. Phase 1 implemented subset
+
+Migration `0002_phase1_conversations.sql` adds `conversations` and
+`conversation_messages`. Rust creates exactly one active provisional main conversation for
+each existing agent, using a UUIDv7 identifier and the title `Conversa principal`.
+
+The message table stores explicit conversation and agent identifiers with a composite foreign
+key, plain text, the actual provider-qualified model reference, generation request correlation,
+validated lifecycle status, timestamps, and one sanitized terminal error code. Ordering uses
+`created_at` and `id`; history reads always validate the requested agent/conversation pair.
+
+The Phase 1 selected model and keep-alive remain typed `app_settings` entries. Missing models do
+not erase the saved reference or conversation history. On startup, abandoned `pending` and
+`streaming` assistant rows become `failed` with `runtime_interrupted`, preserving any valid
+partial content. The in-memory queue is not persisted; SQLite messages remain authoritative.
+# Phase 3 foundation
+
+Phase 3 adds agent-scoped normal conversations, an active-conversation preference, memory records, and separate summary storage. Each record remains owned by exactly one agent and the implicit local Owner; cross-agent reads and assignments are rejected by the Rust database layer.

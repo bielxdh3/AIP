@@ -1,5 +1,15 @@
 export const PROTOCOL_VERSION = 1 as const;
 
+export const PHASE_ONE_LIMITS = {
+  maxUserMessageBytes: 16_384,
+  maxHistoryMessages: 32,
+  maxContextBytes: 49_152,
+  maxStreamChunkBytes: 8_192,
+  maxAssistantOutputBytes: 65_536,
+  maxQueueLength: 8,
+  maxDiscoveredModels: 64,
+} as const;
+
 export type RuntimeState =
   "stopped" | "starting" | "ready" | "unavailable" | "crashed" | "safe_mode";
 
@@ -29,15 +39,173 @@ export type ProvisionalAgent = {
   profileKey: "owner" | "companion";
   spriteKey: "astra" | "luma";
   position: AgentPosition;
+  birthday: string;
+  fictiveAge: number;
+  ageCategory: string;
+  species: string;
+  pronouns: string;
+  personalitySummary: string;
+  traitsJson: string;
+  appearancePreset: string;
 };
 
 export type AppSnapshot = {
   appVersion: string;
+  buildSha: string;
+  buildTimestamp: string;
+  runtimePackagingMode: string;
   safeMode: boolean;
   databaseReady: boolean;
   migrationVersion: number;
   runtime: RuntimeStatus;
   agents: ProvisionalAgent[];
+  onboardingRequired: boolean;
+};
+
+export type ProviderState =
+  "checking" | "available" | "empty" | "unavailable" | "malformed" | "timeout";
+
+export type OllamaModel = {
+  ref: string;
+  providerModelId: string;
+  displayName: string;
+  size: number;
+  family: string | null;
+  parameterSize: string | null;
+  quantization: string | null;
+  capabilities: string[];
+};
+
+export type ProviderSnapshot = {
+  state: ProviderState;
+  detailCode: string;
+  models: OllamaModel[];
+  refreshedAt: number | null;
+};
+
+export type ConversationMessageStatus =
+  "pending" | "streaming" | "complete" | "failed" | "cancelled";
+
+export type ConversationMessageAuthor = "user" | "agent" | "system";
+
+export type ConversationMessage = {
+  id: string;
+  conversationId: string;
+  agentId: string;
+  author: ConversationMessageAuthor;
+  content: string;
+  modelRef: string | null;
+  status: ConversationMessageStatus;
+  createdAt: number;
+  completedAt: number | null;
+  errorCode: string | null;
+  branchId: string;
+  turnGroupId: string;
+};
+
+export type ConversationBranch = {
+  id: string;
+  parentBranchId: string | null;
+  parentMessageId: string | null;
+  createdAt: number;
+};
+
+export type ConversationTurnVariant = {
+  assistantMessageId: string;
+  branchId: string;
+  turnGroupId: string;
+};
+
+export type PhaseOneConversation = {
+  id: string;
+  agentId: string;
+  title: string;
+  modelOverrideRef: string | null;
+};
+
+export type AgentMemory = {
+  id: string;
+  agentId: string;
+  category: string;
+  content: string;
+  status: "active" | "archived" | "trashed" | "candidate_rejected";
+  confirmationStatus: "confirmed" | "pending" | "rejected";
+  confidenceMilli: number;
+  importance: number;
+  sourceType: string;
+  sourceMessageId: string | null;
+  sourceConversationId: string | null;
+  conflictKey: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type AgentSimulatedState = {
+  agentId: string;
+  sleep: number;
+  energy: number;
+  mood: number;
+  focus: number;
+  curiosity: number;
+  socialFatigue: number;
+  mode: "normal" | "voice_muted" | "silent";
+  suspended: boolean;
+  wakeNowUntil: number | null;
+  lastSimulatedAt: number;
+};
+
+export type QueueEntry = {
+  requestId: string;
+  agentId: string;
+  conversationId: string;
+  assistantMessageId: string;
+  position: number;
+  active: boolean;
+  cancellationRequested: boolean;
+};
+
+export type PhaseOneState = {
+  agent: ProvisionalAgent;
+  conversation: PhaseOneConversation;
+  messages: ConversationMessage[];
+  branches: ConversationBranch[];
+  turnVariants: ConversationTurnVariant[];
+  activeBranchId: string | null;
+  provider: ProviderSnapshot;
+  selectedModelRef: string | null;
+  defaultModelRef: string | null;
+  modelOverrideRef: string | null;
+  effectiveModelSource: "agent_default" | "conversation_override" | "temporary_override";
+  selectedModelAvailable: boolean;
+  keepAliveMinutes: number;
+  queue: QueueEntry[];
+  canSend: boolean;
+  sendBlockedCode: string | null;
+};
+
+export type SendMessageResult = {
+  requestId: string;
+  conversationId: string;
+  userMessageId: string;
+  assistantMessageId: string;
+};
+
+export type PhaseOneEvent = {
+  protocolVersion: typeof PROTOCOL_VERSION;
+  eventType:
+    | "state.changed"
+    | "generation.started"
+    | "generation.chunk"
+    | "generation.complete"
+    | "generation.failed"
+    | "generation.cancelled";
+  requestId: string | null;
+  agentId: string | null;
+  conversationId: string | null;
+  assistantMessageId: string | null;
+  sequence: number | null;
+  content: string | null;
+  errorCode: string | null;
 };
 
 export type HealthRequest = {

@@ -11,7 +11,11 @@ use tauri::{AppHandle, Manager};
 
 use crate::overlays;
 
-pub fn spawn_monitor(app: AppHandle, safe_mode: Arc<AtomicBool>) {
+pub fn spawn_monitor(
+    app: AppHandle,
+    safe_mode: Arc<AtomicBool>,
+    input_state: overlays::OverlayInputState,
+) {
     thread::spawn(move || {
         let mut last_hidden = None;
         loop {
@@ -20,7 +24,7 @@ pub fn spawn_monitor(app: AppHandle, safe_mode: Arc<AtomicBool>) {
             }
             let hidden = safe_mode.load(Ordering::SeqCst) || foreground_is_fullscreen();
             if last_hidden != Some(hidden) {
-                overlays::set_visible(&app, !hidden);
+                overlays::set_visible(&app, &input_state, !hidden);
                 last_hidden = Some(hidden);
             }
             thread::sleep(Duration::from_millis(750));

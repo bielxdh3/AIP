@@ -1,5 +1,10 @@
 # AIP Roadmap
 
+## Phase 2
+
+Persistent identity profiles, per-agent model defaults, and the one-main-conversation
+boundary are implemented. Manual Windows Phase 2 validation remains pending.
+
 ## Roadmap principles
 
 - Build AIP standalone before BielOS integration.
@@ -48,7 +53,7 @@ Excluded:
 
 Expected commit: `chore: bootstrap AIP desktop workspace`
 
-## Phase 1: local conversation vertical slice `[NEXT]`
+## Phase 1: local conversation vertical slice `[PENDING VALIDATION]`
 
 Goal: prove one complete model conversation path without coupling agent identity to the model.
 
@@ -67,7 +72,12 @@ Deliverables:
 
 Expected commit: `feat: add local conversation vertical slice`
 
-## Phase 2: two-agent creation and isolation
+Implementation is present locally. Automated fake-provider, persistence, queue, protocol,
+frontend, build, and security gates are required before the local commit. The phase remains
+pending until real Windows and Ollama discovery, streaming, restart, queue, cancellation,
+provider interruption, bubble, and click-through checks pass against the exact commit.
+
+## Phase 2: two-agent creation and isolation `[IMPLEMENTED — MANUAL VALIDATION PENDING]`
 
 Goal: create and persist two independent agents under the implicit Owner.
 
@@ -84,7 +94,7 @@ Deliverables:
 
 Expected commit: `feat: add two-agent creation and isolation`
 
-## Phase 3: memory and temporary chat
+## Phase 3: memory and temporary chat `[IMPLEMENTED — MANUAL VALIDATION PENDING]`
 
 Goal: add initial learning without deep personality evolution.
 
@@ -102,7 +112,7 @@ Deliverables:
 
 Expected commit: `feat: add initial memory and temporary chat`
 
-## Phase 4: states, modes, and scheduling
+## Phase 4: states and modes `[IMPLEMENTED — MANUAL VALIDATION PENDING]`
 
 Goal: introduce deterministic fictional state and robust application modes.
 
@@ -117,9 +127,11 @@ Deliverables:
 - queue priority and basic resource settings;
 - clear UI status.
 
+Local scheduling is intentionally deferred because calendar integration is outside v0.1.
+
 Expected commit: `feat: add agent states and application modes`
 
-## Phase 5: pixel editor and overlay behavior
+## Phase 5: pixel editor and overlay behavior `[IMPLEMENTED — MANUAL VALIDATION PENDING]`
 
 Goal: replace provisional appearance handling with the initial complete visual toolset.
 
@@ -140,7 +152,7 @@ Deliverables:
 
 Expected commit: `feat: add pixel editor and overlay physics`
 
-## Phase 6: v0.1 stabilization and packaging
+## Phase 6: v0.1 stabilization and packaging `[DONE]`
 
 Goal: produce a testable public Windows v0.1 package.
 
@@ -157,6 +169,9 @@ Deliverables:
 - honest manual validation record.
 
 Expected commit: `release: prepare AIP v0.1`
+
+Installed-Windows manual validation was approved on 2026-07-30 for packaged SHA
+`6b5dc1a0a18d3e346d04c6bd89de13775c681434` (CI run `30474813207`).
 
 ## Post-v0.1 Phase 7: deeper personality and relationships
 
