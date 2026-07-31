@@ -19,8 +19,8 @@ use std::{
 use chat::ChatCoordinator;
 use database::Database;
 use domain::{
-    AgentMemory, AgentSimulatedState, AppSnapshot, ConversationMessage, PhaseOneConversation,
-    PhaseOneState, SendMessageResult,
+    AgentMemory, AgentSimulatedState, AppSnapshot, CognitiveEvent, CognitiveTrait,
+    ConversationMessage, PhaseOneConversation, PhaseOneState, SendMessageResult,
 };
 use overlays::{InteractiveRegion, OverlayInputState};
 use runtime::RuntimeController;
@@ -32,6 +32,49 @@ struct AppState {
     chat: Option<ChatCoordinator>,
     safe_mode: Arc<AtomicBool>,
     overlay_input: OverlayInputState,
+}
+
+#[tauri::command]
+fn list_cognitive_traits(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CognitiveTrait>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .cognitive_traits(&agent_id)
+        .map_err(|_| "cognitive_request_rejected")
+}
+
+#[tauri::command]
+fn list_cognitive_events(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CognitiveEvent>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .cognitive_events(&agent_id)
+        .map_err(|_| "cognitive_request_rejected")
+}
+
+#[tauri::command]
+fn create_owner_trait_correction(
+    state: State<'_, AppState>,
+    agent_id: String,
+    trait_key: String,
+    value: f64,
+    reason: String,
+    idempotency_key: String,
+) -> Result<CognitiveEvent, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .owner_correct_trait(&agent_id, &trait_key, value, &reason, &idempotency_key)
+        .map_err(|_| "cognitive_request_rejected")
 }
 
 #[tauri::command]
@@ -739,6 +782,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_app_snapshot,
+            list_cognitive_traits,
+            list_cognitive_events,
+            create_owner_trait_correction,
             set_safe_mode,
             get_phase_one_state,
             get_temporary_phase_one_state,

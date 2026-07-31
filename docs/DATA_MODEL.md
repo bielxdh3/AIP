@@ -211,6 +211,12 @@ and source filters. Editing a memory preserves its stable ID and source metadata
 
 ## 6. Models
 
+## Phase 7A cognitive events
+
+Migration `0012` adds the deterministic trait-event foundation. `cognitive_events` is append-only and owner/agent scoped: it records the event and idempotency IDs, kind, trait key, source category, reason, confidence, requested/prior/resulting normalized values, policy/schema versions, terminal status, rollback link, and timestamps. `(agent_id, idempotency_key)` is unique and indexes support per-agent history and trait-window checks.
+
+`cognitive_processing_checkpoints` records the terminal outcome of a processor/idempotency key for safe replay. Trait values remain in the existing identity-profile JSON projection; the migration does not modify existing Astra/Luma traits or add opinions, relationships, goals, activities, or model-generated learning.
+
 ### `model_providers`
 
 | Field | Type | Notes |
