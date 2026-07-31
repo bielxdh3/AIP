@@ -10,9 +10,9 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::domain::{
-    can_transition_message, AgentMemory, AgentPosition, AgentSimulatedState, ConversationMessage,
-    MessageAuthor, MessageStatus, PhaseOneConversation, ProvisionalAgent,
-    DEFAULT_KEEP_ALIVE_MINUTES, MAX_KEEP_ALIVE_MINUTES, MAX_USER_MESSAGE_BYTES,
+    can_transition_message, AgentMemory, AgentPosition, AgentSimulatedState, CognitiveEvent,
+    CognitiveTrait, ConversationMessage, MessageAuthor, MessageStatus, PhaseOneConversation,
+    ProvisionalAgent, DEFAULT_KEEP_ALIVE_MINUTES, MAX_KEEP_ALIVE_MINUTES, MAX_USER_MESSAGE_BYTES,
 };
 
 const MIGRATION_0001: &str = include_str!("../migrations/0001_phase0.sql");
@@ -26,7 +26,8 @@ const MIGRATION_0008: &str = include_str!("../migrations/0008_global_safe_mode.s
 const MIGRATION_0009: &str = include_str!("../migrations/0009_conversation_branches.sql");
 const MIGRATION_0010: &str = include_str!("../migrations/0010_branch_summaries.sql");
 const MIGRATION_0011: &str = include_str!("../migrations/0011_turn_variants.sql");
-const MIGRATIONS: [(i64, &str); 11] = [
+const MIGRATION_0012: &str = include_str!("../migrations/0012_phase7a_cognitive_events.sql");
+const MIGRATIONS: [(i64, &str); 12] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
@@ -38,6 +39,7 @@ const MIGRATIONS: [(i64, &str); 11] = [
     (9, MIGRATION_0009),
     (10, MIGRATION_0010),
     (11, MIGRATION_0011),
+    (12, MIGRATION_0012),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -55,6 +57,8 @@ pub enum DatabaseError {
     InvalidValue,
     #[error("invalid state transition")]
     InvalidTransition,
+    #[error("cognitive policy rejected request")]
+    PolicyRejected,
 }
 
 impl From<rusqlite::Error> for DatabaseError {
@@ -1949,6 +1953,110 @@ fn valid_calendar_date(value: &str) -> bool {
     day <= days
 }
 
+impl Database {
+    pub fn cognitive_traits(&self, agent_id: &str) -> Result<Vec<CognitiveTrait>, DatabaseError> {
+        let connection = self.open()?;
+        let source: String = connection
+            .query_row(
+                "SELECT traits_json FROM agent_identity_profiles WHERE agent_id = ?1",
+                params![agent_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or(DatabaseError::OwnershipMismatch)?;
+        let traits: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&source).map_err(|_| DatabaseError::InvalidValue)?;
+        Ok(traits
+            .into_iter()
+            .filter_map(|(key, value)| {
+                value.as_f64().map(|value| CognitiveTrait {
+                    is_protected: key.starts_with("protected_"),
+                    key,
+                    value: value / 100.0,
+                })
+            })
+            .collect())
+    }
+
+    pub fn cognitive_events(&self, agent_id: &str) -> Result<Vec<CognitiveEvent>, DatabaseError> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare("SELECT id, agent_id, kind, trait_key, source_kind, reason, confidence, prior_value, resulting_value, status, rollback_of_event_id, created_at FROM cognitive_events WHERE agent_id = ?1 ORDER BY created_at DESC, id DESC")?;
+        let events = statement
+            .query_map(params![agent_id], |row| {
+                Ok(CognitiveEvent {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    kind: row.get(2)?,
+                    trait_key: row.get(3)?,
+                    source_kind: row.get(4)?,
+                    reason: row.get(5)?,
+                    confidence: row.get(6)?,
+                    prior_value: row.get(7)?,
+                    resulting_value: row.get(8)?,
+                    status: row.get(9)?,
+                    rollback_of_event_id: row.get(10)?,
+                    created_at: row.get(11)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(events)
+    }
+
+    pub fn owner_correct_trait(
+        &self,
+        agent_id: &str,
+        trait_key: &str,
+        value: f64,
+        reason: &str,
+        idempotency_key: &str,
+    ) -> Result<CognitiveEvent, DatabaseError> {
+        if !value.is_finite()
+            || !(0.0..=1.0).contains(&value)
+            || reason.trim().is_empty()
+            || reason.len() > 500
+            || idempotency_key.is_empty()
+            || idempotency_key.len() > 128
+        {
+            return Err(DatabaseError::InvalidValue);
+        }
+        let mut connection = self.open()?;
+        let tx = connection.transaction()?;
+        if let Some(existing) = tx.query_row("SELECT id, agent_id, kind, trait_key, source_kind, reason, confidence, prior_value, resulting_value, status, rollback_of_event_id, created_at FROM cognitive_events WHERE agent_id = ?1 AND idempotency_key = ?2", params![agent_id, idempotency_key], |row| Ok(CognitiveEvent { id: row.get(0)?, agent_id: row.get(1)?, kind: row.get(2)?, trait_key: row.get(3)?, source_kind: row.get(4)?, reason: row.get(5)?, confidence: row.get(6)?, prior_value: row.get(7)?, resulting_value: row.get(8)?, status: row.get(9)?, rollback_of_event_id: row.get(10)?, created_at: row.get(11)? })).optional()? { return Ok(existing); }
+        let (owner_id, source): (String, String) = tx.query_row("SELECT a.owner_user_id, i.traits_json FROM agents a JOIN agent_identity_profiles i ON i.agent_id = a.id WHERE a.id = ?1", params![agent_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?.ok_or(DatabaseError::OwnershipMismatch)?;
+        if trait_key.starts_with("protected_") {
+            return Err(DatabaseError::PolicyRejected);
+        }
+        let mut traits: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&source).map_err(|_| DatabaseError::InvalidValue)?;
+        let prior = traits
+            .get(trait_key)
+            .and_then(serde_json::Value::as_f64)
+            .ok_or(DatabaseError::PolicyRejected)?
+            / 100.0;
+        traits.insert(trait_key.to_owned(), serde_json::json!(value * 100.0));
+        let id = Uuid::now_v7().to_string();
+        let now = now_millis();
+        tx.execute("UPDATE agent_identity_profiles SET traits_json = ?1, updated_at = ?2 WHERE agent_id = ?3", params![serde_json::to_string(&traits).map_err(|_| DatabaseError::InvalidValue)?, now, agent_id])?;
+        tx.execute("INSERT INTO cognitive_events (id,agent_id,owner_user_id,idempotency_key,kind,trait_key,source_kind,reason,confidence,requested_value,prior_value,resulting_value,status,policy_version,schema_version,created_at,terminal_at) VALUES (?1,?2,?3,?4,'owner_correction',?5,'owner_correction',?6,1.0,?7,?8,?7,'applied',1,1,?9,?9)", params![id, agent_id, owner_id, idempotency_key, trait_key, reason.trim(), value, prior, now])?;
+        tx.execute("INSERT INTO cognitive_processing_checkpoints (agent_id,processor_key,idempotency_key,event_id,terminal_status,updated_at) VALUES (?1,'phase7a_owner_correction',?2,?3,'applied',?4)", params![agent_id,idempotency_key,id,now])?;
+        tx.commit()?;
+        Ok(CognitiveEvent {
+            id,
+            agent_id: agent_id.to_owned(),
+            kind: "owner_correction".into(),
+            trait_key: trait_key.into(),
+            source_kind: "owner_correction".into(),
+            reason: reason.trim().into(),
+            confidence: 1.0,
+            prior_value: prior,
+            resulting_value: value,
+            status: "applied".into(),
+            rollback_of_event_id: None,
+            created_at: now,
+        })
+    }
+}
+
 fn valid_traits(source: &str) -> bool {
     let Ok(serde_json::Value::Object(traits)) = serde_json::from_str(source) else {
         return false;
@@ -2119,7 +2227,7 @@ mod tests {
         let first = Database::initialize(&path).expect("database should initialize");
         let second = Database::initialize(&path).expect("database should reinitialize");
         let snapshot = second.snapshot().expect("snapshot should load");
-        assert_eq!(snapshot.migration_version, 11);
+        assert_eq!(snapshot.migration_version, 12);
         assert_eq!(snapshot.agents.len(), 2);
         for agent in &snapshot.agents {
             assert_eq!(
@@ -2148,7 +2256,7 @@ mod tests {
         drop(connection);
 
         let database = Database::initialize(&path).expect("v1 database should upgrade");
-        assert_eq!(database.snapshot().unwrap().migration_version, 11);
+        assert_eq!(database.snapshot().unwrap().migration_version, 12);
         let connection = Connection::open(&path).unwrap();
         let preserved: String = connection
             .query_row(
@@ -3111,7 +3219,7 @@ mod tests {
 
         let upgraded = Database::initialize(&path).unwrap();
         assert_eq!(upgraded.simulated_state(ASTRA_ID).unwrap().mode, "normal");
-        assert_eq!(upgraded.snapshot().unwrap().migration_version, 11);
+        assert_eq!(upgraded.snapshot().unwrap().migration_version, 12);
         cleanup(&path);
     }
 }

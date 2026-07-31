@@ -36,6 +36,31 @@ pub struct ProvisionalAgent {
     pub appearance_preset: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CognitiveTrait {
+    pub key: String,
+    pub value: f64,
+    pub is_protected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CognitiveEvent {
+    pub id: String,
+    pub agent_id: String,
+    pub kind: String,
+    pub trait_key: String,
+    pub source_kind: String,
+    pub reason: String,
+    pub confidence: f64,
+    pub prior_value: f64,
+    pub resulting_value: f64,
+    pub status: String,
+    pub rollback_of_event_id: Option<String>,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeState {

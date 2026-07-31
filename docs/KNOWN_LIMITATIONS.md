@@ -14,6 +14,8 @@ Installed-Windows manual validation passed for the v0.1 package on 2026-07-30. A
 
 ## Deferred usability and agent features
 
+- Phase 7A provides only the cognitive-event foundation and explicit owner-correction path; it does not yet connect model extraction or implement opinions, relationships, goals, activities, or agent-to-agent conversations. Windows/manual validation remains pending.
+
 - General, Owner profile, Agents, and Models settings still need their own focused functional UX pass. Safe mode and diagnostics are the currently implemented settings controls; backup/export remains unavailable.
 - The default controls and conversation management layout need a cohesive visual-design pass. This is intentionally separate from generation reliability work.
 - The current visual design is functional but unattractive; a dedicated visual redesign is deferred.
