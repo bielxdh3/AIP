@@ -1435,19 +1435,28 @@ function AgentStateControls({ agentId }: { agentId: string }) {
 }
 
 const cognitiveErrorCopy: Record<string, string> = {
+  agent_not_found: "Agente não encontrado.",
+  event_not_found: "Alteração não encontrada.",
+  invalid_idempotency_key: "Não foi possível repetir a operação com segurança.",
   protected_trait: "Este traço é protegido.",
   trait_not_found: "Traço não disponível.",
   invalid_value: "Valor inválido.",
   invalid_reason: "Informe um motivo válido.",
+  oscillation_blocked: "A alternância recente impede esta alteração.",
   rate_limit_window: "Limite de alteração de 30 dias atingido.",
   rate_limit_event: "Alteração acima do limite permitido.",
+  source_ineligible: "A evidência não é elegível.",
+  source_not_found: "A evidência não foi encontrada.",
+  ownership_mismatch: "Esta alteração não pertence ao agente atual.",
+  idempotency_conflict: "A operação conflita com uma solicitação anterior.",
+  duplicate_evidence: "Esta evidência já foi aplicada.",
   rollback_conflict: "A reversão conflita com uma alteração posterior.",
   rollback_not_allowed: "Este evento não pode ser revertido.",
   persistence_failed: "Não foi possível salvar a alteração.",
   operation_unavailable: "Operação indisponível.",
 };
 
-function CognitivePanel({ agentId }: { agentId: string }) {
+export function CognitivePanel({ agentId }: { agentId: string }) {
   const [traits, setTraits] = useState<CognitiveTrait[]>([]);
   const [events, setEvents] = useState<CognitiveEventSummary[]>([]);
   const [selected, setSelected] = useState<CognitiveEventExplanation | null>(
@@ -1457,12 +1466,18 @@ function CognitivePanel({ agentId }: { agentId: string }) {
   const [value, setValue] = useState("0.5");
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const loadVersion = useRef(0);
+  const activeAgentId = useRef(agentId);
   const load = useCallback(async () => {
+    const version = ++loadVersion.current;
     const [nextTraits, nextEvents] = await Promise.all([
       invoke<CognitiveTrait[]>("list_cognitive_traits", { agentId }),
       invoke<CognitiveEventSummary[]>("list_cognitive_events", { agentId }),
     ]);
+    if (version !== loadVersion.current) return;
     setTraits(nextTraits);
     setEvents(nextEvents);
     setTraitKey(
@@ -1471,28 +1486,51 @@ function CognitivePanel({ agentId }: { agentId: string }) {
     );
   }, [agentId]);
   useEffect(() => {
-    void load().catch(() =>
-      setError("Não foi possível carregar os valores cognitivos."),
-    );
+    activeAgentId.current = agentId;
+    setTraits([]);
+    setEvents([]);
+    setError(null);
+    setSuccess(null);
+    setLoading(true);
+    void load()
+      .catch(() => {
+        if (activeAgentId.current === agentId) {
+          setError("Não foi possível carregar os valores cognitivos.");
+        }
+      })
+      .finally(() => {
+        if (activeAgentId.current === agentId) setLoading(false);
+      });
     setSelected(null);
-  }, [load]);
+  }, [agentId, load]);
   async function correct() {
+    const numericValue = Number(value);
+    if (
+      !Number.isFinite(numericValue) ||
+      numericValue < 0 ||
+      numericValue > 1
+    ) {
+      setError("Informe um valor entre 0 e 1.");
+      return;
+    }
     if (!reason.trim()) {
       setError("Informe o motivo da correção.");
       return;
     }
     setBusy(true);
     setError(null);
+    setSuccess(null);
     try {
       await invoke("create_owner_trait_correction", {
         agentId,
         traitKey,
-        value: Number(value),
+        value: numericValue,
         reason,
         idempotencyKey: crypto.randomUUID(),
       });
       setReason("");
       await load();
+      if (activeAgentId.current === agentId) setSuccess("Correção aplicada.");
     } catch (cause) {
       setError(cognitiveErrorCopy[String(cause)] || "A correção foi recusada.");
     } finally {
@@ -1502,6 +1540,7 @@ function CognitivePanel({ agentId }: { agentId: string }) {
   async function rollback(eventId: string) {
     setBusy(true);
     setError(null);
+    setSuccess(null);
     try {
       await invoke("rollback_cognitive_event", {
         agentId,
@@ -1509,10 +1548,24 @@ function CognitivePanel({ agentId }: { agentId: string }) {
         idempotencyKey: crypto.randomUUID(),
       });
       await load();
+      if (activeAgentId.current === agentId) setSuccess("Reversão aplicada.");
     } catch (cause) {
       setError(cognitiveErrorCopy[String(cause)] || "A reversão foi recusada.");
     } finally {
       setBusy(false);
+    }
+  }
+  async function explain(eventId: string) {
+    try {
+      const explanation = await invoke<CognitiveEventExplanation>(
+        "explain_cognitive_event",
+        { agentId, eventId },
+      );
+      if (activeAgentId.current === agentId) setSelected(explanation);
+    } catch {
+      if (activeAgentId.current === agentId) {
+        setError("Não foi possível abrir a explicação.");
+      }
     }
   }
   return (
@@ -1525,6 +1578,7 @@ function CognitivePanel({ agentId }: { agentId: string }) {
         São valores de produto simulados; não representam emoções reais nem
         diagnóstico psicológico.
       </p>
+      {loading ? <p>Carregando valores cognitivos…</p> : null}
       <ul>
         {traits.map((trait) => (
           <li key={trait.key}>
@@ -1567,30 +1621,31 @@ function CognitivePanel({ agentId }: { agentId: string }) {
           onChange={(event) => setReason(event.target.value)}
         />
       </label>
-      <button type="button" disabled={busy} onClick={() => void correct()}>
+      <button
+        type="button"
+        aria-label="Corrigir valor cognitivo"
+        disabled={busy}
+        onClick={() => void correct()}
+      >
         Corrigir valor
       </button>
       {error ? <p role="alert">{error}</p> : null}
+      {success ? <p role="status">{success}</p> : null}
       <h3>Histórico recente</h3>
       <ul>
         {events.map((event) => (
           <li key={event.id}>
             <button
               type="button"
-              onClick={() =>
-                void invoke<CognitiveEventExplanation>(
-                  "explain_cognitive_event",
-                  { agentId, eventId: event.id },
-                )
-                  .then(setSelected)
-                  .catch(() => setError("Não foi possível abrir a explicação."))
-              }
+              aria-label={`Explicar alteração de ${event.traitKey}`}
+              onClick={() => void explain(event.id)}
             >
               {event.traitKey}: {event.resultingValue.toFixed(2)} ({event.kind})
             </button>
             {event.status === "applied" && event.kind !== "rollback" ? (
               <button
                 type="button"
+                aria-label={`Reverter alteração de ${event.traitKey}`}
                 disabled={busy}
                 onClick={() => void rollback(event.id)}
               >

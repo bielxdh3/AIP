@@ -13,10 +13,17 @@
 
 ## Implemented scope
 
-Phase 7A partially provides deterministic Rust/SQLite trait events, owner correction, safe explanation projection, compensating rollback, checkpoints, and minimal audit metadata. Ordinary candidates now use typed controlled-internal or persisted conversation-message sources; conversation messages are only validated as a future adapter boundary and do not trigger live model extraction. Evidence identity is deterministic and independent of idempotency; source identifiers, not conversation content or hidden reasoning, are retained. The frontend exposes Portuguese inspection, explanation, correction, and rollback controls for Astra and Luma.
+Phase 7A provides deterministic Rust/SQLite trait events, owner correction, safe explanation projection, compensating rollback, checkpoints, and minimal audit metadata. Ordinary candidates use typed controlled-internal or persisted conversation-message sources; conversation messages are only validated as a future-adapter boundary and do not trigger live model extraction. Evidence identity is independent of idempotency; source identifiers, not conversation content or hidden reasoning, are retained. The Portuguese panel has deterministic mocked coverage for loading, empty history, trait visibility, validation, refreshes, eligible rollback, safe explanations, stable errors, agent switching, late responses, degraded responses, safe mode, accessible labels, and simulated-state wording.
 
-Focused backend source-eligibility, policy, persistence, rollback, and redaction tests are recorded with this change: the Rust suite has 69 passing tests and one intentionally ignored local-Ollama integration test. The global formatting baseline remains limited to unchanged `apps/desktop/src-tauri/gen/schemas/{acl-manifests,capabilities,desktop-schema,windows-schema}.json`, `apps/desktop/src/{App.css,components/AgentSprite.tsx,conversation-state.test.ts,conversation-state.ts,pixel-document.test.ts,pixel-document.ts,use-phase-one.ts}`, and `pnpm-lock.yaml`. Phase 7A remains incomplete: the full test matrix, additional frontend coverage, and manual Windows validation still remain. The phase is not approved.
+The automated matrix covers policy limits and anti-oscillation, idempotency/evidence identity, corrections, compensating rollback and original-event immutability, source eligibility/redaction, migration/reopen persistence, isolation, contracts, and frontend behavior. The global formatting baseline remains limited to unchanged `apps/desktop/src-tauri/gen/schemas/{acl-manifests,capabilities,desktop-schema,windows-schema}.json`, `apps/desktop/src/{App.css,components/AgentSprite.tsx,conversation-state.test.ts,conversation-state.ts,pixel-document.test.ts,pixel-document.ts,use-phase-one.ts}`, and `pnpm-lock.yaml`. Phase 7A is automated-validation complete but not approved.
+
+## Automated command results
+
+- `pnpm secrets:scan`: passed (117 repository files).
+- Touched-file Prettier and `cargo fmt --check`: passed. `pnpm format:check` reports only the 12 unchanged baseline paths above.
+- `pnpm lint`, `pnpm typecheck`, contracts tests (5), desktop tests (39), and the desktop production build: passed.
+- `cargo check --locked`, Clippy with `-D warnings`, and full Rust/Tauri tests: passed (71 passed, 1 ignored local-Ollama integration test). Migration coverage is included in the Rust suite.
 
 ## Not yet validated
 
-No live Windows/manual validation is claimed by this implementation task. Phase 7A remains pending review and manual validation.
+No live extraction or Windows/manual validation is claimed by this implementation task. Manual Windows validation and approval remain pending.

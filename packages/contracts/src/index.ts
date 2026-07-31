@@ -165,6 +165,7 @@ export type CognitiveEventSummary = {
   kind: "trait_delta" | "owner_correction" | "rollback";
   traitKey: string;
   sourceKind: string;
+  sourceReference: string | null;
   reason: string;
   confidence: number;
   requestedValue: number;
@@ -193,6 +194,16 @@ export type RollbackRequest = {
   idempotencyKey: string;
 };
 export type CognitiveErrorCode =
+  | "agent_not_found"
+  | "event_not_found"
+  | "invalid_idempotency_key"
+  | "invalid_reason"
+  | "invalid_value"
+  | "operation_unavailable"
+  | "oscillation_blocked"
+  | "rate_limit_event"
+  | "rate_limit_window"
+  | "rollback_not_allowed"
   | "source_ineligible"
   | "source_not_found"
   | "ownership_mismatch"
@@ -210,6 +221,9 @@ export type CognitiveErrorResponse = {
 function cognitiveNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
+function cognitiveString(value: unknown): value is string {
+  return typeof value === "string";
+}
 export function parseCognitiveTrait(value: unknown): CognitiveTrait | null {
   if (typeof value !== "object" || value === null) return null;
   const candidate = value as Partial<CognitiveTrait>;
@@ -224,15 +238,79 @@ export function parseCognitiveEvent(
 ): CognitiveEventSummary | null {
   if (typeof value !== "object" || value === null) return null;
   const candidate = value as Partial<CognitiveEventSummary>;
-  return typeof candidate.id === "string" &&
-    typeof candidate.agentId === "string" &&
-    typeof candidate.traitKey === "string" &&
+  return cognitiveString(candidate.id) &&
+    cognitiveString(candidate.agentId) &&
+    ["trait_delta", "owner_correction", "rollback"].includes(
+      candidate.kind ?? "",
+    ) &&
+    cognitiveString(candidate.traitKey) &&
+    cognitiveString(candidate.sourceKind) &&
+    (candidate.sourceReference === null ||
+      cognitiveString(candidate.sourceReference)) &&
+    cognitiveString(candidate.reason) &&
+    (candidate.appliedDelta === null ||
+      cognitiveNumber(candidate.appliedDelta)) &&
     cognitiveNumber(candidate.priorValue) &&
     cognitiveNumber(candidate.resultingValue) &&
     cognitiveNumber(candidate.requestedValue) &&
     cognitiveNumber(candidate.confidence) &&
-    typeof candidate.createdAt === "number"
+    ["applied", "rejected", "rolled_back"].includes(candidate.status ?? "") &&
+    (candidate.code === null || cognitiveString(candidate.code)) &&
+    (candidate.rollbackOfEventId === null ||
+      cognitiveString(candidate.rollbackOfEventId)) &&
+    cognitiveNumber(candidate.createdAt)
     ? (candidate as CognitiveEventSummary)
+    : null;
+}
+export function parseCognitiveExplanation(
+  value: unknown,
+): CognitiveEventExplanation | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Partial<CognitiveEventExplanation>;
+  return parseCognitiveEvent(candidate.event) !== null &&
+    cognitiveString(candidate.traitLabel)
+    ? (candidate as CognitiveEventExplanation)
+    : null;
+}
+export function parseOwnerCorrectionResult(
+  value: unknown,
+): CognitiveEventSummary | null {
+  return parseCognitiveEvent(value);
+}
+export function parseRollbackResult(
+  value: unknown,
+): CognitiveEventSummary | null {
+  return parseCognitiveEvent(value);
+}
+export function parseCognitiveError(
+  value: unknown,
+): CognitiveErrorResponse | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Partial<CognitiveErrorResponse>;
+  const codes: CognitiveErrorCode[] = [
+    "agent_not_found",
+    "event_not_found",
+    "invalid_idempotency_key",
+    "invalid_reason",
+    "invalid_value",
+    "operation_unavailable",
+    "oscillation_blocked",
+    "rate_limit_event",
+    "rate_limit_window",
+    "rollback_not_allowed",
+    "source_ineligible",
+    "source_not_found",
+    "ownership_mismatch",
+    "trait_not_found",
+    "protected_trait",
+    "idempotency_conflict",
+    "duplicate_evidence",
+    "rollback_conflict",
+    "persistence_failed",
+  ];
+  return codes.includes(candidate.code as CognitiveErrorCode) &&
+    cognitiveString(candidate.message)
+    ? (candidate as CognitiveErrorResponse)
     : null;
 }
 

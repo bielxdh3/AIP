@@ -2275,10 +2275,6 @@ impl Database {
             created_at: now,
         };
         persist_event(&tx, &owner_id, &event, idempotency_key, 1)?;
-        tx.execute(
-            "UPDATE cognitive_events SET status = 'rolled_back', terminal_at = ?1 WHERE id = ?2",
-            params![now, event_id],
-        )?;
         save_projection(&tx, agent_id, &traits, now)?;
         audit(&tx, &owner_id, &event, "rollback")?;
         tx.commit()?;
@@ -2300,7 +2296,7 @@ fn evolvable_trait(key: &str) -> bool {
     EVOLVABLE_TRAITS.contains(&key)
 }
 fn protected_trait(key: &str) -> bool {
-    key.starts_with("protected_") || !evolvable_trait(key)
+    key.starts_with("protected_")
 }
 fn trait_label(key: &str) -> &'static str {
     match key {
@@ -4119,6 +4115,139 @@ mod tests {
             database.apply_trait_delta(duplicate).unwrap_err(),
             DatabaseError::Cognitive("duplicate_evidence")
         );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn cognitive_policy_covers_partial_allowance_bounds_and_oscillation() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let agent = with_initial_traits(database.agent(ASTRA_ID).unwrap());
+        database.update_profile(&agent).unwrap();
+        assert_eq!(
+            database.apply_trait_delta(candidate(ASTRA_ID, "unknown", 0.01, "unknown")),
+            Err(DatabaseError::Cognitive("trait_not_found"))
+        );
+        assert_eq!(
+            database.apply_trait_delta(candidate(ASTRA_ID, "curiosity", f64::NAN, "nan")),
+            Err(DatabaseError::Cognitive("invalid_value"))
+        );
+        let bounded = database
+            .apply_trait_delta(candidate(ASTRA_ID, "curiosity", 0.2, "bounded"))
+            .unwrap();
+        assert!((bounded.applied_delta.unwrap() - 0.05).abs() < 1e-9);
+        database
+            .owner_correct_trait(ASTRA_ID, "sociability", 0.99, "bound", "bound-correct")
+            .unwrap();
+        assert_eq!(
+            database
+                .apply_trait_delta(candidate(ASTRA_ID, "sociability", 0.05, "upper-bound"))
+                .unwrap()
+                .resulting_value,
+            1.0
+        );
+        database
+            .apply_trait_delta(candidate(ASTRA_ID, "autonomy", 0.05, "allowance-one"))
+            .unwrap();
+        database
+            .apply_trait_delta(candidate(ASTRA_ID, "autonomy", 0.03, "allowance-two"))
+            .unwrap();
+        assert!(
+            (database
+                .apply_trait_delta(candidate(ASTRA_ID, "autonomy", 0.05, "allowance-three"))
+                .unwrap()
+                .applied_delta
+                .unwrap()
+                - 0.02)
+                .abs()
+                < 1e-9
+        );
+        assert_eq!(
+            database.apply_trait_delta(candidate(ASTRA_ID, "autonomy", 0.01, "exhausted")),
+            Err(DatabaseError::Cognitive("rate_limit_window"))
+        );
+        for (delta, evidence) in [
+            (0.01, "positive"),
+            (-0.01, "negative-one"),
+            (-0.01, "negative-two"),
+        ] {
+            database
+                .apply_trait_delta(candidate(ASTRA_ID, "affection", delta, evidence))
+                .unwrap();
+        }
+        assert_eq!(
+            database.apply_trait_delta(candidate(ASTRA_ID, "affection", 0.01, "counter-evidence")),
+            Err(DatabaseError::Cognitive("oscillation_blocked"))
+        );
+        let before = database.cognitive_traits(ASTRA_ID).unwrap();
+        database
+            .set_selected_model(ASTRA_ID, "ollama:other")
+            .unwrap();
+        assert_eq!(database.cognitive_traits(ASTRA_ID).unwrap(), before);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn owner_correction_and_rollback_are_replay_safe_and_persistent() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        database
+            .update_profile(&with_initial_traits(database.agent(ASTRA_ID).unwrap()))
+            .unwrap();
+        assert_eq!(
+            database.owner_correct_trait(ASTRA_ID, "curiosity", 0.6, "", "empty-reason"),
+            Err(DatabaseError::Cognitive("invalid_reason"))
+        );
+        assert_eq!(
+            database.owner_correct_trait(ASTRA_ID, "unknown", 0.6, "reason", "unknown-correction"),
+            Err(DatabaseError::Cognitive("trait_not_found"))
+        );
+        let correction = database
+            .owner_correct_trait(ASTRA_ID, "curiosity", 0.6, "reason", "correction")
+            .unwrap();
+        assert_eq!(
+            database
+                .owner_correct_trait(ASTRA_ID, "curiosity", 0.6, "reason", "correction")
+                .unwrap()
+                .id,
+            correction.id
+        );
+        assert_eq!(
+            database.owner_correct_trait(ASTRA_ID, "curiosity", 0.7, "reason", "correction"),
+            Err(DatabaseError::Cognitive("idempotency_conflict"))
+        );
+        let rollback = database
+            .rollback_cognitive_event(ASTRA_ID, &correction.id, "correction-rollback")
+            .unwrap();
+        assert_eq!(rollback.kind, "rollback");
+        assert_eq!(
+            rollback.rollback_of_event_id.as_deref(),
+            Some(correction.id.as_str())
+        );
+        assert_eq!(
+            database
+                .cognitive_events(ASTRA_ID)
+                .unwrap()
+                .into_iter()
+                .find(|event| event.id == correction.id)
+                .unwrap()
+                .status,
+            "applied"
+        );
+        assert_eq!(
+            database
+                .rollback_cognitive_event(ASTRA_ID, &correction.id, "correction-rollback")
+                .unwrap()
+                .id,
+            rollback.id
+        );
+        assert_eq!(
+            database.rollback_cognitive_event(ASTRA_ID, &rollback.id, "rollback-rollback"),
+            Err(DatabaseError::Cognitive("rollback_not_allowed"))
+        );
+        drop(database);
+        let reopened = Database::initialize(&path).unwrap();
+        assert_eq!(reopened.cognitive_events(ASTRA_ID).unwrap().len(), 2);
         cleanup(&path);
     }
 }
