@@ -1,87 +1,228 @@
-# AIP
+<div align="center">
 
-**Agentes Independentes Personalizáveis** is a local-first desktop platform for creating 2D agents with separate identities, memories, conversations, models, and persistent state.
+# A.I.P.
 
-AIP is designed to run locally on Windows using a Tauri/Rust desktop core, a React and TypeScript interface, SQLite persistence, and a replaceable Python inference runtime. The visual product name is **A.I.P.**
+**Agentes Independentes Personalizáveis**
 
-> **Stable baseline:** v0.1.0. Post-v0.1 cognitive-core work is under active development and is not part of the stable baseline until reviewed and merged.
+Local-first 2D agents with their own identity, memory, conversations, model, and persistent fictional state.
 
-## Current capabilities
+[![Status](https://img.shields.io/badge/status-active%20development-orange)](#project-status)
+[![Version](https://img.shields.io/badge/stable%20baseline-v0.1.0-blue)](#project-status)
+[![Platform](https://img.shields.io/badge/platform-Windows-0078D4)](#requirements)
+[![Desktop](https://img.shields.io/badge/desktop-Tauri%202-FFC131)](#technology)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 
-- two isolated provisional agents with independent profiles and histories;
-- multiple persistent conversations and temporary in-memory chat;
-- local Ollama discovery and streaming generation;
-- scoped memories and bounded conversation summaries;
-- deterministic fictional states and safe/silent controls;
-- configurable local model selection and generation queue;
-- compact and expanded desktop overlays with persisted positions;
-- Rust-owned SQLite migrations and application state;
-- managed, versioned Rust-to-Python NDJSON runtime protocol;
-- automated TypeScript, Python, Rust, secret-scan, and CI validation.
+AIP is a Windows desktop platform for running expressive local agents without turning their identity, memories, or private conversations into a cloud dependency.
 
-## Platform support
+</div>
 
-- Windows 10 64-bit minimum;
-- Windows 11 64-bit.
+> [!IMPORTANT]
+> **v0.1.0 is the stable reviewed baseline.** Post-v0.1 cognitive-core work remains under active development and must not be presented as part of the stable release until it is reviewed and merged.
 
-Linux, macOS, iOS, and Android are not supported by the current stable release.
+## The idea at a glance
+
+```text
+                         ┌──────────────────────┐
+                         │      You speak       │
+                         │  text · controls     │
+                         └──────────┬───────────┘
+                                    │
+                         ┌──────────▼───────────┐
+                         │    Desktop agent     │
+                         │ overlay · identity   │
+                         │ mood · conversations │
+                         └──────────┬───────────┘
+                                    │ Tauri commands
+                    ┌───────────────▼────────────────┐
+                    │         Rust desktop core       │
+                    │ lifecycle · permissions · state │
+                    │ queue · migrations · processes  │
+                    └───────────┬───────────┬─────────┘
+                                │           │
+                     persistent │           │ managed NDJSON
+                                │           │
+                    ┌───────────▼──────┐ ┌──▼─────────────────┐
+                    │ SQLite database  │ │ Python runtime      │
+                    │ agents · memory  │ │ replaceable backend │
+                    │ chats · settings │ └──┬─────────────────┘
+                    └──────────────────┘    │ loopback only
+                                           ▼
+                                  ┌───────────────────┐
+                                  │ Local model host  │
+                                  │      Ollama       │
+                                  └───────────────────┘
+```
+
+The desktop core owns application state and persistence. The Python service is a managed, replaceable inference boundary rather than the owner of the primary database.
+
+## Why AIP exists
+
+Most assistants are presented as disposable chat windows. AIP explores a different model: agents that feel persistent and distinct while keeping the user in control of local data, models, permissions, and behavior.
+
+Each agent can have its own:
+
+- identity and profile;
+- conversation history;
+- scoped memories and summaries;
+- selected local model;
+- fictional state such as energy, focus, or mood;
+- overlay position and interface preferences.
+
+## Project status
+
+The current stable baseline already includes:
+
+- [x] two isolated provisional agents;
+- [x] persistent and temporary conversations;
+- [x] local Ollama discovery and streaming generation;
+- [x] scoped memories and bounded summaries;
+- [x] deterministic fictional states;
+- [x] configurable model selection and generation queue;
+- [x] compact and expanded desktop overlays;
+- [x] Rust-owned SQLite migrations and application state;
+- [x] versioned Rust-to-Python NDJSON protocol;
+- [x] TypeScript, Python, Rust, secret-scan, and CI validation.
+
+> [!NOTE]
+> AIP is functional software under active development, not a finished consumer product. Packaging, visual polish, model management, and platform validation are still evolving.
 
 ## Technology
 
-- Tauri 2 and Rust for lifecycle, persistence, process ownership, and overlays;
-- React 19 and TypeScript for the desktop interface;
-- SQLite through `rusqlite`;
-- Python 3.11+ as a replaceable managed runtime;
-- pnpm workspaces;
-- Ollama through loopback-only local discovery.
+| Layer | Responsibility | Technology |
+|---|---|---|
+| Desktop shell | Windows lifecycle, windows, overlays, process ownership | Tauri 2 + Rust |
+| Interface | Agent UI, chats, settings, visual state | React 19 + TypeScript |
+| Persistence | Agents, conversations, memories, settings, migrations | SQLite + `rusqlite` |
+| Runtime boundary | Replaceable local inference service | Python 3.11+ |
+| Model host | Local discovery and generation | Ollama |
+| Workspace | Packages, scripts, validation | pnpm workspaces |
 
-## Repository layout
+## Requirements
 
-```text
-apps/desktop/               React UI and Tauri/Rust desktop core
-packages/contracts/         Shared versioned contracts and state rules
-services/runtime/           Managed Python runtime boundary
-scripts/                    Validation and repository tooling
-docs/                       Product, architecture, security, and setup docs
+- Windows 10 64-bit or Windows 11 64-bit;
+- Node.js 22 or newer;
+- pnpm 11;
+- Rust toolchain required by Tauri;
+- Python 3.11 or newer;
+- Ollama for the current local-model workflow.
+
+Linux, macOS, Android, and iOS are not supported by the current stable release.
+
+## Quick start
+
+### 1. Clone the repository
+
+```powershell
+git clone https://github.com/bielxdh3/AIP.git
+cd AIP
 ```
 
-## Development
-
-Read the [Windows setup guide](docs/WINDOWS_SETUP.md), then run:
+### 2. Install JavaScript dependencies
 
 ```powershell
 pnpm install
+```
+
+### 3. Prepare the Python runtime
+
+```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 python -m pip install -e ".\services\runtime[dev]"
+```
+
+### 4. Validate the workspace
+
+```powershell
 pnpm check
+```
+
+### 5. Start the desktop app
+
+Start Ollama separately, then run:
+
+```powershell
 pnpm dev
 ```
 
-The application stores its database in the Tauri application-local data directory, not in the repository. The Python runtime does not own the primary database and opens no network listener.
+For the complete Windows environment setup, read [docs/WINDOWS_SETUP.md](docs/WINDOWS_SETUP.md).
+
+## Repository map
+
+```text
+AIP/
+├── apps/
+│   └── desktop/             React interface + Tauri/Rust desktop core
+├── packages/
+│   └── contracts/           Shared contracts and deterministic state rules
+├── services/
+│   └── runtime/             Managed Python inference boundary
+├── benchmarks/              Performance and evaluation material
+├── scripts/                 Validation and repository tooling
+├── docs/                    Product, architecture, security, and setup docs
+├── SECURITY.md              Vulnerability reporting policy
+└── README.md
+```
 
 ## Validation
 
-Use the repository commands appropriate to the change, including:
+The main validation command combines secret scanning, linting, type checking, tests, builds, Python checks, and the Tauri/Rust check:
 
 ```powershell
-pnpm secrets:scan
 pnpm check
-pnpm test
-pnpm build
 ```
 
-Platform-dependent overlay, packaging, and installed-runtime behavior require honest Windows validation and must not be claimed from CI alone.
+Useful focused commands:
+
+| Command | Purpose |
+|---|---|
+| `pnpm secrets:scan` | Detect secrets and unsafe repository artifacts |
+| `pnpm lint` | Lint TypeScript and JavaScript |
+| `pnpm typecheck` | Type-check workspace packages |
+| `pnpm test` | Run workspace tests |
+| `pnpm build` | Build contracts and desktop interface |
+| `pnpm python:check` | Format, lint, type-check, and test the Python runtime |
+| `pnpm tauri:check` | Validate the Tauri/Rust desktop core |
+
+> [!WARNING]
+> CI cannot honestly prove Windows overlay behavior, installer behavior, GPU/model compatibility, or installed-runtime behavior. Those areas require real Windows validation.
+
+## Privacy and security model
+
+AIP is local-first, but “local” does not automatically mean “safe.” The project treats the following boundaries as explicit responsibilities:
+
+- the Rust core owns the primary database and managed runtime lifecycle;
+- Ollama discovery is loopback-only in the current design;
+- the Python runtime opens no network listener;
+- real conversations, memories, databases, model files, and secrets must stay outside Git;
+- external tools and future extensions must use explicit permission boundaries;
+- temporary in-memory conversations must not silently become persistent memory;
+- logs and diagnostics must avoid leaking private user content.
+
+See [SECURITY.md](SECURITY.md) and [docs/SECURITY_AND_PERMISSIONS.md](docs/SECURITY_AND_PERMISSIONS.md).
 
 ## Current limitations
 
 - Ollama must currently be started separately;
 - installers are unsigned;
 - the visual design is still being refined;
-- Android, voice, screen vision, supervised external tools, extensions, and BielOS integration are future work;
-- no production model is downloaded automatically.
+- no production model is downloaded automatically;
+- voice, screen vision, supervised external tools, extensions, and BielOS integration are future work;
+- Android and other desktop operating systems are not part of the stable baseline.
 
-See [Known limitations](docs/KNOWN_LIMITATIONS.md) and [v0.1 manual validation](docs/V0_1_MANUAL_VALIDATION.md) for the current evidence boundary.
+The evidence boundary is documented in [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) and [docs/V0_1_MANUAL_VALIDATION.md](docs/V0_1_MANUAL_VALIDATION.md).
+
+## Roadmap
+
+- [ ] Refine the visual identity and pixel-art agent system
+- [ ] Improve local model discovery and lifecycle management
+- [ ] Add voice input and per-agent voice output
+- [ ] Add supervised screen understanding and external tools
+- [ ] Extend the cognitive core without breaking deterministic boundaries
+- [ ] Build the Android companion experience
+- [ ] Define an approved BielOS integration boundary
+- [ ] Produce signed, reproducible Windows installers
 
 ## Documentation
 
@@ -94,12 +235,10 @@ See [Known limitations](docs/KNOWN_LIMITATIONS.md) and [v0.1 manual validation](
 - [Windows setup](docs/WINDOWS_SETUP.md)
 - [Cognitive-core specification](docs/COGNITIVE_CORE_SPEC.md)
 
-## Security and privacy
-
-AIP is local-first, but local software can still expose private conversations, memories, models, or files through careless logging, committed artifacts, unsafe extensions, or broad external-tool permissions. Real user data, secrets, databases, model files, build output, and private BielOS material must remain outside Git.
-
-See [SECURITY.md](SECURITY.md) for responsible vulnerability reporting.
-
 ## License
 
-Licensed under the Apache License 2.0. See [LICENSE](LICENSE).
+Licensed under the [Apache License 2.0](LICENSE).
+
+## Disclaimer
+
+AIP is an independent experimental project. Its fictional states and personalities are interface and simulation features; they are not evidence of consciousness, emotion, or sentience.
