@@ -14,6 +14,8 @@ Installed-Windows manual validation passed for the v0.1 package on 2026-07-30. A
 
 ## Deferred usability and agent features
 
+- Phase 7A automated validation is complete but the phase is not approved. It provides bounded deterministic trait events, explicit owner correction, inspection, latest-event compensating rollback, and typed source-eligibility validation. Persisted conversation sources are validated only for a future adapter; no model extraction is connected. Manual Windows validation remains pending. Opinions, relationships, goals, activities, and agent-to-agent conversations remain excluded.
+
 - General, Owner profile, Agents, and Models settings still need their own focused functional UX pass. Safe mode and diagnostics are the currently implemented settings controls; backup/export remains unavailable.
 - The default controls and conversation management layout need a cohesive visual-design pass. This is intentionally separate from generation reliability work.
 - The current visual design is functional but unattractive; a dedicated visual redesign is deferred.
