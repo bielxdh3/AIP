@@ -345,6 +345,90 @@ export type CognitiveGoalStatusRequest = {
   completionEvidence: string | null;
   idempotencyKey: string;
 };
+export type ConversationPolicy = {
+  agentId: string;
+  purpose: string;
+  optedIn: boolean;
+  maxTurns: number;
+  maxTokens: number;
+  maxDurationMs: number;
+  maxRepetitions: number;
+  resourceBudget: number;
+  revokedAt: number | null;
+  updatedAt: number;
+};
+export type ConversationPolicyRequest = {
+  agentId: string;
+  purpose: string;
+  optedIn: boolean;
+  maxTurns: number;
+  maxTokens: number;
+  maxDurationMs: number;
+  maxRepetitions: number;
+  resourceBudget: number;
+  temporaryChat: boolean;
+};
+export type AgentConversationStatus =
+  | "active"
+  | "completed"
+  | "cancelled"
+  | "suspended"
+  | "rejected";
+export type AgentConversationSummary = {
+  id: string;
+  initiatorAgentId: string;
+  participantAgentId: string;
+  purpose: string;
+  status: AgentConversationStatus;
+  maxTurns: number;
+  maxTokens: number;
+  maxDurationMs: number;
+  maxRepetitions: number;
+  resourceBudget: number;
+  turnCount: number;
+  tokenCount: number;
+  loopCount: number;
+  terminationReason: string | null;
+  createdAt: number;
+  updatedAt: number;
+  completedAt: number | null;
+};
+export type PublicConversationTurn = {
+  id: string;
+  conversationId: string;
+  speakerAgentId: string;
+  turnIndex: number;
+  content: string;
+  sourceKind: "owner" | "model_candidate";
+  createdAt: number;
+};
+export type AgentConversationInspection = {
+  conversation: AgentConversationSummary;
+  turns: PublicConversationTurn[];
+};
+export type ConversationInterruptRequest = {
+  agentId: string;
+  conversationId: string;
+  reason: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type CognitiveCandidate = {
+  id: string;
+  conversationId: string;
+  agentId: string;
+  candidateKind: "opinion" | "relationship" | "goal";
+  candidateJson: string;
+  sourceReference: string;
+  status: "pending" | "applied" | "rejected";
+  createdAt: number;
+};
+export type CognitiveCandidateRejectionRequest = {
+  agentId: string;
+  candidateId: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
 export type OwnerCorrectionRequest = {
   agentId: string;
   traitKey: string;
@@ -398,6 +482,27 @@ export type CognitiveErrorCode =
   | "goal_not_found"
   | "goal_loop_blocked"
   | "invalid_transition"
+  | "conversation_temporary_blocked"
+  | "conversation_purpose_invalid"
+  | "conversation_budget_invalid"
+  | "conversation_opt_in_required"
+  | "conversation_participant_invalid"
+  | "conversation_blocked_safe_mode"
+  | "conversation_blocked_silent"
+  | "conversation_blocked_suspended"
+  | "conversation_not_found"
+  | "conversation_not_active"
+  | "conversation_not_completed"
+  | "conversation_turn_invalid"
+  | "conversation_turn_limit"
+  | "conversation_token_limit"
+  | "conversation_duration_limit"
+  | "conversation_candidate_invalid"
+  | "candidate_not_found"
+  | "candidate_already_decided"
+  | "heavy_generation_busy"
+  | "invalid_resource_status"
+  | "resource_job_not_found"
   | "persistence_failed";
 export type CognitiveErrorResponse = {
   code: CognitiveErrorCode;
@@ -514,6 +619,27 @@ export function parseCognitiveError(
     "goal_not_found",
     "goal_loop_blocked",
     "invalid_transition",
+    "conversation_temporary_blocked",
+    "conversation_purpose_invalid",
+    "conversation_budget_invalid",
+    "conversation_opt_in_required",
+    "conversation_participant_invalid",
+    "conversation_blocked_safe_mode",
+    "conversation_blocked_silent",
+    "conversation_blocked_suspended",
+    "conversation_not_found",
+    "conversation_not_active",
+    "conversation_not_completed",
+    "conversation_turn_invalid",
+    "conversation_turn_limit",
+    "conversation_token_limit",
+    "conversation_duration_limit",
+    "conversation_candidate_invalid",
+    "candidate_not_found",
+    "candidate_already_decided",
+    "heavy_generation_busy",
+    "invalid_resource_status",
+    "resource_job_not_found",
     "persistence_failed",
   ];
   return codes.includes(candidate.code as CognitiveErrorCode) &&
