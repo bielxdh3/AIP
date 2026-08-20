@@ -1200,6 +1200,337 @@ export type GatewayTransferActionRequest = {
   temporaryChat: boolean;
 };
 
+function isGatewayReference(value: unknown, maximum = 256): value is string {
+  return (
+    cognitiveString(value) &&
+    value.length > 0 &&
+    value.length <= maximum &&
+    !Array.from(value).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    })
+  );
+}
+
+function isGatewayTimestamp(value: unknown): value is number {
+  return cognitiveNumber(value) && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isGatewayInteger(
+  value: unknown,
+  minimum = 0,
+  maximum = Number.MAX_SAFE_INTEGER,
+): value is number {
+  return (
+    cognitiveNumber(value) &&
+    Number.isSafeInteger(value) &&
+    value >= minimum &&
+    value <= maximum
+  );
+}
+
+function hasGatewayForbiddenField(candidate: Record<string, unknown>): boolean {
+  return Object.keys(candidate).some((key) =>
+    /raw|bytes|privateKey|secret|token|password|credentialValue|shell|command|relayUrl|listenerAddress|python|bielos/i.test(
+      key,
+    ),
+  );
+}
+
+function isGatewayTransferStatus(
+  value: unknown,
+): value is GatewayTransferStatus {
+  return value === "previewed" || value === "approved" || value === "revoked";
+}
+
+function isGatewaySessionStatus(value: unknown): value is GatewaySessionStatus {
+  return (
+    value === "connected" ||
+    value === "disconnected" ||
+    value === "revoked" ||
+    value === "expired"
+  );
+}
+
+function isGatewayRecoveryStatus(
+  value: unknown,
+): value is GatewayRecoveryStatus {
+  return (
+    value === "pending_approval" || value === "approved" || value === "revoked"
+  );
+}
+
+export function parseGatewayCloudflareMetadata(
+  value: unknown,
+): GatewayCloudflareMetadata | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasGatewayForbiddenField(candidate) &&
+    candidate.provider === "cloudflare_tunnel_access" &&
+    candidate.mode === "metadata_only" &&
+    candidate.tunnelIdMetadata === GATEWAY_CLOUDFLARE_TUNNEL_ID_METADATA &&
+    candidate.hostnameMetadata === GATEWAY_CLOUDFLARE_HOSTNAME_METADATA &&
+    candidate.accessAudienceMetadata ===
+      GATEWAY_CLOUDFLARE_ACCESS_AUDIENCE_METADATA &&
+    candidate.credentialState === "absent" &&
+    candidate.networkListener === false
+    ? (candidate as unknown as GatewayCloudflareMetadata)
+    : null;
+}
+
+export function parseGatewayProtocolInfo(
+  value: unknown,
+): GatewayProtocolInfo | null {
+  const candidate = toolRecord(value);
+  const cloudflare = parseGatewayCloudflareMetadata(candidate?.cloudflare);
+  return candidate !== null &&
+    !hasGatewayForbiddenField(candidate) &&
+    candidate.schemaVersion === 1 &&
+    candidate.protocolVersion === GATEWAY_PROTOCOL_VERSION &&
+    candidate.minProtocolVersion === GATEWAY_MIN_PROTOCOL_VERSION &&
+    candidate.transport === "local_loopback_fixture" &&
+    candidate.networkListener === false &&
+    candidate.standaloneFallback === true &&
+    cloudflare !== null
+    ? (candidate as unknown as GatewayProtocolInfo)
+    : null;
+}
+
+export function parseGatewayProtocolMessage(
+  value: unknown,
+): GatewayProtocolMessage | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasGatewayForbiddenField(candidate) &&
+    candidate.schemaVersion === 1 &&
+    candidate.protocolVersion === GATEWAY_PROTOCOL_VERSION &&
+    isGatewayReference(candidate.messageId, 128) &&
+    candidate.clientId === GATEWAY_FIXTURE_CLIENT_ID &&
+    (candidate.kind === "session" || candidate.kind === "recovery") &&
+    isGatewayReference(candidate.sessionId, 128) &&
+    isGatewayReference(candidate.nonceMetadata, 256) &&
+    isGatewayInteger(candidate.replayCounter, 1) &&
+    isGatewayReference(candidate.payloadKind, 64)
+    ? (candidate as unknown as GatewayProtocolMessage)
+    : null;
+}
+
+export function parseGatewayAccount(value: unknown): GatewayAccount | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasGatewayForbiddenField(candidate) &&
+    isGatewayReference(candidate.id, 128) &&
+    isGatewayReference(candidate.ownerUserId, 96) &&
+    candidate.localAccountId === GATEWAY_FIXTURE_LOCAL_ACCOUNT_ID &&
+    candidate.externalAccountIdMetadata ===
+      GATEWAY_FIXTURE_EXTERNAL_ACCOUNT_METADATA &&
+    candidate.ownershipScope === "owner_only" &&
+    (candidate.status === "metadata_only" || candidate.status === "revoked") &&
+    candidate.metadataOnly === true &&
+    candidate.externalEffectPerformed === false &&
+    candidate.standaloneFallback === true &&
+    isGatewayTimestamp(candidate.createdAt) &&
+    isGatewayTimestamp(candidate.updatedAt)
+    ? (candidate as unknown as GatewayAccount)
+    : null;
+}
+
+export function parseGatewayTransfer(value: unknown): GatewayTransfer | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasGatewayForbiddenField(candidate) &&
+    isGatewayReference(candidate.id, 128) &&
+    candidate.accountId === GATEWAY_FIXTURE_ACCOUNT_ID &&
+    candidate.sourceAgentId === GATEWAY_FIXTURE_AGENT_ID &&
+    isGatewayReference(candidate.ownerUserId, 96) &&
+    candidate.destinationAccountMetadata ===
+      GATEWAY_FIXTURE_EXTERNAL_ACCOUNT_METADATA &&
+    candidate.integrityHash === GATEWAY_FIXTURE_TRANSFER_INTEGRITY_HASH &&
+    isGatewayTransferStatus(candidate.status) &&
+    (candidate.authorizationStatus === "pending_owner_approval" ||
+      candidate.authorizationStatus === "owner_approved" ||
+      candidate.authorizationStatus === "revoked") &&
+    candidate.approvalRequired === true &&
+    candidate.metadataOnly === true &&
+    candidate.externalEffectPerformed === false &&
+    candidate.standaloneFallback === true &&
+    isGatewayTimestamp(candidate.createdAt) &&
+    (candidate.approvedAt === null ||
+      isGatewayTimestamp(candidate.approvedAt)) &&
+    isGatewayTimestamp(candidate.updatedAt)
+    ? (candidate as unknown as GatewayTransfer)
+    : null;
+}
+
+export function parseGatewaySessionProof(
+  value: unknown,
+): GatewaySessionProof | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasGatewayForbiddenField(candidate) &&
+    isGatewayReference(candidate.sessionId, 128) &&
+    isGatewayReference(candidate.transferId, 128) &&
+    candidate.clientId === GATEWAY_FIXTURE_CLIENT_ID &&
+    isGatewayReference(candidate.sessionNonceMetadata, 256) &&
+    candidate.authProofMetadata === GATEWAY_FIXTURE_AUTH_PROOF_METADATA &&
+    candidate.appVersion === GATEWAY_FIXTURE_APP_VERSION &&
+    candidate.protocolVersion === GATEWAY_PROTOCOL_VERSION &&
+    isGatewayReference(candidate.messageNonceMetadata, 256) &&
+    isGatewayInteger(candidate.replayCounter, 1)
+    ? (candidate as unknown as GatewaySessionProof)
+    : null;
+}
+
+export function parseGatewaySession(value: unknown): GatewaySession | null {
+  const candidate = toolRecord(value);
+  const protocol = parseGatewayProtocolInfo(candidate?.protocol);
+  const handshake = parseGatewayProtocolMessage(candidate?.handshake);
+  return candidate !== null &&
+    !hasGatewayForbiddenField(candidate) &&
+    isGatewayReference(candidate.id, 128) &&
+    candidate.accountId === GATEWAY_FIXTURE_ACCOUNT_ID &&
+    isGatewayReference(candidate.transferId, 128) &&
+    candidate.sourceAgentId === GATEWAY_FIXTURE_AGENT_ID &&
+    isGatewayReference(candidate.ownerUserId, 96) &&
+    candidate.clientId === GATEWAY_FIXTURE_CLIENT_ID &&
+    isGatewaySessionStatus(candidate.status) &&
+    candidate.protocolVersion === GATEWAY_PROTOCOL_VERSION &&
+    candidate.appVersion === GATEWAY_FIXTURE_APP_VERSION &&
+    candidate.negotiatedProtocolVersion === GATEWAY_PROTOCOL_VERSION &&
+    isGatewayReference(candidate.sessionNonceMetadata, 256) &&
+    candidate.authProofMetadata === GATEWAY_FIXTURE_AUTH_PROOF_METADATA &&
+    isGatewayInteger(candidate.lastReplayCounter, 1) &&
+    candidate.scope === "administrative_recovery" &&
+    candidate.authenticated === true &&
+    candidate.localLoopbackOnly === true &&
+    candidate.standaloneFallback === true &&
+    isGatewayTimestamp(candidate.connectedAt) &&
+    isGatewayTimestamp(candidate.lastSeenAt) &&
+    (candidate.disconnectedAt === null ||
+      isGatewayTimestamp(candidate.disconnectedAt)) &&
+    protocol !== null &&
+    handshake !== null &&
+    handshake.kind === "session" &&
+    handshake.sessionId === candidate.id &&
+    isGatewayTimestamp(candidate.updatedAt)
+    ? (candidate as unknown as GatewaySession)
+    : null;
+}
+
+export function parseGatewayRecovery(value: unknown): GatewayRecovery | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasGatewayForbiddenField(candidate) &&
+    isGatewayReference(candidate.id, 128) &&
+    candidate.accountId === GATEWAY_FIXTURE_ACCOUNT_ID &&
+    isGatewayReference(candidate.transferId, 128) &&
+    isGatewayReference(candidate.sessionId, 128) &&
+    candidate.sourceAgentId === GATEWAY_FIXTURE_AGENT_ID &&
+    isGatewayReference(candidate.ownerUserId, 96) &&
+    candidate.clientId === GATEWAY_FIXTURE_CLIENT_ID &&
+    candidate.kind === "mobile_administrative" &&
+    isGatewayRecoveryStatus(candidate.status) &&
+    candidate.targetMetadata === GATEWAY_FIXTURE_RECOVERY_TARGET &&
+    candidate.approvalRequired === true &&
+    candidate.metadataOnly === true &&
+    candidate.externalEffectPerformed === false &&
+    isGatewayTimestamp(candidate.createdAt) &&
+    (candidate.approvedAt === null ||
+      isGatewayTimestamp(candidate.approvedAt)) &&
+    isGatewayTimestamp(candidate.updatedAt)
+    ? (candidate as unknown as GatewayRecovery)
+    : null;
+}
+
+export function parseGatewayAuditRecord(
+  value: unknown,
+): GatewayAuditRecord | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasGatewayForbiddenField(candidate) &&
+    isGatewayReference(candidate.id, 128) &&
+    (candidate.accountId === null ||
+      isGatewayReference(candidate.accountId, 128)) &&
+    (candidate.transferId === null ||
+      isGatewayReference(candidate.transferId, 128)) &&
+    (candidate.sessionId === null ||
+      isGatewayReference(candidate.sessionId, 128)) &&
+    (candidate.recoveryId === null ||
+      isGatewayReference(candidate.recoveryId, 128)) &&
+    candidate.sourceAgentId === GATEWAY_FIXTURE_AGENT_ID &&
+    isGatewayReference(candidate.ownerUserId, 96) &&
+    isGatewayReference(candidate.event, 96) &&
+    isGatewayReference(candidate.result, 96) &&
+    (candidate.code === null || isGatewayReference(candidate.code, 96)) &&
+    isGatewayReference(candidate.summary, 512) &&
+    isGatewayTimestamp(candidate.createdAt)
+    ? (candidate as unknown as GatewayAuditRecord)
+    : null;
+}
+
+export function parseGatewayRevocation(
+  value: unknown,
+): GatewayRevocation | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasGatewayForbiddenField(candidate) &&
+    isGatewayReference(candidate.id, 128) &&
+    candidate.accountId === GATEWAY_FIXTURE_ACCOUNT_ID &&
+    (candidate.transferId === null ||
+      isGatewayReference(candidate.transferId, 128)) &&
+    (candidate.sessionId === null ||
+      isGatewayReference(candidate.sessionId, 128)) &&
+    isGatewayReference(candidate.ownerUserId, 96) &&
+    (candidate.targetKind === "transfer" ||
+      candidate.targetKind === "session") &&
+    isGatewayReference(candidate.targetId, 128) &&
+    isGatewayReference(candidate.previousStatus, 64) &&
+    isGatewayReference(candidate.reason, 512) &&
+    isGatewayTimestamp(candidate.createdAt)
+    ? (candidate as unknown as GatewayRevocation)
+    : null;
+}
+
+function parseGatewayArray<T>(
+  value: unknown,
+  parser: (item: unknown) => T | null,
+  maximum: number,
+): T[] | null {
+  if (!Array.isArray(value) || value.length > maximum) return null;
+  const parsed = value.map(parser);
+  return parsed.every((item): item is T => item !== null) ? parsed : null;
+}
+
+export function parseGatewayAccounts(value: unknown): GatewayAccount[] | null {
+  return parseGatewayArray(value, parseGatewayAccount, 4);
+}
+
+export function parseGatewayTransfers(
+  value: unknown,
+): GatewayTransfer[] | null {
+  return parseGatewayArray(value, parseGatewayTransfer, 16);
+}
+
+export function parseGatewaySessions(value: unknown): GatewaySession[] | null {
+  return parseGatewayArray(value, parseGatewaySession, 32);
+}
+
+export function parseGatewayRecoveries(
+  value: unknown,
+): GatewayRecovery[] | null {
+  return parseGatewayArray(value, parseGatewayRecovery, 64);
+}
+
+export function parseGatewayAudit(value: unknown): GatewayAuditRecord[] | null {
+  return parseGatewayArray(value, parseGatewayAuditRecord, 100);
+}
+
+export function parseGatewayRevocations(
+  value: unknown,
+): GatewayRevocation[] | null {
+  return parseGatewayArray(value, parseGatewayRevocation, 64);
+}
+
 export type CognitiveTrait = {
   key: string;
   value: number;
