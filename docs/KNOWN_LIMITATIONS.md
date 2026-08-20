@@ -6,10 +6,11 @@ level; earlier phase-specific notes remain historical preparation evidence and a
 new observations here. AIP v0.1.0 was published from commit `b6f74b3793437a647186dd52eeb950ff4b3fb228`.
 A local Ollama integration test is skipped when its required model is not installed. v0.1.0 has
 no cloud synchronization, Android client, BielOS integration, released voice feature,
-supervised external tools, extensions, screen vision, or the post-release Phase 7E–7F
+real supervised external tools, extensions, screen vision, or the post-release Phase 7E–7F
 cognitive-core conversation integration. The current development checkpoint implements
-bounded Phase 7B–7E local paths and the Phase 8 local voice architecture checkpoint; this is
-not a v0.1 release claim. Phase 7E and 7F validation reservations are recorded in
+bounded Phase 7B–7E local paths, the Phase 8 local voice architecture checkpoint, and the
+Phase 9 supervised-tools mock checkpoint; this is not a v0.1 release claim. Phase 7E and 7F
+validation reservations are recorded in
 [PHASE_7E_VALIDATION.md](PHASE_7E_VALIDATION.md) and [PHASE_7F_VALIDATION.md](PHASE_7F_VALIDATION.md).
 
 ## Distribution and platform
@@ -31,6 +32,19 @@ not a v0.1 release claim. Phase 7E and 7F validation reservations are recorded i
 - Real audio-device/model integration, packaged Windows validation, restart/manual runtime
   evidence, and subjective voice-quality validation remain reserved. The checkpoint is not
   release approval. See [PHASE_8_VOICE_SPEC.md](PHASE_8_VOICE_SPEC.md).
+
+## Phase 9 supervised-tools checkpoint
+
+- Phase 9 currently provides only SQLite-backed manifests, fixture-scoped sessions, typed
+  preview/approval/confirmation/cancellation/compensation paths, deterministic mock output,
+  audit retention, and Portuguese Owner controls. It does not access the host filesystem,
+  shell, credentials, calendars, messaging accounts, network, or external providers.
+- Safe mode and temporary chat fail closed for tool mutations. Read-only catalog and audit
+  inspection remain available for recovery visibility; no hidden execution or permission
+  expansion is supported.
+- Live provider adapters, real external-effect verification, packaged-Windows runtime
+  evidence, and release/manual approval remain reserved. See
+  [PHASE_9_TOOLS_SPEC.md](PHASE_9_TOOLS_SPEC.md).
 
 ## Deferred usability and agent features
 

@@ -243,6 +243,157 @@ export type VoiceEmotionHypothesisResult = {
   source: string;
 };
 
+export type ToolClassification = "read_only" | "state_changing";
+export type ToolAdapterKind =
+  "workspace_mock" | "calendar_mock" | "messaging_mock";
+export type ToolPermission =
+  "preview" | "execute_read_only" | "execute_state_changing";
+export type ToolSessionStatus = "active" | "cancelled" | "closed";
+export type ToolActionStatus =
+  | "previewed"
+  | "approved"
+  | "confirmed"
+  | "dry_run"
+  | "executed"
+  | "cancelled"
+  | "failed"
+  | "compensated"
+  | "rejected";
+export type ToolResultStatus =
+  "dry_run" | "simulated" | "cancelled" | "compensated";
+
+export type ToolManifest = {
+  toolId: string;
+  manifestVersion: 1;
+  name: string;
+  classification: ToolClassification;
+  adapterKind: ToolAdapterKind;
+  scopeKind: "workspace" | "calendar" | "messaging";
+  requiresSecondConfirmation: boolean;
+  capabilities: string[];
+  updatedAt: number;
+};
+export type ToolSessionPermission = {
+  toolId: string;
+  permission: ToolPermission;
+};
+export type ToolSessionRequest = {
+  agentId: string;
+  scopeRef: string;
+  permissions: ToolSessionPermission[];
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ToolSession = {
+  id: string;
+  agentId: string;
+  scopeRef: string;
+  status: ToolSessionStatus;
+  permissions: ToolSessionPermission[];
+  createdAt: number;
+  updatedAt: number;
+};
+export type ToolFileMove = { from: string; to: string };
+export type ToolActionInput =
+  | { kind: "workspaceInspect"; relativePaths: string[] }
+  | { kind: "workspaceOrganize"; moves: ToolFileMove[] }
+  | { kind: "calendarList"; date: string }
+  | {
+      kind: "calendarCreate";
+      title: string;
+      date: string;
+      start: string;
+      end: string;
+    }
+  | { kind: "messagingPreview"; recipient: string; body: string }
+  | { kind: "messagingSend"; recipient: string; body: string };
+export type ToolActionPreviewRequest = {
+  agentId: string;
+  sessionId: string;
+  toolId: string;
+  input: ToolActionInput;
+  dryRun: boolean;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ToolActionDecisionRequest = {
+  agentId: string;
+  actionId: string;
+  approved: boolean;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ToolActionConfirmationRequest = {
+  agentId: string;
+  actionId: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ToolActionExecutionRequest = {
+  agentId: string;
+  actionId: string;
+  dryRun: boolean;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ToolActionCancellationRequest = {
+  agentId: string;
+  actionId: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ToolSessionCancellationRequest = {
+  agentId: string;
+  sessionId: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ToolExecutionResult = {
+  status: ToolResultStatus;
+  output: string;
+  changed: false;
+  untrusted: true;
+};
+export type ToolCompensation = {
+  kind: string;
+  available: boolean;
+  description: string;
+};
+export type ToolAction = {
+  id: string;
+  sessionId: string;
+  agentId: string;
+  toolId: string;
+  classification: ToolClassification;
+  input: ToolActionInput;
+  summary: string;
+  affectedResources: string[];
+  exactEffect: string;
+  status: ToolActionStatus;
+  dryRun: boolean;
+  requiresOwnerApproval: boolean;
+  requiresSecondConfirmation: boolean;
+  ownerApproved: boolean;
+  secondConfirmed: boolean;
+  result: ToolExecutionResult | null;
+  compensation: ToolCompensation | null;
+  code: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+export type ToolAuditRecord = {
+  id: string;
+  actionId: string | null;
+  sessionId: string | null;
+  agentId: string;
+  toolId: string | null;
+  event: string;
+  result: string;
+  code: string | null;
+  summary: string;
+  createdAt: number;
+};
+
 export type CognitiveTrait = {
   key: string;
   value: number;
@@ -698,7 +849,33 @@ export type CognitiveErrorCode =
   | "voice_model_unavailable"
   | "voice_device_or_model_unavailable"
   | "voice_input_invalid"
-  | "voice_muted";
+  | "voice_muted"
+  | "tools_blocked_temporary"
+  | "tools_blocked_safe_mode"
+  | "tool_not_found"
+  | "tool_manifest_invalid"
+  | "tool_scope_invalid"
+  | "tool_permission_invalid"
+  | "tool_permission_denied"
+  | "tool_session_limit"
+  | "tool_session_not_found"
+  | "tool_session_cancelled"
+  | "tool_input_invalid"
+  | "tool_output_oversized"
+  | "tool_audit_oversized"
+  | "tool_action_not_found"
+  | "tool_action_invalid"
+  | "tool_action_not_executable"
+  | "tool_action_already_completed"
+  | "tool_action_not_approvable"
+  | "tool_approval_not_required"
+  | "tool_approval_required"
+  | "tool_action_rejected"
+  | "tool_action_cancelled"
+  | "tool_confirmation_not_required"
+  | "tool_confirmation_required"
+  | "tool_action_not_confirmable"
+  | "tool_compensation_unavailable";
 export type CognitiveErrorResponse = {
   code: CognitiveErrorCode;
   message: string;
@@ -850,6 +1027,32 @@ export function parseCognitiveError(
     "voice_device_or_model_unavailable",
     "voice_input_invalid",
     "voice_muted",
+    "tools_blocked_temporary",
+    "tools_blocked_safe_mode",
+    "tool_not_found",
+    "tool_manifest_invalid",
+    "tool_scope_invalid",
+    "tool_permission_invalid",
+    "tool_permission_denied",
+    "tool_session_limit",
+    "tool_session_not_found",
+    "tool_session_cancelled",
+    "tool_input_invalid",
+    "tool_output_oversized",
+    "tool_audit_oversized",
+    "tool_action_not_found",
+    "tool_action_invalid",
+    "tool_action_not_executable",
+    "tool_action_already_completed",
+    "tool_action_not_approvable",
+    "tool_approval_not_required",
+    "tool_approval_required",
+    "tool_action_rejected",
+    "tool_action_cancelled",
+    "tool_confirmation_not_required",
+    "tool_confirmation_required",
+    "tool_action_not_confirmable",
+    "tool_compensation_unavailable",
   ];
   return codes.includes(candidate.code as CognitiveErrorCode) &&
     cognitiveString(candidate.message)
@@ -945,6 +1148,245 @@ export function parseVoiceEmotionHypothesis(
     candidate.diagnostic === false &&
     cognitiveString(candidate.source)
     ? (candidate as VoiceEmotionHypothesisResult)
+    : null;
+}
+
+function toolRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function toolStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(cognitiveString);
+}
+
+function isToolClassification(value: unknown): value is ToolClassification {
+  return value === "read_only" || value === "state_changing";
+}
+
+function isToolAdapterKind(value: unknown): value is ToolAdapterKind {
+  return (
+    value === "workspace_mock" ||
+    value === "calendar_mock" ||
+    value === "messaging_mock"
+  );
+}
+
+function isToolPermission(value: unknown): value is ToolPermission {
+  return (
+    value === "preview" ||
+    value === "execute_read_only" ||
+    value === "execute_state_changing"
+  );
+}
+
+function isToolActionStatus(value: unknown): value is ToolActionStatus {
+  return [
+    "previewed",
+    "approved",
+    "confirmed",
+    "dry_run",
+    "executed",
+    "cancelled",
+    "failed",
+    "compensated",
+    "rejected",
+  ].includes(value as string);
+}
+
+function isToolResultStatus(value: unknown): value is ToolResultStatus {
+  return ["dry_run", "simulated", "cancelled", "compensated"].includes(
+    value as string,
+  );
+}
+
+export function parseToolActionInput(value: unknown): ToolActionInput | null {
+  const candidate = toolRecord(value);
+  if (!candidate || !cognitiveString(candidate.kind)) return null;
+  switch (candidate.kind) {
+    case "workspaceInspect":
+      return toolStringArray(candidate.relativePaths)
+        ? (candidate as unknown as ToolActionInput)
+        : null;
+    case "workspaceOrganize": {
+      if (!Array.isArray(candidate.moves)) return null;
+      const moves = candidate.moves.every((move) => {
+        const item = toolRecord(move);
+        return (
+          item !== null &&
+          cognitiveString(item.from) &&
+          cognitiveString(item.to)
+        );
+      });
+      return moves ? (candidate as unknown as ToolActionInput) : null;
+    }
+    case "calendarList":
+      return cognitiveString(candidate.date)
+        ? (candidate as unknown as ToolActionInput)
+        : null;
+    case "calendarCreate":
+      return cognitiveString(candidate.title) &&
+        cognitiveString(candidate.date) &&
+        cognitiveString(candidate.start) &&
+        cognitiveString(candidate.end)
+        ? (candidate as unknown as ToolActionInput)
+        : null;
+    case "messagingPreview":
+    case "messagingSend":
+      return cognitiveString(candidate.recipient) &&
+        cognitiveString(candidate.body)
+        ? (candidate as unknown as ToolActionInput)
+        : null;
+    default:
+      return null;
+  }
+}
+
+export function parseToolManifest(value: unknown): ToolManifest | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    cognitiveString(candidate.toolId) &&
+    candidate.manifestVersion === 1 &&
+    cognitiveString(candidate.name) &&
+    isToolClassification(candidate.classification) &&
+    isToolAdapterKind(candidate.adapterKind) &&
+    ["workspace", "calendar", "messaging"].includes(
+      candidate.scopeKind as string,
+    ) &&
+    typeof candidate.requiresSecondConfirmation === "boolean" &&
+    toolStringArray(candidate.capabilities) &&
+    cognitiveNumber(candidate.updatedAt)
+    ? (candidate as unknown as ToolManifest)
+    : null;
+}
+
+export function parseToolSessionPermission(
+  value: unknown,
+): ToolSessionPermission | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    cognitiveString(candidate.toolId) &&
+    isToolPermission(candidate.permission)
+    ? (candidate as unknown as ToolSessionPermission)
+    : null;
+}
+
+export function parseToolSession(value: unknown): ToolSession | null {
+  const candidate = toolRecord(value);
+  if (!candidate || !Array.isArray(candidate.permissions)) return null;
+  const permissions = candidate.permissions.map(parseToolSessionPermission);
+  return cognitiveString(candidate.id) &&
+    cognitiveString(candidate.agentId) &&
+    cognitiveString(candidate.scopeRef) &&
+    ["active", "cancelled", "closed"].includes(candidate.status as string) &&
+    permissions.every(
+      (permission): permission is ToolSessionPermission => permission !== null,
+    ) &&
+    cognitiveNumber(candidate.createdAt) &&
+    cognitiveNumber(candidate.updatedAt)
+    ? (candidate as unknown as ToolSession)
+    : null;
+}
+
+export function parseToolExecutionResult(
+  value: unknown,
+): ToolExecutionResult | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    isToolResultStatus(candidate.status) &&
+    cognitiveString(candidate.output) &&
+    candidate.changed === false &&
+    candidate.untrusted === true
+    ? (candidate as unknown as ToolExecutionResult)
+    : null;
+}
+
+export function parseToolCompensation(value: unknown): ToolCompensation | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    cognitiveString(candidate.kind) &&
+    typeof candidate.available === "boolean" &&
+    cognitiveString(candidate.description)
+    ? (candidate as unknown as ToolCompensation)
+    : null;
+}
+
+export function parseToolAction(value: unknown): ToolAction | null {
+  const candidate = toolRecord(value);
+  const result =
+    candidate?.result === null
+      ? null
+      : parseToolExecutionResult(candidate?.result);
+  const compensation =
+    candidate?.compensation === null
+      ? null
+      : parseToolCompensation(candidate?.compensation);
+  return candidate !== null &&
+    cognitiveString(candidate.id) &&
+    cognitiveString(candidate.sessionId) &&
+    cognitiveString(candidate.agentId) &&
+    cognitiveString(candidate.toolId) &&
+    isToolClassification(candidate.classification) &&
+    parseToolActionInput(candidate.input) !== null &&
+    cognitiveString(candidate.summary) &&
+    toolStringArray(candidate.affectedResources) &&
+    cognitiveString(candidate.exactEffect) &&
+    isToolActionStatus(candidate.status) &&
+    typeof candidate.dryRun === "boolean" &&
+    typeof candidate.requiresOwnerApproval === "boolean" &&
+    typeof candidate.requiresSecondConfirmation === "boolean" &&
+    typeof candidate.ownerApproved === "boolean" &&
+    typeof candidate.secondConfirmed === "boolean" &&
+    (candidate.result === null || result !== null) &&
+    (candidate.compensation === null || compensation !== null) &&
+    (candidate.code === null || cognitiveString(candidate.code)) &&
+    cognitiveNumber(candidate.createdAt) &&
+    cognitiveNumber(candidate.updatedAt)
+    ? (candidate as unknown as ToolAction)
+    : null;
+}
+
+export function parseToolAuditRecord(value: unknown): ToolAuditRecord | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    cognitiveString(candidate.id) &&
+    (candidate.actionId === null || cognitiveString(candidate.actionId)) &&
+    (candidate.sessionId === null || cognitiveString(candidate.sessionId)) &&
+    cognitiveString(candidate.agentId) &&
+    (candidate.toolId === null || cognitiveString(candidate.toolId)) &&
+    cognitiveString(candidate.event) &&
+    cognitiveString(candidate.result) &&
+    (candidate.code === null || cognitiveString(candidate.code)) &&
+    cognitiveString(candidate.summary) &&
+    cognitiveNumber(candidate.createdAt)
+    ? (candidate as unknown as ToolAuditRecord)
+    : null;
+}
+
+export function parseToolCatalog(value: unknown): ToolManifest[] | null {
+  if (!Array.isArray(value)) return null;
+  const manifests = value.map(parseToolManifest);
+  return manifests.every(
+    (manifest): manifest is ToolManifest => manifest !== null,
+  )
+    ? manifests
+    : null;
+}
+
+export function parseToolSessions(value: unknown): ToolSession[] | null {
+  if (!Array.isArray(value)) return null;
+  const sessions = value.map(parseToolSession);
+  return sessions.every((session): session is ToolSession => session !== null)
+    ? sessions
+    : null;
+}
+
+export function parseToolAudit(value: unknown): ToolAuditRecord[] | null {
+  if (!Array.isArray(value)) return null;
+  const records = value.map(parseToolAuditRecord);
+  return records.every((record): record is ToolAuditRecord => record !== null)
+    ? records
     : null;
 }
 

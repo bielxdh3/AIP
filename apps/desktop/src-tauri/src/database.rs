@@ -31,7 +31,8 @@ const MIGRATION_0012: &str = include_str!("../migrations/0012_phase7a_cognitive_
 const MIGRATION_0013: &str = include_str!("../migrations/0013_phase7b_7d_cognitive_core.sql");
 const MIGRATION_0014: &str = include_str!("../migrations/0014_phase7e_7f_conversations.sql");
 const MIGRATION_0015: &str = include_str!("../migrations/0015_phase8_voice.sql");
-const MIGRATIONS: [(i64, &str); 15] = [
+const MIGRATION_0016: &str = include_str!("../migrations/0016_phase9_tools.sql");
+const MIGRATIONS: [(i64, &str); 16] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
@@ -47,6 +48,7 @@ const MIGRATIONS: [(i64, &str); 15] = [
     (13, MIGRATION_0013),
     (14, MIGRATION_0014),
     (15, MIGRATION_0015),
+    (16, MIGRATION_0016),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -2784,7 +2786,7 @@ mod tests {
         let first = Database::initialize(&path).expect("database should initialize");
         let second = Database::initialize(&path).expect("database should reinitialize");
         let snapshot = second.snapshot().expect("snapshot should load");
-        assert_eq!(snapshot.migration_version, 15);
+        assert_eq!(snapshot.migration_version, 16);
         assert_eq!(snapshot.agents.len(), 2);
         for agent in &snapshot.agents {
             assert_eq!(
@@ -2813,7 +2815,7 @@ mod tests {
         drop(connection);
 
         let database = Database::initialize(&path).expect("v1 database should upgrade");
-        assert_eq!(database.snapshot().unwrap().migration_version, 15);
+        assert_eq!(database.snapshot().unwrap().migration_version, 16);
         let connection = Connection::open(&path).unwrap();
         let preserved: String = connection
             .query_row(
@@ -3776,7 +3778,7 @@ mod tests {
 
         let upgraded = Database::initialize(&path).unwrap();
         assert_eq!(upgraded.simulated_state(ASTRA_ID).unwrap().mode, "normal");
-        assert_eq!(upgraded.snapshot().unwrap().migration_version, 15);
+        assert_eq!(upgraded.snapshot().unwrap().migration_version, 16);
         cleanup(&path);
     }
 

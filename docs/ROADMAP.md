@@ -228,19 +228,21 @@ behavior, and subjective voice quality. The checkpoint keeps no microphone captu
 audio persistence, upload/network path, real-person cloning, or hidden listener. See the
 [Phase 8 voice specification](PHASE_8_VOICE_SPEC.md).
 
-## Post-v0.1 Phase 9: supervised tools
+## Post-v0.1 Phase 9: supervised tools `[IMPLEMENTED — LOCAL MOCK CHECKPOINT]`
 
-Potential scope:
+The current checkpoint implements the bounded local architecture described in
+[PHASE_9_TOOLS_SPEC.md](PHASE_9_TOOLS_SPEC.md):
 
-- tool manifest;
-- granular session permissions;
-- action preview;
-- approval and forced-execution flow;
-- read-only and state-changing separation;
-- file organization tools;
-- calendar and messaging tools;
-- audit retention;
-- safe rollback.
+- versioned catalog with read-only/state-changing classification;
+- granular fixture-scoped sessions and permissions;
+- exact action preview, dry-run, Owner approval, and manifest-bound second confirmation;
+- deterministic workspace, calendar, and messaging adapter mocks;
+- bounded untrusted output, cancellation, compensation metadata, and 30-day audit retention;
+- temporary-chat and safe-mode fail-closed controls with Portuguese Owner UI.
+
+This does not enable real filesystem, shell, credential, calendar, messaging,
+network, or external-provider access. Live adapters, packaged-Windows runtime
+evidence, and release approval remain reserved validation work.
 
 ## Post-v0.1 Phase 10: extensions
 

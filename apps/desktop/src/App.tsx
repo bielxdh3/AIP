@@ -50,6 +50,19 @@ import type {
   VoiceSynthesisResult,
   VoiceTranscriptionRequest,
   VoiceTranscriptionResult,
+  ToolAction,
+  ToolActionInput,
+  ToolManifest,
+  ToolPermission,
+  ToolSession,
+} from "@aip/contracts";
+import {
+  parseCognitiveError,
+  parseToolAction,
+  parseToolAudit,
+  parseToolCatalog,
+  parseToolSession,
+  parseToolSessions,
 } from "@aip/contracts";
 import AgentSprite from "./components/AgentSprite";
 import {
@@ -1473,8 +1486,10 @@ const voiceErrorCopy: Record<string, string> = {
   conversation_temporary_blocked:
     "A conversa temporária não pode salvar configurações ou consentimento de voz.",
   voice_blocked_silent: "O modo silencioso bloqueia alterações de voz.",
-  voice_blocked_suspended: "Agentes suspensos não alteram configurações de voz.",
-  voice_reference_invalid: "Use uma referência local fixture: ou local: válida.",
+  voice_blocked_suspended:
+    "Agentes suspensos não alteram configurações de voz.",
+  voice_reference_invalid:
+    "Use uma referência local fixture: ou local: válida.",
   voice_consent_invalid:
     "O consentimento exige uma referência sintética fixture:custom-.",
   invalid_idempotency_key: "Não foi possível repetir a operação com segurança.",
@@ -1559,7 +1574,9 @@ export function VoiceControls({
       setStatus("Referências locais de voz salvas.");
       await load();
     } catch (cause) {
-      setError(voiceErrorCopy[String(cause)] || "A configuração de voz foi recusada.");
+      setError(
+        voiceErrorCopy[String(cause)] || "A configuração de voz foi recusada.",
+      );
     } finally {
       setBusy(false);
     }
@@ -1578,10 +1595,16 @@ export function VoiceControls({
         temporaryChat: false,
       };
       await invoke<VoiceSettings>("set_custom_voice_consent", request);
-      setStatus(granted ? "Consentimento customizado registrado." : "Consentimento customizado revogado.");
+      setStatus(
+        granted
+          ? "Consentimento customizado registrado."
+          : "Consentimento customizado revogado.",
+      );
       await load();
     } catch (cause) {
-      setError(voiceErrorCopy[String(cause)] || "O consentimento de voz foi recusado.");
+      setError(
+        voiceErrorCopy[String(cause)] || "O consentimento de voz foi recusado.",
+      );
     } finally {
       setBusy(false);
     }
@@ -1606,7 +1629,10 @@ export function VoiceControls({
           : `Voz degradada (${result.code}); a conversa de texto continua disponível.`,
       );
     } catch (cause) {
-      setError(voiceErrorCopy[String(cause)] || "A transcrição local está indisponível.");
+      setError(
+        voiceErrorCopy[String(cause)] ||
+          "A transcrição local está indisponível.",
+      );
     } finally {
       setBusy(false);
     }
@@ -1633,7 +1659,9 @@ export function VoiceControls({
             : `Voz degradada (${result.code}); a conversa de texto continua disponível.`,
       );
     } catch (cause) {
-      setError(voiceErrorCopy[String(cause)] || "A síntese local está indisponível.");
+      setError(
+        voiceErrorCopy[String(cause)] || "A síntese local está indisponível.",
+      );
     } finally {
       setBusy(false);
     }
@@ -1644,7 +1672,8 @@ export function VoiceControls({
       <section aria-label="Configurações de voz">
         <strong>Voz local</strong>
         <p role="alert">
-          {error || "Voz local indisponível; a conversa de texto continua disponível."}
+          {error ||
+            "Voz local indisponível; a conversa de texto continua disponível."}
         </p>
       </section>
     );
@@ -1656,7 +1685,8 @@ export function VoiceControls({
       <p>{voiceAvailabilityCopy(settings)}</p>
       {temporaryChat ? (
         <p role="status">
-          Conversa temporária: configurações e consentimento de voz não serão salvos.
+          Conversa temporária: configurações e consentimento de voz não serão
+          salvos.
         </p>
       ) : null}
       <p>Voz-base protegida: {settings.baseVoiceId}.</p>
@@ -1700,7 +1730,11 @@ export function VoiceControls({
           onChange={(event) => setOutputDeviceRef(event.target.value)}
         />
       </label>
-      <button type="button" disabled={temporaryChat || busy} onClick={() => void saveSettings()}>
+      <button
+        type="button"
+        disabled={temporaryChat || busy}
+        onClick={() => void saveSettings()}
+      >
         Salvar referências locais
       </button>
       <label>
@@ -1716,16 +1750,26 @@ export function VoiceControls({
       <button
         type="button"
         disabled={temporaryChat || busy}
-        onClick={() => void changeConsent(settings.customVoiceConsent !== "granted")}
+        onClick={() =>
+          void changeConsent(settings.customVoiceConsent !== "granted")
+        }
       >
         {settings.customVoiceConsent === "granted"
           ? "Revogar consentimento customizado"
           : "Conceder consentimento customizado"}
       </button>
-      <button type="button" disabled={busy} onClick={() => void testTranscription()}>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void testTranscription()}
+      >
         Testar transcrição de fixture
       </button>
-      <button type="button" disabled={busy} onClick={() => void testSynthesis()}>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void testSynthesis()}
+      >
         Testar síntese de fixture
       </button>
       {status ? <p role="status">{status}</p> : null}
@@ -2031,17 +2075,21 @@ const coreErrorCopy: Record<string, string> = {
   conversation_temporary_blocked:
     "Conversas entre agentes não podem iniciar ou ser alteradas em conversa temporária.",
   conversation_purpose_invalid: "Informe um propósito público válido.",
-  conversation_budget_invalid: "Os limites da conversa pública não são válidos.",
+  conversation_budget_invalid:
+    "Os limites da conversa pública não são válidos.",
   conversation_opt_in_required:
     "Os dois agentes precisam autorizar este propósito explicitamente.",
   conversation_participant_invalid: "O participante da conversa não é válido.",
   conversation_blocked_safe_mode:
     "O modo seguro bloqueia conversas autônomas entre agentes.",
-  conversation_blocked_silent: "O modo silencioso bloqueia conversas entre agentes.",
-  conversation_blocked_suspended: "Agentes suspensos não participam de conversas.",
+  conversation_blocked_silent:
+    "O modo silencioso bloqueia conversas entre agentes.",
+  conversation_blocked_suspended:
+    "Agentes suspensos não participam de conversas.",
   conversation_not_found: "A conversa pública não foi encontrada.",
   conversation_not_active: "A conversa pública já terminou.",
-  conversation_not_completed: "A conversa precisa terminar antes de gerar candidatos.",
+  conversation_not_completed:
+    "A conversa precisa terminar antes de gerar candidatos.",
   conversation_turn_invalid: "O turno público não é válido.",
   conversation_turn_limit: "O limite de turnos da conversa foi atingido.",
   conversation_token_limit: "O limite de tokens da conversa foi atingido.",
@@ -2247,12 +2295,8 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
     setOpinions(nextOpinions);
     setRelationships(nextRelationships);
     setGoals(nextGoals);
-    setConversationPolicies(
-      Array.isArray(nextPolicies) ? nextPolicies : [],
-    );
-    setConversations(
-      Array.isArray(nextConversations) ? nextConversations : [],
-    );
+    setConversationPolicies(Array.isArray(nextPolicies) ? nextPolicies : []);
+    setConversations(Array.isArray(nextConversations) ? nextConversations : []);
     setCandidates(Array.isArray(nextCandidates) ? nextCandidates : []);
     setSelectedConversation(null);
   }, [agentId]);
@@ -2288,9 +2332,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
     command: Command,
     args: CognitiveCommandMap[Command]["args"],
     message: string,
-    onResult?: (
-      response: CognitiveCommandMap[Command]["response"],
-    ) => void,
+    onResult?: (response: CognitiveCommandMap[Command]["response"]) => void,
   ): Promise<boolean> {
     setBusy(true);
     setError(null);
@@ -2792,8 +2834,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
   const selectedConversationSummary =
     conversations.find(
       (conversation) => conversation.id === selectedConversationId,
-    ) ??
-    selectedConversation?.conversation;
+    ) ?? selectedConversation?.conversation;
 
   return (
     <section aria-label="Núcleo cognitivo 7B a 7E">
@@ -3127,10 +3168,10 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
         {conversationPolicies.map((policy) => (
           <li key={`${policy.agentId}:${policy.purpose}`}>
             {policy.agentId} — {policy.purpose} —{" "}
-            {policy.optedIn ? "autorizado" : "revogado"} — até{" "}
-            {policy.maxTurns} turnos, {policy.maxTokens} tokens,{" "}
-            {policy.maxDurationMs} ms, {policy.maxRepetitions} repetições e{" "}
-            {policy.resourceBudget} unidades de recurso
+            {policy.optedIn ? "autorizado" : "revogado"} — até {policy.maxTurns}{" "}
+            turnos, {policy.maxTokens} tokens, {policy.maxDurationMs} ms,{" "}
+            {policy.maxRepetitions} repetições e {policy.resourceBudget}{" "}
+            unidades de recurso
           </li>
         ))}
       </ul>
@@ -3164,7 +3205,9 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
       </ul>
       {selectedConversation ? (
         <div>
-          <h5>Turnos públicos de {selectedConversation.conversation.purpose}</h5>
+          <h5>
+            Turnos públicos de {selectedConversation.conversation.purpose}
+          </h5>
           <ul aria-label="Turnos públicos">
             {selectedConversation.turns.map((turn) => (
               <li key={turn.id}>
@@ -3881,6 +3924,706 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
   );
 }
 
+const toolLabels: Record<string, string> = {
+  "workspace.inspect_scope": "Inspecionar área de arquivos fixture",
+  "workspace.organize_files": "Organizar arquivos fixture",
+  "calendar.list_events": "Listar eventos do calendário fixture",
+  "calendar.create_event": "Criar evento no calendário fixture",
+  "messaging.preview_message": "Pré-visualizar mensagem fixture",
+  "messaging.send_message": "Enviar mensagem fixture",
+};
+
+const toolErrorLabels: Record<string, string> = {
+  tools_blocked_temporary:
+    "Ferramentas bloqueadas durante a conversa temporária.",
+  tools_blocked_safe_mode: "Ferramentas bloqueadas pelo modo seguro.",
+  tool_permission_denied: "A sessão não concedeu esta permissão.",
+  tool_permission_invalid:
+    "A combinação de ferramenta e permissão não é válida.",
+  tool_scope_invalid: "A área fixture escolhida não é válida.",
+  tool_input_invalid: "A entrada da ação não passou na validação.",
+  tool_approval_required: "A aprovação explícita do Owner é necessária.",
+  tool_confirmation_required: "A segunda confirmação explícita é necessária.",
+  tool_action_rejected: "A ação foi recusada pelo Owner.",
+  tool_action_not_executable: "A ação não está em um estado executável.",
+  tool_session_cancelled: "A sessão de ferramentas está cancelada.",
+  tool_compensation_unavailable:
+    "Não há compensação disponível para esta ação.",
+  tool_payload_invalid:
+    "A resposta da ferramenta não passou no contrato seguro.",
+};
+
+const toolStatusLabels: Record<string, string> = {
+  active: "ativa",
+  cancelled: "cancelada",
+  closed: "encerrada",
+  previewed: "pré-visualizada",
+  approved: "aprovada",
+  confirmed: "confirmada",
+  dry_run: "dry-run",
+  executed: "executada pelo mock",
+  rejected: "recusada",
+  compensated: "compensada",
+};
+
+const toolPermissionLabels: Record<string, string> = {
+  preview: "prévia",
+  execute_read_only: "execução somente leitura",
+  execute_state_changing: "execução com mudança simulada",
+};
+
+const toolAuditLabels: Record<string, string> = {
+  session_created: "sessão criada",
+  session_cancelled: "sessão cancelada",
+  action_previewed: "ação pré-visualizada",
+  action_approved: "ação aprovada",
+  action_rejected: "ação recusada",
+  action_confirmed: "segunda confirmação registrada",
+  action_dry_run: "dry-run executado",
+  action_executed: "ação simulada",
+  action_cancelled: "ação cancelada",
+  action_compensated: "compensação registrada",
+};
+
+function toolErrorMessage(error: unknown): string {
+  const typed = parseCognitiveError(error);
+  const code =
+    typed?.code ??
+    (typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : "operation_unavailable");
+  return (
+    toolErrorLabels[code] ?? "A operação de ferramentas não está disponível."
+  );
+}
+
+function parseToolPayload<T>(
+  value: unknown,
+  parser: (input: unknown) => T | null,
+): T {
+  const parsed = parser(value);
+  if (parsed === null) throw new Error("tool_payload_invalid");
+  return parsed;
+}
+
+function ToolControls({
+  agentId,
+  temporaryChat,
+  safeMode,
+}: {
+  agentId: string;
+  temporaryChat: boolean;
+  safeMode: boolean;
+}) {
+  const [catalog, setCatalog] = useState<ToolManifest[]>([]);
+  const [sessions, setSessions] = useState<ToolSession[]>([]);
+  const [audit, setAudit] = useState<
+    import("@aip/contracts").ToolAuditRecord[]
+  >([]);
+  const [selectedToolId, setSelectedToolId] = useState("");
+  const [selectedSessionId, setSelectedSessionId] = useState("");
+  const [scopeRef, setScopeRef] = useState("");
+  const [allowPreview, setAllowPreview] = useState(true);
+  const [allowExecute, setAllowExecute] = useState(true);
+  const [action, setAction] = useState<ToolAction | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [relativePaths, setRelativePaths] = useState("inbox");
+  const [moveFrom, setMoveFrom] = useState("inbox/entrada.txt");
+  const [moveTo, setMoveTo] = useState("inbox/processado.txt");
+  const [calendarTitle, setCalendarTitle] = useState("Revisão fixture");
+  const [calendarDate, setCalendarDate] = useState("2026-08-20");
+  const [calendarStart, setCalendarStart] = useState("10:00");
+  const [calendarEnd, setCalendarEnd] = useState("11:00");
+  const [recipient, setRecipient] = useState("fixture:recipient-owner");
+  const [messageBody, setMessageBody] = useState("Mensagem de teste fixture");
+  const [dryRun, setDryRun] = useState(false);
+
+  const loadData = useCallback(async () => {
+    const [rawCatalog, rawSessions, rawAudit] = await Promise.all([
+      invoke<unknown>("list_tool_catalog"),
+      invoke<unknown>("list_tool_sessions", { agentId }),
+      invoke<unknown>("list_tool_audit", { agentId }),
+    ]);
+    const nextCatalog = parseToolPayload(rawCatalog, parseToolCatalog);
+    const nextSessions = parseToolPayload(rawSessions, parseToolSessions);
+    const nextAudit = parseToolPayload(rawAudit, parseToolAudit);
+    setCatalog(nextCatalog);
+    setSessions(nextSessions);
+    setAudit(nextAudit);
+    setSelectedToolId((current) =>
+      current && nextCatalog.some((manifest) => manifest.toolId === current)
+        ? current
+        : (nextCatalog[0]?.toolId ?? ""),
+    );
+    setSelectedSessionId((current) =>
+      current && nextSessions.some((session) => session.id === current)
+        ? current
+        : (nextSessions[0]?.id ?? ""),
+    );
+  }, [agentId]);
+
+  useEffect(() => {
+    void loadData().catch((loadError: unknown) => {
+      setError(toolErrorMessage(loadError));
+    });
+  }, [loadData]);
+
+  const selectedManifest = catalog.find(
+    (manifest) => manifest.toolId === selectedToolId,
+  );
+  const selectedSession = sessions.find(
+    (session) => session.id === selectedSessionId,
+  );
+  const executePermission: ToolPermission =
+    selectedManifest?.classification === "read_only"
+      ? "execute_read_only"
+      : "execute_state_changing";
+
+  useEffect(() => {
+    if (!selectedManifest) return;
+    setScopeRef(`fixture:${selectedManifest.scopeKind}/owner`);
+    setAllowPreview(true);
+    setAllowExecute(true);
+  }, [selectedManifest]);
+
+  function buildInput(): ToolActionInput | null {
+    switch (selectedToolId) {
+      case "workspace.inspect_scope":
+        return {
+          kind: "workspaceInspect",
+          relativePaths: relativePaths
+            .split(",")
+            .map((path) => path.trim())
+            .filter(Boolean),
+        };
+      case "workspace.organize_files":
+        return {
+          kind: "workspaceOrganize",
+          moves: [{ from: moveFrom, to: moveTo }],
+        };
+      case "calendar.list_events":
+        return { kind: "calendarList", date: calendarDate };
+      case "calendar.create_event":
+        return {
+          kind: "calendarCreate",
+          title: calendarTitle,
+          date: calendarDate,
+          start: calendarStart,
+          end: calendarEnd,
+        };
+      case "messaging.preview_message":
+        return { kind: "messagingPreview", recipient, body: messageBody };
+      case "messaging.send_message":
+        return { kind: "messagingSend", recipient, body: messageBody };
+      default:
+        return null;
+    }
+  }
+
+  async function createSession() {
+    if (!selectedManifest || temporaryChat || safeMode) return;
+    const permissions: { toolId: string; permission: ToolPermission }[] = [];
+    if (allowPreview) {
+      permissions.push({
+        toolId: selectedManifest.toolId,
+        permission: "preview",
+      });
+    }
+    if (allowExecute) {
+      permissions.push({
+        toolId: selectedManifest.toolId,
+        permission: executePermission,
+      });
+    }
+    if (permissions.length === 0) {
+      setError("Escolha pelo menos uma permissão para a sessão.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const next = parseToolPayload(
+        await invoke<unknown>("create_tool_session", {
+          agentId,
+          scopeRef,
+          permissions,
+          idempotencyKey: `tool-session-${crypto.randomUUID()}`,
+          temporaryChat: false,
+        }),
+        parseToolSession,
+      );
+      setSelectedSessionId(next.id);
+      await loadData();
+    } catch (createError: unknown) {
+      setError(toolErrorMessage(createError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function previewAction() {
+    const input = buildInput();
+    if (!selectedManifest || !selectedSession || input === null) {
+      setError("Escolha uma ferramenta e uma sessão ativa antes da prévia.");
+      return;
+    }
+    if (temporaryChat || safeMode) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = parseToolPayload(
+        await invoke<unknown>("preview_tool_action", {
+          agentId,
+          sessionId: selectedSession.id,
+          toolId: selectedManifest.toolId,
+          input,
+          dryRun,
+          idempotencyKey: `tool-action-${crypto.randomUUID()}`,
+          temporaryChat: false,
+        }),
+        parseToolAction,
+      );
+      setAction(next);
+      await loadData();
+    } catch (previewError: unknown) {
+      setError(toolErrorMessage(previewError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateAction(command: string, args: Record<string, unknown>) {
+    if (!action || temporaryChat || safeMode) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = parseToolPayload(
+        await invoke<unknown>(command, args),
+        parseToolAction,
+      );
+      setAction(next);
+      await loadData();
+    } catch (actionError: unknown) {
+      setError(toolErrorMessage(actionError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelSession() {
+    if (!selectedSession || temporaryChat || safeMode) return;
+    setBusy(true);
+    setError(null);
+    try {
+      parseToolPayload(
+        await invoke<unknown>("cancel_tool_session", {
+          agentId,
+          sessionId: selectedSession.id,
+          idempotencyKey: `tool-session-cancel-${crypto.randomUUID()}`,
+          temporaryChat: false,
+        }),
+        parseToolSession,
+      );
+      setAction(null);
+      await loadData();
+    } catch (cancelError: unknown) {
+      setError(toolErrorMessage(cancelError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const blocked = temporaryChat || safeMode;
+  const actionIsStateChanging = action?.classification === "state_changing";
+  const actionIsPending =
+    action !== null &&
+    !["executed", "dry_run", "cancelled", "rejected", "compensated"].includes(
+      action.status,
+    );
+
+  return (
+    <section className="tool-controls" aria-label="Ferramentas supervisionadas">
+      <h3>Ferramentas supervisionadas</h3>
+      <p>
+        Apenas mocks locais e determinísticos. Nenhum arquivo, serviço, conta,
+        rede ou provedor externo é acessado.
+      </p>
+      {temporaryChat ? (
+        <p role="alert">Conversa temporária: ferramentas bloqueadas.</p>
+      ) : null}
+      {safeMode ? (
+        <p role="alert">Modo seguro: ferramentas bloqueadas.</p>
+      ) : null}
+      {error ? <p role="alert">{error}</p> : null}
+      <section className="settings-card">
+        <h4>Catálogo local v1</h4>
+        <ul>
+          {catalog.map((manifest) => (
+            <li key={manifest.toolId}>
+              <strong>
+                {toolLabels[manifest.toolId] ?? "Ferramenta fixture"}
+              </strong>{" "}
+              <span>
+                {manifest.classification === "read_only"
+                  ? "somente leitura"
+                  : "altera estado no mock"}
+                {manifest.requiresSecondConfirmation
+                  ? "; exige segunda confirmação"
+                  : ""}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </section>
+      <fieldset disabled={busy || blocked}>
+        <legend>Sessão com escopo explícito</legend>
+        <label>
+          Ferramenta
+          <select
+            value={selectedToolId}
+            onChange={(event) => {
+              setSelectedToolId(event.target.value);
+              setAction(null);
+            }}
+          >
+            {catalog.map((manifest) => (
+              <option key={manifest.toolId} value={manifest.toolId}>
+                {toolLabels[manifest.toolId] ?? manifest.toolId}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Escopo fixture
+          <input
+            value={scopeRef}
+            onChange={(event) => setScopeRef(event.target.value)}
+          />
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={allowPreview}
+            onChange={(event) => setAllowPreview(event.target.checked)}
+          />{" "}
+          Permitir prévia
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={allowExecute}
+            onChange={(event) => setAllowExecute(event.target.checked)}
+          />{" "}
+          Permitir{" "}
+          {selectedManifest?.classification === "read_only"
+            ? "execução somente leitura"
+            : "execução com mudança simulada"}
+        </label>
+        <button type="button" onClick={() => void createSession()}>
+          Criar sessão limitada
+        </button>
+      </fieldset>
+      <label>
+        Sessão atual
+        <select
+          value={selectedSessionId}
+          onChange={(event) => {
+            setSelectedSessionId(event.target.value);
+            setAction(null);
+          }}
+          disabled={busy}
+        >
+          <option value="">Nenhuma sessão</option>
+          {sessions.map((session) => (
+            <option key={session.id} value={session.id}>
+              {session.scopeRef} —{" "}
+              {toolStatusLabels[session.status] ?? "estado desconhecido"}
+            </option>
+          ))}
+        </select>
+      </label>
+      {selectedSession ? (
+        <p>
+          Permissões:{" "}
+          {selectedSession.permissions
+            .map(
+              (permission) =>
+                toolPermissionLabels[permission.permission] ??
+                "permissão desconhecida",
+            )
+            .join(", ")}
+          .
+        </p>
+      ) : null}
+      <button
+        type="button"
+        disabled={busy || blocked || selectedSession?.status !== "active"}
+        onClick={() => void cancelSession()}
+      >
+        Cancelar sessão
+      </button>
+      <fieldset
+        disabled={busy || blocked || selectedSession?.status !== "active"}
+      >
+        <legend>Prévia da ação</legend>
+        {selectedToolId === "workspace.inspect_scope" ? (
+          <label>
+            Entradas relativas, separadas por vírgula
+            <input
+              value={relativePaths}
+              onChange={(event) => setRelativePaths(event.target.value)}
+            />
+          </label>
+        ) : null}
+        {selectedToolId === "workspace.organize_files" ? (
+          <>
+            <label>
+              Origem relativa
+              <input
+                value={moveFrom}
+                onChange={(event) => setMoveFrom(event.target.value)}
+              />
+            </label>
+            <label>
+              Destino relativo
+              <input
+                value={moveTo}
+                onChange={(event) => setMoveTo(event.target.value)}
+              />
+            </label>
+          </>
+        ) : null}
+        {selectedToolId.startsWith("calendar.") ? (
+          <>
+            {selectedToolId === "calendar.create_event" ? (
+              <label>
+                Título
+                <input
+                  value={calendarTitle}
+                  onChange={(event) => setCalendarTitle(event.target.value)}
+                />
+              </label>
+            ) : null}
+            <label>
+              Data fixture
+              <input
+                type="date"
+                value={calendarDate}
+                onChange={(event) => setCalendarDate(event.target.value)}
+              />
+            </label>
+            {selectedToolId === "calendar.create_event" ? (
+              <>
+                <label>
+                  Início
+                  <input
+                    type="time"
+                    value={calendarStart}
+                    onChange={(event) => setCalendarStart(event.target.value)}
+                  />
+                </label>
+                <label>
+                  Fim
+                  <input
+                    type="time"
+                    value={calendarEnd}
+                    onChange={(event) => setCalendarEnd(event.target.value)}
+                  />
+                </label>
+              </>
+            ) : null}
+          </>
+        ) : null}
+        {selectedToolId.startsWith("messaging.") ? (
+          <>
+            <label>
+              Destinatário fixture
+              <input
+                value={recipient}
+                onChange={(event) => setRecipient(event.target.value)}
+              />
+            </label>
+            <label>
+              Corpo da mensagem
+              <textarea
+                value={messageBody}
+                onChange={(event) => setMessageBody(event.target.value)}
+              />
+            </label>
+          </>
+        ) : null}
+        <label>
+          <input
+            type="checkbox"
+            checked={dryRun}
+            onChange={(event) => setDryRun(event.target.checked)}
+          />{" "}
+          Executar como dry-run
+        </label>
+        <button type="button" onClick={() => void previewAction()}>
+          Gerar prévia limitada
+        </button>
+      </fieldset>
+      {action ? (
+        <section className="settings-card" aria-label="Ação selecionada">
+          <h4>Ação selecionada</h4>
+          <p>{action.summary}</p>
+          <p>{action.exactEffect}</p>
+          <p>Recursos afetados: {action.affectedResources.join(", ")}.</p>
+          <p>
+            Status: {toolStatusLabels[action.status] ?? "estado desconhecido"}.
+          </p>
+          <div className="message-actions">
+            {actionIsStateChanging &&
+            ["previewed", "approved", "confirmed"].includes(action.status) ? (
+              <>
+                <button
+                  type="button"
+                  disabled={busy || blocked}
+                  onClick={() =>
+                    void updateAction("approve_tool_action", {
+                      agentId,
+                      actionId: action.id,
+                      approved: true,
+                      idempotencyKey: `tool-approve-${crypto.randomUUID()}`,
+                      temporaryChat: false,
+                    })
+                  }
+                >
+                  Aprovar como Owner
+                </button>
+                <button
+                  type="button"
+                  disabled={busy || blocked}
+                  onClick={() =>
+                    void updateAction("approve_tool_action", {
+                      agentId,
+                      actionId: action.id,
+                      approved: false,
+                      idempotencyKey: `tool-deny-${crypto.randomUUID()}`,
+                      temporaryChat: false,
+                    })
+                  }
+                >
+                  Recusar ação
+                </button>
+              </>
+            ) : null}
+            {action.requiresSecondConfirmation &&
+            action.status === "approved" ? (
+              <button
+                type="button"
+                disabled={busy || blocked}
+                onClick={() =>
+                  void updateAction("confirm_tool_action", {
+                    agentId,
+                    actionId: action.id,
+                    idempotencyKey: `tool-confirm-${crypto.randomUUID()}`,
+                    temporaryChat: false,
+                  })
+                }
+              >
+                Confirmar segunda vez
+              </button>
+            ) : null}
+            {actionIsPending ? (
+              <button
+                type="button"
+                disabled={busy || blocked}
+                onClick={() =>
+                  void updateAction("execute_tool_action", {
+                    agentId,
+                    actionId: action.id,
+                    dryRun: action.dryRun,
+                    idempotencyKey: `tool-execute-${crypto.randomUUID()}`,
+                    temporaryChat: false,
+                  })
+                }
+              >
+                Executar mock explicitamente
+              </button>
+            ) : null}
+            {actionIsPending ? (
+              <button
+                type="button"
+                disabled={busy || blocked}
+                onClick={() =>
+                  void updateAction("cancel_tool_action", {
+                    agentId,
+                    actionId: action.id,
+                    idempotencyKey: `tool-cancel-${crypto.randomUUID()}`,
+                    temporaryChat: false,
+                  })
+                }
+              >
+                Cancelar ação
+              </button>
+            ) : null}
+            {action.status === "executed" && action.compensation?.available ? (
+              <button
+                type="button"
+                disabled={busy || blocked}
+                onClick={() =>
+                  void updateAction("compensate_tool_action", {
+                    agentId,
+                    actionId: action.id,
+                    idempotencyKey: `tool-compensate-${crypto.randomUUID()}`,
+                    temporaryChat: false,
+                  })
+                }
+              >
+                Registrar compensação
+              </button>
+            ) : null}
+          </div>
+          {action.result ? (
+            <div>
+              <h5>Saída não confiável do mock</h5>
+              <pre>{action.result.output}</pre>
+              <p>
+                Nenhuma alteração real: {action.result.changed ? "sim" : "não"}.
+              </p>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+      <section className="settings-card">
+        <div className="message-actions">
+          <h4>Auditoria recente</h4>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              void loadData().catch((loadError: unknown) =>
+                setError(toolErrorMessage(loadError)),
+              )
+            }
+          >
+            Atualizar auditoria
+          </button>
+        </div>
+        {audit.length === 0 ? (
+          <p>Nenhum evento de ferramenta registrado para este agente.</p>
+        ) : (
+          <ul>
+            {audit.slice(0, 20).map((record) => (
+              <li key={record.id}>
+                <strong>
+                  {toolAuditLabels[record.event] ?? "evento de ferramenta"}
+                </strong>
+                : {record.summary}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </section>
+  );
+}
+
 function SettingsSurface({
   snapshot,
   changingMode,
@@ -4192,6 +4935,14 @@ function App() {
               <VoiceControls
                 agentId={activeAgentId}
                 temporaryChat={temporaryChat}
+              />
+            </details>
+            <details>
+              <summary>Ferramentas supervisionadas</summary>
+              <ToolControls
+                agentId={activeAgentId}
+                temporaryChat={temporaryChat}
+                safeMode={snapshot?.safeMode ?? true}
               />
             </details>
             <details>
