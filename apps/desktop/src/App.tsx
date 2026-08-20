@@ -1679,6 +1679,24 @@ export function CognitivePanel({ agentId }: { agentId: string }) {
   );
 }
 
+export function CognitivePanelGate({
+  agentId,
+  temporaryChat,
+}: {
+  agentId: string;
+  temporaryChat: boolean;
+}) {
+  if (temporaryChat) {
+    return (
+      <p role="status" aria-label="Valores cognitivos somente para leitura">
+        Conversa temporária ativa: opiniões, relacionamentos e objetivos ficam
+        somente para leitura; nenhuma alteração será salva.
+      </p>
+    );
+  }
+  return <CognitivePanel agentId={agentId} />;
+}
+
 const coreGoalStatusCopy: Record<CognitiveGoal["status"], string> = {
   proposed: "proposto",
   active: "ativo",
@@ -3335,7 +3353,10 @@ function App() {
             </details>
             <details>
               <summary>Valores cognitivos</summary>
-              <CognitivePanel agentId={activeAgentId} />
+              <CognitivePanelGate
+                agentId={activeAgentId}
+                temporaryChat={temporaryChat}
+              />
             </details>
             <details>
               <summary>Aparência</summary>
