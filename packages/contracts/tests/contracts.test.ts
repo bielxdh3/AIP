@@ -14,6 +14,12 @@ import {
   parseVoiceSynthesisResult,
   parseVoiceTranscriptionResult,
   parseVoiceWakeWordResult,
+  parseToolAction,
+  parseToolActionInput,
+  parseToolAudit,
+  parseToolCatalog,
+  parseToolSession,
+  parseToolSessions,
 } from "../src/index";
 
 describe("runtime contracts", () => {
@@ -208,5 +214,112 @@ describe("voice contracts", () => {
         source: "model",
       }),
     ).toBeNull();
+  });
+});
+
+describe("supervised tool contracts", () => {
+  const manifest = {
+    toolId: "calendar.create_event",
+    manifestVersion: 1 as const,
+    name: "Calendar fixture event",
+    classification: "state_changing" as const,
+    adapterKind: "calendar_mock" as const,
+    scopeKind: "calendar" as const,
+    requiresSecondConfirmation: true,
+    capabilities: ["preview", "create", "compensate"],
+    updatedAt: 1,
+  };
+  const session = {
+    id: "session-1",
+    agentId: "astra",
+    scopeRef: "fixture:calendar/owner",
+    status: "active" as const,
+    permissions: [
+      { toolId: manifest.toolId, permission: "preview" as const },
+      {
+        toolId: manifest.toolId,
+        permission: "execute_state_changing" as const,
+      },
+    ],
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const action = {
+    id: "action-1",
+    sessionId: session.id,
+    agentId: session.agentId,
+    toolId: manifest.toolId,
+    classification: manifest.classification,
+    input: {
+      kind: "calendarCreate" as const,
+      title: "Revisão",
+      date: "2026-08-20",
+      start: "10:00",
+      end: "11:00",
+    },
+    summary: "Criar evento fixture",
+    affectedResources: ["fixture:calendar/owner/2026-08-20"],
+    exactEffect: "Somente mock local.",
+    status: "approved" as const,
+    dryRun: false,
+    requiresOwnerApproval: true,
+    requiresSecondConfirmation: true,
+    ownerApproved: true,
+    secondConfirmed: false,
+    result: null,
+    compensation: null,
+    code: null,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  it("accepts manifest, session, preview, action and audit payloads", () => {
+    expect(parseToolCatalog([manifest])).not.toBeNull();
+    expect(parseToolSession(session)).not.toBeNull();
+    expect(parseToolSessions([session])).not.toBeNull();
+    expect(parseToolActionInput(action.input)).not.toBeNull();
+    expect(parseToolAction(action)).not.toBeNull();
+    expect(
+      parseToolAudit([
+        {
+          id: "audit-1",
+          actionId: action.id,
+          sessionId: session.id,
+          agentId: session.agentId,
+          toolId: manifest.toolId,
+          event: "action_previewed",
+          result: "previewed",
+          code: null,
+          summary: "Prévia registrada.",
+          createdAt: 1,
+        },
+      ]),
+    ).not.toBeNull();
+  });
+
+  it("rejects unsafe or malformed tool payloads", () => {
+    expect(
+      parseToolAction({
+        ...action,
+        result: {
+          status: "simulated",
+          output: "mock",
+          changed: true,
+          untrusted: false,
+        },
+      }),
+    ).toBeNull();
+    expect(
+      parseToolActionInput({ kind: "shell", command: "whoami" }),
+    ).toBeNull();
+    expect(
+      parseToolSessions([session, { ...session, status: "unknown" }]),
+    ).toBeNull();
+    expect(
+      parseCognitiveError({
+        code: "tools_blocked_safe_mode",
+        message: "Ferramentas bloqueadas no modo seguro",
+      }),
+    ).not.toBeNull();
   });
 });

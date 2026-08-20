@@ -8,6 +8,7 @@ mod native_overlay_region;
 mod overlays;
 mod protocol;
 mod runtime;
+mod tools;
 mod voice;
 
 use std::{
@@ -40,6 +41,11 @@ use domain::{
 use overlays::{InteractiveRegion, OverlayInputState};
 use runtime::RuntimeController;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
+use tools::{
+    ToolAction, ToolActionCancellationRequest, ToolActionConfirmationRequest,
+    ToolActionDecisionRequest, ToolActionExecutionRequest, ToolActionPreviewRequest,
+    ToolAuditRecord, ToolManifest, ToolSession, ToolSessionCancellationRequest, ToolSessionRequest,
+};
 use voice::{
     CustomVoiceConsentRequest, VoiceEmotionHypothesisRequest, VoiceEmotionHypothesisResult,
     VoiceSettings, VoiceSettingsRequest, VoiceSynthesisRequest, VoiceSynthesisResult,
@@ -735,6 +741,162 @@ fn classify_voice_emotion(
         .as_ref()
         .ok_or("operation_unavailable")?
         .classify_voice_emotion(request)
+        .map_err(|error| error.code())
+}
+
+fn ensure_tool_mutation_allowed(
+    state: &AppState,
+    agent_id: &str,
+    requested_temporary: bool,
+) -> Result<(), &'static str> {
+    ensure_conversation_not_temporary(state, agent_id, requested_temporary)
+}
+
+#[tauri::command]
+fn list_tool_catalog(state: State<'_, AppState>) -> Result<Vec<ToolManifest>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_tool_catalog()
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn create_tool_session(
+    state: State<'_, AppState>,
+    request: ToolSessionRequest,
+) -> Result<ToolSession, &'static str> {
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .create_tool_session(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_tool_sessions(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ToolSession>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_tool_sessions(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn preview_tool_action(
+    state: State<'_, AppState>,
+    request: ToolActionPreviewRequest,
+) -> Result<ToolAction, &'static str> {
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .preview_tool_action(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn approve_tool_action(
+    state: State<'_, AppState>,
+    request: ToolActionDecisionRequest,
+) -> Result<ToolAction, &'static str> {
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .decide_tool_action(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn confirm_tool_action(
+    state: State<'_, AppState>,
+    request: ToolActionConfirmationRequest,
+) -> Result<ToolAction, &'static str> {
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .confirm_tool_action(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn execute_tool_action(
+    state: State<'_, AppState>,
+    request: ToolActionExecutionRequest,
+) -> Result<ToolAction, &'static str> {
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .execute_tool_action(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn cancel_tool_action(
+    state: State<'_, AppState>,
+    request: ToolActionCancellationRequest,
+) -> Result<ToolAction, &'static str> {
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .cancel_tool_action(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn compensate_tool_action(
+    state: State<'_, AppState>,
+    request: ToolActionCancellationRequest,
+) -> Result<ToolAction, &'static str> {
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .compensate_tool_action(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn cancel_tool_session(
+    state: State<'_, AppState>,
+    request: ToolSessionCancellationRequest,
+) -> Result<ToolSession, &'static str> {
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .cancel_tool_session(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_tool_audit(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ToolAuditRecord>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_tool_audit(&agent_id)
         .map_err(|error| error.code())
 }
 
@@ -1484,6 +1646,17 @@ pub fn run() {
             synthesize_voice_fixture,
             detect_voice_wake_word_fixture,
             classify_voice_emotion,
+            list_tool_catalog,
+            create_tool_session,
+            list_tool_sessions,
+            preview_tool_action,
+            approve_tool_action,
+            confirm_tool_action,
+            execute_tool_action,
+            cancel_tool_action,
+            compensate_tool_action,
+            cancel_tool_session,
+            list_tool_audit,
             set_safe_mode,
             get_phase_one_state,
             get_temporary_phase_one_state,
