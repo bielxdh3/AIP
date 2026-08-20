@@ -38,7 +38,8 @@ const MIGRATION_0019: &str = include_str!("../migrations/0019_phase12_android_co
 const MIGRATION_0020: &str = include_str!("../migrations/0020_phase13_gateway.sql");
 const MIGRATION_0021: &str = include_str!("../migrations/0021_corrective_tools_capabilities.sql");
 const MIGRATION_0022: &str = include_str!("../migrations/0022_phase8_voice_runtime.sql");
-const MIGRATIONS: [(i64, &str); 22] = [
+const MIGRATION_0023: &str = include_str!("../migrations/0023_phase9_workspace_roots.sql");
+const MIGRATIONS: [(i64, &str); 23] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
@@ -61,6 +62,7 @@ const MIGRATIONS: [(i64, &str); 22] = [
     (20, MIGRATION_0020),
     (21, MIGRATION_0021),
     (22, MIGRATION_0022),
+    (23, MIGRATION_0023),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -2878,13 +2880,10 @@ mod tests {
             )
             .unwrap();
         connection
-            .execute("DELETE FROM schema_migrations WHERE version = 21", [])
+            .execute("DELETE FROM schema_migrations WHERE version >= 21", [])
             .unwrap();
         connection
             .execute("DROP TABLE voice_operation_records", [])
-            .unwrap();
-        connection
-            .execute("DELETE FROM schema_migrations WHERE version = 22", [])
             .unwrap();
         drop(connection);
         drop(database);

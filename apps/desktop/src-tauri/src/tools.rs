@@ -1,3 +1,8 @@
+use std::{
+    fs,
+    path::{Component, Path, PathBuf},
+};
+
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -33,6 +38,8 @@ pub enum ToolAdapterKind {
     Calendar,
     #[serde(rename = "messaging_mock")]
     Messaging,
+    #[serde(rename = "workspace_local")]
+    WorkspaceLocal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +79,32 @@ pub enum ToolResultStatus {
     Simulated,
     Cancelled,
     Compensated,
+    Executed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRoot {
+    pub id: String,
+    pub enabled: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRootRequest {
+    pub path: String,
+    pub idempotency_key: String,
+    pub temporary_chat: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceRootIdRequest {
+    pub root_id: String,
+    pub idempotency_key: String,
+    pub temporary_chat: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,6 +315,83 @@ struct ToolPreviewPlan {
 }
 
 impl Database {
+    pub fn add_workspace_root(
+        &self,
+        request: WorkspaceRootRequest,
+    ) -> Result<WorkspaceRoot, DatabaseError> {
+        ensure_not_temporary(request.temporary_chat)?;
+        let key = valid_idempotency(&request.idempotency_key)?;
+        let path = validate_workspace_root(Path::new(&request.path))?;
+        let mut connection = self.open()?;
+        let owner_id = OWNER_ID.to_string();
+        let transaction = connection.transaction()?;
+        let existing: Option<(String, String)> = transaction
+            .query_row(
+                "SELECT id, path FROM workspace_roots WHERE owner_user_id = ?1 AND idempotency_key = ?2",
+                params![owner_id, key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((id, existing_path)) = existing {
+            if existing_path != path.to_string_lossy() {
+                return Err(DatabaseError::Cognitive("idempotency_conflict"));
+            }
+            let root = load_workspace_root_tx(&transaction, &id)?;
+            transaction.commit()?;
+            return Ok(root);
+        }
+        let now = now_millis();
+        let root_id = format!("wrt_{}", Uuid::now_v7());
+        transaction.execute(
+            "INSERT INTO workspace_roots
+             (id, owner_user_id, path, idempotency_key, enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5)",
+            params![
+                root_id,
+                owner_id,
+                path.to_string_lossy().to_string(),
+                key,
+                now
+            ],
+        )?;
+        let root = load_workspace_root_tx(&transaction, &root_id)?;
+        transaction.commit()?;
+        Ok(root)
+    }
+
+    pub fn list_workspace_roots(&self) -> Result<Vec<WorkspaceRoot>, DatabaseError> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT id, enabled, created_at, updated_at FROM workspace_roots
+             WHERE owner_user_id = ?1 ORDER BY updated_at DESC, id",
+        )?;
+        let roots = statement
+            .query_map(params![OWNER_ID], map_workspace_root)
+            .map_err(DatabaseError::from)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DatabaseError::from);
+        roots
+    }
+
+    pub fn remove_workspace_root(
+        &self,
+        request: WorkspaceRootIdRequest,
+    ) -> Result<WorkspaceRoot, DatabaseError> {
+        ensure_not_temporary(request.temporary_chat)?;
+        let _ = valid_idempotency(&request.idempotency_key)?;
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        let root = load_workspace_root_tx(&transaction, &request.root_id)?;
+        transaction.execute(
+            "UPDATE workspace_roots SET enabled = 0, updated_at = ?1
+             WHERE id = ?2 AND owner_user_id = ?3",
+            params![now_millis(), request.root_id, OWNER_ID],
+        )?;
+        let updated = load_workspace_root_tx(&transaction, &root.id)?;
+        transaction.commit()?;
+        Ok(updated)
+    }
+
     pub fn list_tool_catalog(&self) -> Result<Vec<ToolManifest>, DatabaseError> {
         let connection = self.open()?;
         let mut statement = connection.prepare(
@@ -411,7 +521,8 @@ impl Database {
             &ToolPermission::Preview,
         )?;
         let manifest = load_tool_manifest_tx(&transaction, &request.tool_id)?;
-        let plan = validate_action_input(&manifest, &session.scope_ref, &request.input)?;
+        let plan =
+            validate_action_input(&transaction, &manifest, &session.scope_ref, &request.input)?;
         let input_json =
             serde_json::to_string(&plan.input).map_err(|_| DatabaseError::Unavailable)?;
         if input_json.len() > MAX_INPUT_BYTES {
@@ -696,8 +807,9 @@ impl Database {
                 return Err(DatabaseError::Cognitive("tool_confirmation_required"));
             }
         }
-        let plan = validate_action_input(&manifest, &session.scope_ref, &action.input)?;
-        let result = mock_execute(&manifest, &plan, action.dry_run)?;
+        let plan =
+            validate_action_input(&transaction, &manifest, &session.scope_ref, &action.input)?;
+        let result = execute_adapter(&transaction, &manifest, &plan, action.dry_run)?;
         let result_json = serde_json::to_string(&result).map_err(|_| DatabaseError::Unavailable)?;
         if result_json.len() > MAX_OUTPUT_BYTES {
             return Err(DatabaseError::Cognitive("tool_output_oversized"));
@@ -706,9 +818,18 @@ impl Database {
             && !action.dry_run
         {
             Some(ToolCompensation {
-                kind: "mock_noop".into(),
+                kind: if manifest.adapter_kind == ToolAdapterKind::WorkspaceLocal {
+                    "workspace_move"
+                } else {
+                    "mock_noop"
+                }
+                .into(),
                 available: true,
-                description: "O mock não alterou sistemas externos; nenhuma compensação externa é necessária.".into(),
+                description: if manifest.adapter_kind == ToolAdapterKind::WorkspaceLocal {
+                    "Reverter somente os movimentos ainda compatíveis com a prévia aprovada.".into()
+                } else {
+                    "O mock não alterou sistemas externos; nenhuma compensação externa é necessária.".into()
+                },
             })
         } else {
             None
@@ -838,6 +959,50 @@ impl Database {
         if action.status != ToolActionStatus::Executed || action.compensation.is_none() {
             return Err(DatabaseError::Cognitive("tool_compensation_unavailable"));
         }
+        let session = load_tool_session_tx(&transaction, &action.session_id)?;
+        let manifest = load_tool_manifest_tx(&transaction, &action.tool_id)?;
+        if manifest.adapter_kind == ToolAdapterKind::WorkspaceLocal {
+            let ToolActionInput::WorkspaceOrganize { moves } = &action.input else {
+                return Err(DatabaseError::Cognitive("tool_compensation_unavailable"));
+            };
+            let root = workspace_root_path(&transaction, &session.scope_ref)?;
+            for movement in moves {
+                let destination = safe_child(&root, &movement.to, true)?;
+                let source = safe_child(&root, &movement.from, false)?;
+                fs::rename(destination, source)
+                    .map_err(|_| DatabaseError::Cognitive("workspace_compensation_failed"))?;
+            }
+            let result_json = serde_json::to_string(&ToolExecutionResult {
+                status: ToolResultStatus::Compensated,
+                output: "Movimentos locais revertidos com segurança.".into(),
+                changed: true,
+                untrusted: true,
+            })
+            .map_err(|_| DatabaseError::Unavailable)?;
+            let now = now_millis();
+            transaction.execute(
+                "UPDATE tool_actions SET status = 'compensated', result_json = ?1,
+                 updated_at = ?2 WHERE id = ?3 AND agent_id = ?4",
+                params![result_json, now, request.action_id, request.agent_id],
+            )?;
+            audit_tx(
+                &transaction,
+                AuditContext {
+                    action_id: Some(&request.action_id),
+                    session_id: Some(&action.session_id),
+                    agent_id: &request.agent_id,
+                    owner_id: OWNER_ID,
+                    tool_id: Some(&action.tool_id),
+                    event: "action_compensated",
+                    result: "compensated",
+                    code: None,
+                    summary: "Movimentos locais compensados.",
+                },
+            )?;
+            let result = load_tool_action_tx(&transaction, &request.action_id)?;
+            transaction.commit()?;
+            return Ok(result);
+        }
         let result_json = serde_json::to_string(&ToolExecutionResult {
             status: ToolResultStatus::Compensated,
             output: "Compensação registrada; o mock não teve efeito externo para desfazer.".into(),
@@ -934,6 +1099,144 @@ impl Database {
     }
 }
 
+fn map_workspace_root(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceRoot> {
+    Ok(WorkspaceRoot {
+        id: row.get(0)?,
+        enabled: row.get(1)?,
+        created_at: row.get(2)?,
+        updated_at: row.get(3)?,
+    })
+}
+
+fn load_workspace_root_tx(
+    transaction: &Transaction<'_>,
+    root_id: &str,
+) -> Result<WorkspaceRoot, DatabaseError> {
+    transaction
+        .query_row(
+            "SELECT id, enabled, created_at, updated_at FROM workspace_roots
+             WHERE id = ?1 AND owner_user_id = ?2",
+            params![root_id, OWNER_ID],
+            map_workspace_root,
+        )
+        .optional()?
+        .ok_or(DatabaseError::Cognitive("workspace_root_not_found"))
+}
+
+fn workspace_root_path(
+    transaction: &Transaction<'_>,
+    scope_ref: &str,
+) -> Result<PathBuf, DatabaseError> {
+    let root_id = scope_ref
+        .strip_prefix("workspace_root:")
+        .ok_or(DatabaseError::Cognitive("tool_scope_invalid"))?;
+    let path: String = transaction
+        .query_row(
+            "SELECT path FROM workspace_roots
+             WHERE id = ?1 AND owner_user_id = ?2 AND enabled = 1",
+            params![root_id, OWNER_ID],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or(DatabaseError::Cognitive("workspace_root_unavailable"))?;
+    validate_workspace_root(Path::new(&path))
+}
+
+fn validate_workspace_root(path: &Path) -> Result<PathBuf, DatabaseError> {
+    let original = fs::symlink_metadata(path)
+        .map_err(|_| DatabaseError::Cognitive("workspace_root_unavailable"))?;
+    if original.file_type().is_symlink() {
+        return Err(DatabaseError::Cognitive("workspace_root_invalid"));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if original.file_attributes() & 0x400 != 0 {
+            return Err(DatabaseError::Cognitive("workspace_root_invalid"));
+        }
+    }
+    let canonical = fs::canonicalize(path)
+        .map_err(|_| DatabaseError::Cognitive("workspace_root_unavailable"))?;
+    let metadata = fs::symlink_metadata(&canonical)
+        .map_err(|_| DatabaseError::Cognitive("workspace_root_unavailable"))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() || canonical.parent().is_none() {
+        return Err(DatabaseError::Cognitive("workspace_root_invalid"));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err(DatabaseError::Cognitive("workspace_root_invalid"));
+        }
+        let text = canonical.to_string_lossy().to_ascii_lowercase();
+        if text.ends_with("\\windows")
+            || text.ends_with("\\program files")
+            || text.ends_with("\\program files (x86)")
+            || text.ends_with("\\programdata")
+        {
+            return Err(DatabaseError::Cognitive("workspace_root_invalid"));
+        }
+    }
+    Ok(canonical)
+}
+
+fn relative_components(value: &str) -> Result<PathBuf, DatabaseError> {
+    let normalized = validate_relative_path(value)?;
+    let path = PathBuf::from(&normalized);
+    if path.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(DatabaseError::Cognitive("tool_scope_invalid"));
+    }
+    Ok(path)
+}
+
+fn safe_child(root: &Path, relative: &str, must_exist: bool) -> Result<PathBuf, DatabaseError> {
+    let relative = relative_components(relative)?;
+    let candidate = root.join(relative);
+    if must_exist {
+        let metadata = fs::symlink_metadata(&candidate)
+            .map_err(|_| DatabaseError::Cognitive("workspace_path_unavailable"))?;
+        if metadata.file_type().is_symlink() {
+            return Err(DatabaseError::Cognitive("workspace_path_invalid"));
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes() & 0x400 != 0 {
+                return Err(DatabaseError::Cognitive("workspace_path_invalid"));
+            }
+        }
+        let canonical = fs::canonicalize(&candidate)
+            .map_err(|_| DatabaseError::Cognitive("workspace_path_unavailable"))?;
+        if !canonical.starts_with(root) {
+            return Err(DatabaseError::Cognitive("workspace_path_invalid"));
+        }
+        Ok(canonical)
+    } else {
+        if candidate.exists() {
+            return Err(DatabaseError::Cognitive("workspace_destination_exists"));
+        }
+        let parent = candidate
+            .parent()
+            .ok_or(DatabaseError::Cognitive("workspace_path_invalid"))?;
+        let parent = fs::canonicalize(parent)
+            .map_err(|_| DatabaseError::Cognitive("workspace_path_unavailable"))?;
+        if !parent.starts_with(root) {
+            return Err(DatabaseError::Cognitive("workspace_path_invalid"));
+        }
+        let metadata = fs::symlink_metadata(&parent)
+            .map_err(|_| DatabaseError::Cognitive("workspace_path_unavailable"))?;
+        if metadata.file_type().is_symlink() {
+            return Err(DatabaseError::Cognitive("workspace_path_invalid"));
+        }
+        Ok(candidate)
+    }
+}
+
 fn map_tool_manifest(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolManifest> {
     let manifest_version: i64 = row.get(1)?;
     let classification = classification_from_str(&row.get::<_, String>(3)?)?;
@@ -1007,6 +1310,7 @@ fn adapter_from_str(value: &str) -> rusqlite::Result<ToolAdapterKind> {
         "workspace_mock" => Ok(ToolAdapterKind::Workspace),
         "calendar_mock" => Ok(ToolAdapterKind::Calendar),
         "messaging_mock" => Ok(ToolAdapterKind::Messaging),
+        "workspace_local" => Ok(ToolAdapterKind::WorkspaceLocal),
         _ => Err(invalid_query()),
     }
 }
@@ -1256,6 +1560,18 @@ fn valid_idempotency(value: &str) -> Result<String, DatabaseError> {
 
 fn validate_scope(value: &str) -> Result<String, DatabaseError> {
     let value = value.trim();
+    if value.starts_with("workspace_root:") {
+        let root_id = value.strip_prefix("workspace_root:").unwrap_or_default();
+        if root_id.is_empty()
+            || root_id.len() > 64
+            || root_id
+                .chars()
+                .any(|character| !(character.is_ascii_alphanumeric() || ":._-".contains(character)))
+        {
+            return Err(DatabaseError::Cognitive("tool_scope_invalid"));
+        }
+        return Ok(value.to_string());
+    }
     if value.len() > MAX_SCOPE_BYTES
         || !value.starts_with("fixture:")
         || value.contains("..")
@@ -1376,6 +1692,7 @@ fn scope_prefix(scope_kind: &str) -> Option<&'static str> {
         "workspace" => Some("fixture:workspace/"),
         "calendar" => Some("fixture:calendar/"),
         "messaging" => Some("fixture:messaging/"),
+        "workspace_root" => Some("workspace_root:"),
         _ => None,
     }
 }
@@ -1470,6 +1787,7 @@ fn ensure_owner_tx(transaction: &Transaction<'_>, agent_id: &str) -> Result<Stri
 }
 
 fn validate_action_input(
+    transaction: &Transaction<'_>,
     manifest: &ToolManifest,
     scope_ref: &str,
     input: &ToolActionInput,
@@ -1479,6 +1797,9 @@ fn validate_action_input(
     };
     if !scope_ref.starts_with(prefix) {
         return Err(DatabaseError::Cognitive("tool_scope_invalid"));
+    }
+    if manifest.adapter_kind == ToolAdapterKind::WorkspaceLocal {
+        return validate_local_action_input(transaction, manifest, scope_ref, input);
     }
     match (manifest.tool_id.as_str(), input) {
         ("workspace.inspect_scope", ToolActionInput::WorkspaceInspect { relative_paths }) => {
@@ -1584,6 +1905,155 @@ fn validate_action_input(
                 summary: format!("Enviar mensagem fixture para {recipient}; nenhum serviço real será contatado."),
                 affected_resources: vec![recipient],
                 exact_effect: "O mock retorna metadados de envio sem enviar, persistir ou transmitir a mensagem.".into(),
+            })
+        }
+        _ => Err(DatabaseError::Cognitive("tool_input_invalid")),
+    }
+}
+
+fn validate_local_action_input(
+    transaction: &Transaction<'_>,
+    manifest: &ToolManifest,
+    scope_ref: &str,
+    input: &ToolActionInput,
+) -> Result<ToolPreviewPlan, DatabaseError> {
+    let root = workspace_root_path(transaction, scope_ref)?;
+    match (manifest.tool_id.as_str(), input) {
+        ("workspace.inspect_local", ToolActionInput::WorkspaceInspect { relative_paths }) => {
+            if relative_paths.is_empty() || relative_paths.len() > 32 {
+                return Err(DatabaseError::Cognitive("tool_input_invalid"));
+            }
+            for path in relative_paths {
+                let item = safe_child(&root, path, true)?;
+                if !fs::metadata(&item)
+                    .map_err(|_| DatabaseError::Cognitive("workspace_path_unavailable"))?
+                    .is_file()
+                {
+                    return Err(DatabaseError::Cognitive("workspace_path_invalid"));
+                }
+            }
+            let paths = relative_paths
+                .iter()
+                .map(|path| validate_relative_path(path))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(ToolPreviewPlan {
+                input: ToolActionInput::WorkspaceInspect {
+                    relative_paths: paths.clone(),
+                },
+                summary: format!(
+                    "Inspecionar {} arquivo(s) locais; conteúdo não será retornado.",
+                    paths.len()
+                ),
+                affected_resources: paths
+                    .iter()
+                    .map(|path| format!("{scope_ref}/{path}"))
+                    .collect(),
+                exact_effect:
+                    "Ler somente nomes e metadados limitados dentro da raiz Owner configurada."
+                        .into(),
+            })
+        }
+        ("workspace.organize_local", ToolActionInput::WorkspaceOrganize { moves }) => {
+            if moves.is_empty() || moves.len() > 32 {
+                return Err(DatabaseError::Cognitive("tool_input_invalid"));
+            }
+            let mut normalized = Vec::with_capacity(moves.len());
+            let mut affected_resources = Vec::with_capacity(moves.len() * 2);
+            for movement in moves {
+                let from = validate_relative_path(&movement.from)?;
+                let to = validate_relative_path(&movement.to)?;
+                if from == to {
+                    return Err(DatabaseError::Cognitive("tool_input_invalid"));
+                }
+                let source = safe_child(&root, &from, true)?;
+                if !fs::metadata(&source)
+                    .map_err(|_| DatabaseError::Cognitive("workspace_path_unavailable"))?
+                    .is_file()
+                {
+                    return Err(DatabaseError::Cognitive("workspace_path_invalid"));
+                }
+                let _destination = safe_child(&root, &to, false)?;
+                affected_resources.push(format!("{scope_ref}/{from}"));
+                affected_resources.push(format!("{scope_ref}/{to}"));
+                normalized.push(ToolFileMove { from, to });
+            }
+            Ok(ToolPreviewPlan {
+                input: ToolActionInput::WorkspaceOrganize {
+                    moves: normalized.clone(),
+                },
+                summary: format!(
+                    "Organizar {} arquivo(s) locais após confirmação do Proprietário.",
+                    normalized.len()
+                ),
+                affected_resources,
+                exact_effect:
+                    "Mover somente arquivos dentro da raiz Owner configurada; sem exclusão.".into(),
+            })
+        }
+        _ => Err(DatabaseError::Cognitive("tool_input_invalid")),
+    }
+}
+
+fn execute_adapter(
+    transaction: &Transaction<'_>,
+    manifest: &ToolManifest,
+    plan: &ToolPreviewPlan,
+    dry_run: bool,
+) -> Result<ToolExecutionResult, DatabaseError> {
+    if manifest.adapter_kind != ToolAdapterKind::WorkspaceLocal {
+        return mock_execute(manifest, plan, dry_run);
+    }
+    let root = workspace_root_path(
+        transaction,
+        plan.affected_resources[0]
+            .split('/')
+            .next()
+            .unwrap_or_default(),
+    )?;
+    match &plan.input {
+        ToolActionInput::WorkspaceInspect { relative_paths } => {
+            let mut output = Vec::new();
+            for path in relative_paths {
+                let item = safe_child(&root, path, true)?;
+                let metadata = fs::metadata(item)
+                    .map_err(|_| DatabaseError::Cognitive("workspace_path_unavailable"))?;
+                output.push(json!({"path": path, "bytes": metadata.len()}));
+            }
+            let output = serde_json::to_string(&output).map_err(|_| DatabaseError::Unavailable)?;
+            if output.len() > MAX_OUTPUT_BYTES {
+                return Err(DatabaseError::Cognitive("tool_output_oversized"));
+            }
+            Ok(ToolExecutionResult {
+                status: if dry_run {
+                    ToolResultStatus::DryRun
+                } else {
+                    ToolResultStatus::Executed
+                },
+                output,
+                changed: false,
+                untrusted: true,
+            })
+        }
+        ToolActionInput::WorkspaceOrganize { moves } => {
+            if dry_run {
+                return Ok(ToolExecutionResult {
+                    status: ToolResultStatus::DryRun,
+                    output: format!("{} movimento(s) local(is) simulados.", moves.len()),
+                    changed: false,
+                    untrusted: true,
+                });
+            }
+            for movement in moves {
+                let source = safe_child(&root, &movement.from, true)?;
+                let destination = safe_child(&root, &movement.to, false)?;
+                fs::rename(source, destination)
+                    .map_err(|_| DatabaseError::Cognitive("workspace_move_failed"))?;
+            }
+            Ok(ToolExecutionResult {
+                status: ToolResultStatus::Executed,
+                output: format!("{} movimento(s) local(is) executado(s).", moves.len()),
+                changed: true,
+                untrusted: true,
             })
         }
         _ => Err(DatabaseError::Cognitive("tool_input_invalid")),
@@ -1796,7 +2266,7 @@ mod tests {
         let path = test_path();
         let database = Database::initialize(&path).expect("database should initialize");
         let catalog = database.list_tool_catalog().expect("catalog should load");
-        assert_eq!(catalog.len(), 6);
+        assert!(catalog.len() >= 8);
         assert!(catalog.iter().any(|manifest| {
             manifest.tool_id == "calendar.create_event"
                 && manifest.classification == ToolClassification::StateChanging
@@ -1899,6 +2369,128 @@ mod tests {
         ] {
             assert!(audit.iter().any(|record| record.event == event));
         }
+        cleanup(&path);
+    }
+
+    #[test]
+    fn local_workspace_root_move_is_bounded_approved_executed_and_compensated() {
+        let path = test_path();
+        let workspace = path.parent().unwrap().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("draft.txt"), b"bounded").unwrap();
+        let database = Database::initialize(&path).unwrap();
+        let root = database
+            .add_workspace_root(WorkspaceRootRequest {
+                path: workspace.to_string_lossy().into_owned(),
+                idempotency_key: "root-add".into(),
+                temporary_chat: false,
+            })
+            .unwrap_or_else(|error| panic!("local session error: {error:?}"));
+        assert!(root.id.starts_with("wrt_"));
+        let session = database
+            .create_tool_session(ToolSessionRequest {
+                agent_id: ASTRA_ID.into(),
+                scope_ref: format!("workspace_root:{}", root.id),
+                permissions: vec![
+                    ToolSessionPermission {
+                        tool_id: "workspace.organize_local".into(),
+                        permission: ToolPermission::Preview,
+                    },
+                    ToolSessionPermission {
+                        tool_id: "workspace.organize_local".into(),
+                        permission: ToolPermission::ExecuteStateChanging,
+                    },
+                ],
+                idempotency_key: "local-session".into(),
+                temporary_chat: false,
+            })
+            .unwrap_or_else(|error| panic!("local session error: {error:?}"));
+        assert_eq!(
+            database.preview_tool_action(ToolActionPreviewRequest {
+                agent_id: ASTRA_ID.into(),
+                session_id: session.id.clone(),
+                tool_id: "workspace.organize_local".into(),
+                input: ToolActionInput::WorkspaceOrganize {
+                    moves: vec![ToolFileMove {
+                        from: "../draft.txt".into(),
+                        to: "organized.txt".into()
+                    }],
+                },
+                dry_run: false,
+                idempotency_key: "local-traversal".into(),
+                temporary_chat: false,
+            }),
+            Err(DatabaseError::Cognitive("tool_scope_invalid"))
+        );
+        let preview = database
+            .preview_tool_action(ToolActionPreviewRequest {
+                agent_id: ASTRA_ID.into(),
+                session_id: session.id.clone(),
+                tool_id: "workspace.organize_local".into(),
+                input: ToolActionInput::WorkspaceOrganize {
+                    moves: vec![ToolFileMove {
+                        from: "draft.txt".into(),
+                        to: "organized.txt".into(),
+                    }],
+                },
+                dry_run: false,
+                idempotency_key: "local-move".into(),
+                temporary_chat: false,
+            })
+            .unwrap();
+        assert_eq!(
+            database.execute_tool_action(ToolActionExecutionRequest {
+                agent_id: ASTRA_ID.into(),
+                action_id: preview.id.clone(),
+                dry_run: false,
+                idempotency_key: "local-before-approval".into(),
+                temporary_chat: false,
+            }),
+            Err(DatabaseError::Cognitive("tool_approval_required"))
+        );
+        database
+            .decide_tool_action(ToolActionDecisionRequest {
+                agent_id: ASTRA_ID.into(),
+                action_id: preview.id.clone(),
+                approved: true,
+                idempotency_key: "local-approve".into(),
+                temporary_chat: false,
+            })
+            .unwrap();
+        database
+            .confirm_tool_action(ToolActionConfirmationRequest {
+                agent_id: ASTRA_ID.into(),
+                action_id: preview.id.clone(),
+                idempotency_key: "local-confirm".into(),
+                temporary_chat: false,
+            })
+            .unwrap();
+        let executed = database
+            .execute_tool_action(ToolActionExecutionRequest {
+                agent_id: ASTRA_ID.into(),
+                action_id: preview.id.clone(),
+                dry_run: false,
+                idempotency_key: "local-execute".into(),
+                temporary_chat: false,
+            })
+            .unwrap();
+        assert_eq!(
+            executed.result.as_ref().unwrap().status,
+            ToolResultStatus::Executed
+        );
+        assert!(executed.result.as_ref().unwrap().changed);
+        assert!(workspace.join("organized.txt").is_file());
+        let compensated = database
+            .compensate_tool_action(ToolActionCancellationRequest {
+                agent_id: ASTRA_ID.into(),
+                action_id: preview.id,
+                idempotency_key: "local-compensate".into(),
+                temporary_chat: false,
+            })
+            .unwrap();
+        assert_eq!(compensated.status, ToolActionStatus::Compensated);
+        assert!(workspace.join("draft.txt").is_file());
+        assert!(!workspace.join("organized.txt").exists());
         cleanup(&path);
     }
 
