@@ -1,4 +1,5 @@
 mod chat;
+mod cognitive;
 mod database;
 mod domain;
 mod fullscreen;
@@ -17,6 +18,10 @@ use std::{
 };
 
 use chat::ChatCoordinator;
+use cognitive::{
+    CognitiveGoal, CognitiveOpinion, GoalRequest, OpinionCandidateRequest,
+    RelationshipCandidateRequest, RelationshipState,
+};
 use database::Database;
 use domain::{
     AgentMemory, AgentSimulatedState, AppSnapshot, CognitiveEvent, CognitiveEventExplanation,
@@ -103,6 +108,135 @@ fn rollback_cognitive_event(
         .as_ref()
         .ok_or("operation_unavailable")?
         .rollback_cognitive_event(&agent_id, &event_id, &idempotency_key)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_cognitive_opinions(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CognitiveOpinion>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_cognitive_opinions(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn propose_cognitive_opinion(
+    state: State<'_, AppState>,
+    request: OpinionCandidateRequest,
+) -> Result<CognitiveOpinion, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .propose_cognitive_opinion(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_cognitive_relationships(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<RelationshipState>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_relationships(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn propose_cognitive_relationship(
+    state: State<'_, AppState>,
+    request: RelationshipCandidateRequest,
+) -> Result<RelationshipState, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .propose_relationship_event(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_cognitive_goals(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CognitiveGoal>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_cognitive_goals(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn create_owner_cognitive_goal(
+    state: State<'_, AppState>,
+    request: GoalRequest,
+) -> Result<CognitiveGoal, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .create_owner_goal(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn propose_agent_cognitive_goal(
+    state: State<'_, AppState>,
+    request: GoalRequest,
+) -> Result<CognitiveGoal, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .propose_agent_goal(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn approve_cognitive_goal(
+    state: State<'_, AppState>,
+    agent_id: String,
+    goal_id: String,
+    idempotency_key: String,
+) -> Result<CognitiveGoal, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .approve_cognitive_goal(&agent_id, &goal_id, &idempotency_key)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn update_cognitive_goal_status(
+    state: State<'_, AppState>,
+    agent_id: String,
+    goal_id: String,
+    status: String,
+    completion_evidence: Option<String>,
+    idempotency_key: String,
+) -> Result<CognitiveGoal, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .update_goal_status(
+            &agent_id,
+            &goal_id,
+            &status,
+            completion_evidence.as_deref(),
+            &idempotency_key,
+        )
         .map_err(|error| error.code())
 }
 
@@ -816,6 +950,15 @@ pub fn run() {
             explain_cognitive_event,
             create_owner_trait_correction,
             rollback_cognitive_event,
+            list_cognitive_opinions,
+            propose_cognitive_opinion,
+            list_cognitive_relationships,
+            propose_cognitive_relationship,
+            list_cognitive_goals,
+            create_owner_cognitive_goal,
+            propose_agent_cognitive_goal,
+            approve_cognitive_goal,
+            update_cognitive_goal_status,
             set_safe_mode,
             get_phase_one_state,
             get_temporary_phase_one_state,

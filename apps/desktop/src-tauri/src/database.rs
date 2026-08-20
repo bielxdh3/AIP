@@ -28,7 +28,9 @@ const MIGRATION_0009: &str = include_str!("../migrations/0009_conversation_branc
 const MIGRATION_0010: &str = include_str!("../migrations/0010_branch_summaries.sql");
 const MIGRATION_0011: &str = include_str!("../migrations/0011_turn_variants.sql");
 const MIGRATION_0012: &str = include_str!("../migrations/0012_phase7a_cognitive_events.sql");
-const MIGRATIONS: [(i64, &str); 12] = [
+const MIGRATION_0013: &str = include_str!("../migrations/0013_phase7b_7d_cognitive_core.sql");
+const MIGRATION_0014: &str = include_str!("../migrations/0014_phase7e_7f_conversations.sql");
+const MIGRATIONS: [(i64, &str); 14] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
@@ -41,6 +43,8 @@ const MIGRATIONS: [(i64, &str); 12] = [
     (10, MIGRATION_0010),
     (11, MIGRATION_0011),
     (12, MIGRATION_0012),
+    (13, MIGRATION_0013),
+    (14, MIGRATION_0014),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -139,7 +143,7 @@ impl Database {
         Ok(database)
     }
 
-    fn open(&self) -> Result<Connection, DatabaseError> {
+    pub(crate) fn open(&self) -> Result<Connection, DatabaseError> {
         let connection = Connection::open(&self.path)?;
         connection.busy_timeout(Duration::from_secs(2))?;
         connection.pragma_update(None, "foreign_keys", true)?;
@@ -283,6 +287,18 @@ impl Database {
              SET status = 'failed', completed_at = ?1,
                  terminal_error_code = 'runtime_interrupted'
              WHERE author_type = 'agent' AND status IN ('pending', 'streaming')",
+            params![now_millis()],
+        )?;
+        connection.execute(
+            "UPDATE cognitive_resource_jobs
+             SET status = 'failed', error_code = 'runtime_interrupted', ended_at = ?1
+             WHERE status IN ('queued', 'running')",
+            params![now_millis()],
+        )?;
+        connection.execute(
+            "UPDATE agent_conversations
+             SET status = 'suspended', termination_reason = 'runtime_interrupted', updated_at = ?1
+             WHERE status = 'active'",
             params![now_millis()],
         )?;
         Ok(())
@@ -2334,7 +2350,7 @@ fn trait_value(
         Err(DatabaseError::Cognitive("invalid_value"))
     }
 }
-fn ensure_agent(connection: &Connection, agent_id: &str) -> Result<(), DatabaseError> {
+pub(crate) fn ensure_agent(connection: &Connection, agent_id: &str) -> Result<(), DatabaseError> {
     connection
         .query_row(
             "SELECT owner_user_id FROM agents WHERE id = ?1",
@@ -2746,7 +2762,7 @@ mod tests {
         let first = Database::initialize(&path).expect("database should initialize");
         let second = Database::initialize(&path).expect("database should reinitialize");
         let snapshot = second.snapshot().expect("snapshot should load");
-        assert_eq!(snapshot.migration_version, 12);
+        assert_eq!(snapshot.migration_version, 14);
         assert_eq!(snapshot.agents.len(), 2);
         for agent in &snapshot.agents {
             assert_eq!(
@@ -2775,7 +2791,7 @@ mod tests {
         drop(connection);
 
         let database = Database::initialize(&path).expect("v1 database should upgrade");
-        assert_eq!(database.snapshot().unwrap().migration_version, 12);
+        assert_eq!(database.snapshot().unwrap().migration_version, 14);
         let connection = Connection::open(&path).unwrap();
         let preserved: String = connection
             .query_row(
@@ -3738,7 +3754,7 @@ mod tests {
 
         let upgraded = Database::initialize(&path).unwrap();
         assert_eq!(upgraded.simulated_state(ASTRA_ID).unwrap().mode, "normal");
-        assert_eq!(upgraded.snapshot().unwrap().migration_version, 12);
+        assert_eq!(upgraded.snapshot().unwrap().migration_version, 14);
         cleanup(&path);
     }
 
