@@ -52,6 +52,11 @@ import type {
   ExtensionSourceKind,
   VoiceSettings,
   VoiceSettingsRequest,
+  VoiceCaptureRuntimeRequest,
+  VoiceOperationCancellationRequest,
+  VoiceRuntimeSynthesisResult,
+  VoiceRuntimeTranscriptionResult,
+  VoiceRuntimeWakeWordResult,
   VoiceSynthesisRequest,
   VoiceSynthesisResult,
   VoiceTranscriptionRequest,
@@ -1603,6 +1608,7 @@ export function VoiceControls({
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [activeOperation, setActiveOperation] = useState<string | null>(null);
   const load = useCallback(async () => {
     try {
       const next = await invoke<VoiceSettings>("get_voice_settings", {
@@ -1739,6 +1745,76 @@ export function VoiceControls({
     }
   }
 
+  async function runLocalCapture(kind: "transcription" | "wake_word") {
+    if (temporaryChat || busy) return;
+    const operationId = crypto.randomUUID();
+    const request: VoiceCaptureRuntimeRequest = {
+      agentId,
+      operationId,
+      idempotencyKey: crypto.randomUUID(),
+      durationMs: 1000,
+      temporaryChat: false,
+    };
+    setBusy(true);
+    setActiveOperation(operationId);
+    setStatus("Operação local iniciada; aguardando dispositivo/provedor configurado.");
+    setError(null);
+    try {
+      const result = await invoke<VoiceRuntimeTranscriptionResult | VoiceRuntimeWakeWordResult>(
+        kind === "transcription"
+          ? "transcribe_voice_local"
+          : "detect_voice_wake_word_local",
+        request,
+      );
+      setStatus(
+        `${kind === "transcription" ? "Transcrição" : "Wake-word"} ${result.status}${
+          result.code ? ` (${result.code})` : ""
+        }; conversa de texto continua disponível.`,
+      );
+    } catch (cause) {
+      setError(voiceErrorCopy[String(cause)] || "A operação local está indisponível; a conversa de texto continua disponível.");
+    } finally {
+      setActiveOperation(null);
+      setBusy(false);
+    }
+  }
+
+  async function runLocalSynthesis() {
+    if (temporaryChat || busy) return;
+    const operationId = crypto.randomUUID();
+    const request = {
+      agentId,
+      operationId,
+      idempotencyKey: crypto.randomUUID(),
+      text: "Olá, operação local.",
+      temporaryChat: false,
+    };
+    setBusy(true);
+    setActiveOperation(operationId);
+    setStatus("Síntese local iniciada; aguardando dispositivo/provedor configurado.");
+    setError(null);
+    try {
+      const result = await invoke<VoiceRuntimeSynthesisResult>("synthesize_voice_local", request);
+      setStatus(`Síntese ${result.status}${result.code ? ` (${result.code})` : ""}; conversa de texto continua disponível.`);
+    } catch (cause) {
+      setError(voiceErrorCopy[String(cause)] || "A operação local está indisponível; a conversa de texto continua disponível.");
+    } finally {
+      setActiveOperation(null);
+      setBusy(false);
+    }
+  }
+
+  async function cancelLocalOperation() {
+    if (!activeOperation) return;
+    const request: VoiceOperationCancellationRequest = { agentId, operationId: activeOperation };
+    try {
+      await invoke<boolean>("cancel_voice_operation", request);
+      setStatus("Cancelamento solicitado para a operação local.");
+    } catch (cause) {
+      setError(voiceErrorCopy[String(cause)] || "Não foi possível cancelar a operação local.");
+    }
+  }
+
   if (settings === null) {
     return (
       <section aria-label="Configurações de voz">
@@ -1766,7 +1842,7 @@ export function VoiceControls({
         Modelo local de transcrição
         <input
           value={recognitionModelRef}
-          placeholder="fixture:stt-v1"
+          placeholder="local:stt:provider"
           maxLength={160}
           disabled={temporaryChat || busy}
           onChange={(event) => setRecognitionModelRef(event.target.value)}
@@ -1776,7 +1852,7 @@ export function VoiceControls({
         Modelo local de síntese
         <input
           value={synthesisModelRef}
-          placeholder="fixture:tts-v1"
+          placeholder="local:tts:provider"
           maxLength={160}
           disabled={temporaryChat || busy}
           onChange={(event) => setSynthesisModelRef(event.target.value)}
@@ -1786,7 +1862,7 @@ export function VoiceControls({
         Dispositivo local de entrada
         <input
           value={inputDeviceRef}
-          placeholder="fixture:microphone-1"
+          placeholder="local:wavein:0"
           maxLength={160}
           disabled={temporaryChat || busy}
           onChange={(event) => setInputDeviceRef(event.target.value)}
@@ -1796,7 +1872,7 @@ export function VoiceControls({
         Dispositivo local de saída
         <input
           value={outputDeviceRef}
-          placeholder="fixture:speaker-1"
+          placeholder="local:waveout:0"
           maxLength={160}
           disabled={temporaryChat || busy}
           onChange={(event) => setOutputDeviceRef(event.target.value)}
@@ -1844,6 +1920,33 @@ export function VoiceControls({
       >
         Testar síntese de fixture
       </button>
+      <p>Operações reais sob demanda (Windows, somente referências locais):</p>
+      <button
+        type="button"
+        disabled={temporaryChat || busy}
+        onClick={() => void runLocalCapture("transcription")}
+      >
+        Capturar e transcrever localmente
+      </button>
+      <button
+        type="button"
+        disabled={temporaryChat || busy}
+        onClick={() => void runLocalSynthesis()}
+      >
+        Sintetizar localmente
+      </button>
+      <button
+        type="button"
+        disabled={temporaryChat || busy}
+        onClick={() => void runLocalCapture("wake_word")}
+      >
+        Verificar wake-word localmente
+      </button>
+      {activeOperation ? (
+        <button type="button" onClick={() => void cancelLocalOperation()}>
+          Cancelar operação local ({activeOperation})
+        </button>
+      ) : null}
       {status ? <p role="status">{status}</p> : null}
       {error ? <p role="alert">{error}</p> : null}
     </section>
