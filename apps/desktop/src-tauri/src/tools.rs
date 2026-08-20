@@ -1333,6 +1333,42 @@ fn validate_existing_components(path: &Path) -> Result<(), DatabaseError> {
     Ok(())
 }
 
+fn reject_link_or_reparse(path: &Path, error: &'static str) -> Result<(), DatabaseError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| DatabaseError::Cognitive("workspace_path_unavailable"))?;
+    if metadata.file_type().is_symlink() {
+        return Err(DatabaseError::Cognitive(error));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err(DatabaseError::Cognitive(error));
+        }
+    }
+    Ok(())
+}
+
+fn validate_child_components(
+    root: &Path,
+    path: &Path,
+    error: &'static str,
+) -> Result<(), DatabaseError> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| DatabaseError::Cognitive("workspace_path_invalid"))?;
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        match fs::symlink_metadata(&current) {
+            Ok(_) => reject_link_or_reparse(&current, error)?,
+            Err(error_value) if error_value.kind() == std::io::ErrorKind::NotFound => break,
+            Err(_) => return Err(DatabaseError::Cognitive("workspace_path_unavailable")),
+        }
+    }
+    Ok(())
+}
+
 fn relative_components(value: &str) -> Result<PathBuf, DatabaseError> {
     let normalized = validate_relative_path(value)?;
     let path = PathBuf::from(&normalized);
@@ -1351,6 +1387,14 @@ fn safe_child(root: &Path, relative: &str, must_exist: bool) -> Result<PathBuf, 
     let root = validate_workspace_root(root)?;
     let relative = relative_components(relative)?;
     let candidate = root.join(relative);
+    let components_end = if must_exist {
+        candidate.as_path()
+    } else {
+        candidate
+            .parent()
+            .ok_or(DatabaseError::Cognitive("workspace_path_invalid"))?
+    };
+    validate_child_components(&root, components_end, "workspace_path_invalid")?;
     if must_exist {
         let metadata = fs::symlink_metadata(&candidate)
             .map_err(|_| DatabaseError::Cognitive("workspace_path_unavailable"))?;
@@ -1380,11 +1424,6 @@ fn safe_child(root: &Path, relative: &str, must_exist: bool) -> Result<PathBuf, 
         let parent = fs::canonicalize(parent)
             .map_err(|_| DatabaseError::Cognitive("workspace_path_unavailable"))?;
         if !parent.starts_with(root) {
-            return Err(DatabaseError::Cognitive("workspace_path_invalid"));
-        }
-        let metadata = fs::symlink_metadata(&parent)
-            .map_err(|_| DatabaseError::Cognitive("workspace_path_unavailable"))?;
-        if metadata.file_type().is_symlink() {
             return Err(DatabaseError::Cognitive("workspace_path_invalid"));
         }
         Ok(candidate)
@@ -2867,6 +2906,59 @@ mod tests {
         assert!(is_broad_workspace_root(Path::new("C:/")));
         assert!(is_broad_workspace_root(Path::new("C:/Windows/System32")));
         assert!(is_broad_workspace_root(Path::new("C:/ProgramData")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nested_symlink_component_is_rejected_before_local_access() {
+        use std::os::unix::fs::symlink;
+
+        let path = test_path();
+        let workspace = path.parent().unwrap().join("nested-link-workspace");
+        let target = workspace.join("target");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("source.txt"), b"bounded").unwrap();
+        symlink(&target, workspace.join("nested")).unwrap();
+
+        let result = safe_child(
+            &validate_workspace_root(&workspace).unwrap(),
+            "nested/source.txt",
+            true,
+        );
+        assert_eq!(
+            result,
+            Err(DatabaseError::Cognitive("workspace_path_invalid"))
+        );
+        assert!(!workspace.join("nested").join("moved.txt").exists());
+        cleanup(&path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn nested_reparse_component_is_rejected_when_link_creation_is_available() {
+        use std::os::windows::fs::symlink_dir;
+
+        let path = test_path();
+        let workspace = path.parent().unwrap().join("nested-reparse-workspace");
+        let target = workspace.join("target");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("source.txt"), b"bounded").unwrap();
+        if symlink_dir(&target, workspace.join("nested")).is_err() {
+            cleanup(&path);
+            return;
+        }
+
+        let result = safe_child(
+            &validate_workspace_root(&workspace).unwrap(),
+            "nested/source.txt",
+            true,
+        );
+        assert_eq!(
+            result,
+            Err(DatabaseError::Cognitive("workspace_path_invalid"))
+        );
+        assert!(!workspace.join("nested").join("moved.txt").exists());
+        cleanup(&path);
     }
 
     #[test]
