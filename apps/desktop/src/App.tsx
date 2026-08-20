@@ -43,6 +43,13 @@ import type {
   RelationshipResetRequest,
   RelationshipRollbackRequest,
   RelationshipState,
+  CustomVoiceConsentRequest,
+  VoiceSettings,
+  VoiceSettingsRequest,
+  VoiceSynthesisRequest,
+  VoiceSynthesisResult,
+  VoiceTranscriptionRequest,
+  VoiceTranscriptionResult,
 } from "@aip/contracts";
 import AgentSprite from "./components/AgentSprite";
 import {
@@ -1456,6 +1463,273 @@ function AgentStateControls({ agentId }: { agentId: string }) {
       >
         Acordar agora
       </button>
+    </section>
+  );
+}
+
+const voiceErrorCopy: Record<string, string> = {
+  operation_unavailable:
+    "Voz local indisponível; a conversa de texto continua disponível.",
+  conversation_temporary_blocked:
+    "A conversa temporária não pode salvar configurações ou consentimento de voz.",
+  voice_blocked_silent: "O modo silencioso bloqueia alterações de voz.",
+  voice_blocked_suspended: "Agentes suspensos não alteram configurações de voz.",
+  voice_reference_invalid: "Use uma referência local fixture: ou local: válida.",
+  voice_consent_invalid:
+    "O consentimento exige uma referência sintética fixture:custom-.",
+  invalid_idempotency_key: "Não foi possível repetir a operação com segurança.",
+};
+
+function voiceAvailabilityCopy(settings: VoiceSettings): string {
+  if (settings.voiceMuted) {
+    return "Modo sem voz: nenhuma saída audível será produzida; a conversa de texto continua disponível.";
+  }
+  if (
+    settings.inputDeviceRef === null ||
+    settings.outputDeviceRef === null ||
+    settings.recognitionModelRef === null ||
+    settings.synthesisModelRef === null
+  ) {
+    return "Voz degradada: selecione dispositivos e modelos locais; a conversa de texto continua disponível.";
+  }
+  if (settings.silent) {
+    return "Modo silencioso: não há ação espontânea; solicitações diretas continuam sem quebrar a conversa de texto.";
+  }
+  return "Voz local configurada. Nenhum áudio bruto é salvo neste checkpoint.";
+}
+
+export function VoiceControls({
+  agentId,
+  temporaryChat,
+}: {
+  agentId: string;
+  temporaryChat: boolean;
+}) {
+  const [settings, setSettings] = useState<VoiceSettings | null>(null);
+  const [recognitionModelRef, setRecognitionModelRef] = useState("");
+  const [synthesisModelRef, setSynthesisModelRef] = useState("");
+  const [inputDeviceRef, setInputDeviceRef] = useState("");
+  const [outputDeviceRef, setOutputDeviceRef] = useState("");
+  const [customVoiceRef, setCustomVoiceRef] = useState(
+    "fixture:custom-neutral-v1",
+  );
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const load = useCallback(async () => {
+    try {
+      const next = await invoke<VoiceSettings>("get_voice_settings", {
+        agentId,
+      });
+      setSettings(next);
+      setRecognitionModelRef(next.recognitionModelRef ?? "");
+      setSynthesisModelRef(next.synthesisModelRef ?? "");
+      setInputDeviceRef(next.inputDeviceRef ?? "");
+      setOutputDeviceRef(next.outputDeviceRef ?? "");
+      setCustomVoiceRef(next.customVoiceRef ?? "fixture:custom-neutral-v1");
+      setError(null);
+    } catch (cause) {
+      setSettings(null);
+      setError(
+        voiceErrorCopy[String(cause)] ||
+          "Voz local indisponível; a conversa de texto continua disponível.",
+      );
+    }
+  }, [agentId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function saveSettings() {
+    if (temporaryChat || settings === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const request: VoiceSettingsRequest = {
+        agentId,
+        recognitionModelRef: recognitionModelRef || null,
+        synthesisModelRef: synthesisModelRef || null,
+        inputDeviceRef: inputDeviceRef || null,
+        outputDeviceRef: outputDeviceRef || null,
+        idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
+      };
+      await invoke<VoiceSettings>("update_voice_settings", request);
+      setStatus("Referências locais de voz salvas.");
+      await load();
+    } catch (cause) {
+      setError(voiceErrorCopy[String(cause)] || "A configuração de voz foi recusada.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeConsent(granted: boolean) {
+    if (temporaryChat || settings === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const request: CustomVoiceConsentRequest = {
+        agentId,
+        granted,
+        customVoiceRef: granted ? customVoiceRef || null : null,
+        idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
+      };
+      await invoke<VoiceSettings>("set_custom_voice_consent", request);
+      setStatus(granted ? "Consentimento customizado registrado." : "Consentimento customizado revogado.");
+      await load();
+    } catch (cause) {
+      setError(voiceErrorCopy[String(cause)] || "O consentimento de voz foi recusado.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function testTranscription() {
+    setBusy(true);
+    setError(null);
+    try {
+      const request: VoiceTranscriptionRequest = {
+        agentId,
+        fixtureId: "fixture:hello",
+        temporaryChat,
+      };
+      const result = await invoke<VoiceTranscriptionResult>(
+        "transcribe_voice_fixture",
+        request,
+      );
+      setStatus(
+        result.status === "ready"
+          ? `Fixture transcrita: ${result.text}`
+          : `Voz degradada (${result.code}); a conversa de texto continua disponível.`,
+      );
+    } catch (cause) {
+      setError(voiceErrorCopy[String(cause)] || "A transcrição local está indisponível.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function testSynthesis() {
+    setBusy(true);
+    setError(null);
+    try {
+      const request: VoiceSynthesisRequest = {
+        agentId,
+        text: "Olá, fixture local.",
+        temporaryChat,
+      };
+      const result = await invoke<VoiceSynthesisResult>(
+        "synthesize_voice_fixture",
+        request,
+      );
+      setStatus(
+        result.status === "muted"
+          ? "Saída de voz silenciada; a conversa de texto continua disponível."
+          : result.status === "ready"
+            ? "Fixture sintetizada somente como metadados; nenhum áudio foi salvo."
+            : `Voz degradada (${result.code}); a conversa de texto continua disponível.`,
+      );
+    } catch (cause) {
+      setError(voiceErrorCopy[String(cause)] || "A síntese local está indisponível.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (settings === null) {
+    return (
+      <section aria-label="Configurações de voz">
+        <strong>Voz local</strong>
+        <p role="alert">
+          {error || "Voz local indisponível; a conversa de texto continua disponível."}
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section aria-label="Configurações de voz">
+      <strong>Voz local</strong>
+      <p>{voiceAvailabilityCopy(settings)}</p>
+      {temporaryChat ? (
+        <p role="status">
+          Conversa temporária: configurações e consentimento de voz não serão salvos.
+        </p>
+      ) : null}
+      <p>Voz-base protegida: {settings.baseVoiceId}.</p>
+      <label>
+        Modelo local de transcrição
+        <input
+          value={recognitionModelRef}
+          placeholder="fixture:stt-v1"
+          maxLength={160}
+          disabled={temporaryChat || busy}
+          onChange={(event) => setRecognitionModelRef(event.target.value)}
+        />
+      </label>
+      <label>
+        Modelo local de síntese
+        <input
+          value={synthesisModelRef}
+          placeholder="fixture:tts-v1"
+          maxLength={160}
+          disabled={temporaryChat || busy}
+          onChange={(event) => setSynthesisModelRef(event.target.value)}
+        />
+      </label>
+      <label>
+        Dispositivo local de entrada
+        <input
+          value={inputDeviceRef}
+          placeholder="fixture:microphone-1"
+          maxLength={160}
+          disabled={temporaryChat || busy}
+          onChange={(event) => setInputDeviceRef(event.target.value)}
+        />
+      </label>
+      <label>
+        Dispositivo local de saída
+        <input
+          value={outputDeviceRef}
+          placeholder="fixture:speaker-1"
+          maxLength={160}
+          disabled={temporaryChat || busy}
+          onChange={(event) => setOutputDeviceRef(event.target.value)}
+        />
+      </label>
+      <button type="button" disabled={temporaryChat || busy} onClick={() => void saveSettings()}>
+        Salvar referências locais
+      </button>
+      <label>
+        Referência de voz customizada sintética
+        <input
+          value={customVoiceRef}
+          placeholder="fixture:custom-neutral-v1"
+          maxLength={160}
+          disabled={temporaryChat || busy}
+          onChange={(event) => setCustomVoiceRef(event.target.value)}
+        />
+      </label>
+      <button
+        type="button"
+        disabled={temporaryChat || busy}
+        onClick={() => void changeConsent(settings.customVoiceConsent !== "granted")}
+      >
+        {settings.customVoiceConsent === "granted"
+          ? "Revogar consentimento customizado"
+          : "Conceder consentimento customizado"}
+      </button>
+      <button type="button" disabled={busy} onClick={() => void testTranscription()}>
+        Testar transcrição de fixture
+      </button>
+      <button type="button" disabled={busy} onClick={() => void testSynthesis()}>
+        Testar síntese de fixture
+      </button>
+      {status ? <p role="status">{status}</p> : null}
+      {error ? <p role="alert">{error}</p> : null}
     </section>
   );
 }
@@ -3912,6 +4186,13 @@ function App() {
             <details>
               <summary>Estado</summary>
               <AgentStateControls agentId={activeAgentId} />
+            </details>
+            <details>
+              <summary>Voz</summary>
+              <VoiceControls
+                agentId={activeAgentId}
+                temporaryChat={temporaryChat}
+              />
             </details>
             <details>
               <summary>Valores cognitivos</summary>

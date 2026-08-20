@@ -9,6 +9,11 @@ import {
   parseHealthResponse,
   parseOwnerCorrectionResult,
   parseRollbackResult,
+  parseVoiceEmotionHypothesis,
+  parseVoiceSettings,
+  parseVoiceSynthesisResult,
+  parseVoiceTranscriptionResult,
+  parseVoiceWakeWordResult,
 } from "../src/index";
 
 describe("runtime contracts", () => {
@@ -122,5 +127,86 @@ describe("cognitive contracts", () => {
       ).not.toBeNull();
     }
     expect(parseCognitiveError({ code: "unknown", message: "x" })).toBeNull();
+  });
+});
+
+describe("voice contracts", () => {
+  const settings = {
+    agentId: "agt_astra_provisional",
+    schemaVersion: 1 as const,
+    baseVoiceId: "aip-base-v1",
+    baseVoiceProtected: true as const,
+    customVoiceRef: null,
+    customVoiceConsent: "not_granted" as const,
+    recognitionModelRef: null,
+    synthesisModelRef: null,
+    inputDeviceRef: null,
+    outputDeviceRef: null,
+    mode: "normal" as const,
+    voiceMuted: false,
+    silent: false,
+    suspended: false,
+    updatedAt: 1,
+  };
+
+  it("accepts metadata-only settings and degraded results", () => {
+    expect(parseVoiceSettings(settings)).not.toBeNull();
+    expect(
+      parseVoiceTranscriptionResult({
+        status: "degraded",
+        code: "voice_device_unavailable",
+        fixtureId: "fixture:hello",
+        text: null,
+        confidence: null,
+        metadataOnly: true,
+        rawAudioPersisted: false,
+        textChatFallback: true,
+      }),
+    ).not.toBeNull();
+    expect(
+      parseVoiceSynthesisResult({
+        status: "muted",
+        code: "voice_muted",
+        voiceRef: "aip-base-v1",
+        durationMs: 0,
+        metadataOnly: true,
+        rawAudioPersisted: false,
+        textChatFallback: true,
+      }),
+    ).not.toBeNull();
+  });
+
+  it("rejects raw-audio or diagnostic voice payloads", () => {
+    expect(
+      parseVoiceTranscriptionResult({
+        status: "ready",
+        code: null,
+        fixtureId: "fixture:hello",
+        text: "Olá",
+        confidence: 0.9,
+        metadataOnly: true,
+        rawAudioPersisted: true,
+        textChatFallback: false,
+      }),
+    ).toBeNull();
+    expect(
+      parseVoiceWakeWordResult({
+        status: "detected",
+        code: null,
+        fixtureId: "fixture:wake-aip",
+        detected: true,
+        listenerActive: true,
+        metadataOnly: true,
+      }),
+    ).toBeNull();
+    expect(
+      parseVoiceEmotionHypothesis({
+        label: "positive",
+        confidence: 0.9,
+        uncertain: false,
+        diagnostic: true,
+        source: "model",
+      }),
+    ).toBeNull();
   });
 });
