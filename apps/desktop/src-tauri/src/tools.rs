@@ -939,7 +939,7 @@ fn map_tool_manifest(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolManifest> 
     let classification = classification_from_str(&row.get::<_, String>(3)?)?;
     let adapter_kind = adapter_from_str(&row.get::<_, String>(4)?)?;
     let capabilities_json: String = row.get(7)?;
-    let capabilities = serde_json::from_str(&capabilities_json).map_err(|_| invalid_query())?;
+    let capabilities = parse_tool_capabilities(&capabilities_json)?;
     Ok(ToolManifest {
         tool_id: row.get(0)?,
         manifest_version,
@@ -951,6 +951,20 @@ fn map_tool_manifest(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolManifest> 
         capabilities,
         updated_at: row.get(8)?,
     })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum StoredToolCapabilities {
+    List(Vec<String>),
+    LegacyOperations { operations: Vec<String> },
+}
+
+fn parse_tool_capabilities(value: &str) -> rusqlite::Result<Vec<String>> {
+    match serde_json::from_str(value).map_err(|_| invalid_query())? {
+        StoredToolCapabilities::List(capabilities) => Ok(capabilities),
+        StoredToolCapabilities::LegacyOperations { operations } => Ok(operations),
+    }
 }
 
 fn map_tool_audit_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolAuditRecord> {
@@ -1955,6 +1969,31 @@ mod tests {
             }),
             Err(DatabaseError::Cognitive("tools_blocked_safe_mode"))
         );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn legacy_tool_capabilities_remain_readable_by_compatible_parser() {
+        let path = test_path();
+        let database = Database::initialize(&path).expect("database should initialize");
+        let connection = database.open().expect("database should open");
+        connection
+            .execute(
+                "UPDATE tool_catalog
+                 SET capabilities_json = '{\"operations\":[\"inspect_scope\"]}'
+                 WHERE tool_id = 'workspace.inspect_scope'",
+                [],
+            )
+            .expect("legacy capability fixture should be stored");
+        drop(connection);
+
+        let manifest = database
+            .list_tool_catalog()
+            .expect("catalog should load")
+            .into_iter()
+            .find(|manifest| manifest.tool_id == "workspace.inspect_scope")
+            .expect("workspace manifest should exist");
+        assert_eq!(manifest.capabilities, vec!["inspect_scope"]);
         cleanup(&path);
     }
 }
