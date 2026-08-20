@@ -6,11 +6,12 @@ level; earlier phase-specific notes remain historical preparation evidence and a
 new observations here. AIP v0.1.0 was published from commit `b6f74b3793437a647186dd52eeb950ff4b3fb228`.
 A local Ollama integration test is skipped when its required model is not installed. v0.1.0 has
 no cloud synchronization, Android client, BielOS integration, released voice feature,
-real supervised external tools, screen vision, or the post-release Phase 7E–7F
+real supervised external tools, released screen vision, or the post-release Phase 7E–7F
 cognitive-core conversation integration. The current development checkpoint implements
 bounded Phase 7B–7E local paths, the Phase 8 local voice architecture checkpoint, and the
 Phase 9 supervised-tools mock checkpoint plus the Phase 10 metadata-only extension
-checkpoint; these are not v0.1 release claims. Phase 7E and 7F
+checkpoint and the Phase 11 synthetic metadata-only screen-vision checkpoint; these are not
+v0.1 release claims. Phase 7E and 7F
 validation reservations are recorded in
 [PHASE_7E_VALIDATION.md](PHASE_7E_VALIDATION.md) and [PHASE_7F_VALIDATION.md](PHASE_7F_VALIDATION.md).
 
@@ -65,6 +66,26 @@ validation reservations are recorded in
   package validation, manual Windows evidence, and release approval remain
   reserved. See
   [PHASE_10_EXTENSIONS_SPEC.md](PHASE_10_EXTENSIONS_SPEC.md).
+
+## Phase 11 screen-vision checkpoint
+
+- Phase 11 currently provides only synthetic monitor fixtures, metadata-only
+  preview/confirmation, per-session permissions, privacy/redaction hooks,
+  reference-GPU scheduling, bounded quotas, cancellation, cleanup, audit, and
+  Portuguese Owner controls. It does not call a Windows screenshot API, capture
+  a desktop/window, create or retain pixels, or persist screenshot bytes.
+- No continuous or background capture exists. The checkpoint does not access
+  the host filesystem, shell, credentials, browser/accounts, network, remote
+  model, or cloud provider. The visual hypothesis is always uncertain,
+  non-diagnostic, non-sensitive-attribute, bounded, and non-durable.
+- Rust/SQLite owns Owner validation, permissions, safe-mode and temporary-chat
+  gates, lifecycle, quotas, and cleanup; the React controls cannot bypass them.
+  Read-only Screen Vision history/audit can remain visible for recovery, but
+  durable mutations fail closed in safe mode and temporary chat.
+- Real screen adapters, real visual models, Windows packaging/manual evidence,
+  privacy and visual-UX acceptance, performance under real workloads, and
+  release approval remain reserved. See
+  [PHASE_11_SCREEN_VISION_SPEC.md](PHASE_11_SCREEN_VISION_SPEC.md).
 
 ## Deferred usability and agent features
 

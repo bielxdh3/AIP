@@ -533,6 +533,170 @@ export type ExtensionDisableRequest = {
   temporaryChat: boolean;
 };
 
+export type ScreenVisionPermission = "capture_fixture" | "analyze_fixture";
+export type ScreenVisionSessionStatus = "active" | "cancelled" | "closed";
+export type ScreenVisionJobStatus =
+  | "previewed"
+  | "queued"
+  | "running"
+  | "completed"
+  | "cancelled"
+  | "failed"
+  | "cleaned";
+export type ScreenVisionModelLifecycle =
+  "not_loaded" | "loading" | "ready" | "running" | "unloaded" | "unavailable";
+export type ScreenVisionCleanupStatus = "pending" | "complete";
+export type ScreenVisionRedactionKind =
+  "exclude_sensitive_regions" | "exclude_text_like_regions";
+export type ScreenVisionRedactionRule = {
+  kind: ScreenVisionRedactionKind;
+  enabled: boolean;
+};
+export type ScreenVisionPrivacyPolicy = {
+  excludeSensitiveContent: true;
+  redactionRules: ScreenVisionRedactionRule[];
+};
+export type ScreenVisionFixture = {
+  fixtureId: string;
+  monitorId: string;
+  displayName: string;
+  width: number;
+  height: number;
+  scale: number;
+  synthetic: true;
+  metadataOnly: true;
+};
+export type ScreenVisionPreview = {
+  fixtureId: string;
+  monitorId: string;
+  displayName: string;
+  width: number;
+  height: number;
+  synthetic: true;
+  metadataOnly: true;
+  confirmationRequired: true;
+  redactionRuleCount: number;
+};
+export type ScreenVisionSession = {
+  id: string;
+  agentId: string;
+  ownerUserId: string;
+  monitorId: string;
+  fixtureId: string;
+  status: ScreenVisionSessionStatus;
+  permissions: ScreenVisionPermission[];
+  privacy: ScreenVisionPrivacyPolicy;
+  maxJobs: number;
+  maxDurationMs: number;
+  createdAt: number;
+  updatedAt: number;
+  closedAt: number | null;
+};
+export type ScreenVisionJob = {
+  id: string;
+  sessionId: string;
+  agentId: string;
+  ownerUserId: string;
+  monitorId: string;
+  fixtureId: string;
+  modelFixtureId: "fixture:visual-model/screen-neutral-v1";
+  resourceKey: "reference-gpu";
+  resourceStatus: "available" | "reserved" | "released";
+  status: ScreenVisionJobStatus;
+  terminalStatus:
+    "completed" | "cancelled" | "failed" | "expired" | "cleaned" | null;
+  modelLifecycle: ScreenVisionModelLifecycle;
+  modelLoadedAt: number | null;
+  modelRunAt: number | null;
+  modelCleanupAt: number | null;
+  cleanupStatus: ScreenVisionCleanupStatus;
+  preview: ScreenVisionPreview;
+  privacy: ScreenVisionPrivacyPolicy;
+  frameMetadataPresent: boolean;
+  resultDurable: false;
+  errorCode: string | null;
+  createdAt: number;
+  queuedAt: number | null;
+  runningAt: number | null;
+  completedAt: number | null;
+  cleanedAt: number | null;
+  updatedAt: number;
+};
+export type ScreenVisionHypothesis = {
+  text: string;
+  confidence: number;
+  uncertain: true;
+  diagnostic: false;
+  durable: false;
+  sensitiveAttributeInferred: false;
+  source: string;
+};
+export type ScreenVisionAnalysisResult = {
+  job: ScreenVisionJob;
+  hypothesis: ScreenVisionHypothesis;
+  outputBounded: true;
+  screenshotBytesPersisted: false;
+};
+export type ScreenVisionAuditRecord = {
+  id: string;
+  sessionId: string | null;
+  jobId: string | null;
+  agentId: string;
+  event: string;
+  result: string;
+  code: string | null;
+  summary: string;
+  createdAt: number;
+};
+export type ScreenVisionSessionRequest = {
+  agentId: string;
+  ownerUserId: string;
+  monitorId: string;
+  fixtureId: string;
+  permissions: ScreenVisionPermission[];
+  privacy: ScreenVisionPrivacyPolicy;
+  maxJobs: number;
+  maxDurationMs: number;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ScreenVisionJobPreviewRequest = {
+  agentId: string;
+  ownerUserId: string;
+  sessionId: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ScreenVisionJobConfirmationRequest = {
+  agentId: string;
+  ownerUserId: string;
+  jobId: string;
+  confirmed: boolean;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ScreenVisionJobCancellationRequest = {
+  agentId: string;
+  ownerUserId: string;
+  jobId: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ScreenVisionJobCleanupRequest = {
+  agentId: string;
+  ownerUserId: string;
+  jobId: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ScreenVisionSessionCancellationRequest = {
+  agentId: string;
+  ownerUserId: string;
+  sessionId: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+
 export type CognitiveTrait = {
   key: string;
   value: number;
@@ -1048,7 +1212,28 @@ export type CognitiveErrorCode =
   | "extension_proposal_self_review"
   | "extension_request_oversized"
   | "extension_result_oversized"
-  | "extension_idempotency_invalid";
+  | "extension_idempotency_invalid"
+  | "screen_vision_blocked_temporary"
+  | "screen_vision_blocked_safe_mode"
+  | "screen_vision_blocked_suspended"
+  | "screen_vision_owner_required"
+  | "screen_vision_agent_invalid"
+  | "screen_vision_session_not_found"
+  | "screen_vision_job_not_found"
+  | "screen_vision_fixture_invalid"
+  | "screen_vision_permission_invalid"
+  | "screen_vision_privacy_invalid"
+  | "screen_vision_quota_invalid"
+  | "screen_vision_session_limit"
+  | "screen_vision_job_limit"
+  | "screen_vision_session_cancelled"
+  | "screen_vision_confirmation_required"
+  | "screen_vision_job_invalid"
+  | "screen_vision_resource_busy"
+  | "screen_vision_request_oversized"
+  | "screen_vision_result_oversized"
+  | "screen_vision_audit_oversized"
+  | "screen_vision_idempotency_invalid";
 export type CognitiveErrorResponse = {
   code: CognitiveErrorCode;
   message: string;
@@ -1255,6 +1440,27 @@ export function parseCognitiveError(
     "extension_update_requires_review",
     "extension_rollback_unavailable",
     "extension_audit_oversized",
+    "screen_vision_blocked_temporary",
+    "screen_vision_blocked_safe_mode",
+    "screen_vision_blocked_suspended",
+    "screen_vision_owner_required",
+    "screen_vision_agent_invalid",
+    "screen_vision_session_not_found",
+    "screen_vision_job_not_found",
+    "screen_vision_fixture_invalid",
+    "screen_vision_permission_invalid",
+    "screen_vision_privacy_invalid",
+    "screen_vision_quota_invalid",
+    "screen_vision_session_limit",
+    "screen_vision_job_limit",
+    "screen_vision_session_cancelled",
+    "screen_vision_confirmation_required",
+    "screen_vision_job_invalid",
+    "screen_vision_resource_busy",
+    "screen_vision_request_oversized",
+    "screen_vision_result_oversized",
+    "screen_vision_audit_oversized",
+    "screen_vision_idempotency_invalid",
   ];
   return codes.includes(candidate.code as CognitiveErrorCode) &&
     cognitiveString(candidate.message)
@@ -1915,6 +2121,358 @@ export function parseExtensionAudit(
   const records = value.map(parseExtensionAuditRecord);
   return records.every(
     (record): record is ExtensionAuditRecord => record !== null,
+  )
+    ? records
+    : null;
+}
+
+const SCREEN_VISION_MODEL_FIXTURE_ID = "fixture:visual-model/screen-neutral-v1";
+const SCREEN_VISION_RESOURCE_KEY = "reference-gpu";
+const MAX_SCREEN_VISION_TEXT = 512;
+const MAX_SCREEN_VISION_RESULT_TEXT = 1_024;
+
+function isScreenVisionBoundedText(
+  value: unknown,
+  maximum: number,
+): value is string {
+  return (
+    cognitiveString(value) &&
+    value.length > 0 &&
+    value.length <= maximum &&
+    !Array.from(value).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    })
+  );
+}
+
+function isScreenVisionReference(
+  value: unknown,
+  maximum: number,
+): value is string {
+  return (
+    isScreenVisionBoundedText(value, maximum) &&
+    !value.includes("..") &&
+    !value.includes("\\") &&
+    /^[A-Za-z0-9:._/-]+$/.test(value)
+  );
+}
+
+function isScreenVisionTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isScreenVisionBoundedInteger(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= minimum &&
+    value <= maximum
+  );
+}
+
+function hasScreenVisionForbiddenField(
+  candidate: Record<string, unknown>,
+): boolean {
+  return [
+    "screenshot",
+    "screenshotBytes",
+    "pixelData",
+    "imageBytes",
+    "imageData",
+    "pixels",
+    "capturePath",
+    "filePath",
+    "networkUrl",
+    "remoteModelRef",
+  ].some((key) => key in candidate);
+}
+
+function isScreenVisionPermission(
+  value: unknown,
+): value is ScreenVisionPermission {
+  return value === "capture_fixture" || value === "analyze_fixture";
+}
+
+function parseScreenVisionPermissions(
+  value: unknown,
+): ScreenVisionPermission[] | null {
+  if (
+    !Array.isArray(value) ||
+    value.length !== 2 ||
+    !value.every(isScreenVisionPermission)
+  ) {
+    return null;
+  }
+  const permissions = value as ScreenVisionPermission[];
+  return new Set(permissions).size === 2 &&
+    permissions.includes("capture_fixture") &&
+    permissions.includes("analyze_fixture")
+    ? permissions
+    : null;
+}
+
+export function parseScreenVisionPrivacy(
+  value: unknown,
+): ScreenVisionPrivacyPolicy | null {
+  const candidate = toolRecord(value);
+  const redactionRules = Array.isArray(candidate?.redactionRules)
+    ? candidate.redactionRules.map((rule) => {
+        const parsed = toolRecord(rule);
+        return parsed !== null &&
+          ["exclude_sensitive_regions", "exclude_text_like_regions"].includes(
+            parsed.kind as string,
+          ) &&
+          typeof parsed.enabled === "boolean"
+          ? (parsed as unknown as ScreenVisionRedactionRule)
+          : null;
+      })
+    : null;
+  return candidate !== null &&
+    candidate.excludeSensitiveContent === true &&
+    redactionRules !== null &&
+    redactionRules.length > 0 &&
+    redactionRules.length <= 8 &&
+    redactionRules.every(
+      (rule): rule is ScreenVisionRedactionRule =>
+        rule !== null && rule.enabled,
+    ) &&
+    redactionRules.some((rule) => rule.kind === "exclude_sensitive_regions")
+    ? (candidate as unknown as ScreenVisionPrivacyPolicy)
+    : null;
+}
+
+export function parseScreenVisionFixture(
+  value: unknown,
+): ScreenVisionFixture | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasScreenVisionForbiddenField(candidate) &&
+    isScreenVisionReference(candidate.fixtureId, 160) &&
+    isScreenVisionReference(candidate.monitorId, 64) &&
+    isScreenVisionBoundedText(candidate.displayName, 160) &&
+    isScreenVisionBoundedInteger(candidate.width, 1, 16_384) &&
+    isScreenVisionBoundedInteger(candidate.height, 1, 16_384) &&
+    cognitiveNumber(candidate.scale) &&
+    candidate.scale > 0 &&
+    candidate.scale <= 4 &&
+    candidate.synthetic === true &&
+    candidate.metadataOnly === true
+    ? (candidate as unknown as ScreenVisionFixture)
+    : null;
+}
+
+export function parseScreenVisionPreview(
+  value: unknown,
+): ScreenVisionPreview | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasScreenVisionForbiddenField(candidate) &&
+    isScreenVisionReference(candidate.fixtureId, 160) &&
+    isScreenVisionReference(candidate.monitorId, 64) &&
+    isScreenVisionBoundedText(candidate.displayName, 160) &&
+    isScreenVisionBoundedInteger(candidate.width, 1, 16_384) &&
+    isScreenVisionBoundedInteger(candidate.height, 1, 16_384) &&
+    candidate.synthetic === true &&
+    candidate.metadataOnly === true &&
+    candidate.confirmationRequired === true &&
+    isScreenVisionBoundedInteger(candidate.redactionRuleCount, 1, 8)
+    ? (candidate as unknown as ScreenVisionPreview)
+    : null;
+}
+
+export function parseScreenVisionSession(
+  value: unknown,
+): ScreenVisionSession | null {
+  const candidate = toolRecord(value);
+  const permissions = parseScreenVisionPermissions(candidate?.permissions);
+  const privacy = parseScreenVisionPrivacy(candidate?.privacy);
+  return candidate !== null &&
+    !hasScreenVisionForbiddenField(candidate) &&
+    isScreenVisionReference(candidate.id, 128) &&
+    isScreenVisionReference(candidate.agentId, 96) &&
+    isScreenVisionReference(candidate.ownerUserId, 96) &&
+    isScreenVisionReference(candidate.monitorId, 64) &&
+    isScreenVisionReference(candidate.fixtureId, 160) &&
+    ["active", "cancelled", "closed"].includes(candidate.status as string) &&
+    permissions !== null &&
+    privacy !== null &&
+    isScreenVisionBoundedInteger(candidate.maxJobs, 1, 8) &&
+    isScreenVisionBoundedInteger(candidate.maxDurationMs, 100, 15_000) &&
+    isScreenVisionTimestamp(candidate.createdAt) &&
+    isScreenVisionTimestamp(candidate.updatedAt) &&
+    (candidate.closedAt === null || isScreenVisionTimestamp(candidate.closedAt))
+    ? (candidate as unknown as ScreenVisionSession)
+    : null;
+}
+
+export function parseScreenVisionJob(value: unknown): ScreenVisionJob | null {
+  const candidate = toolRecord(value);
+  const preview = parseScreenVisionPreview(candidate?.preview);
+  const privacy = parseScreenVisionPrivacy(candidate?.privacy);
+  return candidate !== null &&
+    !hasScreenVisionForbiddenField(candidate) &&
+    isScreenVisionReference(candidate.id, 128) &&
+    isScreenVisionReference(candidate.sessionId, 128) &&
+    isScreenVisionReference(candidate.agentId, 96) &&
+    isScreenVisionReference(candidate.ownerUserId, 96) &&
+    isScreenVisionReference(candidate.monitorId, 64) &&
+    isScreenVisionReference(candidate.fixtureId, 160) &&
+    candidate.modelFixtureId === SCREEN_VISION_MODEL_FIXTURE_ID &&
+    candidate.resourceKey === SCREEN_VISION_RESOURCE_KEY &&
+    ["available", "reserved", "released"].includes(
+      candidate.resourceStatus as string,
+    ) &&
+    [
+      "previewed",
+      "queued",
+      "running",
+      "completed",
+      "cancelled",
+      "failed",
+      "cleaned",
+    ].includes(candidate.status as string) &&
+    (candidate.terminalStatus === null ||
+      ["completed", "cancelled", "failed", "expired", "cleaned"].includes(
+        candidate.terminalStatus as string,
+      )) &&
+    [
+      "not_loaded",
+      "loading",
+      "ready",
+      "running",
+      "unloaded",
+      "unavailable",
+    ].includes(candidate.modelLifecycle as string) &&
+    (candidate.modelLoadedAt === null ||
+      isScreenVisionTimestamp(candidate.modelLoadedAt)) &&
+    (candidate.modelRunAt === null ||
+      isScreenVisionTimestamp(candidate.modelRunAt)) &&
+    (candidate.modelCleanupAt === null ||
+      isScreenVisionTimestamp(candidate.modelCleanupAt)) &&
+    ["pending", "complete"].includes(candidate.cleanupStatus as string) &&
+    preview !== null &&
+    preview.fixtureId === candidate.fixtureId &&
+    preview.monitorId === candidate.monitorId &&
+    privacy !== null &&
+    typeof candidate.frameMetadataPresent === "boolean" &&
+    candidate.resultDurable === false &&
+    (candidate.errorCode === null ||
+      isScreenVisionBoundedText(candidate.errorCode, 96)) &&
+    isScreenVisionTimestamp(candidate.createdAt) &&
+    (candidate.queuedAt === null ||
+      isScreenVisionTimestamp(candidate.queuedAt)) &&
+    (candidate.runningAt === null ||
+      isScreenVisionTimestamp(candidate.runningAt)) &&
+    (candidate.completedAt === null ||
+      isScreenVisionTimestamp(candidate.completedAt)) &&
+    (candidate.cleanedAt === null ||
+      isScreenVisionTimestamp(candidate.cleanedAt)) &&
+    isScreenVisionTimestamp(candidate.updatedAt)
+    ? (candidate as unknown as ScreenVisionJob)
+    : null;
+}
+
+export function parseScreenVisionHypothesis(
+  value: unknown,
+): ScreenVisionHypothesis | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasScreenVisionForbiddenField(candidate) &&
+    isScreenVisionBoundedText(candidate.text, MAX_SCREEN_VISION_RESULT_TEXT) &&
+    isScreenVisionBoundedInteger(candidate.confidence, 0, 100) &&
+    candidate.uncertain === true &&
+    candidate.diagnostic === false &&
+    candidate.durable === false &&
+    candidate.sensitiveAttributeInferred === false &&
+    isScreenVisionBoundedText(candidate.source, 160)
+    ? (candidate as unknown as ScreenVisionHypothesis)
+    : null;
+}
+
+export function parseScreenVisionAnalysisResult(
+  value: unknown,
+): ScreenVisionAnalysisResult | null {
+  const candidate = toolRecord(value);
+  const job = parseScreenVisionJob(candidate?.job);
+  const hypothesis = parseScreenVisionHypothesis(candidate?.hypothesis);
+  return candidate !== null &&
+    !hasScreenVisionForbiddenField(candidate) &&
+    job !== null &&
+    hypothesis !== null &&
+    candidate.outputBounded === true &&
+    candidate.screenshotBytesPersisted === false
+    ? (candidate as unknown as ScreenVisionAnalysisResult)
+    : null;
+}
+
+export function parseScreenVisionAuditRecord(
+  value: unknown,
+): ScreenVisionAuditRecord | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasScreenVisionForbiddenField(candidate) &&
+    isScreenVisionReference(candidate.id, 128) &&
+    (candidate.sessionId === null ||
+      isScreenVisionReference(candidate.sessionId, 128)) &&
+    (candidate.jobId === null ||
+      isScreenVisionReference(candidate.jobId, 128)) &&
+    isScreenVisionReference(candidate.agentId, 96) &&
+    isScreenVisionBoundedText(candidate.event, 64) &&
+    isScreenVisionBoundedText(candidate.result, 64) &&
+    (candidate.code === null ||
+      isScreenVisionBoundedText(candidate.code, 96)) &&
+    isScreenVisionBoundedText(candidate.summary, MAX_SCREEN_VISION_TEXT) &&
+    isScreenVisionTimestamp(candidate.createdAt)
+    ? (candidate as unknown as ScreenVisionAuditRecord)
+    : null;
+}
+
+export function parseScreenVisionFixtures(
+  value: unknown,
+): ScreenVisionFixture[] | null {
+  if (!Array.isArray(value) || value.length > 2) return null;
+  const fixtures = value.map(parseScreenVisionFixture);
+  return fixtures.every(
+    (fixture): fixture is ScreenVisionFixture => fixture !== null,
+  )
+    ? fixtures
+    : null;
+}
+
+export function parseScreenVisionSessions(
+  value: unknown,
+): ScreenVisionSession[] | null {
+  if (!Array.isArray(value) || value.length > 32) return null;
+  const sessions = value.map(parseScreenVisionSession);
+  return sessions.every(
+    (session): session is ScreenVisionSession => session !== null,
+  )
+    ? sessions
+    : null;
+}
+
+export function parseScreenVisionJobs(
+  value: unknown,
+): ScreenVisionJob[] | null {
+  if (!Array.isArray(value) || value.length > 64) return null;
+  const jobs = value.map(parseScreenVisionJob);
+  return jobs.every((job): job is ScreenVisionJob => job !== null)
+    ? jobs
+    : null;
+}
+
+export function parseScreenVisionAudit(
+  value: unknown,
+): ScreenVisionAuditRecord[] | null {
+  if (!Array.isArray(value) || value.length > 100) return null;
+  const records = value.map(parseScreenVisionAuditRecord);
+  return records.every(
+    (record): record is ScreenVisionAuditRecord => record !== null,
   )
     ? records
     : null;

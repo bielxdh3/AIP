@@ -260,18 +260,27 @@ This does not load, compile, interpret, fetch, or execute extension code. It
 does not access the network, shell, host filesystem, credentials, remote code,
 or a public marketplace. Package integrity/signature policy, real plugin
 behavior, ratings, packaged-Windows evidence, and release approval remain
-reserved. Phase 11 screen vision is unchanged.
+reserved.
 
-## Post-v0.1 Phase 11: screen vision
+## Post-v0.1 Phase 11: screen vision `[IMPLEMENTED — LOCAL SYNTHETIC METADATA-ONLY CHECKPOINT]`
 
-Potential scope:
+The current checkpoint implements the bounded local architecture described in
+[PHASE_11_SCREEN_VISION_SPEC.md](PHASE_11_SCREEN_VISION_SPEC.md):
 
-- on-demand screenshot only;
-- explicit user request;
-- separate visual model loaded on demand;
-- no continuous screen analysis;
-- privacy controls;
-- resource scheduling.
+- explicit local Owner identity and confirmation;
+- synthetic monitor fixture selection only;
+- per-session capture/analyze permissions, privacy policy, and redaction hooks;
+- preview before confirmation, one-job reference-GPU scheduling, and quotas;
+- on-demand synthetic model-fixture lifecycle with automatic cleanup;
+- cancellation, bounded uncertain non-diagnostic hypothesis, and audit history;
+- Rust/SQLite authoritative temporary-chat and safe-mode fail-closed gates;
+- Portuguese Owner-facing Screen Vision controls and versioned contracts.
+
+This checkpoint does not capture the Windows desktop, call a screenshot API,
+retain pixels or screenshot bytes, analyze continuously, run in the background,
+access the host filesystem/shell/credentials, use a network or remote model, or
+persist visual state. Real screen adapters, Windows packaging evidence,
+privacy/visual UX validation, and release approval remain reserved work.
 
 ## Post-v0.1 Phase 12: Android client
 

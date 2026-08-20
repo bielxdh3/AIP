@@ -56,6 +56,13 @@ import type {
   VoiceSynthesisResult,
   VoiceTranscriptionRequest,
   VoiceTranscriptionResult,
+  ScreenVisionAuditRecord,
+  ScreenVisionFixture,
+  ScreenVisionHypothesis,
+  ScreenVisionJob,
+  ScreenVisionPermission,
+  ScreenVisionPrivacyPolicy,
+  ScreenVisionSession,
   ToolAction,
   ToolActionInput,
   ToolManifest,
@@ -67,6 +74,11 @@ import {
   parseExtensionAudit,
   parseExtensionCatalog,
   parseExtensionProposals,
+  parseScreenVisionAudit,
+  parseScreenVisionAnalysisResult,
+  parseScreenVisionFixtures,
+  parseScreenVisionJobs,
+  parseScreenVisionSessions,
   parseToolAction,
   parseToolAudit,
   parseToolCatalog,
@@ -5296,6 +5308,638 @@ function ExtensionControls({
   );
 }
 
+const screenVisionStatusLabels: Record<string, string> = {
+  active: "ativa",
+  cancelled: "cancelada",
+  closed: "encerrada",
+  previewed: "prévia pronta",
+  queued: "na fila",
+  running: "em execução",
+  completed: "concluída",
+  failed: "falhou",
+  cleaned: "limpa",
+};
+
+const screenVisionLifecycleLabels: Record<string, string> = {
+  not_loaded: "modelo não carregado",
+  loading: "carregando fixture",
+  ready: "fixture pronta",
+  running: "modelo em execução",
+  unloaded: "modelo descarregado",
+  unavailable: "modelo indisponível",
+};
+
+const screenVisionErrorLabels: Record<string, string> = {
+  screen_vision_blocked_temporary:
+    "Visão de tela bloqueada durante a conversa temporária.",
+  screen_vision_blocked_safe_mode: "Visão de tela bloqueada pelo modo seguro.",
+  screen_vision_blocked_suspended: "O agente está suspenso.",
+  screen_vision_owner_required: "A confirmação do Owner local é necessária.",
+  screen_vision_fixture_invalid: "A fixture de monitor selecionada é inválida.",
+  screen_vision_permission_invalid:
+    "A sessão precisa das permissões de fixture exigidas.",
+  screen_vision_privacy_invalid:
+    "Ative a exclusão de conteúdo sensível e a regra de redaction obrigatória.",
+  screen_vision_quota_invalid: "A quota escolhida está fora do limite seguro.",
+  screen_vision_session_limit: "O limite de sessões ativas foi atingido.",
+  screen_vision_job_limit: "O limite de jobs desta sessão foi atingido.",
+  screen_vision_session_cancelled: "A sessão de visão está cancelada.",
+  screen_vision_confirmation_required:
+    "A confirmação explícita do Owner é necessária.",
+  screen_vision_job_invalid:
+    "O job não está em um estado válido para esta ação.",
+  screen_vision_resource_busy:
+    "O recurso visual está ocupado; aguarde a limpeza do job atual.",
+  screen_vision_payload_invalid:
+    "A resposta de visão de tela não passou no contrato seguro.",
+};
+
+function screenVisionErrorMessage(error: unknown): string {
+  const typed = parseCognitiveError(error);
+  const code =
+    typed?.code ??
+    (typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : "operation_unavailable");
+  return (
+    screenVisionErrorLabels[code] ??
+    "A operação de visão de tela sintética não está disponível."
+  );
+}
+
+function parseScreenVisionPayload<T>(
+  value: unknown,
+  parser: (input: unknown) => T | null,
+): T {
+  const parsed = parser(value);
+  if (parsed === null) throw new Error("screen_vision_payload_invalid");
+  return parsed;
+}
+
+export function ScreenVisionControls({
+  agentId,
+  temporaryChat,
+  safeMode,
+}: {
+  agentId: string;
+  temporaryChat: boolean;
+  safeMode: boolean;
+}) {
+  const [fixtures, setFixtures] = useState<ScreenVisionFixture[]>([]);
+  const [sessions, setSessions] = useState<ScreenVisionSession[]>([]);
+  const [jobs, setJobs] = useState<ScreenVisionJob[]>([]);
+  const [audit, setAudit] = useState<ScreenVisionAuditRecord[]>([]);
+  const [selectedFixtureId, setSelectedFixtureId] = useState("");
+  const [selectedSessionId, setSelectedSessionId] = useState("");
+  const [selectedJobId, setSelectedJobId] = useState("");
+  const [allowCapture, setAllowCapture] = useState(true);
+  const [allowAnalyze, setAllowAnalyze] = useState(true);
+  const [excludeSensitiveContent, setExcludeSensitiveContent] = useState(true);
+  const [excludeSensitiveRegions, setExcludeSensitiveRegions] = useState(true);
+  const [excludeTextLikeRegions, setExcludeTextLikeRegions] = useState(false);
+  const [maxJobs, setMaxJobs] = useState("4");
+  const [maxDurationMs, setMaxDurationMs] = useState("5000");
+  const [hypothesis, setHypothesis] = useState<ScreenVisionHypothesis | null>(
+    null,
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadData = useCallback(async () => {
+    const [rawFixtures, rawSessions, rawJobs, rawAudit] = await Promise.all([
+      invoke<unknown>("list_screen_vision_fixtures"),
+      invoke<unknown>("list_screen_vision_sessions", { agentId }),
+      invoke<unknown>("list_screen_vision_jobs", { agentId }),
+      invoke<unknown>("list_screen_vision_audit", { agentId }),
+    ]);
+    const nextFixtures = parseScreenVisionPayload(
+      rawFixtures,
+      parseScreenVisionFixtures,
+    );
+    const nextSessions = parseScreenVisionPayload(
+      rawSessions,
+      parseScreenVisionSessions,
+    );
+    const nextJobs = parseScreenVisionPayload(rawJobs, parseScreenVisionJobs);
+    const nextAudit = parseScreenVisionPayload(
+      rawAudit,
+      parseScreenVisionAudit,
+    );
+    setFixtures(nextFixtures);
+    setSessions(nextSessions);
+    setJobs(nextJobs);
+    setAudit(nextAudit);
+    setSelectedFixtureId((current) =>
+      current && nextFixtures.some((fixture) => fixture.fixtureId === current)
+        ? current
+        : (nextFixtures[0]?.fixtureId ?? ""),
+    );
+    setSelectedSessionId((current) =>
+      current && nextSessions.some((session) => session.id === current)
+        ? current
+        : (nextSessions[0]?.id ?? ""),
+    );
+    setSelectedJobId((current) =>
+      current && nextJobs.some((job) => job.id === current)
+        ? current
+        : (nextJobs[0]?.id ?? ""),
+    );
+  }, [agentId]);
+
+  useEffect(() => {
+    void loadData().catch((loadError: unknown) => {
+      setError(screenVisionErrorMessage(loadError));
+    });
+  }, [loadData]);
+
+  const selectedFixture = fixtures.find(
+    (fixture) => fixture.fixtureId === selectedFixtureId,
+  );
+  const selectedSession = sessions.find(
+    (session) => session.id === selectedSessionId,
+  );
+  const selectedJob = jobs.find((job) => job.id === selectedJobId);
+  const blocked = temporaryChat || safeMode;
+
+  function buildPrivacy(): ScreenVisionPrivacyPolicy | null {
+    if (!excludeSensitiveContent || !excludeSensitiveRegions) return null;
+    return {
+      excludeSensitiveContent: true,
+      redactionRules: [
+        { kind: "exclude_sensitive_regions", enabled: true },
+        ...(excludeTextLikeRegions
+          ? [{ kind: "exclude_text_like_regions" as const, enabled: true }]
+          : []),
+      ],
+    };
+  }
+
+  async function createSession() {
+    if (blocked || !selectedFixture) return;
+    const permissions: ScreenVisionPermission[] = [];
+    if (allowCapture) permissions.push("capture_fixture");
+    if (allowAnalyze) permissions.push("analyze_fixture");
+    if (permissions.length !== 2) {
+      setError("Conceda as duas permissões para criar a sessão limitada.");
+      return;
+    }
+    const privacy = buildPrivacy();
+    if (privacy === null) {
+      setError(
+        "A exclusão de conteúdo sensível e a regra de regiões sensíveis são obrigatórias.",
+      );
+      return;
+    }
+    const jobsQuota = Number(maxJobs);
+    const durationQuota = Number(maxDurationMs);
+    if (
+      !Number.isInteger(jobsQuota) ||
+      !Number.isInteger(durationQuota) ||
+      jobsQuota < 1 ||
+      jobsQuota > 8 ||
+      durationQuota < 100 ||
+      durationQuota > 15_000
+    ) {
+      setError("Use de 1 a 8 jobs e duração entre 100 e 15000 ms.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const next = parseScreenVisionPayload(
+        await invoke<unknown>("create_screen_vision_session", {
+          agentId,
+          ownerUserId: OWNER_USER_ID,
+          monitorId: selectedFixture.monitorId,
+          fixtureId: selectedFixture.fixtureId,
+          permissions,
+          privacy,
+          maxJobs: jobsQuota,
+          maxDurationMs: durationQuota,
+          idempotencyKey: `screen-session-${crypto.randomUUID()}`,
+          temporaryChat,
+        }),
+        (value) => {
+          const parsed = parseScreenVisionSessions([value]);
+          return parsed?.[0] ?? null;
+        },
+      );
+      setSelectedSessionId(next.id);
+      setHypothesis(null);
+      await loadData();
+    } catch (createError: unknown) {
+      setError(screenVisionErrorMessage(createError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function previewJob() {
+    if (blocked || !selectedSession || selectedSession.status !== "active") {
+      setError("Escolha uma sessão ativa antes de criar a prévia.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const next = parseScreenVisionPayload(
+        await invoke<unknown>("preview_screen_vision_job", {
+          agentId,
+          ownerUserId: OWNER_USER_ID,
+          sessionId: selectedSession.id,
+          idempotencyKey: `screen-preview-${crypto.randomUUID()}`,
+          temporaryChat,
+        }),
+        (value) => {
+          const parsed = parseScreenVisionJobs([value]);
+          return parsed?.[0] ?? null;
+        },
+      );
+      setSelectedJobId(next.id);
+      setHypothesis(null);
+      await loadData();
+    } catch (previewError: unknown) {
+      setError(screenVisionErrorMessage(previewError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmJob() {
+    if (blocked || !selectedJob || selectedJob.status !== "previewed") {
+      setError("Selecione uma prévia pendente antes de confirmar.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const result = parseScreenVisionPayload(
+        await invoke<unknown>("confirm_screen_vision_job", {
+          agentId,
+          ownerUserId: OWNER_USER_ID,
+          jobId: selectedJob.id,
+          confirmed: true,
+          idempotencyKey: `screen-confirm-${crypto.randomUUID()}`,
+          temporaryChat,
+        }),
+        parseScreenVisionAnalysisResult,
+      );
+      setSelectedJobId(result.job.id);
+      setHypothesis(result.hypothesis);
+      await loadData();
+    } catch (confirmError: unknown) {
+      setError(screenVisionErrorMessage(confirmError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function transitionJob(command: string, idempotencyPrefix: string) {
+    if (blocked || !selectedJob || selectedJob.status === "cleaned") return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = parseScreenVisionPayload(
+        await invoke<unknown>(command, {
+          agentId,
+          ownerUserId: OWNER_USER_ID,
+          jobId: selectedJob.id,
+          idempotencyKey: `${idempotencyPrefix}-${crypto.randomUUID()}`,
+          temporaryChat,
+        }),
+        (value) => {
+          const parsed = parseScreenVisionJobs([value]);
+          return parsed?.[0] ?? null;
+        },
+      );
+      setSelectedJobId(next.id);
+      await loadData();
+    } catch (transitionError: unknown) {
+      setError(screenVisionErrorMessage(transitionError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelSession() {
+    if (blocked || !selectedSession || selectedSession.status !== "active")
+      return;
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("cancel_screen_vision_session", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        sessionId: selectedSession.id,
+        idempotencyKey: `screen-session-cancel-${crypto.randomUUID()}`,
+        temporaryChat,
+      });
+      await loadData();
+    } catch (cancelError: unknown) {
+      setError(screenVisionErrorMessage(cancelError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="tool-controls" aria-label="Visão de tela sintética">
+      <h3>Visão de tela (fixture)</h3>
+      <p>
+        Somente metadados sintéticos: não há captura do Windows, pixels,
+        screenshot, rede, modelo remoto ou análise contínua.
+      </p>
+      <p>
+        Owner confirmado: <code>{OWNER_USER_ID}</code>. O Rust valida essa
+        identidade, as permissões, o modo e todo o ciclo de vida.
+      </p>
+      {temporaryChat ? (
+        <p role="alert">Conversa temporária: alterações de visão bloqueadas.</p>
+      ) : null}
+      {safeMode ? (
+        <p role="alert">Modo seguro: alterações de visão bloqueadas.</p>
+      ) : null}
+      {error ? <p role="alert">{error}</p> : null}
+
+      <section className="settings-card">
+        <div className="message-actions">
+          <h4>Monitores sintéticos</h4>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              void loadData().catch((loadError: unknown) =>
+                setError(screenVisionErrorMessage(loadError)),
+              )
+            }
+          >
+            Atualizar histórico
+          </button>
+        </div>
+        {fixtures.length === 0 ? (
+          <p>Nenhuma fixture sintética disponível.</p>
+        ) : (
+          <>
+            <label>
+              Monitor fixture
+              <select
+                value={selectedFixtureId}
+                onChange={(event) => setSelectedFixtureId(event.target.value)}
+                disabled={busy}
+              >
+                {fixtures.map((fixture) => (
+                  <option key={fixture.fixtureId} value={fixture.fixtureId}>
+                    {fixture.displayName} — {fixture.width}×{fixture.height}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {selectedFixture ? (
+              <p>
+                Monitor {selectedFixture.monitorId}; escala{" "}
+                {selectedFixture.scale}; metadata-only confirmado.
+              </p>
+            ) : null}
+          </>
+        )}
+      </section>
+
+      <section className="settings-card">
+        <h4>Nova sessão autorizada</h4>
+        <fieldset disabled={busy || blocked || selectedFixture === undefined}>
+          <legend>Permissões desta sessão</legend>
+          <label>
+            <input
+              type="checkbox"
+              checked={allowCapture}
+              onChange={(event) => setAllowCapture(event.target.checked)}
+            />{" "}
+            Permitir fixture de captura sintética
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={allowAnalyze}
+              onChange={(event) => setAllowAnalyze(event.target.checked)}
+            />{" "}
+            Permitir análise da fixture
+          </label>
+          <legend>Exclusão e redaction</legend>
+          <label>
+            <input
+              type="checkbox"
+              checked={excludeSensitiveContent}
+              onChange={(event) =>
+                setExcludeSensitiveContent(event.target.checked)
+              }
+            />{" "}
+            Excluir conteúdo sensível (obrigatório)
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={excludeSensitiveRegions}
+              onChange={(event) =>
+                setExcludeSensitiveRegions(event.target.checked)
+              }
+            />{" "}
+            Excluir regiões sensíveis (obrigatório)
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={excludeTextLikeRegions}
+              onChange={(event) =>
+                setExcludeTextLikeRegions(event.target.checked)
+              }
+            />{" "}
+            Excluir regiões semelhantes a texto
+          </label>
+          <label>
+            Quota de jobs por sessão (1–8)
+            <input
+              type="number"
+              min="1"
+              max="8"
+              value={maxJobs}
+              onChange={(event) => setMaxJobs(event.target.value)}
+            />
+          </label>
+          <label>
+            Duração máxima (100–15000 ms)
+            <input
+              type="number"
+              min="100"
+              max="15000"
+              value={maxDurationMs}
+              onChange={(event) => setMaxDurationMs(event.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            disabled={busy || blocked || selectedFixture === undefined}
+            onClick={() => void createSession()}
+          >
+            Criar sessão limitada
+          </button>
+        </fieldset>
+      </section>
+
+      <section className="settings-card">
+        <h4>Sessões e prévias</h4>
+        <label>
+          Sessão atual
+          <select
+            value={selectedSessionId}
+            onChange={(event) => setSelectedSessionId(event.target.value)}
+            disabled={busy}
+          >
+            <option value="">Nenhuma sessão</option>
+            {sessions.map((session) => (
+              <option key={session.id} value={session.id}>
+                {session.monitorId} — {screenVisionStatusLabels[session.status]}
+              </option>
+            ))}
+          </select>
+        </label>
+        {selectedSession ? (
+          <>
+            <p>
+              Permissões: {selectedSession.permissions.join(", ")}; quota:{" "}
+              {selectedSession.maxJobs} jobs / {selectedSession.maxDurationMs}{" "}
+              ms; redaction obrigatória ativa.
+            </p>
+            <div className="message-actions">
+              <button
+                type="button"
+                disabled={
+                  busy || blocked || selectedSession.status !== "active"
+                }
+                onClick={() => void previewJob()}
+              >
+                Gerar prévia sem pixels
+              </button>
+              <button
+                type="button"
+                disabled={
+                  busy || blocked || selectedSession.status !== "active"
+                }
+                onClick={() => void cancelSession()}
+              >
+                Cancelar sessão
+              </button>
+            </div>
+          </>
+        ) : (
+          <p>Nenhuma sessão selecionada.</p>
+        )}
+      </section>
+
+      <section className="settings-card">
+        <h4>Jobs e confirmação explícita</h4>
+        <label>
+          Job atual
+          <select
+            value={selectedJobId}
+            onChange={(event) => setSelectedJobId(event.target.value)}
+            disabled={busy}
+          >
+            <option value="">Nenhum job</option>
+            {jobs.map((job) => (
+              <option key={job.id} value={job.id}>
+                {job.monitorId} — {screenVisionStatusLabels[job.status]}
+              </option>
+            ))}
+          </select>
+        </label>
+        {selectedJob ? (
+          <>
+            <p>
+              Status: {screenVisionStatusLabels[selectedJob.status]}; modelo:{" "}
+              {screenVisionLifecycleLabels[selectedJob.modelLifecycle]};
+              recurso: {selectedJob.resourceStatus}; cleanup:{" "}
+              {selectedJob.cleanupStatus}.
+            </p>
+            <p>
+              Prévia {selectedJob.preview.width}×{selectedJob.preview.height};
+              confirmação necessária; bytes persistidos: não.
+            </p>
+            <div className="message-actions">
+              <button
+                type="button"
+                disabled={busy || blocked || selectedJob.status !== "previewed"}
+                onClick={() => void confirmJob()}
+              >
+                Confirmar e analisar agora
+              </button>
+              <button
+                type="button"
+                disabled={
+                  busy ||
+                  blocked ||
+                  ["cleaned", "completed", "cancelled"].includes(
+                    selectedJob.status,
+                  )
+                }
+                onClick={() =>
+                  void transitionJob(
+                    "cancel_screen_vision_job",
+                    "screen-cancel",
+                  )
+                }
+              >
+                Cancelar job
+              </button>
+              <button
+                type="button"
+                disabled={busy || blocked || selectedJob.status === "cleaned"}
+                onClick={() =>
+                  void transitionJob(
+                    "cleanup_screen_vision_job",
+                    "screen-cleanup",
+                  )
+                }
+              >
+                Limpar metadados agora
+              </button>
+            </div>
+          </>
+        ) : (
+          <p>Nenhuma prévia selecionada.</p>
+        )}
+        {hypothesis ? (
+          <section className="settings-card" aria-label="Hipótese incerta">
+            <h4>Resultado incerto e não diagnóstico</h4>
+            <p>{hypothesis.text}</p>
+            <p>
+              Confiança limitada: {hypothesis.confidence}%; fonte:{" "}
+              {hypothesis.source}. Não é atributo sensível e não é salvo como
+              memória visual.
+            </p>
+          </section>
+        ) : null}
+      </section>
+
+      <section className="settings-card">
+        <h4>Auditoria recente</h4>
+        {audit.length === 0 ? (
+          <p>Nenhum evento de visão sintética registrado para este agente.</p>
+        ) : (
+          <ul>
+            {audit.slice(0, 20).map((record) => (
+              <li key={record.id}>
+                <strong>{record.event}</strong>: {record.summary}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </section>
+  );
+}
+
 function SettingsSurface({
   snapshot,
   changingMode,
@@ -5620,6 +6264,14 @@ function App() {
             <details>
               <summary>Extensões locais</summary>
               <ExtensionControls
+                agentId={activeAgentId}
+                temporaryChat={temporaryChat}
+                safeMode={snapshot?.safeMode ?? true}
+              />
+            </details>
+            <details>
+              <summary>Visão de tela sintética</summary>
+              <ScreenVisionControls
                 agentId={activeAgentId}
                 temporaryChat={temporaryChat}
                 safeMode={snapshot?.safeMode ?? true}
