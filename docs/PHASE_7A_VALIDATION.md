@@ -9,9 +9,15 @@ any Phase 7B–7E behavior.
 
 ## Automated evidence
 
-- PR #3 head is `3e591a06129a9d8f27e026490f9bd83028eb2465`, matching the mission baseline.
-- CI run [30671809304](https://github.com/bielxdh3/AIP/actions/runs/30671809304) completed
-  successfully for that head; both `phase-zero` and `package` passed.
+- The exact Phase 7A implementation/build baseline is
+  `3e591a06129a9d8f27e026490f9bd83028eb2465`.
+- The Phase A documentation baseline is
+  `b6adccc754c7ba293d96c057d9e0f3fa71d0a3fd`. CI run
+  [32337005681](https://github.com/bielxdh3/AIP/actions/runs/32337005681) completed
+  successfully for that documentation commit; both `phase-zero` and `package` passed.
+- The implementation/build baseline's earlier CI run
+  [30671809304](https://github.com/bielxdh3/AIP/actions/runs/30671809304) also completed
+  successfully; both `phase-zero` and `package` passed.
 - Rust compilation covers migration loading and the typed Rust/Tauri boundary.
 - The focused repository test matrix covers protected-target rejection, bounded deltas and
   windows, idempotency, rollback, isolation, ineligible sources, malformed candidates,
