@@ -2658,7 +2658,7 @@ export function parseToolActionInput(value: unknown): ToolActionInput | null {
         ? (candidate as unknown as ToolActionInput)
         : null;
     case "workspaceOrganize": {
-      if (!Array.isArray(candidate.moves)) return null;
+      if (!Array.isArray(candidate.moves) || candidate.moves.length === 0 || candidate.moves.length > 32) return null;
       const moves = candidate.moves.every((move) => {
         const item = toolRecord(move);
         return (
@@ -2722,7 +2722,7 @@ export function parseToolSessionPermission(
 
 export function parseToolSession(value: unknown): ToolSession | null {
   const candidate = toolRecord(value);
-  if (!candidate || !Array.isArray(candidate.permissions)) return null;
+  if (!candidate || !Array.isArray(candidate.permissions) || candidate.permissions.length === 0 || candidate.permissions.length > 12) return null;
   const permissions = candidate.permissions.map(parseToolSessionPermission);
   return toolBoundedId(candidate.id) &&
     toolBoundedId(candidate.agentId, 96) &&
@@ -2771,7 +2771,7 @@ export function parseWorkspaceRoot(value: unknown): WorkspaceRoot | null {
 }
 
 export function parseWorkspaceRoots(value: unknown): WorkspaceRoot[] | null {
-  if (!Array.isArray(value)) return null;
+  if (!Array.isArray(value) || value.length > 64) return null;
   const roots = value.map(parseWorkspaceRoot);
   return roots.every((root): root is WorkspaceRoot => root !== null) ? roots : null;
 }
@@ -2859,7 +2859,7 @@ export function parseToolAuditRecord(value: unknown): ToolAuditRecord | null {
 }
 
 export function parseToolCatalog(value: unknown): ToolManifest[] | null {
-  if (!Array.isArray(value)) return null;
+  if (!Array.isArray(value) || value.length > 16) return null;
   const manifests = value.map(parseToolManifest);
   return manifests.every(
     (manifest): manifest is ToolManifest => manifest !== null,
@@ -2869,7 +2869,7 @@ export function parseToolCatalog(value: unknown): ToolManifest[] | null {
 }
 
 export function parseToolSessions(value: unknown): ToolSession[] | null {
-  if (!Array.isArray(value)) return null;
+  if (!Array.isArray(value) || value.length > 32) return null;
   const sessions = value.map(parseToolSession);
   return sessions.every((session): session is ToolSession => session !== null)
     ? sessions
@@ -2877,7 +2877,7 @@ export function parseToolSessions(value: unknown): ToolSession[] | null {
 }
 
 export function parseToolAudit(value: unknown): ToolAuditRecord[] | null {
-  if (!Array.isArray(value)) return null;
+  if (!Array.isArray(value) || value.length > 100) return null;
   const records = value.map(parseToolAuditRecord);
   return records.every((record): record is ToolAuditRecord => record !== null)
     ? records
