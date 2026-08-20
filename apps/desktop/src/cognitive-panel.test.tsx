@@ -551,6 +551,299 @@ describe("CognitivePanel", () => {
     expect(container.textContent).toContain("estado fictício");
   });
 
+  it(
+    "invokes bounded public conversation and resource commands with pending-only candidates",
+    async () => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    let conversation = {
+      id: "conversation-1",
+      initiatorAgentId: "astra",
+      participantAgentId: "luma",
+      purpose: "planejamento fictício",
+      status: "active" as const,
+      maxTurns: 12,
+      maxTokens: 2048,
+      maxDurationMs: 300000,
+      maxRepetitions: 2,
+      resourceBudget: 20,
+      turnCount: 0,
+      tokenCount: 0,
+      loopCount: 0,
+      terminationReason: null,
+      createdAt: 1,
+      updatedAt: 1,
+      completedAt: null,
+    };
+    const policy = {
+      agentId: "astra",
+      purpose: "planejamento fictício",
+      optedIn: true,
+      maxTurns: 12,
+      maxTokens: 2048,
+      maxDurationMs: 300000,
+      maxRepetitions: 2,
+      resourceBudget: 20,
+      revokedAt: null,
+      updatedAt: 1,
+    };
+    const pendingCandidate = {
+      id: "candidate-pending",
+      conversationId: conversation.id,
+      agentId: "astra",
+      candidateKind: "opinion" as const,
+      candidateJson: '{"subject":"tema","stance":0.2}',
+      sourceReference: "conversation-1",
+      status: "pending" as const,
+      createdAt: 1,
+    };
+    const rejectedCandidate = {
+      ...pendingCandidate,
+      id: "candidate-rejected",
+      status: "rejected" as const,
+    };
+    let candidates = [pendingCandidate, rejectedCandidate];
+    const resourceJob = {
+      id: "resource-job-1",
+      agentId: "astra",
+      conversationId: conversation.id,
+      jobKind: "heavy_generation",
+      heavy: true,
+      priority: 50,
+      budgetUnits: 1,
+      status: "running" as const,
+      errorCode: null,
+      createdAt: 1,
+      startedAt: 1,
+      endedAt: null,
+    };
+    const inspection = () => ({
+      conversation,
+      turns: [
+        {
+          id: "turn-1",
+          conversationId: conversation.id,
+          speakerAgentId: "astra",
+          turnIndex: 0,
+          content: "Turno público seguro",
+          sourceKind: "owner" as const,
+          createdAt: 1,
+        },
+      ],
+    });
+
+    invoke.mockImplementation(
+      (command: string, args: Record<string, unknown>) => {
+        if (
+          command === "list_cognitive_traits" ||
+          command === "list_cognitive_events" ||
+          command === "list_cognitive_opinions" ||
+          command === "list_cognitive_relationships" ||
+          command === "list_cognitive_goals"
+        )
+          return Promise.resolve([]);
+        if (command === "list_agent_conversation_policies")
+          return Promise.resolve([policy, { ...policy, agentId: "luma" }]);
+        if (command === "list_cognitive_conversations")
+          return Promise.resolve([conversation]);
+        if (command === "list_cognitive_candidates")
+          return Promise.resolve(candidates);
+        if (command === "set_agent_conversation_policy")
+          return Promise.resolve({
+            ...policy,
+            agentId: String(args.agentId),
+            optedIn: Boolean(args.optedIn),
+          });
+        if (command === "start_agent_conversation") {
+          conversation = { ...conversation, id: "conversation-started" };
+          return Promise.resolve(conversation);
+        }
+        if (command === "inspect_agent_conversation")
+          return Promise.resolve(inspection());
+        if (command === "append_public_conversation_turn")
+          return Promise.resolve(inspection());
+        if (command === "reserve_heavy_generation")
+          return Promise.resolve({
+            ...resourceJob,
+            conversationId: conversation.id,
+          });
+        if (command === "complete_resource_job")
+          return Promise.resolve({
+            ...resourceJob,
+            status: "completed" as const,
+            endedAt: 2,
+          });
+        if (command === "reject_cognitive_candidate") {
+          candidates = [rejectedCandidate];
+          return Promise.resolve(rejectedCandidate);
+        }
+        return Promise.resolve([]);
+      },
+    );
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root.render(<CognitivePanel agentId="astra" />));
+
+    expect(
+      Array.from(container.querySelectorAll("button")).filter(
+        (button) => button.textContent === "Rejeitar candidato",
+      ),
+    ).toHaveLength(1);
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Salvar autorização pública")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "set_agent_conversation_policy",
+      expect.objectContaining({ agentId: "astra", temporaryChat: false }),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "set_agent_conversation_policy",
+      expect.objectContaining({ agentId: "luma", temporaryChat: false }),
+    );
+
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Iniciar conversa pública")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "start_agent_conversation",
+      expect.objectContaining({
+        initiatorAgentId: "astra",
+        participantAgentId: "luma",
+        temporaryChat: false,
+      }),
+    );
+
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Inspecionar turnos públicos")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "inspect_agent_conversation",
+      expect.objectContaining({ agentId: "astra" }),
+    );
+    const turn = Array.from(container.querySelectorAll("label"))
+      .find((label) => label.textContent?.startsWith("Turno público"))
+      ?.querySelector("textarea");
+    await act(async () =>
+      change(turn as HTMLTextAreaElement, "Turno do Owner"),
+    );
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Registrar turno público")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "append_public_conversation_turn",
+      expect.objectContaining({
+        content: "Turno do Owner",
+        sourceKind: "owner",
+        temporaryChat: false,
+      }),
+    );
+
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Reservar geração pesada")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "reserve_heavy_generation",
+      expect.objectContaining({
+        priority: 50,
+        budgetUnits: 1,
+      }),
+    );
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Concluir trabalho pesado")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "complete_resource_job",
+      expect.objectContaining({
+        status: "completed",
+        temporaryChat: false,
+      }),
+    );
+
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Interromper conversa pública")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "interrupt_agent_conversation",
+      expect.objectContaining({
+        agentId: "astra",
+        temporaryChat: false,
+      }),
+    );
+
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Rejeitar candidato")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "reject_cognitive_candidate",
+      expect.objectContaining({ candidateId: "candidate-pending" }),
+    );
+    expect(
+      Array.from(container.querySelectorAll("button")).filter(
+        (button) => button.textContent === "Rejeitar candidato",
+      ),
+    ).toHaveLength(0);
+      expect(
+        invoke.mock.calls.some(
+          ([command]) => command === "emit_cognitive_candidate",
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it("renders safe Portuguese copy for a public conversation backend error", async () => {
+    (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT = true;
+    invoke.mockImplementation((command: string) => {
+      if (
+        command === "list_cognitive_traits" ||
+        command === "list_cognitive_events" ||
+        command === "list_cognitive_opinions" ||
+        command === "list_cognitive_relationships" ||
+        command === "list_cognitive_goals"
+      )
+        return Promise.resolve([]);
+      if (command === "list_agent_conversation_policies")
+        return Promise.resolve([]);
+      if (command === "list_cognitive_conversations")
+        return Promise.resolve([]);
+      if (command === "list_cognitive_candidates") return Promise.resolve([]);
+      if (command === "start_agent_conversation")
+        return Promise.reject("conversation_opt_in_required");
+      return Promise.resolve([]);
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root.render(<CognitivePanel agentId="astra" />));
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Iniciar conversa pública")
+        ?.click(),
+    );
+    expect(container.textContent).toContain(
+      "Os dois agentes precisam autorizar este propósito explicitamente.",
+    );
+  });
+
   it("suppresses durable cognitive controls during temporary chat", async () => {
     invoke.mockImplementation((command: string) => {
       throw new Error(`unexpected temporary-chat command: ${command}`);

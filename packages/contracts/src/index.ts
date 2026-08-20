@@ -368,12 +368,15 @@ export type ConversationPolicyRequest = {
   resourceBudget: number;
   temporaryChat: boolean;
 };
+export type ConversationStartRequest = {
+  initiatorAgentId: string;
+  participantAgentId: string;
+  purpose: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
 export type AgentConversationStatus =
-  | "active"
-  | "completed"
-  | "cancelled"
-  | "suspended"
-  | "rejected";
+  "active" | "completed" | "cancelled" | "suspended" | "rejected";
 export type AgentConversationSummary = {
   id: string;
   initiatorAgentId: string;
@@ -406,12 +409,28 @@ export type AgentConversationInspection = {
   conversation: AgentConversationSummary;
   turns: PublicConversationTurn[];
 };
+export type PublicConversationTurnRequest = {
+  agentId: string;
+  conversationId: string;
+  speakerAgentId: string;
+  content: string;
+  sourceKind: "owner" | "model_candidate";
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
 export type ConversationInterruptRequest = {
   agentId: string;
   conversationId: string;
   reason: string;
   idempotencyKey: string;
   temporaryChat: boolean;
+};
+export type CognitiveCandidateRequest = {
+  agentId: string;
+  conversationId: string;
+  candidateKind: "opinion" | "relationship" | "goal";
+  candidateJson: string;
+  idempotencyKey: string;
 };
 export type CognitiveCandidate = {
   id: string;
@@ -426,6 +445,37 @@ export type CognitiveCandidate = {
 export type CognitiveCandidateRejectionRequest = {
   agentId: string;
   candidateId: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type HeavyGenerationRequest = {
+  agentId: string;
+  conversationId: string;
+  priority: number;
+  budgetUnits: number;
+  idempotencyKey: string;
+};
+export type CognitiveResourceJobStatus =
+  "queued" | "running" | "completed" | "cancelled" | "failed";
+export type CognitiveResourceJob = {
+  id: string;
+  agentId: string;
+  conversationId: string | null;
+  jobKind: string;
+  heavy: boolean;
+  priority: number;
+  budgetUnits: number;
+  status: CognitiveResourceJobStatus;
+  errorCode: string | null;
+  createdAt: number;
+  startedAt: number | null;
+  endedAt: number | null;
+};
+export type ResourceJobCompletionRequest = {
+  agentId: string;
+  jobId: string;
+  status: "completed" | "cancelled" | "failed";
+  errorCode: string | null;
   idempotencyKey: string;
   temporaryChat: boolean;
 };
