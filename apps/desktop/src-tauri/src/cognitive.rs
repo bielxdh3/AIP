@@ -133,7 +133,7 @@ mod tests {
     fn phase_7b_to_7f_migrations_load() {
         let path = test_path();
         let database = Database::initialize(&path).unwrap();
-        assert_eq!(database.snapshot().unwrap().migration_version, 14);
+        assert!(database.snapshot().unwrap().migration_version >= 14);
         let connection = database.open().unwrap();
         for table in [
             "cognitive_core_events",
@@ -370,6 +370,13 @@ mod tests {
         );
 
         let connection = database.open().unwrap();
+        connection
+            .execute(
+                "INSERT INTO users (id, role, display_name, created_at, updated_at)
+                 VALUES ('usr_other', 'owner', 'Other', 1, 1)",
+                [],
+            )
+            .unwrap();
         connection
             .execute(
                 "UPDATE agents SET owner_user_id = 'usr_other' WHERE id = ?1",

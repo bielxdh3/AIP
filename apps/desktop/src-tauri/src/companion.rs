@@ -922,10 +922,11 @@ impl Database {
             &request.proof,
             "session_reconnect",
         )?;
+        let device_id = session_device_internal_id(&transaction, &session.id)?;
         insert_audit_tx(
             &transaction,
             AuditContext {
-                device_id: Some(&session.device_id),
+                device_id: Some(&device_id),
                 session_id: Some(&session.id),
                 queue_id: None,
                 agent_id: &request.agent_id,
@@ -1014,17 +1015,18 @@ impl Database {
         let queue_id = Uuid::now_v7().to_string();
         let now = now_millis();
         let summary = bounded_summary(&request.payload.summary());
+        let device_id = session_device_internal_id(&transaction, &session.id)?;
         let inserted = transaction.execute(
             "INSERT INTO companion_queue
              (id, device_id, session_id, agent_id, owner_user_id, kind, status,
               payload_json, summary, metadata_only, media_bytes_persisted,
               approval_required, retry_count, idempotency_key, created_at,
               previewed_at, updated_at)
-             SELECT ?1, d.id, ?2, ?3, ?4, ?5, 'previewed', ?6, ?7, 1, 0, 1, 0,
-                    ?8, ?9, ?9, ?9
-             FROM companion_devices d WHERE d.device_id = ?10 AND d.agent_id = ?3",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'previewed', ?7, ?8, 1, 0, 1, 0,
+                     ?9, ?10, ?10, ?10)",
             params![
                 queue_id,
+                device_id,
                 session.id,
                 request.agent_id,
                 request.owner_user_id,
@@ -1033,7 +1035,6 @@ impl Database {
                 summary,
                 idempotency_key,
                 now,
-                session_device_external_id(&transaction, &session.id)?,
             ],
         )?;
         if inserted != 1 {
@@ -1042,7 +1043,7 @@ impl Database {
         insert_history_tx(
             &transaction,
             HistoryContext {
-                device_id: Some(&session.device_id),
+                device_id: Some(&device_id),
                 session_id: Some(&session.id),
                 agent_id: &request.agent_id,
                 owner_user_id: &request.owner_user_id,
@@ -1054,7 +1055,7 @@ impl Database {
         insert_audit_tx(
             &transaction,
             AuditContext {
-                device_id: Some(&session.device_id),
+                device_id: Some(&device_id),
                 session_id: Some(&session.id),
                 queue_id: Some(&queue_id),
                 agent_id: &request.agent_id,
@@ -1167,6 +1168,7 @@ impl Database {
             return Err(DatabaseError::Cognitive("companion_retry_limit"));
         }
         let now = now_millis();
+        let device_id = session_device_internal_id(&transaction, &session.id)?;
         transaction.execute(
             "UPDATE companion_queue
              SET status = 'previewed', error_code = NULL, approved_at = NULL,
@@ -1177,7 +1179,7 @@ impl Database {
         insert_audit_tx(
             &transaction,
             AuditContext {
-                device_id: Some(&session.device_id),
+                device_id: Some(&device_id),
                 session_id: Some(&session.id),
                 queue_id: Some(&item.id),
                 agent_id: &request.agent_id,
@@ -1266,6 +1268,7 @@ impl Database {
             return Err(DatabaseError::Cognitive("companion_queue_state_invalid"));
         }
         let now = now_millis();
+        let device_id = session_device_internal_id(&transaction, &session.id)?;
         transaction.execute(
             "UPDATE companion_queue
              SET status = ?1, approved_at = CASE WHEN ?1 = 'queued' THEN ?2 ELSE approved_at END,
@@ -1278,7 +1281,7 @@ impl Database {
         insert_audit_tx(
             &transaction,
             AuditContext {
-                device_id: Some(&session.device_id),
+                device_id: Some(&device_id),
                 session_id: Some(&session.id),
                 queue_id: Some(&item.id),
                 agent_id: &request.agent_id,
@@ -2265,14 +2268,13 @@ fn load_device_by_external_tx(
     load_device_tx(transaction, &internal_id)
 }
 
-fn session_device_external_id(
+fn session_device_internal_id(
     transaction: &Transaction<'_>,
     session_id: &str,
 ) -> Result<String, DatabaseError> {
     transaction
         .query_row(
-            "SELECT d.device_id FROM companion_sessions s
-             JOIN companion_devices d ON d.id = s.device_id WHERE s.id = ?1",
+            "SELECT device_id FROM companion_sessions WHERE id = ?1",
             params![session_id],
             |row| row.get::<_, String>(0),
         )
