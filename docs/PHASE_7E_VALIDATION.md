@@ -17,10 +17,12 @@ The implementation baseline under validation is:
 - The Phase 7E commits are `4de625841d6b87ad8821cdc98e947877eb61dbe7`
   (wiring), `70ba8fe88049c530cdd53c9585bcef3ede408a21` (boundary hardening),
   and `5ff4807985eb8156f2c59b7644700c43d19c58fc` (typed UI path).
-- Migration `0014_phase7e_7f_conversations.sql` is schema version 14. Database
-  initialization applies it through the existing migration runner; the migration
-  persists policies, conversations, public turns, candidates, resource jobs, and
-  the one-running-heavy-job constraint.
+- The relevant migration sequence is `0012_phase7a_cognitive_events.sql` (7A),
+  `0013_phase7b_7d_cognitive_core.sql` (7B–7D), and
+  `0014_phase7e_7f_conversations.sql` (schema version 14). Database initialization
+  applies them through the existing migration runner; 0014 persists policies,
+  conversations, public turns, candidates, resource jobs, and the one-running-heavy-job
+  constraint.
 
 ## Authoritative behavior reviewed
 
