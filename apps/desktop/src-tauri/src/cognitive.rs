@@ -286,6 +286,121 @@ mod tests {
         );
         cleanup(&path);
     }
+
+    #[test]
+    fn advanced_cognitive_paths_are_replay_safe_and_owner_scoped() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+
+        let opinion = database
+            .propose_cognitive_opinion(opinion_request(ASTRA_ID, "advanced-opinion"))
+            .unwrap();
+        let correction = OpinionEvidenceCorrectionRequest {
+            agent_id: ASTRA_ID.into(),
+            evidence_id: opinion.evidence[0].id.clone(),
+            claim_value: "A corrected fictional topic".into(),
+            reason: "Owner supplied a correction".into(),
+            idempotency_key: "advanced-correction".into(),
+        };
+        let corrected = database
+            .correct_opinion_evidence(correction.clone())
+            .unwrap();
+        assert_eq!(
+            database
+                .correct_opinion_evidence(correction)
+                .unwrap()
+                .evidence
+                .len(),
+            corrected.evidence.len()
+        );
+        let disputed = database
+            .set_opinion_status(
+                ASTRA_ID,
+                &opinion.id,
+                "disputed",
+                "Owner marked the evidence for review",
+                "advanced-status",
+            )
+            .unwrap();
+        assert_eq!(disputed.status, "disputed");
+        let recalculated = database
+            .recalculate_opinion(
+                ASTRA_ID,
+                &opinion.id,
+                "Owner requested a deterministic recalculation",
+                "advanced-recalculate",
+            )
+            .unwrap();
+        assert_eq!(recalculated.status, "active");
+
+        let relationship = database
+            .propose_relationship_event(relationship_request(ASTRA_ID, "advanced-relationship"))
+            .unwrap();
+        assert!(!relationship.events[0].event_id.is_empty());
+        let reset = database
+            .reset_relationship(
+                ASTRA_ID,
+                &relationship.id,
+                "Owner reset the fictional relationship",
+                "advanced-reset",
+            )
+            .unwrap();
+        let replayed_reset = database
+            .reset_relationship(
+                ASTRA_ID,
+                &relationship.id,
+                "Owner reset the fictional relationship",
+                "advanced-reset",
+            )
+            .unwrap();
+        assert_eq!(replayed_reset.events.len(), reset.events.len());
+        let rollback_event_id = reset.events[0].event_id.clone();
+        let rolled_back = database
+            .rollback_relationship_event(ASTRA_ID, &rollback_event_id, "advanced-rollback")
+            .unwrap();
+        assert_eq!(rolled_back.values, relationship.values);
+        assert_eq!(
+            database.rollback_relationship_event(
+                LUMA_ID,
+                &rollback_event_id,
+                "cross-agent-rollback"
+            ),
+            Err(DatabaseError::OwnershipMismatch)
+        );
+
+        let proposal = database
+            .propose_agent_goal(goal_request(ASTRA_ID, "advanced-goal"))
+            .unwrap();
+        assert!(proposal.fictional_only);
+        assert_eq!(proposal.status, "proposed");
+        let approved = database
+            .approve_cognitive_goal(ASTRA_ID, &proposal.id, "advanced-approve")
+            .unwrap();
+        assert_eq!(approved.status, "active");
+        let completed = database
+            .update_goal_status(
+                ASTRA_ID,
+                &proposal.id,
+                "completed",
+                Some("Concluído em estado fictício"),
+                "advanced-complete",
+            )
+            .unwrap();
+        assert_eq!(completed.status, "completed");
+        let replayed = database
+            .update_goal_status(
+                ASTRA_ID,
+                &proposal.id,
+                "completed",
+                Some("Concluído em estado fictício"),
+                "advanced-complete",
+            )
+            .unwrap();
+        assert_eq!(replayed.status, "completed");
+
+        drop(database);
+        cleanup(&path);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -406,6 +521,7 @@ impl RelationshipDeltas {
 pub struct RelationshipEvent {
     pub id: String,
     pub relationship_id: String,
+    pub event_id: String,
     pub deltas: RelationshipDeltas,
     pub prior: RelationshipValues,
     pub resulting: RelationshipValues,
@@ -879,24 +995,25 @@ fn map_activity(row: &rusqlite::Row<'_>) -> rusqlite::Result<FictionalActivity> 
 }
 
 fn map_relationship_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<RelationshipEvent> {
-    let deltas: RelationshipDeltas = serde_json::from_str(&row.get::<_, String>(2)?)
+    let deltas: RelationshipDeltas = serde_json::from_str(&row.get::<_, String>(3)?)
         .map_err(|_| rusqlite::Error::InvalidQuery)?;
-    let prior: RelationshipValues = serde_json::from_str(&row.get::<_, String>(3)?)
+    let prior: RelationshipValues = serde_json::from_str(&row.get::<_, String>(4)?)
         .map_err(|_| rusqlite::Error::InvalidQuery)?;
-    let resulting: RelationshipValues = serde_json::from_str(&row.get::<_, String>(4)?)
+    let resulting: RelationshipValues = serde_json::from_str(&row.get::<_, String>(5)?)
         .map_err(|_| rusqlite::Error::InvalidQuery)?;
     Ok(RelationshipEvent {
         id: row.get(0)?,
         relationship_id: row.get(1)?,
+        event_id: row.get(2)?,
         deltas,
         prior,
         resulting,
-        source_kind: row.get(5)?,
-        source_reference: row.get(6)?,
-        confidence: row.get(7)?,
-        reason: row.get(8)?,
-        status: row.get(9)?,
-        created_at: row.get(10)?,
+        source_kind: row.get(6)?,
+        source_reference: row.get(7)?,
+        confidence: row.get(8)?,
+        reason: row.get(9)?,
+        status: row.get(10)?,
+        created_at: row.get(11)?,
     })
 }
 
@@ -916,7 +1033,7 @@ fn load_relationship_tx(
         .optional()?
         .ok_or(DatabaseError::Cognitive("relationship_not_found"))?;
     let mut statement = tx.prepare(
-        "SELECT id, relationship_id, delta_json, prior_json, resulting_json,
+        "SELECT id, relationship_id, event_id, delta_json, prior_json, resulting_json,
                 source_kind, source_reference, confidence, reason, status, created_at
          FROM relationship_events WHERE relationship_id = ?1
          ORDER BY created_at DESC, id DESC",
@@ -1377,9 +1494,6 @@ impl Database {
             )
             .optional()?
             .ok_or(DatabaseError::Cognitive("evidence_not_found"))?;
-        if old_status != "active" {
-            return Err(DatabaseError::Cognitive("evidence_not_active"));
-        }
         let payload = json!({
             "evidenceId": evidence_id,
             "claimValue": claim_value,
@@ -1396,6 +1510,9 @@ impl Database {
             let opinion = load_opinion_tx(&tx, &request.agent_id, &opinion_id)?;
             tx.commit()?;
             return Ok(opinion);
+        }
+        if old_status != "active" {
+            return Err(DatabaseError::Cognitive("evidence_not_active"));
         }
         let classification = if subject_type == "real_person" {
             "reported_experience"
@@ -1611,7 +1728,7 @@ impl Database {
         let mut relationships_with_events = Vec::with_capacity(relationships.len());
         for mut relationship in relationships {
             let mut events = connection.prepare(
-                "SELECT re.id, re.relationship_id, re.delta_json, re.prior_json,
+                "SELECT re.id, re.relationship_id, re.event_id, re.delta_json, re.prior_json,
                         re.resulting_json, re.source_kind, re.source_reference, re.confidence,
                         re.reason, re.status, re.created_at
                  FROM relationship_events re
@@ -1620,25 +1737,26 @@ impl Database {
             relationship.events = events
                 .query_map(params![relationship.id], |row| {
                     let deltas: RelationshipDeltas =
-                        serde_json::from_str(&row.get::<_, String>(2)?)
+                        serde_json::from_str(&row.get::<_, String>(3)?)
                             .map_err(|_| rusqlite::Error::InvalidQuery)?;
-                    let prior: RelationshipValues = serde_json::from_str(&row.get::<_, String>(3)?)
+                    let prior: RelationshipValues = serde_json::from_str(&row.get::<_, String>(4)?)
                         .map_err(|_| rusqlite::Error::InvalidQuery)?;
                     let resulting: RelationshipValues =
-                        serde_json::from_str(&row.get::<_, String>(4)?)
+                        serde_json::from_str(&row.get::<_, String>(5)?)
                             .map_err(|_| rusqlite::Error::InvalidQuery)?;
                     Ok(RelationshipEvent {
                         id: row.get(0)?,
                         relationship_id: row.get(1)?,
+                        event_id: row.get(2)?,
                         deltas,
                         prior,
                         resulting,
-                        source_kind: row.get(5)?,
-                        source_reference: row.get(6)?,
-                        confidence: row.get(7)?,
-                        reason: row.get(8)?,
-                        status: row.get(9)?,
-                        created_at: row.get(10)?,
+                        source_kind: row.get(6)?,
+                        source_reference: row.get(7)?,
+                        confidence: row.get(8)?,
+                        reason: row.get(9)?,
+                        status: row.get(10)?,
+                        created_at: row.get(11)?,
                     })
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -2268,6 +2386,23 @@ impl Database {
         let tx = connection.transaction()?;
         let owner_id = ensure_owned_tx(&tx, agent_id)?;
         let prior = load_goal_tx(&tx, agent_id, goal_id)?;
+        let payload = json!({
+            "goalId": goal_id,
+            "status": status,
+            "completionEvidence": completion_evidence,
+        });
+        if let Some(existing) = idempotent_or_conflict(
+            existing_core_event(&tx, agent_id, &idempotency_key)?,
+            "goal_status",
+            &payload,
+        )? {
+            let goal_id = existing
+                .result_ref
+                .ok_or(DatabaseError::Cognitive("persistence_failed"))?;
+            let goal = load_goal_tx(&tx, agent_id, &goal_id)?;
+            tx.commit()?;
+            return Ok(goal);
+        }
         if prior.origin == "agent_proposal"
             && prior.status == "proposed"
             && !matches!(status.as_str(), "active" | "rejected")
@@ -2283,24 +2418,6 @@ impl Database {
         }
         if prior.status == "archived" || (prior.status == "suspended" && status == "suspended") {
             return Err(DatabaseError::Cognitive("invalid_transition"));
-        }
-        let payload = json!({
-            "goalId": goal_id,
-            "priorStatus": prior.status,
-            "status": status,
-            "completionEvidence": completion_evidence,
-        });
-        if let Some(existing) = idempotent_or_conflict(
-            existing_core_event(&tx, agent_id, &idempotency_key)?,
-            "goal_status",
-            &payload,
-        )? {
-            let goal_id = existing
-                .result_ref
-                .ok_or(DatabaseError::Cognitive("persistence_failed"))?;
-            let goal = load_goal_tx(&tx, agent_id, &goal_id)?;
-            tx.commit()?;
-            return Ok(goal);
         }
         let now = now_millis();
         let event = core_event(

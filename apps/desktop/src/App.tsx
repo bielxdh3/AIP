@@ -13,10 +13,13 @@ import type {
   AgentSimulatedState,
   CognitiveEventExplanation,
   CognitiveEventSummary,
+  CognitiveGoal,
+  CognitiveOpinion,
   CognitiveTrait,
   ConversationMessage,
   PhaseOneConversation,
   ProvisionalAgent,
+  RelationshipState,
 } from "@aip/contracts";
 import AgentSprite from "./components/AgentSprite";
 import {
@@ -1661,6 +1664,465 @@ export function CognitivePanel({ agentId }: { agentId: string }) {
           {selected.event.resultingValue.toFixed(2)}. {selected.event.reason}
         </p>
       ) : null}
+      <CognitiveCorePanel agentId={agentId} />
+    </section>
+  );
+}
+
+const coreGoalStatusCopy: Record<CognitiveGoal["status"], string> = {
+  proposed: "proposto",
+  active: "ativo",
+  suspended: "suspenso",
+  completed: "concluído",
+  cancelled: "cancelado",
+  archived: "arquivado",
+  rejected: "rejeitado",
+};
+
+const coreErrorCopy: Record<string, string> = {
+  invalid_classification: "A classificação da opinião não é válida.",
+  invalid_evidence: "A evidência não é válida.",
+  attribution_required: "Informe a atribuição da experiência.",
+  internet_fact_unverified: "Informações externas não podem virar fatos verificados.",
+  inference_not_fact: "Uma inferência de modelo não pode ser fato verificado.",
+  real_person_uncertain: "Opiniões sobre pessoas reais exigem cautela adicional.",
+  defamation_blocked: "A descrição foi recusada por segurança.",
+  invalid_status: "O status solicitado não é válido.",
+  evidence_not_found: "A evidência não foi encontrada.",
+  evidence_not_active: "A evidência já foi substituída.",
+  invalid_subject: "O assunto informado não é válido.",
+  relationship_not_found: "O relacionamento não foi encontrado.",
+  relationship_delta_limit: "A alteração do relacionamento excede o limite.",
+  relationship_rate_limit: "O limite de alterações do relacionamento foi atingido.",
+  manipulation_blocked: "A alteração do relacionamento foi recusada.",
+  invalid_goal: "Os dados do objetivo não são válidos.",
+  external_action_blocked: "Objetivos fictícios não podem pedir ações externas.",
+  invalid_goal_budget: "Use prioridade de 0 a 100 e orçamento de 1 a 1000.",
+  invalid_goal_schedule: "O prazo do objetivo não é válido.",
+  goal_not_found: "O objetivo não foi encontrado.",
+  goal_loop_blocked: "A dependência criaria um ciclo de objetivos.",
+  invalid_transition: "Essa mudança de status não é permitida.",
+};
+
+function CognitiveCorePanel({ agentId }: { agentId: string }) {
+  const [opinions, setOpinions] = useState<CognitiveOpinion[]>([]);
+  const [relationships, setRelationships] = useState<RelationshipState[]>([]);
+  const [goals, setGoals] = useState<CognitiveGoal[]>([]);
+  const [opinionSubject, setOpinionSubject] = useState("");
+  const [opinionStance, setOpinionStance] = useState("0");
+  const [opinionClaim, setOpinionClaim] = useState("");
+  const [opinionReason, setOpinionReason] = useState("");
+  const [relationshipSubject, setRelationshipSubject] = useState("");
+  const [relationshipTrust, setRelationshipTrust] = useState("0.05");
+  const [relationshipReason, setRelationshipReason] = useState("");
+  const [goalTitle, setGoalTitle] = useState("");
+  const [goalDescription, setGoalDescription] = useState("");
+  const [goalPriority, setGoalPriority] = useState("50");
+  const [goalBudget, setGoalBudget] = useState("10");
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const loadVersion = useRef(0);
+  const activeAgentId = useRef(agentId);
+
+  const load = useCallback(async () => {
+    const version = ++loadVersion.current;
+    const [nextOpinions, nextRelationships, nextGoals] = await Promise.all([
+      invoke<CognitiveOpinion[]>("list_cognitive_opinions", { agentId }),
+      invoke<RelationshipState[]>("list_cognitive_relationships", { agentId }),
+      invoke<CognitiveGoal[]>("list_cognitive_goals", { agentId }),
+    ]);
+    if (version !== loadVersion.current) return;
+    setOpinions(nextOpinions);
+    setRelationships(nextRelationships);
+    setGoals(nextGoals);
+  }, [agentId]);
+
+  useEffect(() => {
+    activeAgentId.current = agentId;
+    setOpinions([]);
+    setRelationships([]);
+    setGoals([]);
+    setError(null);
+    setSuccess(null);
+    setLoading(true);
+    void load()
+      .catch(() => {
+        if (activeAgentId.current === agentId) {
+          setError("Não foi possível carregar o núcleo cognitivo.");
+        }
+      })
+      .finally(() => {
+        if (activeAgentId.current === agentId) setLoading(false);
+      });
+  }, [agentId, load]);
+
+  async function run(
+    command: string,
+    args: Record<string, unknown>,
+    message: string,
+  ): Promise<boolean> {
+    setBusy(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      await invoke(command, args);
+      await load();
+      if (activeAgentId.current === agentId) setSuccess(message);
+      return true;
+    } catch (cause) {
+      setError(
+        coreErrorCopy[String(cause)] || "A operação cognitiva foi recusada.",
+      );
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function proposeOpinion() {
+    const stance = Number(opinionStance);
+    if (!opinionSubject.trim() || !opinionClaim.trim() || !opinionReason.trim()) {
+      setError("Informe assunto, evidência e motivo da opinião.");
+      return;
+    }
+    if (!Number.isFinite(stance) || stance < -1 || stance > 1) {
+      setError("Use uma posição entre -1 e 1.");
+      return;
+    }
+    if (
+      await run(
+        "propose_cognitive_opinion",
+        {
+          agentId,
+          subjectType: "topic",
+          subjectRef: opinionSubject,
+          stance,
+          confidence: 0.8,
+          sourceKind: "owner_testimony",
+          classification: "verified_fact",
+          claimKey: "owner_claim",
+          claimValue: opinionClaim,
+          sourceReference: null,
+          attribution: null,
+          reason: opinionReason,
+          idempotencyKey: crypto.randomUUID(),
+        },
+        "Opinião proposta.",
+      )
+    ) {
+      setOpinionSubject("");
+      setOpinionClaim("");
+      setOpinionReason("");
+    }
+  }
+
+  async function proposeRelationship() {
+    const trust = Number(relationshipTrust);
+    if (!relationshipSubject.trim() || !relationshipReason.trim()) {
+      setError("Informe assunto e motivo do relacionamento.");
+      return;
+    }
+    if (!Number.isFinite(trust) || trust < -0.1 || trust > 0.1 || trust === 0) {
+      setError("A confiança deve ficar entre -0,1 e 0,1, sem ser zero.");
+      return;
+    }
+    if (
+      await run(
+        "propose_cognitive_relationship",
+        {
+          agentId,
+          subjectType: "agent",
+          subjectRef: relationshipSubject,
+          deltas: {
+            familiarity: 0,
+            trust,
+            affinity: 0,
+            admiration: 0,
+            irritation: 0,
+            reliabilityExpectation: 0,
+          },
+          sourceKind: "owner_testimony",
+          sourceReference: null,
+          confidence: 0.8,
+          reason: relationshipReason,
+          idempotencyKey: crypto.randomUUID(),
+        },
+        "Relacionamento atualizado.",
+      )
+    ) {
+      setRelationshipSubject("");
+      setRelationshipReason("");
+    }
+  }
+
+  async function proposeGoal() {
+    const priority = Number(goalPriority);
+    const budgetUnits = Number(goalBudget);
+    if (!goalTitle.trim() || !goalDescription.trim()) {
+      setError("Informe título e descrição do objetivo.");
+      return;
+    }
+    if (
+      !Number.isInteger(priority) ||
+      priority < 0 ||
+      priority > 100 ||
+      !Number.isInteger(budgetUnits) ||
+      budgetUnits < 1 ||
+      budgetUnits > 1000
+    ) {
+      setError("Use prioridade de 0 a 100 e orçamento de 1 a 1000.");
+      return;
+    }
+    if (
+      await run(
+        "propose_agent_cognitive_goal",
+        {
+          agentId,
+          title: goalTitle,
+          description: goalDescription,
+          priority,
+          budgetUnits,
+          dueAt: null,
+          expiresAt: null,
+          parentGoalId: null,
+          idempotencyKey: crypto.randomUUID(),
+        },
+        "Objetivo fictício proposto.",
+      )
+    ) {
+      setGoalTitle("");
+      setGoalDescription("");
+    }
+  }
+
+  async function approveGoal(goal: CognitiveGoal) {
+    await run(
+      "approve_cognitive_goal",
+      { agentId, goalId: goal.id, idempotencyKey: crypto.randomUUID() },
+      "Objetivo aprovado.",
+    );
+  }
+
+  async function setGoalStatus(
+    goal: CognitiveGoal,
+    status: "active" | "suspended" | "completed" | "rejected",
+  ) {
+    await run(
+      "update_cognitive_goal_status",
+      {
+        agentId,
+        goalId: goal.id,
+        status,
+        completionEvidence:
+          status === "completed" ? "Concluído em estado fictício" : null,
+        idempotencyKey: crypto.randomUUID(),
+      },
+      status === "completed" ? "Objetivo concluído." : "Status atualizado.",
+    );
+  }
+
+  return (
+    <section aria-label="Núcleo cognitivo 7B a 7D">
+      <h3>Núcleo cognitivo</h3>
+      <p>
+        Opiniões, relacionamentos e objetivos são registros limitados e
+        fictícios; nenhuma ação externa é executada.
+      </p>
+      {loading ? <p>Carregando opiniões, relações e objetivos…</p> : null}
+      <h4>Opiniões</h4>
+      <ul>
+        {opinions.map((opinion) => (
+          <li key={opinion.id}>
+            {opinion.subjectRef}: posição {opinion.stance.toFixed(2)}, confiança{" "}
+            {opinion.confidence.toFixed(2)} ({opinion.status}) —{" "}
+            {opinion.evidence.find((item) => item.status === "active")?.claimValue ??
+              "sem evidência ativa"}
+          </li>
+        ))}
+      </ul>
+      <label>
+        Assunto da opinião
+        <input
+          value={opinionSubject}
+          maxLength={128}
+          onChange={(event) => setOpinionSubject(event.target.value)}
+        />
+      </label>
+      <label>
+        Posição (-1 a 1)
+        <input
+          type="number"
+          min="-1"
+          max="1"
+          step="0.01"
+          value={opinionStance}
+          onChange={(event) => setOpinionStance(event.target.value)}
+        />
+      </label>
+      <label>
+        Evidência do Owner
+        <textarea
+          value={opinionClaim}
+          maxLength={500}
+          onChange={(event) => setOpinionClaim(event.target.value)}
+        />
+      </label>
+      <label>
+        Motivo da opinião
+        <textarea
+          value={opinionReason}
+          maxLength={500}
+          onChange={(event) => setOpinionReason(event.target.value)}
+        />
+      </label>
+      <button type="button" disabled={busy} onClick={() => void proposeOpinion()}>
+        Propor opinião
+      </button>
+
+      <h4>Relacionamentos</h4>
+      <ul>
+        {relationships.map((relationship) => (
+          <li key={relationship.id}>
+            {relationship.subjectRef}: confiança {relationship.values.trust.toFixed(2)} —{" "}
+            {relationship.events.length} evento(s)
+          </li>
+        ))}
+      </ul>
+      <label>
+        Assunto do relacionamento
+        <input
+          value={relationshipSubject}
+          maxLength={128}
+          onChange={(event) => setRelationshipSubject(event.target.value)}
+        />
+      </label>
+      <label>
+        Alteração de confiança (-0,1 a 0,1)
+        <input
+          type="number"
+          min="-0.1"
+          max="0.1"
+          step="0.01"
+          value={relationshipTrust}
+          onChange={(event) => setRelationshipTrust(event.target.value)}
+        />
+      </label>
+      <label>
+        Motivo do relacionamento
+        <textarea
+          value={relationshipReason}
+          maxLength={500}
+          onChange={(event) => setRelationshipReason(event.target.value)}
+        />
+      </label>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void proposeRelationship()}
+      >
+        Propor alteração de relacionamento
+      </button>
+
+      <h4>Objetivos fictícios</h4>
+      <ul>
+        {goals.map((goal) => (
+          <li key={goal.id}>
+            <strong>{goal.title}</strong> — {coreGoalStatusCopy[goal.status]} — orçamento{" "}
+            {goal.budgetUnits}
+            <p>{goal.description}</p>
+            {goal.completionEvidence ? <p>{goal.completionEvidence}</p> : null}
+            {goal.status === "proposed" ? (
+              <>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void approveGoal(goal)}
+                >
+                  Aprovar objetivo
+                </button>{" "}
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void setGoalStatus(goal, "rejected")}
+                >
+                  Rejeitar objetivo
+                </button>
+              </>
+            ) : null}
+            {goal.status === "active" ? (
+              <>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void setGoalStatus(goal, "completed")}
+                >
+                  Concluir objetivo
+                </button>{" "}
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void setGoalStatus(goal, "suspended")}
+                >
+                  Suspender objetivo
+                </button>
+              </>
+            ) : null}
+            {goal.status === "suspended" ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void setGoalStatus(goal, "active")}
+              >
+                Retomar objetivo
+              </button>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      <label>
+        Título do objetivo
+        <input
+          value={goalTitle}
+          maxLength={160}
+          onChange={(event) => setGoalTitle(event.target.value)}
+        />
+      </label>
+      <label>
+        Descrição do objetivo
+        <textarea
+          value={goalDescription}
+          maxLength={1000}
+          onChange={(event) => setGoalDescription(event.target.value)}
+        />
+      </label>
+      <label>
+        Prioridade (0 a 100)
+        <input
+          type="number"
+          min="0"
+          max="100"
+          value={goalPriority}
+          onChange={(event) => setGoalPriority(event.target.value)}
+        />
+      </label>
+      <label>
+        Orçamento fictício (1 a 1000)
+        <input
+          type="number"
+          min="1"
+          max="1000"
+          value={goalBudget}
+          onChange={(event) => setGoalBudget(event.target.value)}
+        />
+      </label>
+      <button type="button" disabled={busy} onClick={() => void proposeGoal()}>
+        Propor objetivo fictício
+      </button>
+      {error ? <p role="alert">{coreErrorCopy[error] || error}</p> : null}
+      {success ? <p role="status">{success}</p> : null}
+      <p>Atividades fictícias ainda não estão implementadas neste checkpoint.</p>
     </section>
   );
 }
