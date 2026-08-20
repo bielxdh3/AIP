@@ -28,7 +28,16 @@ const MIGRATION_0009: &str = include_str!("../migrations/0009_conversation_branc
 const MIGRATION_0010: &str = include_str!("../migrations/0010_branch_summaries.sql");
 const MIGRATION_0011: &str = include_str!("../migrations/0011_turn_variants.sql");
 const MIGRATION_0012: &str = include_str!("../migrations/0012_phase7a_cognitive_events.sql");
-const MIGRATIONS: [(i64, &str); 12] = [
+const MIGRATION_0013: &str = include_str!("../migrations/0013_phase7b_7d_cognitive_core.sql");
+const MIGRATION_0014: &str = include_str!("../migrations/0014_phase7e_7f_conversations.sql");
+const MIGRATION_0015: &str = include_str!("../migrations/0015_phase8_voice.sql");
+const MIGRATION_0016: &str = include_str!("../migrations/0016_phase9_tools.sql");
+const MIGRATION_0017: &str = include_str!("../migrations/0017_phase10_extensions.sql");
+const MIGRATION_0018: &str = include_str!("../migrations/0018_phase11_screen_vision.sql");
+const MIGRATION_0019: &str = include_str!("../migrations/0019_phase12_android_companion.sql");
+const MIGRATION_0020: &str = include_str!("../migrations/0020_phase13_gateway.sql");
+const MIGRATION_0021: &str = include_str!("../migrations/0021_corrective_tools_capabilities.sql");
+const MIGRATIONS: [(i64, &str); 21] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
@@ -41,6 +50,15 @@ const MIGRATIONS: [(i64, &str); 12] = [
     (10, MIGRATION_0010),
     (11, MIGRATION_0011),
     (12, MIGRATION_0012),
+    (13, MIGRATION_0013),
+    (14, MIGRATION_0014),
+    (15, MIGRATION_0015),
+    (16, MIGRATION_0016),
+    (17, MIGRATION_0017),
+    (18, MIGRATION_0018),
+    (19, MIGRATION_0019),
+    (20, MIGRATION_0020),
+    (21, MIGRATION_0021),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -135,11 +153,13 @@ impl Database {
         )?;
         Self::seed_phase_zero(&mut connection)?;
         Self::seed_phase_one(&mut connection)?;
+        Self::seed_phase8_voice(&mut connection)?;
+        Self::seed_phase13_gateway(&mut connection)?;
         Self::recover_interrupted(&connection)?;
         Ok(database)
     }
 
-    fn open(&self) -> Result<Connection, DatabaseError> {
+    pub(crate) fn open(&self) -> Result<Connection, DatabaseError> {
         let connection = Connection::open(&self.path)?;
         connection.busy_timeout(Duration::from_secs(2))?;
         connection.pragma_update(None, "foreign_keys", true)?;
@@ -277,12 +297,64 @@ impl Database {
         Ok(())
     }
 
+    fn seed_phase8_voice(connection: &mut Connection) -> Result<(), DatabaseError> {
+        let now = now_millis();
+        let transaction = connection.transaction()?;
+        for agent_id in [ASTRA_ID, LUMA_ID] {
+            transaction.execute(
+                "INSERT OR IGNORE INTO agent_voice_settings
+                 (agent_id, owner_user_id, schema_version, base_voice_id,
+                  custom_voice_ref, custom_voice_consent, recognition_model_ref,
+                  synthesis_model_ref, input_device_ref, output_device_ref,
+                  created_at, updated_at)
+                 VALUES (?1, ?2, 1, 'aip-base-v1', NULL, 'not_granted',
+                         NULL, NULL, NULL, NULL, ?3, ?3)",
+                params![agent_id, OWNER_ID, now],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn seed_phase13_gateway(connection: &mut Connection) -> Result<(), DatabaseError> {
+        let now = now_millis();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO gateway_accounts
+             (id, owner_user_id, local_account_id, external_account_id_metadata,
+              ownership_scope, status, metadata_only, external_effect_performed,
+              standalone_fallback, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'owner_only', 'metadata_only', 1, 0, 1, ?5, ?5)",
+            params![
+                "gateway-account-owner",
+                OWNER_ID,
+                "aip-owner-local",
+                "fixture:external-account/bielos-owner",
+                now,
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     fn recover_interrupted(connection: &Connection) -> Result<(), DatabaseError> {
         connection.execute(
             "UPDATE conversation_messages
              SET status = 'failed', completed_at = ?1,
                  terminal_error_code = 'runtime_interrupted'
              WHERE author_type = 'agent' AND status IN ('pending', 'streaming')",
+            params![now_millis()],
+        )?;
+        connection.execute(
+            "UPDATE cognitive_resource_jobs
+             SET status = 'failed', error_code = 'runtime_interrupted', ended_at = ?1
+             WHERE status IN ('queued', 'running')",
+            params![now_millis()],
+        )?;
+        connection.execute(
+            "UPDATE agent_conversations
+             SET status = 'suspended', termination_reason = 'runtime_interrupted', updated_at = ?1
+             WHERE status = 'active'",
             params![now_millis()],
         )?;
         Ok(())
@@ -2334,7 +2406,7 @@ fn trait_value(
         Err(DatabaseError::Cognitive("invalid_value"))
     }
 }
-fn ensure_agent(connection: &Connection, agent_id: &str) -> Result<(), DatabaseError> {
+pub(crate) fn ensure_agent(connection: &Connection, agent_id: &str) -> Result<(), DatabaseError> {
     connection
         .query_row(
             "SELECT owner_user_id FROM agents WHERE id = ?1",
@@ -2746,7 +2818,7 @@ mod tests {
         let first = Database::initialize(&path).expect("database should initialize");
         let second = Database::initialize(&path).expect("database should reinitialize");
         let snapshot = second.snapshot().expect("snapshot should load");
-        assert_eq!(snapshot.migration_version, 12);
+        assert!(snapshot.migration_version >= 20);
         assert_eq!(snapshot.agents.len(), 2);
         for agent in &snapshot.agents {
             assert_eq!(
@@ -2775,7 +2847,7 @@ mod tests {
         drop(connection);
 
         let database = Database::initialize(&path).expect("v1 database should upgrade");
-        assert_eq!(database.snapshot().unwrap().migration_version, 12);
+        assert!(database.snapshot().unwrap().migration_version >= 20);
         let connection = Connection::open(&path).unwrap();
         let preserved: String = connection
             .query_row(
@@ -2787,6 +2859,41 @@ mod tests {
         assert_eq!(preserved, "Preserved");
         drop(connection);
         drop(database);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn version_twenty_tool_capabilities_are_repaired_by_forward_migration() {
+        let path = test_path();
+        let database = Database::initialize(&path).expect("database should initialize");
+        let connection = database.open().expect("database should open");
+        connection
+            .execute(
+                "UPDATE tool_catalog
+                 SET capabilities_json = '{\"operations\":[\"inspect_scope\"]}'
+                 WHERE tool_id = 'workspace.inspect_scope'",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute("DELETE FROM schema_migrations WHERE version = 21", [])
+            .unwrap();
+        drop(connection);
+        drop(database);
+
+        let upgraded = Database::initialize(&path).expect("database should upgrade");
+        let connection = upgraded.open().expect("upgraded database should open");
+        let capabilities: String = connection
+            .query_row(
+                "SELECT capabilities_json FROM tool_catalog
+                 WHERE tool_id = 'workspace.inspect_scope'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(capabilities, "[\"inspect_scope\"]");
+        assert!(upgraded.snapshot().unwrap().migration_version >= 21);
+        drop(connection);
         cleanup(&path);
     }
 
@@ -3738,7 +3845,7 @@ mod tests {
 
         let upgraded = Database::initialize(&path).unwrap();
         assert_eq!(upgraded.simulated_state(ASTRA_ID).unwrap().mode, "normal");
-        assert_eq!(upgraded.snapshot().unwrap().migration_version, 12);
+        assert!(upgraded.snapshot().unwrap().migration_version >= 20);
         cleanup(&path);
     }
 

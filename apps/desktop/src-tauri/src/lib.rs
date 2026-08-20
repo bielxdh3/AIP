@@ -1,11 +1,19 @@
 mod chat;
+mod cognitive;
+mod companion;
+mod conversation;
 mod database;
 mod domain;
+mod extensions;
 mod fullscreen;
+mod gateway;
 mod native_overlay_region;
 mod overlays;
 mod protocol;
 mod runtime;
+mod screen_vision;
+mod tools;
+mod voice;
 
 use std::{
     io,
@@ -17,14 +25,60 @@ use std::{
 };
 
 use chat::ChatCoordinator;
+use cognitive::{
+    CognitiveGoal, CognitiveOpinion, FictionalActivity, FictionalActivityRequest,
+    FictionalActivityStatusRequest, GoalRequest, OpinionCandidateRequest,
+    OpinionEvidenceCorrectionRequest, RelationshipCandidateRequest, RelationshipState,
+};
+use companion::{
+    CompanionAuditRecord, CompanionDevice, CompanionDeviceActionRequest, CompanionHistoryRecord,
+    CompanionKeyRotation, CompanionPairingConfirmationRequest, CompanionPairingRequest,
+    CompanionQueueActionRequest, CompanionQueueDecisionRequest, CompanionQueueItem,
+    CompanionQueuePreviewRequest, CompanionReconnectRequest, CompanionRevocation, CompanionSession,
+    CompanionSessionRequest,
+};
+use conversation::{
+    AgentConversationInspection, AgentConversationSummary, CognitiveCandidate,
+    CognitiveCandidateRejectionRequest, CognitiveCandidateRequest, CognitiveResourceJob,
+    ConversationInterruptRequest, ConversationPolicy, ConversationPolicyRequest,
+    ConversationStartRequest, HeavyGenerationRequest, PublicConversationTurnRequest,
+    ResourceJobCompletionRequest,
+};
 use database::Database;
 use domain::{
     AgentMemory, AgentSimulatedState, AppSnapshot, CognitiveEvent, CognitiveEventExplanation,
     CognitiveTrait, ConversationMessage, PhaseOneConversation, PhaseOneState, SendMessageResult,
 };
+use extensions::{
+    ExtensionActivationRequest, ExtensionAgentProposalRequest, ExtensionAuditRecord,
+    ExtensionCatalogEntry, ExtensionDisableRequest, ExtensionProposal, ExtensionProposalRequest,
+    ExtensionReviewRequest, ExtensionRollbackRequest, ExtensionUpdateRequest,
+};
+use gateway::{
+    GatewayAccount, GatewayAuditRecord, GatewayProtocolInfo, GatewayReconnectRequest,
+    GatewayRecovery, GatewayRecoveryApprovalRequest, GatewayRecoveryRequest, GatewayRevocation,
+    GatewaySession, GatewaySessionActionRequest, GatewaySessionRequest, GatewayTransfer,
+    GatewayTransferActionRequest, GatewayTransferApprovalRequest, GatewayTransferRequest,
+};
 use overlays::{InteractiveRegion, OverlayInputState};
 use runtime::RuntimeController;
+use screen_vision::{
+    ScreenVisionAnalysisResult, ScreenVisionAuditRecord, ScreenVisionFixture, ScreenVisionJob,
+    ScreenVisionJobCancellationRequest, ScreenVisionJobCleanupRequest,
+    ScreenVisionJobConfirmationRequest, ScreenVisionJobPreviewRequest, ScreenVisionSession,
+    ScreenVisionSessionCancellationRequest, ScreenVisionSessionRequest,
+};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
+use tools::{
+    ToolAction, ToolActionCancellationRequest, ToolActionConfirmationRequest,
+    ToolActionDecisionRequest, ToolActionExecutionRequest, ToolActionPreviewRequest,
+    ToolAuditRecord, ToolManifest, ToolSession, ToolSessionCancellationRequest, ToolSessionRequest,
+};
+use voice::{
+    CustomVoiceConsentRequest, VoiceEmotionHypothesisRequest, VoiceEmotionHypothesisResult,
+    VoiceSettings, VoiceSettingsRequest, VoiceSynthesisRequest, VoiceSynthesisResult,
+    VoiceTranscriptionRequest, VoiceTranscriptionResult, VoiceWakeWordRequest, VoiceWakeWordResult,
+};
 
 struct AppState {
     database: Option<Database>,
@@ -32,6 +86,37 @@ struct AppState {
     chat: Option<ChatCoordinator>,
     safe_mode: Arc<AtomicBool>,
     overlay_input: OverlayInputState,
+}
+
+fn ensure_conversation_not_temporary(
+    state: &AppState,
+    agent_id: &str,
+    requested_temporary: bool,
+) -> Result<(), &'static str> {
+    if requested_temporary
+        || state
+            .chat
+            .as_ref()
+            .is_some_and(|chat| chat.temporary_chat_active(agent_id))
+    {
+        Err("conversation_temporary_blocked")
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_voice_mutation_allowed(
+    state: &AppState,
+    agent_id: &str,
+    requested_temporary: bool,
+) -> Result<(), &'static str> {
+    ensure_conversation_not_temporary(state, agent_id, requested_temporary)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .ensure_voice_mutation_allowed(agent_id)
+        .map_err(|error| error.code())
 }
 
 #[tauri::command]
@@ -82,7 +167,9 @@ fn create_owner_trait_correction(
     value: f64,
     reason: String,
     idempotency_key: String,
+    temporary_chat: bool,
 ) -> Result<CognitiveEvent, &'static str> {
+    ensure_conversation_not_temporary(&state, &agent_id, temporary_chat)?;
     state
         .database
         .as_ref()
@@ -97,12 +184,1509 @@ fn rollback_cognitive_event(
     agent_id: String,
     event_id: String,
     idempotency_key: String,
+    temporary_chat: bool,
 ) -> Result<CognitiveEvent, &'static str> {
+    ensure_conversation_not_temporary(&state, &agent_id, temporary_chat)?;
     state
         .database
         .as_ref()
         .ok_or("operation_unavailable")?
         .rollback_cognitive_event(&agent_id, &event_id, &idempotency_key)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_cognitive_opinions(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CognitiveOpinion>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_cognitive_opinions(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn propose_cognitive_opinion(
+    state: State<'_, AppState>,
+    request: OpinionCandidateRequest,
+) -> Result<CognitiveOpinion, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .propose_cognitive_opinion(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn correct_cognitive_opinion_evidence(
+    state: State<'_, AppState>,
+    request: OpinionEvidenceCorrectionRequest,
+) -> Result<CognitiveOpinion, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .correct_opinion_evidence(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn set_cognitive_opinion_status(
+    state: State<'_, AppState>,
+    agent_id: String,
+    opinion_id: String,
+    status: String,
+    reason: String,
+    idempotency_key: String,
+    temporary_chat: bool,
+) -> Result<CognitiveOpinion, &'static str> {
+    ensure_conversation_not_temporary(&state, &agent_id, temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .set_opinion_status(&agent_id, &opinion_id, &status, &reason, &idempotency_key)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn recalculate_cognitive_opinion(
+    state: State<'_, AppState>,
+    agent_id: String,
+    opinion_id: String,
+    reason: String,
+    idempotency_key: String,
+    temporary_chat: bool,
+) -> Result<CognitiveOpinion, &'static str> {
+    ensure_conversation_not_temporary(&state, &agent_id, temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .recalculate_opinion(&agent_id, &opinion_id, &reason, &idempotency_key)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_cognitive_relationships(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<RelationshipState>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_relationships(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn propose_cognitive_relationship(
+    state: State<'_, AppState>,
+    request: RelationshipCandidateRequest,
+) -> Result<RelationshipState, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .propose_relationship_event(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn reset_cognitive_relationship(
+    state: State<'_, AppState>,
+    agent_id: String,
+    relationship_id: String,
+    reason: String,
+    idempotency_key: String,
+    temporary_chat: bool,
+) -> Result<RelationshipState, &'static str> {
+    ensure_conversation_not_temporary(&state, &agent_id, temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .reset_relationship(&agent_id, &relationship_id, &reason, &idempotency_key)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn rollback_cognitive_relationship(
+    state: State<'_, AppState>,
+    agent_id: String,
+    event_id: String,
+    idempotency_key: String,
+    temporary_chat: bool,
+) -> Result<RelationshipState, &'static str> {
+    ensure_conversation_not_temporary(&state, &agent_id, temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .rollback_relationship_event(&agent_id, &event_id, &idempotency_key)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_cognitive_goals(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CognitiveGoal>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_cognitive_goals(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn create_owner_cognitive_goal(
+    state: State<'_, AppState>,
+    request: GoalRequest,
+) -> Result<CognitiveGoal, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .create_owner_goal(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn propose_agent_cognitive_goal(
+    state: State<'_, AppState>,
+    request: GoalRequest,
+) -> Result<CognitiveGoal, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .propose_agent_goal(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn approve_cognitive_goal(
+    state: State<'_, AppState>,
+    agent_id: String,
+    goal_id: String,
+    idempotency_key: String,
+    temporary_chat: bool,
+) -> Result<CognitiveGoal, &'static str> {
+    ensure_conversation_not_temporary(&state, &agent_id, temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .approve_cognitive_goal(&agent_id, &goal_id, &idempotency_key)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn update_cognitive_goal_status(
+    state: State<'_, AppState>,
+    agent_id: String,
+    goal_id: String,
+    status: String,
+    completion_evidence: Option<String>,
+    idempotency_key: String,
+    temporary_chat: bool,
+) -> Result<CognitiveGoal, &'static str> {
+    ensure_conversation_not_temporary(&state, &agent_id, temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .update_goal_status(
+            &agent_id,
+            &goal_id,
+            &status,
+            completion_evidence.as_deref(),
+            &idempotency_key,
+        )
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_fictional_activities(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<FictionalActivity>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_fictional_activities(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn start_fictional_activity(
+    state: State<'_, AppState>,
+    request: FictionalActivityRequest,
+) -> Result<FictionalActivity, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .start_fictional_activity(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn update_fictional_activity_status(
+    state: State<'_, AppState>,
+    request: FictionalActivityStatusRequest,
+) -> Result<FictionalActivity, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .update_fictional_activity_status(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_agent_conversation_policies(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ConversationPolicy>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_conversation_policies(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn set_agent_conversation_policy(
+    state: State<'_, AppState>,
+    request: ConversationPolicyRequest,
+) -> Result<ConversationPolicy, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .set_conversation_policy(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn start_agent_conversation(
+    state: State<'_, AppState>,
+    request: ConversationStartRequest,
+) -> Result<AgentConversationSummary, &'static str> {
+    start_agent_conversation_for_state(state.inner(), request)
+}
+
+fn start_agent_conversation_for_state(
+    state: &AppState,
+    request: ConversationStartRequest,
+) -> Result<AgentConversationSummary, &'static str> {
+    ensure_conversation_not_temporary(state, &request.initiator_agent_id, request.temporary_chat)?;
+    ensure_conversation_not_temporary(
+        state,
+        &request.participant_agent_id,
+        request.temporary_chat,
+    )?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .start_agent_conversation(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn append_public_conversation_turn(
+    state: State<'_, AppState>,
+    request: PublicConversationTurnRequest,
+) -> Result<AgentConversationInspection, &'static str> {
+    append_public_conversation_turn_for_state(state.inner(), request)
+}
+
+fn append_public_conversation_turn_for_state(
+    state: &AppState,
+    request: PublicConversationTurnRequest,
+) -> Result<AgentConversationInspection, &'static str> {
+    ensure_conversation_not_temporary(state, &request.agent_id, request.temporary_chat)?;
+    ensure_conversation_not_temporary(state, &request.speaker_agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .append_public_conversation_turn(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn emit_cognitive_candidate(
+    state: State<'_, AppState>,
+    request: CognitiveCandidateRequest,
+) -> Result<CognitiveCandidate, &'static str> {
+    emit_cognitive_candidate_for_state(state.inner(), request)
+}
+
+fn emit_cognitive_candidate_for_state(
+    state: &AppState,
+    request: CognitiveCandidateRequest,
+) -> Result<CognitiveCandidate, &'static str> {
+    ensure_conversation_not_temporary(state, &request.agent_id, false)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .emit_cognitive_candidate(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn reserve_heavy_generation(
+    state: State<'_, AppState>,
+    request: HeavyGenerationRequest,
+) -> Result<CognitiveResourceJob, &'static str> {
+    reserve_heavy_generation_for_state(state.inner(), request)
+}
+
+fn reserve_heavy_generation_for_state(
+    state: &AppState,
+    request: HeavyGenerationRequest,
+) -> Result<CognitiveResourceJob, &'static str> {
+    ensure_conversation_not_temporary(state, &request.agent_id, false)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .reserve_heavy_generation(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn complete_resource_job(
+    state: State<'_, AppState>,
+    request: ResourceJobCompletionRequest,
+) -> Result<CognitiveResourceJob, &'static str> {
+    complete_resource_job_for_state(state.inner(), request)
+}
+
+fn complete_resource_job_for_state(
+    state: &AppState,
+    request: ResourceJobCompletionRequest,
+) -> Result<CognitiveResourceJob, &'static str> {
+    ensure_conversation_not_temporary(state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .complete_resource_job(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_cognitive_conversations(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<AgentConversationSummary>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_agent_conversations(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn inspect_agent_conversation(
+    state: State<'_, AppState>,
+    agent_id: String,
+    conversation_id: String,
+) -> Result<AgentConversationInspection, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .inspect_agent_conversation(&agent_id, &conversation_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn interrupt_agent_conversation(
+    state: State<'_, AppState>,
+    request: ConversationInterruptRequest,
+) -> Result<AgentConversationSummary, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .interrupt_agent_conversation(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_cognitive_candidates(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CognitiveCandidate>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_cognitive_candidates(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn reject_cognitive_candidate(
+    state: State<'_, AppState>,
+    request: CognitiveCandidateRejectionRequest,
+) -> Result<CognitiveCandidate, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .reject_cognitive_candidate(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn get_voice_settings(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<VoiceSettings, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .voice_settings(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn update_voice_settings(
+    state: State<'_, AppState>,
+    request: VoiceSettingsRequest,
+) -> Result<VoiceSettings, &'static str> {
+    update_voice_settings_for_state(state.inner(), request)
+}
+
+fn update_voice_settings_for_state(
+    state: &AppState,
+    request: VoiceSettingsRequest,
+) -> Result<VoiceSettings, &'static str> {
+    ensure_voice_mutation_allowed(state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .update_voice_settings(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn set_custom_voice_consent(
+    state: State<'_, AppState>,
+    request: CustomVoiceConsentRequest,
+) -> Result<VoiceSettings, &'static str> {
+    set_custom_voice_consent_for_state(state.inner(), request)
+}
+
+fn set_custom_voice_consent_for_state(
+    state: &AppState,
+    request: CustomVoiceConsentRequest,
+) -> Result<VoiceSettings, &'static str> {
+    ensure_voice_mutation_allowed(state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .set_custom_voice_consent(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn transcribe_voice_fixture(
+    state: State<'_, AppState>,
+    request: VoiceTranscriptionRequest,
+) -> Result<VoiceTranscriptionResult, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .transcribe_voice_fixture(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn synthesize_voice_fixture(
+    state: State<'_, AppState>,
+    request: VoiceSynthesisRequest,
+) -> Result<VoiceSynthesisResult, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .synthesize_voice_fixture(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn detect_voice_wake_word_fixture(
+    state: State<'_, AppState>,
+    request: VoiceWakeWordRequest,
+) -> Result<VoiceWakeWordResult, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .detect_voice_wake_word_fixture(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn classify_voice_emotion(
+    state: State<'_, AppState>,
+    request: VoiceEmotionHypothesisRequest,
+) -> Result<VoiceEmotionHypothesisResult, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .classify_voice_emotion(request)
+        .map_err(|error| error.code())
+}
+
+fn ensure_tool_mutation_allowed(
+    state: &AppState,
+    agent_id: &str,
+    requested_temporary: bool,
+) -> Result<(), &'static str> {
+    ensure_conversation_not_temporary(state, agent_id, requested_temporary)
+}
+
+#[tauri::command]
+fn list_tool_catalog(state: State<'_, AppState>) -> Result<Vec<ToolManifest>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_tool_catalog()
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn create_tool_session(
+    state: State<'_, AppState>,
+    request: ToolSessionRequest,
+) -> Result<ToolSession, &'static str> {
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .create_tool_session(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_tool_sessions(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ToolSession>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_tool_sessions(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn preview_tool_action(
+    state: State<'_, AppState>,
+    request: ToolActionPreviewRequest,
+) -> Result<ToolAction, &'static str> {
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .preview_tool_action(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn approve_tool_action(
+    state: State<'_, AppState>,
+    request: ToolActionDecisionRequest,
+) -> Result<ToolAction, &'static str> {
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .decide_tool_action(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn confirm_tool_action(
+    state: State<'_, AppState>,
+    request: ToolActionConfirmationRequest,
+) -> Result<ToolAction, &'static str> {
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .confirm_tool_action(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn execute_tool_action(
+    state: State<'_, AppState>,
+    request: ToolActionExecutionRequest,
+) -> Result<ToolAction, &'static str> {
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .execute_tool_action(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn cancel_tool_action(
+    state: State<'_, AppState>,
+    request: ToolActionCancellationRequest,
+) -> Result<ToolAction, &'static str> {
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .cancel_tool_action(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn compensate_tool_action(
+    state: State<'_, AppState>,
+    request: ToolActionCancellationRequest,
+) -> Result<ToolAction, &'static str> {
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .compensate_tool_action(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn cancel_tool_session(
+    state: State<'_, AppState>,
+    request: ToolSessionCancellationRequest,
+) -> Result<ToolSession, &'static str> {
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .cancel_tool_session(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_tool_audit(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ToolAuditRecord>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_tool_audit(&agent_id)
+        .map_err(|error| error.code())
+}
+
+fn ensure_extension_mutation_allowed(
+    state: &AppState,
+    agent_id: &str,
+    requested_temporary: bool,
+) -> Result<(), &'static str> {
+    ensure_conversation_not_temporary(state, agent_id, requested_temporary)
+}
+
+#[tauri::command]
+fn list_extension_catalog(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ExtensionCatalogEntry>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_extension_catalog(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_extension_proposals(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ExtensionProposal>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_extension_proposals(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn create_extension_proposal(
+    state: State<'_, AppState>,
+    request: ExtensionProposalRequest,
+) -> Result<ExtensionProposal, &'static str> {
+    ensure_extension_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .create_extension_proposal(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn create_agent_extension_proposal(
+    state: State<'_, AppState>,
+    request: ExtensionAgentProposalRequest,
+) -> Result<ExtensionProposal, &'static str> {
+    ensure_extension_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .create_agent_extension_proposal(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn review_extension_proposal(
+    state: State<'_, AppState>,
+    request: ExtensionReviewRequest,
+) -> Result<ExtensionProposal, &'static str> {
+    ensure_extension_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .review_extension_proposal(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn activate_extension(
+    state: State<'_, AppState>,
+    request: ExtensionActivationRequest,
+) -> Result<ExtensionCatalogEntry, &'static str> {
+    ensure_extension_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .activate_extension(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn update_extension(
+    state: State<'_, AppState>,
+    request: ExtensionUpdateRequest,
+) -> Result<ExtensionProposal, &'static str> {
+    ensure_extension_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .update_extension(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn rollback_extension(
+    state: State<'_, AppState>,
+    request: ExtensionRollbackRequest,
+) -> Result<ExtensionCatalogEntry, &'static str> {
+    ensure_extension_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .rollback_extension(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn disable_extension(
+    state: State<'_, AppState>,
+    request: ExtensionDisableRequest,
+) -> Result<ExtensionCatalogEntry, &'static str> {
+    ensure_extension_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .disable_extension(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_extension_audit(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ExtensionAuditRecord>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_extension_audit(&agent_id)
+        .map_err(|error| error.code())
+}
+
+fn ensure_companion_mutation_allowed(
+    state: &AppState,
+    agent_id: &str,
+    requested_temporary: bool,
+) -> Result<(), &'static str> {
+    ensure_conversation_not_temporary(state, agent_id, requested_temporary)
+}
+
+#[tauri::command]
+fn list_companion_devices(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CompanionDevice>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_companion_devices(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn start_companion_pairing(
+    state: State<'_, AppState>,
+    request: CompanionPairingRequest,
+) -> Result<CompanionDevice, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .start_companion_pairing(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn confirm_companion_pairing(
+    state: State<'_, AppState>,
+    request: CompanionPairingConfirmationRequest,
+) -> Result<CompanionDevice, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .confirm_companion_pairing(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_companion_sessions(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CompanionSession>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_companion_sessions(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn connect_companion_session(
+    state: State<'_, AppState>,
+    request: CompanionSessionRequest,
+) -> Result<CompanionSession, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .connect_companion_session(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn reconnect_companion_session(
+    state: State<'_, AppState>,
+    request: CompanionReconnectRequest,
+) -> Result<CompanionSession, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .reconnect_companion_session(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_companion_queue(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CompanionQueueItem>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_companion_queue(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn preview_companion_queue(
+    state: State<'_, AppState>,
+    request: CompanionQueuePreviewRequest,
+) -> Result<CompanionQueueItem, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .preview_companion_queue(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn approve_companion_queue(
+    state: State<'_, AppState>,
+    request: CompanionQueueDecisionRequest,
+) -> Result<CompanionQueueItem, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .approve_companion_queue(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn cancel_companion_queue(
+    state: State<'_, AppState>,
+    request: CompanionQueueActionRequest,
+) -> Result<CompanionQueueItem, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .cancel_companion_queue(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn retry_companion_queue(
+    state: State<'_, AppState>,
+    request: CompanionQueueActionRequest,
+) -> Result<CompanionQueueItem, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .retry_companion_queue(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_companion_history(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CompanionHistoryRecord>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_companion_history(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_companion_audit(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CompanionAuditRecord>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_companion_audit(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_companion_key_rotations(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CompanionKeyRotation>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_companion_key_rotations(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_companion_revocations(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CompanionRevocation>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_companion_revocations(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn rotate_companion_key(
+    state: State<'_, AppState>,
+    request: CompanionDeviceActionRequest,
+) -> Result<CompanionKeyRotation, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .rotate_companion_key(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn revoke_companion_device(
+    state: State<'_, AppState>,
+    request: CompanionDeviceActionRequest,
+) -> Result<CompanionRevocation, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .revoke_companion_device(request)
+        .map_err(|error| error.code())
+}
+
+fn ensure_gateway_mutation_allowed(
+    state: &AppState,
+    agent_id: &str,
+    requested_temporary: bool,
+) -> Result<(), &'static str> {
+    ensure_conversation_not_temporary(state, agent_id, requested_temporary)
+}
+
+#[tauri::command]
+fn get_gateway_protocol(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<GatewayProtocolInfo, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .gateway_protocol_info(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_gateway_accounts(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<GatewayAccount>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_gateway_accounts(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_gateway_transfers(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<GatewayTransfer>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_gateway_transfers(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn prepare_gateway_transfer(
+    state: State<'_, AppState>,
+    request: GatewayTransferRequest,
+) -> Result<GatewayTransfer, &'static str> {
+    ensure_gateway_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .prepare_gateway_transfer(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn approve_gateway_transfer(
+    state: State<'_, AppState>,
+    request: GatewayTransferApprovalRequest,
+) -> Result<GatewayTransfer, &'static str> {
+    ensure_gateway_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .approve_gateway_transfer(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_gateway_sessions(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<GatewaySession>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_gateway_sessions(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn connect_gateway_session(
+    state: State<'_, AppState>,
+    request: GatewaySessionRequest,
+) -> Result<GatewaySession, &'static str> {
+    ensure_gateway_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .connect_gateway_session(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn reconnect_gateway_session(
+    state: State<'_, AppState>,
+    request: GatewayReconnectRequest,
+) -> Result<GatewaySession, &'static str> {
+    ensure_gateway_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .reconnect_gateway_session(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_gateway_recoveries(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<GatewayRecovery>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_gateway_recoveries(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn request_gateway_recovery(
+    state: State<'_, AppState>,
+    request: GatewayRecoveryRequest,
+) -> Result<GatewayRecovery, &'static str> {
+    ensure_gateway_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .request_gateway_recovery(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn approve_gateway_recovery(
+    state: State<'_, AppState>,
+    request: GatewayRecoveryApprovalRequest,
+) -> Result<GatewayRecovery, &'static str> {
+    ensure_gateway_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .approve_gateway_recovery(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_gateway_audit(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<GatewayAuditRecord>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_gateway_audit(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_gateway_revocations(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<GatewayRevocation>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_gateway_revocations(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn revoke_gateway_session(
+    state: State<'_, AppState>,
+    request: GatewaySessionActionRequest,
+) -> Result<GatewayRevocation, &'static str> {
+    ensure_gateway_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .revoke_gateway_session(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn revoke_gateway_transfer(
+    state: State<'_, AppState>,
+    request: GatewayTransferActionRequest,
+) -> Result<GatewayRevocation, &'static str> {
+    ensure_gateway_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .revoke_gateway_transfer(request)
+        .map_err(|error| error.code())
+}
+
+fn ensure_screen_vision_mutation_allowed(
+    state: &AppState,
+    agent_id: &str,
+    requested_temporary: bool,
+) -> Result<(), &'static str> {
+    ensure_conversation_not_temporary(state, agent_id, requested_temporary)
+}
+
+#[tauri::command]
+fn list_screen_vision_fixtures(
+    state: State<'_, AppState>,
+) -> Result<Vec<ScreenVisionFixture>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_screen_vision_fixtures()
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_screen_vision_sessions(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ScreenVisionSession>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_screen_vision_sessions(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_screen_vision_jobs(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ScreenVisionJob>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_screen_vision_jobs(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_screen_vision_audit(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ScreenVisionAuditRecord>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_screen_vision_audit(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn create_screen_vision_session(
+    state: State<'_, AppState>,
+    request: ScreenVisionSessionRequest,
+) -> Result<ScreenVisionSession, &'static str> {
+    ensure_screen_vision_mutation_allowed(
+        state.inner(),
+        &request.agent_id,
+        request.temporary_chat,
+    )?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .create_screen_vision_session(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn preview_screen_vision_job(
+    state: State<'_, AppState>,
+    request: ScreenVisionJobPreviewRequest,
+) -> Result<ScreenVisionJob, &'static str> {
+    ensure_screen_vision_mutation_allowed(
+        state.inner(),
+        &request.agent_id,
+        request.temporary_chat,
+    )?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .preview_screen_vision_job(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn confirm_screen_vision_job(
+    state: State<'_, AppState>,
+    request: ScreenVisionJobConfirmationRequest,
+) -> Result<ScreenVisionAnalysisResult, &'static str> {
+    ensure_screen_vision_mutation_allowed(
+        state.inner(),
+        &request.agent_id,
+        request.temporary_chat,
+    )?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .confirm_screen_vision_job(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn cancel_screen_vision_job(
+    state: State<'_, AppState>,
+    request: ScreenVisionJobCancellationRequest,
+) -> Result<ScreenVisionJob, &'static str> {
+    ensure_screen_vision_mutation_allowed(
+        state.inner(),
+        &request.agent_id,
+        request.temporary_chat,
+    )?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .cancel_screen_vision_job(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn cleanup_screen_vision_job(
+    state: State<'_, AppState>,
+    request: ScreenVisionJobCleanupRequest,
+) -> Result<ScreenVisionJob, &'static str> {
+    ensure_screen_vision_mutation_allowed(
+        state.inner(),
+        &request.agent_id,
+        request.temporary_chat,
+    )?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .cleanup_screen_vision_job(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn cancel_screen_vision_session(
+    state: State<'_, AppState>,
+    request: ScreenVisionSessionCancellationRequest,
+) -> Result<ScreenVisionSession, &'static str> {
+    ensure_screen_vision_mutation_allowed(
+        state.inner(),
+        &request.agent_id,
+        request.temporary_chat,
+    )?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .cancel_screen_vision_session(request)
         .map_err(|error| error.code())
 }
 
@@ -816,6 +2400,105 @@ pub fn run() {
             explain_cognitive_event,
             create_owner_trait_correction,
             rollback_cognitive_event,
+            list_cognitive_opinions,
+            propose_cognitive_opinion,
+            correct_cognitive_opinion_evidence,
+            set_cognitive_opinion_status,
+            recalculate_cognitive_opinion,
+            list_cognitive_relationships,
+            propose_cognitive_relationship,
+            reset_cognitive_relationship,
+            rollback_cognitive_relationship,
+            list_cognitive_goals,
+            create_owner_cognitive_goal,
+            propose_agent_cognitive_goal,
+            approve_cognitive_goal,
+            update_cognitive_goal_status,
+            list_fictional_activities,
+            start_fictional_activity,
+            update_fictional_activity_status,
+            list_agent_conversation_policies,
+            set_agent_conversation_policy,
+            start_agent_conversation,
+            append_public_conversation_turn,
+            emit_cognitive_candidate,
+            reserve_heavy_generation,
+            complete_resource_job,
+            list_cognitive_conversations,
+            inspect_agent_conversation,
+            interrupt_agent_conversation,
+            list_cognitive_candidates,
+            reject_cognitive_candidate,
+            get_voice_settings,
+            update_voice_settings,
+            set_custom_voice_consent,
+            transcribe_voice_fixture,
+            synthesize_voice_fixture,
+            detect_voice_wake_word_fixture,
+            classify_voice_emotion,
+            list_tool_catalog,
+            create_tool_session,
+            list_tool_sessions,
+            preview_tool_action,
+            approve_tool_action,
+            confirm_tool_action,
+            execute_tool_action,
+            cancel_tool_action,
+            compensate_tool_action,
+            cancel_tool_session,
+            list_tool_audit,
+            list_extension_catalog,
+            list_extension_proposals,
+            create_extension_proposal,
+            create_agent_extension_proposal,
+            review_extension_proposal,
+            activate_extension,
+            update_extension,
+            rollback_extension,
+            disable_extension,
+            list_extension_audit,
+            list_companion_devices,
+            start_companion_pairing,
+            confirm_companion_pairing,
+            list_companion_sessions,
+            connect_companion_session,
+            reconnect_companion_session,
+            list_companion_queue,
+            preview_companion_queue,
+            approve_companion_queue,
+            cancel_companion_queue,
+            retry_companion_queue,
+            list_companion_history,
+            list_companion_audit,
+            list_companion_key_rotations,
+            list_companion_revocations,
+            rotate_companion_key,
+            revoke_companion_device,
+            get_gateway_protocol,
+            list_gateway_accounts,
+            list_gateway_transfers,
+            prepare_gateway_transfer,
+            approve_gateway_transfer,
+            list_gateway_sessions,
+            connect_gateway_session,
+            reconnect_gateway_session,
+            list_gateway_recoveries,
+            request_gateway_recovery,
+            approve_gateway_recovery,
+            list_gateway_audit,
+            list_gateway_revocations,
+            revoke_gateway_session,
+            revoke_gateway_transfer,
+            list_screen_vision_fixtures,
+            list_screen_vision_sessions,
+            list_screen_vision_jobs,
+            list_screen_vision_audit,
+            create_screen_vision_session,
+            preview_screen_vision_job,
+            confirm_screen_vision_job,
+            cancel_screen_vision_job,
+            cleanup_screen_vision_job,
+            cancel_screen_vision_session,
             set_safe_mode,
             get_phase_one_state,
             get_temporary_phase_one_state,
@@ -884,4 +2567,272 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod conversation_command_tests {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::{atomic::AtomicBool, Arc},
+    };
+
+    use uuid::Uuid;
+
+    use super::{
+        append_public_conversation_turn_for_state, complete_resource_job_for_state,
+        emit_cognitive_candidate_for_state, reserve_heavy_generation_for_state,
+        set_custom_voice_consent_for_state, start_agent_conversation_for_state,
+        update_voice_settings_for_state, AppState,
+    };
+    use crate::{
+        conversation::{
+            CognitiveCandidateRequest, ConversationPolicyRequest, ConversationStartRequest,
+            HeavyGenerationRequest, PublicConversationTurnRequest, ResourceJobCompletionRequest,
+        },
+        database::{Database, ASTRA_ID, LUMA_ID},
+        overlays::OverlayInputState,
+        runtime::RuntimeController,
+        voice::{CustomVoiceConsentRequest, VoiceSettingsRequest},
+    };
+
+    fn test_path() -> PathBuf {
+        std::env::temp_dir().join(format!("aip-command-test-{}", Uuid::now_v7()))
+    }
+
+    fn cleanup(path: &Path) {
+        let _ = fs::remove_dir_all(path);
+    }
+
+    fn test_state(path: &Path) -> AppState {
+        AppState {
+            database: Some(Database::initialize(path).unwrap()),
+            runtime: RuntimeController::new(PathBuf::from("test-runtime"), false),
+            chat: None,
+            safe_mode: Arc::new(AtomicBool::new(false)),
+            overlay_input: OverlayInputState::default(),
+        }
+    }
+
+    fn policy(agent_id: &str, purpose: &str, max_turns: i64) -> ConversationPolicyRequest {
+        ConversationPolicyRequest {
+            agent_id: agent_id.into(),
+            purpose: purpose.into(),
+            opted_in: true,
+            max_turns,
+            max_tokens: 256,
+            max_duration_ms: 300_000,
+            max_repetitions: 2,
+            resource_budget: 20,
+            temporary_chat: false,
+        }
+    }
+
+    #[test]
+    fn typed_commands_reach_public_candidate_and_resource_paths() {
+        let path = test_path();
+        let state = test_state(&path);
+
+        for agent_id in [ASTRA_ID, LUMA_ID] {
+            state
+                .database
+                .as_ref()
+                .unwrap()
+                .set_conversation_policy(policy(agent_id, "candidate-path", 1))
+                .unwrap();
+        }
+        let candidate_conversation = start_agent_conversation_for_state(
+            &state,
+            ConversationStartRequest {
+                initiator_agent_id: ASTRA_ID.into(),
+                participant_agent_id: LUMA_ID.into(),
+                purpose: "candidate-path".into(),
+                idempotency_key: "command-candidate-start".into(),
+                temporary_chat: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            start_agent_conversation_for_state(
+                &state,
+                ConversationStartRequest {
+                    initiator_agent_id: ASTRA_ID.into(),
+                    participant_agent_id: LUMA_ID.into(),
+                    purpose: "candidate-path".into(),
+                    idempotency_key: "command-temporary-start".into(),
+                    temporary_chat: true,
+                },
+            ),
+            Err("conversation_temporary_blocked")
+        );
+        let completed = append_public_conversation_turn_for_state(
+            &state,
+            PublicConversationTurnRequest {
+                agent_id: ASTRA_ID.into(),
+                conversation_id: candidate_conversation.id.clone(),
+                speaker_agent_id: ASTRA_ID.into(),
+                content: "Public candidate source".into(),
+                source_kind: "model_candidate".into(),
+                idempotency_key: "command-candidate-turn".into(),
+                temporary_chat: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(completed.conversation.status, "completed");
+        assert_eq!(completed.turns.len(), 1);
+        let candidate = emit_cognitive_candidate_for_state(
+            &state,
+            CognitiveCandidateRequest {
+                agent_id: ASTRA_ID.into(),
+                conversation_id: candidate_conversation.id,
+                candidate_kind: "opinion".into(),
+                candidate_json: r#"{"subject":"fictional-topic","stance":0.2}"#.into(),
+                idempotency_key: "command-candidate".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(candidate.status, "pending");
+        assert_eq!(
+            state
+                .database
+                .as_ref()
+                .unwrap()
+                .list_cognitive_candidates(ASTRA_ID)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        for agent_id in [ASTRA_ID, LUMA_ID] {
+            state
+                .database
+                .as_ref()
+                .unwrap()
+                .set_conversation_policy(policy(agent_id, "resource-path", 4))
+                .unwrap();
+        }
+        let resource_conversation = start_agent_conversation_for_state(
+            &state,
+            ConversationStartRequest {
+                initiator_agent_id: ASTRA_ID.into(),
+                participant_agent_id: LUMA_ID.into(),
+                purpose: "resource-path".into(),
+                idempotency_key: "command-resource-start".into(),
+                temporary_chat: false,
+            },
+        )
+        .unwrap();
+        let first = reserve_heavy_generation_for_state(
+            &state,
+            HeavyGenerationRequest {
+                agent_id: ASTRA_ID.into(),
+                conversation_id: resource_conversation.id.clone(),
+                priority: 50,
+                budget_units: 10,
+                idempotency_key: "command-heavy-1".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(first.status, "running");
+        assert_eq!(
+            complete_resource_job_for_state(
+                &state,
+                ResourceJobCompletionRequest {
+                    agent_id: ASTRA_ID.into(),
+                    job_id: first.id.clone(),
+                    status: "completed".into(),
+                    error_code: None,
+                    idempotency_key: "command-heavy-temp-finish".into(),
+                    temporary_chat: true,
+                },
+            ),
+            Err("conversation_temporary_blocked")
+        );
+        assert_eq!(
+            reserve_heavy_generation_for_state(
+                &state,
+                HeavyGenerationRequest {
+                    agent_id: LUMA_ID.into(),
+                    conversation_id: resource_conversation.id.clone(),
+                    priority: 50,
+                    budget_units: 10,
+                    idempotency_key: "command-heavy-2".into(),
+                },
+            ),
+            Err("heavy_generation_busy")
+        );
+        assert_eq!(
+            complete_resource_job_for_state(
+                &state,
+                ResourceJobCompletionRequest {
+                    agent_id: ASTRA_ID.into(),
+                    job_id: first.id,
+                    status: "completed".into(),
+                    error_code: None,
+                    idempotency_key: "command-heavy-finish".into(),
+                    temporary_chat: false,
+                },
+            )
+            .unwrap()
+            .status,
+            "completed"
+        );
+
+        cleanup(&path);
+    }
+
+    #[test]
+    fn voice_commands_guard_temporary_chat_and_silent_mode() {
+        let path = test_path();
+        let state = test_state(&path);
+        let request = VoiceSettingsRequest {
+            agent_id: ASTRA_ID.into(),
+            recognition_model_ref: Some("fixture:stt-v1".into()),
+            synthesis_model_ref: Some("fixture:tts-v1".into()),
+            input_device_ref: Some("fixture:microphone-1".into()),
+            output_device_ref: Some("fixture:speaker-1".into()),
+            idempotency_key: "command-voice-settings".into(),
+            temporary_chat: false,
+        };
+        update_voice_settings_for_state(&state, request.clone()).unwrap();
+        let mut temporary = request.clone();
+        temporary.idempotency_key = "command-voice-temporary".into();
+        temporary.temporary_chat = true;
+        assert_eq!(
+            update_voice_settings_for_state(&state, temporary),
+            Err("conversation_temporary_blocked")
+        );
+        state
+            .database
+            .as_ref()
+            .unwrap()
+            .set_agent_mode(ASTRA_ID, "silent")
+            .unwrap();
+        let mut silent = request;
+        silent.idempotency_key = "command-voice-silent".into();
+        assert_eq!(
+            update_voice_settings_for_state(&state, silent),
+            Err("voice_blocked_silent")
+        );
+        state
+            .database
+            .as_ref()
+            .unwrap()
+            .set_agent_mode(ASTRA_ID, "normal")
+            .unwrap();
+        assert_eq!(
+            set_custom_voice_consent_for_state(
+                &state,
+                CustomVoiceConsentRequest {
+                    agent_id: ASTRA_ID.into(),
+                    granted: true,
+                    custom_voice_ref: Some("fixture:custom-neutral-v1".into()),
+                    idempotency_key: "command-voice-consent-temporary".into(),
+                    temporary_chat: true,
+                },
+            ),
+            Err("conversation_temporary_blocked")
+        );
+        cleanup(&path);
+    }
 }

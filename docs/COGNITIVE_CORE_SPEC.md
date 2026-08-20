@@ -40,7 +40,7 @@ Goals never cause external action until a future supervised-tools permission lay
 
 ## 7. Agent-to-agent interaction contract
 
-This is a design contract, not Phase 7 implementation. Both owners can inspect public agent-to-agent conversations; there is no hidden private agent channel. Agent-to-agent initiation requires explicit opt-in for each interaction purpose from the owner of each participating agent; it is not blanket authorization. While both initial agents remain under the same local Owner, that Owner explicitly approves participation for each agent and stated purpose. Approval specifies the purpose and applicable turn, token, time, repetition, and resource budgets. Silent mode, safe mode, suspension, or later owner revocation blocks initiation. Every interaction records its participants and initiator, and terminates on a completed purpose, budget exhaustion, owner interruption, mode enforcement, loop/echo detection, or an error.
+This is the Phase 7E implementation contract for the bounded local path. Both owners can inspect public agent-to-agent conversations; there is no hidden private agent channel. Agent-to-agent initiation requires explicit opt-in for each interaction purpose from the owner of each participating agent; it is not blanket authorization. While both initial agents remain under the same local Owner, that Owner explicitly approves participation for each agent and stated purpose. Approval specifies the purpose and applicable turn, token, time, repetition, and resource budgets. Silent mode, safe mode, suspension, temporary chat, or later owner revocation blocks initiation and durable work. Every interaction records its participants and initiator, and terminates on a completed purpose, budget exhaustion, owner interruption, mode enforcement, loop/echo detection, or an error. The local implementation and its validation reservations are recorded in [PHASE_7E_VALIDATION.md](PHASE_7E_VALIDATION.md) and [PHASE_7F_VALIDATION.md](PHASE_7F_VALIDATION.md); no hidden reasoning, complete prompts, private channel, or later-phase capability is added.
 
 Reference hardware permits one heavy model generation at a time. Memory and personality candidates are generated only after a conversation completes and remain attributable to it. Silent and safe modes prevent autonomous initiation; direct owner chat has the highest priority and preempts queued autonomous work.
 
@@ -108,6 +108,10 @@ Automated acceptance coverage must prove bounded trait changes, idempotent event
 Manual validation must verify understandable Portuguese explanations, owner controls, and behavior across restart. No manual result is claimed until it is recorded in its own validation evidence.
 
 ## 17. Implementation slices
+
+The current development checkpoint contains local implementation paths for 7B–7E. Phase 7F
+is validation/documentation only; its runtime, manual, and remote reservations are recorded
+in [PHASE_7F_VALIDATION.md](PHASE_7F_VALIDATION.md). Phase 8 and later remain pending.
 
 | Slice | Scope and dependencies | Excluded work | Acceptance and manual checks | Migration impact | Expected commit |
 |---|---|---|---|---|---|
