@@ -556,6 +556,21 @@ describe("supervised tool contracts", () => {
     expect(parseToolCompensation({ kind: "workspace_move", available: true, description: "bounded", moves: [{ from: "a.txt\u0000", to: "b.txt", identity: "win:1:2" }] })).toBeNull();
     expect(parseToolAction({ ...action, summary: "x".repeat(513) })).toBeNull();
     expect(parseToolAction({ ...action, affectedResources: Array.from({ length: 65 }, (_, index) => `r${index}`) })).toBeNull();
+    const audit = {
+      id: "audit-1",
+      actionId: action.id,
+      sessionId: session.id,
+      agentId: session.agentId,
+      toolId: manifest.toolId,
+      event: "action_previewed",
+      result: "previewed",
+      code: null,
+      summary: "Prévia registrada.",
+      createdAt: 1,
+    };
+    expect(parseToolAudit([audit])).not.toBeNull();
+    expect(parseToolAudit([{ ...audit, actionId: "a".repeat(129) }])).toBeNull();
+    expect(parseToolAudit([{ ...audit, sessionId: "session\u0000id" }])).toBeNull();
     expect(
       parseToolActionInput({ kind: "shell", command: "whoami" }),
     ).toBeNull();

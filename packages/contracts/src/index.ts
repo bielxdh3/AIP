@@ -2845,8 +2845,8 @@ export function parseToolAuditRecord(value: unknown): ToolAuditRecord | null {
   const candidate = toolRecord(value);
   return candidate !== null &&
     toolBoundedId(candidate.id) &&
-    (candidate.actionId === null || cognitiveString(candidate.actionId)) &&
-    (candidate.sessionId === null || cognitiveString(candidate.sessionId)) &&
+    (candidate.actionId === null || toolBoundedId(candidate.actionId)) &&
+    (candidate.sessionId === null || toolBoundedId(candidate.sessionId)) &&
     toolBoundedId(candidate.agentId, 96) &&
     (candidate.toolId === null || toolBoundedId(candidate.toolId, 96)) &&
     toolBoundedText(candidate.event, 64) &&
