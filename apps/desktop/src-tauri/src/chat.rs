@@ -479,6 +479,12 @@ impl ChatCoordinator {
         })
     }
 
+    pub fn temporary_chat_active(&self, agent_id: &str) -> bool {
+        lock(&self.inner.temporary_chats)
+            .conversations
+            .contains_key(agent_id)
+    }
+
     pub fn refresh_models(&self) -> Result<(), &'static str> {
         if self.inner.safe_mode.load(Ordering::SeqCst) {
             return Err("operation_unavailable");

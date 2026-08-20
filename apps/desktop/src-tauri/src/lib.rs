@@ -1,5 +1,6 @@
 mod chat;
 mod cognitive;
+mod conversation;
 mod database;
 mod domain;
 mod fullscreen;
@@ -22,6 +23,13 @@ use cognitive::{
     CognitiveGoal, CognitiveOpinion, GoalRequest, OpinionCandidateRequest,
     OpinionEvidenceCorrectionRequest, RelationshipCandidateRequest, RelationshipState,
 };
+use conversation::{
+    AgentConversationInspection, AgentConversationSummary, CognitiveCandidate,
+    CognitiveCandidateRejectionRequest, CognitiveCandidateRequest, CognitiveResourceJob,
+    ConversationInterruptRequest, ConversationPolicy, ConversationPolicyRequest,
+    ConversationStartRequest, HeavyGenerationRequest, PublicConversationTurnRequest,
+    ResourceJobCompletionRequest,
+};
 use database::Database;
 use domain::{
     AgentMemory, AgentSimulatedState, AppSnapshot, CognitiveEvent, CognitiveEventExplanation,
@@ -37,6 +45,23 @@ struct AppState {
     chat: Option<ChatCoordinator>,
     safe_mode: Arc<AtomicBool>,
     overlay_input: OverlayInputState,
+}
+
+fn ensure_conversation_not_temporary(
+    state: &AppState,
+    agent_id: &str,
+    requested_temporary: bool,
+) -> Result<(), &'static str> {
+    if requested_temporary
+        || state
+            .chat
+            .as_ref()
+            .is_some_and(|chat| chat.temporary_chat_active(agent_id))
+    {
+        Err("conversation_temporary_blocked")
+    } else {
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -314,6 +339,211 @@ fn update_cognitive_goal_status(
             completion_evidence.as_deref(),
             &idempotency_key,
         )
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_agent_conversation_policies(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ConversationPolicy>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_conversation_policies(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn set_agent_conversation_policy(
+    state: State<'_, AppState>,
+    request: ConversationPolicyRequest,
+) -> Result<ConversationPolicy, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .set_conversation_policy(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn start_agent_conversation(
+    state: State<'_, AppState>,
+    request: ConversationStartRequest,
+) -> Result<AgentConversationSummary, &'static str> {
+    start_agent_conversation_for_state(state.inner(), request)
+}
+
+fn start_agent_conversation_for_state(
+    state: &AppState,
+    request: ConversationStartRequest,
+) -> Result<AgentConversationSummary, &'static str> {
+    ensure_conversation_not_temporary(state, &request.initiator_agent_id, request.temporary_chat)?;
+    ensure_conversation_not_temporary(
+        state,
+        &request.participant_agent_id,
+        request.temporary_chat,
+    )?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .start_agent_conversation(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn append_public_conversation_turn(
+    state: State<'_, AppState>,
+    request: PublicConversationTurnRequest,
+) -> Result<AgentConversationInspection, &'static str> {
+    append_public_conversation_turn_for_state(state.inner(), request)
+}
+
+fn append_public_conversation_turn_for_state(
+    state: &AppState,
+    request: PublicConversationTurnRequest,
+) -> Result<AgentConversationInspection, &'static str> {
+    ensure_conversation_not_temporary(state, &request.agent_id, request.temporary_chat)?;
+    ensure_conversation_not_temporary(state, &request.speaker_agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .append_public_conversation_turn(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn emit_cognitive_candidate(
+    state: State<'_, AppState>,
+    request: CognitiveCandidateRequest,
+) -> Result<CognitiveCandidate, &'static str> {
+    emit_cognitive_candidate_for_state(state.inner(), request)
+}
+
+fn emit_cognitive_candidate_for_state(
+    state: &AppState,
+    request: CognitiveCandidateRequest,
+) -> Result<CognitiveCandidate, &'static str> {
+    ensure_conversation_not_temporary(state, &request.agent_id, false)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .emit_cognitive_candidate(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn reserve_heavy_generation(
+    state: State<'_, AppState>,
+    request: HeavyGenerationRequest,
+) -> Result<CognitiveResourceJob, &'static str> {
+    reserve_heavy_generation_for_state(state.inner(), request)
+}
+
+fn reserve_heavy_generation_for_state(
+    state: &AppState,
+    request: HeavyGenerationRequest,
+) -> Result<CognitiveResourceJob, &'static str> {
+    ensure_conversation_not_temporary(state, &request.agent_id, false)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .reserve_heavy_generation(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn complete_resource_job(
+    state: State<'_, AppState>,
+    request: ResourceJobCompletionRequest,
+) -> Result<CognitiveResourceJob, &'static str> {
+    complete_resource_job_for_state(state.inner(), request)
+}
+
+fn complete_resource_job_for_state(
+    state: &AppState,
+    request: ResourceJobCompletionRequest,
+) -> Result<CognitiveResourceJob, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .complete_resource_job(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_cognitive_conversations(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<AgentConversationSummary>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_agent_conversations(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn inspect_agent_conversation(
+    state: State<'_, AppState>,
+    agent_id: String,
+    conversation_id: String,
+) -> Result<AgentConversationInspection, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .inspect_agent_conversation(&agent_id, &conversation_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn interrupt_agent_conversation(
+    state: State<'_, AppState>,
+    request: ConversationInterruptRequest,
+) -> Result<AgentConversationSummary, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .interrupt_agent_conversation(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_cognitive_candidates(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CognitiveCandidate>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_cognitive_candidates(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn reject_cognitive_candidate(
+    state: State<'_, AppState>,
+    request: CognitiveCandidateRejectionRequest,
+) -> Result<CognitiveCandidate, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .reject_cognitive_candidate(request)
         .map_err(|error| error.code())
 }
 
@@ -1041,6 +1271,18 @@ pub fn run() {
             propose_agent_cognitive_goal,
             approve_cognitive_goal,
             update_cognitive_goal_status,
+            list_agent_conversation_policies,
+            set_agent_conversation_policy,
+            start_agent_conversation,
+            append_public_conversation_turn,
+            emit_cognitive_candidate,
+            reserve_heavy_generation,
+            complete_resource_job,
+            list_cognitive_conversations,
+            inspect_agent_conversation,
+            interrupt_agent_conversation,
+            list_cognitive_candidates,
+            reject_cognitive_candidate,
             set_safe_mode,
             get_phase_one_state,
             get_temporary_phase_one_state,
@@ -1109,4 +1351,200 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod conversation_command_tests {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::{atomic::AtomicBool, Arc},
+    };
+
+    use uuid::Uuid;
+
+    use super::{
+        append_public_conversation_turn_for_state, complete_resource_job_for_state,
+        emit_cognitive_candidate_for_state, reserve_heavy_generation_for_state,
+        start_agent_conversation_for_state, AppState,
+    };
+    use crate::{
+        conversation::{
+            CognitiveCandidateRequest, ConversationPolicyRequest, ConversationStartRequest,
+            HeavyGenerationRequest, PublicConversationTurnRequest, ResourceJobCompletionRequest,
+        },
+        database::{Database, ASTRA_ID, LUMA_ID},
+        overlays::OverlayInputState,
+        runtime::RuntimeController,
+    };
+
+    fn test_path() -> PathBuf {
+        std::env::temp_dir().join(format!("aip-command-test-{}", Uuid::now_v7()))
+    }
+
+    fn cleanup(path: &Path) {
+        let _ = fs::remove_dir_all(path);
+    }
+
+    fn test_state(path: &Path) -> AppState {
+        AppState {
+            database: Some(Database::initialize(path).unwrap()),
+            runtime: RuntimeController::new(PathBuf::from("test-runtime"), false),
+            chat: None,
+            safe_mode: Arc::new(AtomicBool::new(false)),
+            overlay_input: OverlayInputState::default(),
+        }
+    }
+
+    fn policy(agent_id: &str, purpose: &str, max_turns: i64) -> ConversationPolicyRequest {
+        ConversationPolicyRequest {
+            agent_id: agent_id.into(),
+            purpose: purpose.into(),
+            opted_in: true,
+            max_turns,
+            max_tokens: 256,
+            max_duration_ms: 300_000,
+            max_repetitions: 2,
+            resource_budget: 20,
+            temporary_chat: false,
+        }
+    }
+
+    #[test]
+    fn typed_commands_reach_public_candidate_and_resource_paths() {
+        let path = test_path();
+        let state = test_state(&path);
+
+        for agent_id in [ASTRA_ID, LUMA_ID] {
+            state
+                .database
+                .as_ref()
+                .unwrap()
+                .set_conversation_policy(policy(agent_id, "candidate-path", 1))
+                .unwrap();
+        }
+        let candidate_conversation = start_agent_conversation_for_state(
+            &state,
+            ConversationStartRequest {
+                initiator_agent_id: ASTRA_ID.into(),
+                participant_agent_id: LUMA_ID.into(),
+                purpose: "candidate-path".into(),
+                idempotency_key: "command-candidate-start".into(),
+                temporary_chat: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            start_agent_conversation_for_state(
+                &state,
+                ConversationStartRequest {
+                    initiator_agent_id: ASTRA_ID.into(),
+                    participant_agent_id: LUMA_ID.into(),
+                    purpose: "candidate-path".into(),
+                    idempotency_key: "command-temporary-start".into(),
+                    temporary_chat: true,
+                },
+            ),
+            Err("conversation_temporary_blocked")
+        );
+        let completed = append_public_conversation_turn_for_state(
+            &state,
+            PublicConversationTurnRequest {
+                agent_id: ASTRA_ID.into(),
+                conversation_id: candidate_conversation.id.clone(),
+                speaker_agent_id: ASTRA_ID.into(),
+                content: "Public candidate source".into(),
+                source_kind: "model_candidate".into(),
+                idempotency_key: "command-candidate-turn".into(),
+                temporary_chat: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(completed.conversation.status, "completed");
+        assert_eq!(completed.turns.len(), 1);
+        let candidate = emit_cognitive_candidate_for_state(
+            &state,
+            CognitiveCandidateRequest {
+                agent_id: ASTRA_ID.into(),
+                conversation_id: candidate_conversation.id,
+                candidate_kind: "opinion".into(),
+                candidate_json: r#"{"subject":"fictional-topic","stance":0.2}"#.into(),
+                idempotency_key: "command-candidate".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(candidate.status, "pending");
+        assert_eq!(
+            state
+                .database
+                .as_ref()
+                .unwrap()
+                .list_cognitive_candidates(ASTRA_ID)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        for agent_id in [ASTRA_ID, LUMA_ID] {
+            state
+                .database
+                .as_ref()
+                .unwrap()
+                .set_conversation_policy(policy(agent_id, "resource-path", 4))
+                .unwrap();
+        }
+        let resource_conversation = start_agent_conversation_for_state(
+            &state,
+            ConversationStartRequest {
+                initiator_agent_id: ASTRA_ID.into(),
+                participant_agent_id: LUMA_ID.into(),
+                purpose: "resource-path".into(),
+                idempotency_key: "command-resource-start".into(),
+                temporary_chat: false,
+            },
+        )
+        .unwrap();
+        let first = reserve_heavy_generation_for_state(
+            &state,
+            HeavyGenerationRequest {
+                agent_id: ASTRA_ID.into(),
+                conversation_id: resource_conversation.id.clone(),
+                priority: 50,
+                budget_units: 10,
+                idempotency_key: "command-heavy-1".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(first.status, "running");
+        assert_eq!(
+            reserve_heavy_generation_for_state(
+                &state,
+                HeavyGenerationRequest {
+                    agent_id: LUMA_ID.into(),
+                    conversation_id: resource_conversation.id.clone(),
+                    priority: 50,
+                    budget_units: 10,
+                    idempotency_key: "command-heavy-2".into(),
+                },
+            ),
+            Err("heavy_generation_busy")
+        );
+        assert_eq!(
+            complete_resource_job_for_state(
+                &state,
+                ResourceJobCompletionRequest {
+                    agent_id: ASTRA_ID.into(),
+                    job_id: first.id,
+                    status: "completed".into(),
+                    error_code: None,
+                    idempotency_key: "command-heavy-finish".into(),
+                },
+            )
+            .unwrap()
+            .status,
+            "completed"
+        );
+
+        cleanup(&path);
+    }
 }

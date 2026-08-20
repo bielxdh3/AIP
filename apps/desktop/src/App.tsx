@@ -10,17 +10,24 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   AppSnapshot,
   AgentMemory,
+  AgentConversationInspection,
+  AgentConversationSummary,
   AgentSimulatedState,
   CognitiveEventExplanation,
   CognitiveEventSummary,
   CognitiveGoalApprovalRequest,
   CognitiveGoal,
   CognitiveGoalStatusRequest,
+  CognitiveCandidate,
+  CognitiveCandidateRejectionRequest,
   CognitiveOpinion,
   CognitiveOpinionRecalculationRequest,
   CognitiveOpinionStatusRequest,
   CognitiveTrait,
   ConversationMessage,
+  ConversationInterruptRequest,
+  ConversationPolicy,
+  ConversationPolicyRequest,
   GoalRequest,
   OpinionCandidateRequest,
   OpinionEvidenceCorrectionRequest,
@@ -1739,6 +1746,30 @@ const coreErrorCopy: Record<string, string> = {
   goal_not_found: "O objetivo não foi encontrado.",
   goal_loop_blocked: "A dependência criaria um ciclo de objetivos.",
   invalid_transition: "Essa mudança de status não é permitida.",
+  conversation_temporary_blocked:
+    "Conversas entre agentes não podem iniciar ou ser alteradas em conversa temporária.",
+  conversation_purpose_invalid: "Informe um propósito público válido.",
+  conversation_budget_invalid: "Os limites da conversa pública não são válidos.",
+  conversation_opt_in_required:
+    "Os dois agentes precisam autorizar este propósito explicitamente.",
+  conversation_participant_invalid: "O participante da conversa não é válido.",
+  conversation_blocked_safe_mode:
+    "O modo seguro bloqueia conversas autônomas entre agentes.",
+  conversation_blocked_silent: "O modo silencioso bloqueia conversas entre agentes.",
+  conversation_blocked_suspended: "Agentes suspensos não participam de conversas.",
+  conversation_not_found: "A conversa pública não foi encontrada.",
+  conversation_not_active: "A conversa pública já terminou.",
+  conversation_not_completed: "A conversa precisa terminar antes de gerar candidatos.",
+  conversation_turn_invalid: "O turno público não é válido.",
+  conversation_turn_limit: "O limite de turnos da conversa foi atingido.",
+  conversation_token_limit: "O limite de tokens da conversa foi atingido.",
+  conversation_duration_limit: "O tempo máximo da conversa foi atingido.",
+  conversation_candidate_invalid: "O candidato público não é válido.",
+  candidate_not_found: "O candidato não foi encontrado.",
+  candidate_already_decided: "O candidato já recebeu uma decisão.",
+  heavy_generation_busy: "Outra geração pesada já está em andamento.",
+  invalid_resource_status: "O status do recurso não é válido.",
+  resource_job_not_found: "O trabalho de recurso não foi encontrado.",
 };
 
 type CognitiveCommandMap = {
@@ -1798,6 +1829,34 @@ type CognitiveCommandMap = {
     args: CognitiveGoalStatusRequest;
     response: CognitiveGoal;
   };
+  list_agent_conversation_policies: {
+    args: { agentId: string };
+    response: ConversationPolicy[];
+  };
+  set_agent_conversation_policy: {
+    args: ConversationPolicyRequest;
+    response: ConversationPolicy;
+  };
+  list_cognitive_conversations: {
+    args: { agentId: string };
+    response: AgentConversationSummary[];
+  };
+  inspect_agent_conversation: {
+    args: { agentId: string; conversationId: string };
+    response: AgentConversationInspection;
+  };
+  interrupt_agent_conversation: {
+    args: ConversationInterruptRequest;
+    response: AgentConversationSummary;
+  };
+  list_cognitive_candidates: {
+    args: { agentId: string };
+    response: CognitiveCandidate[];
+  };
+  reject_cognitive_candidate: {
+    args: CognitiveCandidateRejectionRequest;
+    response: CognitiveCandidate;
+  };
 };
 
 type CognitiveCommandName = keyof CognitiveCommandMap;
@@ -1813,6 +1872,15 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
   const [opinions, setOpinions] = useState<CognitiveOpinion[]>([]);
   const [relationships, setRelationships] = useState<RelationshipState[]>([]);
   const [goals, setGoals] = useState<CognitiveGoal[]>([]);
+  const [conversationPolicies, setConversationPolicies] = useState<
+    ConversationPolicy[]
+  >([]);
+  const [conversations, setConversations] = useState<
+    AgentConversationSummary[]
+  >([]);
+  const [candidates, setCandidates] = useState<CognitiveCandidate[]>([]);
+  const [selectedConversation, setSelectedConversation] =
+    useState<AgentConversationInspection | null>(null);
   const [opinionSubject, setOpinionSubject] = useState("");
   const [opinionStance, setOpinionStance] = useState("0");
   const [opinionClaim, setOpinionClaim] = useState("");
@@ -1830,6 +1898,10 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
   const [goalDescription, setGoalDescription] = useState("");
   const [goalPriority, setGoalPriority] = useState("50");
   const [goalBudget, setGoalBudget] = useState("10");
+  const [conversationPurpose, setConversationPurpose] = useState(
+    "planejamento fictício",
+  );
+  const [conversationOptedIn, setConversationOptedIn] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1839,15 +1911,33 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
 
   const load = useCallback(async () => {
     const version = ++loadVersion.current;
-    const [nextOpinions, nextRelationships, nextGoals] = await Promise.all([
+    const [
+      nextOpinions,
+      nextRelationships,
+      nextGoals,
+      nextPolicies,
+      nextConversations,
+      nextCandidates,
+    ] = await Promise.all([
       invokeCognitive("list_cognitive_opinions", { agentId }),
       invokeCognitive("list_cognitive_relationships", { agentId }),
       invokeCognitive("list_cognitive_goals", { agentId }),
+      invokeCognitive("list_agent_conversation_policies", { agentId }),
+      invokeCognitive("list_cognitive_conversations", { agentId }),
+      invokeCognitive("list_cognitive_candidates", { agentId }),
     ]);
     if (version !== loadVersion.current) return;
     setOpinions(nextOpinions);
     setRelationships(nextRelationships);
     setGoals(nextGoals);
+    setConversationPolicies(
+      Array.isArray(nextPolicies) ? nextPolicies : [],
+    );
+    setConversations(
+      Array.isArray(nextConversations) ? nextConversations : [],
+    );
+    setCandidates(Array.isArray(nextCandidates) ? nextCandidates : []);
+    setSelectedConversation(null);
   }, [agentId]);
 
   useEffect(() => {
@@ -1855,6 +1945,10 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
     setOpinions([]);
     setRelationships([]);
     setGoals([]);
+    setConversationPolicies([]);
+    setConversations([]);
+    setCandidates([]);
+    setSelectedConversation(null);
     setError(null);
     setSuccess(null);
     setLoading(true);
@@ -2154,6 +2248,73 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
     );
   }
 
+  async function saveConversationPolicy() {
+    if (!conversationPurpose.trim()) {
+      setError("Informe o propósito público da conversa.");
+      return;
+    }
+    await runCognitive(
+      "set_agent_conversation_policy",
+      {
+        agentId,
+        purpose: conversationPurpose.trim(),
+        optedIn: conversationOptedIn,
+        maxTurns: 12,
+        maxTokens: 2048,
+        maxDurationMs: 300000,
+        maxRepetitions: 2,
+        resourceBudget: 20,
+        temporaryChat: false,
+      },
+      conversationOptedIn
+        ? "Opt-in público atualizado."
+        : "Opt-in público revogado.",
+    );
+  }
+
+  async function inspectConversation(conversation: AgentConversationSummary) {
+    setError(null);
+    try {
+      const inspection = await invokeCognitive("inspect_agent_conversation", {
+        agentId,
+        conversationId: conversation.id,
+      });
+      setSelectedConversation(inspection);
+    } catch (cause) {
+      setError(
+        coreErrorCopy[String(cause)] ||
+          "Não foi possível inspecionar a conversa pública.",
+      );
+    }
+  }
+
+  async function interruptConversation(conversation: AgentConversationSummary) {
+    await runCognitive(
+      "interrupt_agent_conversation",
+      {
+        agentId,
+        conversationId: conversation.id,
+        reason: "Interrupção solicitada pelo Owner",
+        idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
+      },
+      "Conversa pública interrompida.",
+    );
+  }
+
+  async function rejectCandidate(candidate: CognitiveCandidate) {
+    await runCognitive(
+      "reject_cognitive_candidate",
+      {
+        agentId,
+        candidateId: candidate.id,
+        idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
+      },
+      "Candidato rejeitado; nenhum estado cognitivo foi aplicado.",
+    );
+  }
+
   return (
     <section aria-label="Núcleo cognitivo 7B a 7D">
       <h3>Núcleo cognitivo</h3>
@@ -2447,6 +2608,107 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
       >
         Criar objetivo do Owner
       </button>
+      <h4>Conversas públicas entre agentes</h4>
+      <p>
+        Cada propósito precisa de autorização explícita nos dois agentes.
+        Somente turnos públicos são registrados; não existe canal privado.
+      </p>
+      <label>
+        Propósito público
+        <input
+          value={conversationPurpose}
+          maxLength={160}
+          onChange={(event) => setConversationPurpose(event.target.value)}
+        />
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={conversationOptedIn}
+          onChange={(event) => setConversationOptedIn(event.target.checked)}
+        />{" "}
+        Autorizar este propósito para {agentId}
+      </label>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void saveConversationPolicy()}
+      >
+        Salvar autorização pública
+      </button>
+      <ul aria-label="Políticas de conversas públicas">
+        {conversationPolicies.map((policy) => (
+          <li key={`${policy.agentId}:${policy.purpose}`}>
+            {policy.agentId} — {policy.purpose} —{" "}
+            {policy.optedIn ? "autorizado" : "revogado"} — até{" "}
+            {policy.maxTurns} turnos, {policy.maxTokens} tokens,{" "}
+            {policy.maxDurationMs} ms, {policy.maxRepetitions} repetições e{" "}
+            {policy.resourceBudget} unidades de recurso
+          </li>
+        ))}
+      </ul>
+      <h5>Histórico de conversas públicas</h5>
+      <ul aria-label="Conversas públicas">
+        {conversations.map((conversation) => (
+          <li key={conversation.id}>
+            <strong>{conversation.purpose}</strong> — {conversation.status} —{" "}
+            {conversation.turnCount}/{conversation.maxTurns} turnos —{" "}
+            {conversation.tokenCount}/{conversation.maxTokens} tokens
+            <div>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void inspectConversation(conversation)}
+              >
+                Inspecionar turnos públicos
+              </button>{" "}
+              {conversation.status === "active" ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void interruptConversation(conversation)}
+                >
+                  Interromper conversa pública
+                </button>
+              ) : null}
+            </div>
+          </li>
+        ))}
+      </ul>
+      {selectedConversation ? (
+        <div>
+          <h5>Turnos públicos de {selectedConversation.conversation.purpose}</h5>
+          <ul aria-label="Turnos públicos">
+            {selectedConversation.turns.map((turn) => (
+              <li key={turn.id}>
+                {turn.turnIndex + 1}. {turn.speakerAgentId}: {turn.content}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      <h5>Candidatos cognitivos pendentes</h5>
+      <p>
+        Candidatos continuam pendentes até decisão do Owner e não alteram o
+        estado cognitivo automaticamente.
+      </p>
+      <ul aria-label="Candidatos cognitivos">
+        {candidates.map((candidate) => (
+          <li key={candidate.id}>
+            {candidate.candidateKind} — {candidate.status} —{" "}
+            {candidate.candidateJson}
+            {candidate.status === "pending" ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void rejectCandidate(candidate)}
+              >
+                Rejeitar candidato
+              </button>
+            ) : null}
+          </li>
+        ))}
+      </ul>
       {error ? <p role="alert">{coreErrorCopy[error] || error}</p> : null}
       {success ? <p role="status">{success}</p> : null}
       <p>
