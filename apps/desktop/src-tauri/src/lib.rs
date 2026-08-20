@@ -75,14 +75,19 @@ use tools::{
     ToolAuditRecord, ToolManifest, ToolSession, ToolSessionCancellationRequest, ToolSessionRequest,
 };
 use voice::{
-    CustomVoiceConsentRequest, VoiceEmotionHypothesisRequest, VoiceEmotionHypothesisResult,
-    VoiceSettings, VoiceSettingsRequest, VoiceSynthesisRequest, VoiceSynthesisResult,
-    VoiceTranscriptionRequest, VoiceTranscriptionResult, VoiceWakeWordRequest, VoiceWakeWordResult,
+    CustomVoiceConsentRequest, VoiceCaptureRequest, VoiceEmotionHypothesisRequest,
+    VoiceEmotionHypothesisResult, VoiceOperationCancellationRequest, VoiceOperationStatus,
+    VoiceOperationStatusRequest, VoiceRuntime, VoiceRuntimeSynthesisResult,
+    VoiceRuntimeTranscriptionResult, VoiceRuntimeWakeWordResult, VoiceSettings,
+    VoiceSettingsRequest, VoiceSynthesisRequest, VoiceSynthesisResult,
+    VoiceSynthesisRuntimeRequest, VoiceTranscriptionRequest, VoiceTranscriptionResult,
+    VoiceWakeWordRequest, VoiceWakeWordResult,
 };
 
 struct AppState {
     database: Option<Database>,
     runtime: RuntimeController,
+    voice_runtime: VoiceRuntime,
     chat: Option<ChatCoordinator>,
     safe_mode: Arc<AtomicBool>,
     overlay_input: OverlayInputState,
@@ -117,6 +122,18 @@ fn ensure_voice_mutation_allowed(
         .ok_or("operation_unavailable")?
         .ensure_voice_mutation_allowed(agent_id)
         .map_err(|error| error.code())
+}
+
+fn ensure_voice_runtime_allowed<'a>(
+    state: &'a AppState,
+    agent_id: &str,
+    temporary_chat: bool,
+) -> Result<&'a Database, &'static str> {
+    if state.safe_mode.load(Ordering::Acquire) {
+        return Err("conversation_blocked_safe_mode");
+    }
+    ensure_voice_mutation_allowed(state, agent_id, temporary_chat)?;
+    state.database.as_ref().ok_or("operation_unavailable")
 }
 
 #[tauri::command]
@@ -756,6 +773,73 @@ fn detect_voice_wake_word_fixture(
         .as_ref()
         .ok_or("operation_unavailable")?
         .detect_voice_wake_word_fixture(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn transcribe_voice_local(
+    state: State<'_, AppState>,
+    request: VoiceCaptureRequest,
+) -> Result<VoiceRuntimeTranscriptionResult, &'static str> {
+    let database = ensure_voice_runtime_allowed(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .voice_runtime
+        .transcribe(database, request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn synthesize_voice_local(
+    state: State<'_, AppState>,
+    request: VoiceSynthesisRuntimeRequest,
+) -> Result<VoiceRuntimeSynthesisResult, &'static str> {
+    let database = ensure_voice_runtime_allowed(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .voice_runtime
+        .synthesize(database, request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn detect_voice_wake_word_local(
+    state: State<'_, AppState>,
+    request: VoiceCaptureRequest,
+) -> Result<VoiceRuntimeWakeWordResult, &'static str> {
+    let database = ensure_voice_runtime_allowed(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .voice_runtime
+        .detect_wake_word(database, request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn cancel_voice_operation(
+    state: State<'_, AppState>,
+    request: VoiceOperationCancellationRequest,
+) -> Result<bool, &'static str> {
+    let database = state.database.as_ref().ok_or("operation_unavailable")?;
+    database
+        .voice_operation_status(VoiceOperationStatusRequest {
+            agent_id: request.agent_id,
+            operation_id: request.operation_id.clone(),
+        })
+        .map_err(|error| error.code())?;
+    state
+        .voice_runtime
+        .cancel(&request.operation_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn get_voice_operation_status(
+    state: State<'_, AppState>,
+    request: VoiceOperationStatusRequest,
+) -> Result<VoiceOperationStatus, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .voice_operation_status(request)
         .map_err(|error| error.code())
 }
 
@@ -2380,6 +2464,7 @@ pub fn run() {
             app.manage(AppState {
                 database: database.clone(),
                 runtime: runtime.clone(),
+                voice_runtime: VoiceRuntime::new(),
                 chat,
                 safe_mode: Arc::clone(&safe_mode),
                 overlay_input: overlay_input.clone(),
@@ -2435,6 +2520,11 @@ pub fn run() {
             transcribe_voice_fixture,
             synthesize_voice_fixture,
             detect_voice_wake_word_fixture,
+            transcribe_voice_local,
+            synthesize_voice_local,
+            detect_voice_wake_word_local,
+            cancel_voice_operation,
+            get_voice_operation_status,
             classify_voice_emotion,
             list_tool_catalog,
             create_tool_session,
@@ -2593,7 +2683,7 @@ mod conversation_command_tests {
         database::{Database, ASTRA_ID, LUMA_ID},
         overlays::OverlayInputState,
         runtime::RuntimeController,
-        voice::{CustomVoiceConsentRequest, VoiceSettingsRequest},
+        voice::{CustomVoiceConsentRequest, VoiceRuntime, VoiceSettingsRequest},
     };
 
     fn test_path() -> PathBuf {
@@ -2608,6 +2698,7 @@ mod conversation_command_tests {
         AppState {
             database: Some(Database::initialize(path).unwrap()),
             runtime: RuntimeController::new(PathBuf::from("test-runtime"), false),
+            voice_runtime: VoiceRuntime::new(),
             chat: None,
             safe_mode: Arc::new(AtomicBool::new(false)),
             overlay_input: OverlayInputState::default(),
