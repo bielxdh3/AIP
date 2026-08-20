@@ -83,8 +83,9 @@ Deliverables:
 Expected commit: `feat: add local conversation vertical slice`
 
 Implementation and release-level manual validation are recorded in the v0.1 manual validation
-record above. The separate Phase 1 validation document retains historical failed and pending
-pre-release attempts; it does not replace the later installed-package approval.
+record above. The separate Phase 1 validation document explicitly labels its failed and pending
+pre-release attempts as historical and records their supersession by the later installed-package
+approval; it does not replace the later installed-package approval.
 
 ## Phase 2: two-agent creation and isolation `[DONE — V0.1 INSTALLED-WINDOWS VALIDATION]`
 
