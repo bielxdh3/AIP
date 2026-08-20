@@ -11,9 +11,10 @@ The exact implementation target is HEAD
 `821d8f9d468e50aedb4ec7b3d42dabcf8162d157`, followed by the Phase 7E commits
 `4de625841d6b87ad8821cdc98e947877eb61dbe7`,
 `70ba8fe88049c530cdd53c9585bcef3ede408a21`, and
-`5ff4807985eb8156f2c59b7644700c43d19c58fc`. Phase 7E's schema is migration
-`0014_phase7e_7f_conversations.sql` (migration version 14). The companion record is
-[Phase 7E validation](PHASE_7E_VALIDATION.md).
+`5ff4807985eb8156f2c59b7644700c43d19c58fc`. The relevant migration sequence is
+`0012_phase7a_cognitive_events.sql` (7A), `0013_phase7b_7d_cognitive_core.sql`
+(7B–7D), and `0014_phase7e_7f_conversations.sql` (schema version 14). The companion
+record is [Phase 7E validation](PHASE_7E_VALIDATION.md).
 
 ## Integrated boundary matrix
 
