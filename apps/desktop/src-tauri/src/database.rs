@@ -35,7 +35,8 @@ const MIGRATION_0016: &str = include_str!("../migrations/0016_phase9_tools.sql")
 const MIGRATION_0017: &str = include_str!("../migrations/0017_phase10_extensions.sql");
 const MIGRATION_0018: &str = include_str!("../migrations/0018_phase11_screen_vision.sql");
 const MIGRATION_0019: &str = include_str!("../migrations/0019_phase12_android_companion.sql");
-const MIGRATIONS: [(i64, &str); 19] = [
+const MIGRATION_0020: &str = include_str!("../migrations/0020_phase13_gateway.sql");
+const MIGRATIONS: [(i64, &str); 20] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
@@ -55,6 +56,7 @@ const MIGRATIONS: [(i64, &str); 19] = [
     (17, MIGRATION_0017),
     (18, MIGRATION_0018),
     (19, MIGRATION_0019),
+    (20, MIGRATION_0020),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -150,6 +152,7 @@ impl Database {
         Self::seed_phase_zero(&mut connection)?;
         Self::seed_phase_one(&mut connection)?;
         Self::seed_phase8_voice(&mut connection)?;
+        Self::seed_phase13_gateway(&mut connection)?;
         Self::recover_interrupted(&connection)?;
         Ok(database)
     }
@@ -307,6 +310,27 @@ impl Database {
                 params![agent_id, OWNER_ID, now],
             )?;
         }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn seed_phase13_gateway(connection: &mut Connection) -> Result<(), DatabaseError> {
+        let now = now_millis();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO gateway_accounts
+             (id, owner_user_id, local_account_id, external_account_id_metadata,
+              ownership_scope, status, metadata_only, external_effect_performed,
+              standalone_fallback, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'owner_only', 'metadata_only', 1, 0, 1, ?5, ?5)",
+            params![
+                "gateway-account-owner",
+                OWNER_ID,
+                "aip-owner-local",
+                "fixture:external-account/bielos-owner",
+                now,
+            ],
+        )?;
         transaction.commit()?;
         Ok(())
     }
@@ -2792,7 +2816,7 @@ mod tests {
         let first = Database::initialize(&path).expect("database should initialize");
         let second = Database::initialize(&path).expect("database should reinitialize");
         let snapshot = second.snapshot().expect("snapshot should load");
-        assert_eq!(snapshot.migration_version, 19);
+        assert_eq!(snapshot.migration_version, 20);
         assert_eq!(snapshot.agents.len(), 2);
         for agent in &snapshot.agents {
             assert_eq!(
@@ -2821,7 +2845,7 @@ mod tests {
         drop(connection);
 
         let database = Database::initialize(&path).expect("v1 database should upgrade");
-        assert_eq!(database.snapshot().unwrap().migration_version, 19);
+        assert_eq!(database.snapshot().unwrap().migration_version, 20);
         let connection = Connection::open(&path).unwrap();
         let preserved: String = connection
             .query_row(
@@ -3784,7 +3808,7 @@ mod tests {
 
         let upgraded = Database::initialize(&path).unwrap();
         assert_eq!(upgraded.simulated_state(ASTRA_ID).unwrap().mode, "normal");
-        assert_eq!(upgraded.snapshot().unwrap().migration_version, 19);
+        assert_eq!(upgraded.snapshot().unwrap().migration_version, 20);
         cleanup(&path);
     }
 
