@@ -381,7 +381,7 @@ export type ToolSession = {
   createdAt: number;
   updatedAt: number;
 };
-export type ToolFileMove = { from: string; to: string };
+export type ToolFileMove = { from: string; to: string; sourceIdentity?: string };
 export type ToolActionInput =
   | { kind: "workspaceInspect"; relativePaths: string[] }
   | { kind: "workspaceOrganize"; moves: ToolFileMove[] }
@@ -2109,11 +2109,14 @@ export type CognitiveErrorCode =
   | "tool_compensation_unavailable"
   | "workspace_root_unavailable"
   | "workspace_root_invalid"
+  | "workspace_root_limit"
   | "workspace_path_unavailable"
   | "workspace_path_invalid"
   | "workspace_destination_exists"
   | "workspace_move_failed"
   | "workspace_move_partial"
+  | "workspace_source_identity_unavailable"
+  | "workspace_source_identity_mismatch"
   | "workspace_compensation_unavailable"
   | "workspace_compensation_failed"
   | "action_compensation_failed"
@@ -2392,11 +2395,14 @@ export function parseCognitiveError(
     "tool_compensation_unavailable",
     "workspace_root_unavailable",
     "workspace_root_invalid",
+    "workspace_root_limit",
     "workspace_path_unavailable",
     "workspace_path_invalid",
     "workspace_destination_exists",
     "workspace_move_failed",
     "workspace_move_partial",
+    "workspace_source_identity_unavailable",
+    "workspace_source_identity_mismatch",
     "workspace_compensation_unavailable",
     "workspace_compensation_failed",
     "action_compensation_failed",
@@ -2664,7 +2670,8 @@ export function parseToolActionInput(value: unknown): ToolActionInput | null {
         return (
           item !== null &&
           toolBoundedText(item.from, 512) &&
-          toolBoundedText(item.to, 512)
+          toolBoundedText(item.to, 512) &&
+          (item.sourceIdentity === undefined || toolBoundedText(item.sourceIdentity, 128))
         );
       });
       return moves ? (candidate as unknown as ToolActionInput) : null;

@@ -4131,11 +4131,14 @@ const toolErrorLabels: Record<string, string> = {
     "Não há compensação disponível para esta ação.",
   workspace_root_unavailable: "A raiz local não está disponível.",
   workspace_root_invalid: "O caminho não é uma raiz local segura.",
+  workspace_root_limit: "O limite de 64 raízes locais do Owner foi atingido.",
   workspace_path_unavailable: "O caminho relativo local não está disponível.",
   workspace_path_invalid: "O caminho relativo local não é seguro.",
   workspace_destination_exists: "O destino local já existe; nada foi sobrescrito.",
   workspace_move_failed: "A movimentação local falhou e foi registrada.",
   workspace_move_partial: "A movimentação local ficou parcial e foi registrada.",
+  workspace_source_identity_unavailable: "A identidade da origem local não pôde ser verificada.",
+  workspace_source_identity_mismatch: "A origem local mudou desde a prévia; nada foi movido.",
   tool_payload_invalid:
     "A resposta da ferramenta não passou no contrato seguro.",
 };
