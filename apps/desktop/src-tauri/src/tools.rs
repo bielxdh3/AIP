@@ -544,8 +544,13 @@ impl Database {
             &ToolPermission::Preview,
         )?;
         let manifest = load_tool_manifest_tx(&transaction, &request.tool_id)?;
-        let plan =
-            validate_action_input(&transaction, &manifest, &session.scope_ref, &request.input)?;
+        let plan = validate_action_input(
+            &transaction,
+            &manifest,
+            &session.scope_ref,
+            &request.input,
+            true,
+        )?;
         let input_json =
             serde_json::to_string(&plan.input).map_err(|_| DatabaseError::Unavailable)?;
         if input_json.len() > MAX_INPUT_BYTES {
@@ -830,8 +835,13 @@ impl Database {
                 return Err(DatabaseError::Cognitive("tool_confirmation_required"));
             }
         }
-        let plan =
-            validate_action_input(&transaction, &manifest, &session.scope_ref, &action.input)?;
+        let plan = validate_action_input(
+            &transaction,
+            &manifest,
+            &session.scope_ref,
+            &action.input,
+            false,
+        )?;
         let result = match execute_adapter(&transaction, &manifest, &plan, action.dry_run) {
             Ok(result) => result,
             Err(error) => {
@@ -2060,6 +2070,7 @@ fn validate_action_input(
     manifest: &ToolManifest,
     scope_ref: &str,
     input: &ToolActionInput,
+    capture_local_identity: bool,
 ) -> Result<ToolPreviewPlan, DatabaseError> {
     let Some(prefix) = scope_prefix(&manifest.scope_kind) else {
         return Err(DatabaseError::Cognitive("tool_manifest_invalid"));
@@ -2068,7 +2079,13 @@ fn validate_action_input(
         return Err(DatabaseError::Cognitive("tool_scope_invalid"));
     }
     if manifest.adapter_kind == ToolAdapterKind::WorkspaceLocal {
-        return validate_local_action_input(transaction, manifest, scope_ref, input);
+        return validate_local_action_input(
+            transaction,
+            manifest,
+            scope_ref,
+            input,
+            capture_local_identity,
+        );
     }
     match (manifest.tool_id.as_str(), input) {
         ("workspace.inspect_scope", ToolActionInput::WorkspaceInspect { relative_paths }) => {
@@ -2189,6 +2206,7 @@ fn validate_local_action_input(
     manifest: &ToolManifest,
     scope_ref: &str,
     input: &ToolActionInput,
+    capture_local_identity: bool,
 ) -> Result<ToolPreviewPlan, DatabaseError> {
     let root = workspace_root_path(transaction, scope_ref)?;
     match (manifest.tool_id.as_str(), input) {
@@ -2248,10 +2266,16 @@ fn validate_local_action_input(
                 let _destination = safe_child(&root, &to, false)?;
                 affected_resources.push(format!("{scope_ref}/{from}"));
                 affected_resources.push(format!("{scope_ref}/{to}"));
-                let source_identity = movement
-                    .source_identity
-                    .clone()
-                    .unwrap_or(capture_file_identity(&source)?);
+                let source_identity = if capture_local_identity {
+                    capture_file_identity(&source)?
+                } else {
+                    movement
+                        .source_identity
+                        .clone()
+                        .ok_or(DatabaseError::Cognitive(
+                            "workspace_source_identity_unavailable",
+                        ))?
+                };
                 normalized.push(ToolFileMove {
                     source_identity: Some(source_identity),
                     from,
@@ -2757,7 +2781,7 @@ mod tests {
                     moves: vec![ToolFileMove {
                         from: "draft.txt".into(),
                         to: "organized.txt".into(),
-                        source_identity: None,
+                        source_identity: Some("forged:caller:identity".into()),
                     }],
                 },
                 dry_run: false,
@@ -2882,6 +2906,7 @@ mod tests {
             &manifest,
             &format!("workspace_root:{}", root.id),
             &input,
+            true,
         )
         .unwrap();
         fs::remove_dir(workspace.join("blocked")).unwrap();
