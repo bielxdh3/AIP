@@ -6,6 +6,7 @@ mod database;
 mod domain;
 mod extensions;
 mod fullscreen;
+mod gateway;
 mod native_overlay_region;
 mod overlays;
 mod protocol;
@@ -52,6 +53,12 @@ use extensions::{
     ExtensionActivationRequest, ExtensionAgentProposalRequest, ExtensionAuditRecord,
     ExtensionCatalogEntry, ExtensionDisableRequest, ExtensionProposal, ExtensionProposalRequest,
     ExtensionReviewRequest, ExtensionRollbackRequest, ExtensionUpdateRequest,
+};
+use gateway::{
+    GatewayAccount, GatewayAuditRecord, GatewayProtocolInfo, GatewayReconnectRequest,
+    GatewayRecovery, GatewayRecoveryApprovalRequest, GatewayRecoveryRequest, GatewayRevocation,
+    GatewaySession, GatewaySessionActionRequest, GatewaySessionRequest, GatewayTransfer,
+    GatewayTransferActionRequest, GatewayTransferApprovalRequest, GatewayTransferRequest,
 };
 use overlays::{InteractiveRegion, OverlayInputState};
 use runtime::RuntimeController;
@@ -1305,6 +1312,217 @@ fn revoke_companion_device(
         .map_err(|error| error.code())
 }
 
+fn ensure_gateway_mutation_allowed(
+    state: &AppState,
+    agent_id: &str,
+    requested_temporary: bool,
+) -> Result<(), &'static str> {
+    ensure_conversation_not_temporary(state, agent_id, requested_temporary)
+}
+
+#[tauri::command]
+fn get_gateway_protocol(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<GatewayProtocolInfo, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .gateway_protocol_info(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_gateway_accounts(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<GatewayAccount>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_gateway_accounts(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_gateway_transfers(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<GatewayTransfer>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_gateway_transfers(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn prepare_gateway_transfer(
+    state: State<'_, AppState>,
+    request: GatewayTransferRequest,
+) -> Result<GatewayTransfer, &'static str> {
+    ensure_gateway_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .prepare_gateway_transfer(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn approve_gateway_transfer(
+    state: State<'_, AppState>,
+    request: GatewayTransferApprovalRequest,
+) -> Result<GatewayTransfer, &'static str> {
+    ensure_gateway_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .approve_gateway_transfer(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_gateway_sessions(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<GatewaySession>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_gateway_sessions(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn connect_gateway_session(
+    state: State<'_, AppState>,
+    request: GatewaySessionRequest,
+) -> Result<GatewaySession, &'static str> {
+    ensure_gateway_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .connect_gateway_session(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn reconnect_gateway_session(
+    state: State<'_, AppState>,
+    request: GatewayReconnectRequest,
+) -> Result<GatewaySession, &'static str> {
+    ensure_gateway_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .reconnect_gateway_session(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_gateway_recoveries(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<GatewayRecovery>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_gateway_recoveries(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn request_gateway_recovery(
+    state: State<'_, AppState>,
+    request: GatewayRecoveryRequest,
+) -> Result<GatewayRecovery, &'static str> {
+    ensure_gateway_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .request_gateway_recovery(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn approve_gateway_recovery(
+    state: State<'_, AppState>,
+    request: GatewayRecoveryApprovalRequest,
+) -> Result<GatewayRecovery, &'static str> {
+    ensure_gateway_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .approve_gateway_recovery(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_gateway_audit(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<GatewayAuditRecord>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_gateway_audit(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_gateway_revocations(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<GatewayRevocation>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_gateway_revocations(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn revoke_gateway_session(
+    state: State<'_, AppState>,
+    request: GatewaySessionActionRequest,
+) -> Result<GatewayRevocation, &'static str> {
+    ensure_gateway_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .revoke_gateway_session(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn revoke_gateway_transfer(
+    state: State<'_, AppState>,
+    request: GatewayTransferActionRequest,
+) -> Result<GatewayRevocation, &'static str> {
+    ensure_gateway_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .revoke_gateway_transfer(request)
+        .map_err(|error| error.code())
+}
+
 fn ensure_screen_vision_mutation_allowed(
     state: &AppState,
     agent_id: &str,
@@ -2256,6 +2474,21 @@ pub fn run() {
             list_companion_revocations,
             rotate_companion_key,
             revoke_companion_device,
+            get_gateway_protocol,
+            list_gateway_accounts,
+            list_gateway_transfers,
+            prepare_gateway_transfer,
+            approve_gateway_transfer,
+            list_gateway_sessions,
+            connect_gateway_session,
+            reconnect_gateway_session,
+            list_gateway_recoveries,
+            request_gateway_recovery,
+            approve_gateway_recovery,
+            list_gateway_audit,
+            list_gateway_revocations,
+            revoke_gateway_session,
+            revoke_gateway_transfer,
             list_screen_vision_fixtures,
             list_screen_vision_sessions,
             list_screen_vision_jobs,

@@ -71,6 +71,14 @@ import type {
   CompanionRevocation,
   CompanionSession,
   CompanionSessionProof,
+  GatewayAccount,
+  GatewayAuditRecord,
+  GatewayProtocolInfo,
+  GatewayRecovery,
+  GatewayRevocation,
+  GatewaySession,
+  GatewaySessionProof,
+  GatewayTransfer,
   ToolAction,
   ToolActionInput,
   ToolManifest,
@@ -83,6 +91,13 @@ import {
   COMPANION_FIXTURE_FINGERPRINT,
   COMPANION_FIXTURE_PAIRING_NONCE,
   COMPANION_PROTOCOL_VERSION,
+  GATEWAY_FIXTURE_APP_VERSION,
+  GATEWAY_FIXTURE_AUTH_PROOF_METADATA,
+  GATEWAY_FIXTURE_CLIENT_ID,
+  GATEWAY_FIXTURE_EXTERNAL_ACCOUNT_METADATA,
+  GATEWAY_FIXTURE_RECOVERY_TARGET,
+  GATEWAY_FIXTURE_TRANSFER_INTEGRITY_HASH,
+  GATEWAY_PROTOCOL_VERSION,
   parseCognitiveError,
   parseCompanionAudit,
   parseCompanionDevice,
@@ -6539,6 +6554,584 @@ export function CompanionControls({
   );
 }
 
+const gatewayTransferStatusLabels: Record<string, string> = {
+  previewed: "prévia aguardando aprovação",
+  approved: "aprovada pelo Owner",
+  revoked: "revogada",
+};
+
+const gatewaySessionStatusLabels: Record<string, string> = {
+  connected: "conectada",
+  disconnected: "desconectada",
+  revoked: "revogada",
+  expired: "expirada",
+};
+
+const gatewayRecoveryStatusLabels: Record<string, string> = {
+  pending_approval: "aguardando aprovação",
+  approved: "aprovada",
+  revoked: "revogada",
+};
+
+const gatewayErrorLabels: Record<string, string> = {
+  gateway_blocked_temporary: "Gateway bloqueado durante a conversa temporária.",
+  gateway_blocked_safe_mode: "Gateway bloqueado pelo modo seguro.",
+  gateway_blocked_suspended: "O agente suspenso não pode usar o gateway.",
+  gateway_fixture_agent_invalid:
+    "A agente fixture do gateway não é compatível.",
+  gateway_agent_invalid: "A agente do gateway não está disponível localmente.",
+  gateway_owner_required: "A aprovação do Owner local é necessária.",
+  gateway_transfer_already_active:
+    "Já existe uma transferência ativa para esta conta fixture.",
+  gateway_transfer_revoked: "A transferência já foi revogada.",
+  gateway_transfer_integrity_failed:
+    "A integridade da transferência fixture não foi validada.",
+  gateway_transfer_approval_required:
+    "A aprovação explícita da transferência é necessária.",
+  gateway_approval_required: "A aprovação explícita do Owner é necessária.",
+  gateway_session_unavailable: "A sessão administrativa não está disponível.",
+  gateway_authentication_failed: "A prova da sessão não foi autenticada.",
+  gateway_replay_rejected:
+    "A prova foi rejeitada por replay ou contador inválido.",
+  gateway_protocol_incompatible: "A versão do protocolo não é compatível.",
+  gateway_recovery_approval_required:
+    "A recuperação ainda aguarda aprovação do Owner.",
+  gateway_recovery_limit: "O limite de recuperações desta sessão foi atingido.",
+};
+
+function gatewayErrorMessage(error: unknown): string {
+  const typed = parseCognitiveError(error);
+  const code =
+    typed?.code ??
+    (typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : "operation_unavailable");
+  return (
+    gatewayErrorLabels[code] ??
+    "A operação do gateway local não está disponível."
+  );
+}
+
+function gatewayIdempotencyKey(prefix: string): string {
+  return `${prefix}-${crypto.randomUUID()}`;
+}
+
+function gatewayProof(
+  session: GatewaySession,
+  purpose: string,
+): GatewaySessionProof {
+  return {
+    sessionId: session.id,
+    transferId: session.transferId,
+    clientId: session.clientId,
+    sessionNonceMetadata: session.sessionNonceMetadata,
+    authProofMetadata: session.authProofMetadata,
+    appVersion: session.appVersion,
+    protocolVersion: session.protocolVersion,
+    messageNonceMetadata: `fixture:gateway-message/${purpose}-${crypto.randomUUID()}`,
+    replayCounter: session.lastReplayCounter + 1,
+  };
+}
+
+export function GatewayControls({
+  agentId,
+  temporaryChat,
+  safeMode,
+}: {
+  agentId: string;
+  temporaryChat: boolean;
+  safeMode: boolean;
+}) {
+  const [protocol, setProtocol] = useState<GatewayProtocolInfo | null>(null);
+  const [accounts, setAccounts] = useState<GatewayAccount[]>([]);
+  const [transfers, setTransfers] = useState<GatewayTransfer[]>([]);
+  const [sessions, setSessions] = useState<GatewaySession[]>([]);
+  const [recoveries, setRecoveries] = useState<GatewayRecovery[]>([]);
+  const [audit, setAudit] = useState<GatewayAuditRecord[]>([]);
+  const [revocations, setRevocations] = useState<GatewayRevocation[]>([]);
+  const [selectedTransferId, setSelectedTransferId] = useState("");
+  const [selectedSessionId, setSelectedSessionId] = useState("");
+  const [selectedRecoveryId, setSelectedRecoveryId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const blocked = temporaryChat || safeMode;
+
+  const loadData = useCallback(async () => {
+    const [
+      nextProtocol,
+      nextAccounts,
+      nextTransfers,
+      nextSessions,
+      nextRecoveries,
+      nextAudit,
+      nextRevocations,
+    ] = await Promise.all([
+      invoke<GatewayProtocolInfo>("get_gateway_protocol", { agentId }),
+      invoke<GatewayAccount[]>("list_gateway_accounts", { agentId }),
+      invoke<GatewayTransfer[]>("list_gateway_transfers", { agentId }),
+      invoke<GatewaySession[]>("list_gateway_sessions", { agentId }),
+      invoke<GatewayRecovery[]>("list_gateway_recoveries", { agentId }),
+      invoke<GatewayAuditRecord[]>("list_gateway_audit", { agentId }),
+      invoke<GatewayRevocation[]>("list_gateway_revocations", { agentId }),
+    ]);
+    setProtocol(nextProtocol);
+    setAccounts(nextAccounts);
+    setTransfers(nextTransfers);
+    setSessions(nextSessions);
+    setRecoveries(nextRecoveries);
+    setAudit(nextAudit);
+    setRevocations(nextRevocations);
+    setSelectedTransferId((current) =>
+      nextTransfers.some((transfer) => transfer.id === current)
+        ? current
+        : (nextTransfers[0]?.id ?? ""),
+    );
+    setSelectedSessionId((current) =>
+      nextSessions.some((session) => session.id === current)
+        ? current
+        : (nextSessions[0]?.id ?? ""),
+    );
+    setSelectedRecoveryId((current) =>
+      nextRecoveries.some((recovery) => recovery.id === current)
+        ? current
+        : (nextRecoveries[0]?.id ?? ""),
+    );
+  }, [agentId]);
+
+  useEffect(() => {
+    void loadData().catch((loadError: unknown) =>
+      setError(gatewayErrorMessage(loadError)),
+    );
+  }, [loadData]);
+
+  const selectedTransfer = transfers.find(
+    (transfer) => transfer.id === selectedTransferId,
+  );
+  const selectedSession = sessions.find(
+    (session) => session.id === selectedSessionId,
+  );
+  const selectedRecovery = recoveries.find(
+    (recovery) => recovery.id === selectedRecoveryId,
+  );
+
+  async function runMutation(operation: () => Promise<void>) {
+    if (blocked || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await operation();
+      await loadData();
+    } catch (operationError: unknown) {
+      setError(gatewayErrorMessage(operationError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function prepareTransfer() {
+    await runMutation(async () => {
+      const transfer = await invoke<GatewayTransfer>(
+        "prepare_gateway_transfer",
+        {
+          agentId,
+          ownerUserId: OWNER_USER_ID,
+          destinationAccountMetadata: GATEWAY_FIXTURE_EXTERNAL_ACCOUNT_METADATA,
+          integrityHash: GATEWAY_FIXTURE_TRANSFER_INTEGRITY_HASH,
+          idempotencyKey: gatewayIdempotencyKey("transfer-prepare"),
+          temporaryChat,
+        },
+      );
+      setSelectedTransferId(transfer.id);
+    });
+  }
+
+  async function approveTransfer() {
+    if (!selectedTransfer) return;
+    await runMutation(async () => {
+      await invoke<GatewayTransfer>("approve_gateway_transfer", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        transferId: selectedTransfer.id,
+        approved: true,
+        idempotencyKey: gatewayIdempotencyKey("transfer-approve"),
+        temporaryChat,
+      });
+    });
+  }
+
+  async function connectSession() {
+    if (!selectedTransfer || selectedTransfer.status !== "approved") return;
+    await runMutation(async () => {
+      const nextCounter =
+        Math.max(
+          0,
+          ...sessions
+            .filter((session) => session.clientId === GATEWAY_FIXTURE_CLIENT_ID)
+            .map((session) => session.lastReplayCounter),
+        ) + 1;
+      const session = await invoke<GatewaySession>("connect_gateway_session", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        transferId: selectedTransfer.id,
+        clientId: GATEWAY_FIXTURE_CLIENT_ID,
+        appVersion: GATEWAY_FIXTURE_APP_VERSION,
+        protocolVersion: GATEWAY_PROTOCOL_VERSION,
+        authProofMetadata: GATEWAY_FIXTURE_AUTH_PROOF_METADATA,
+        messageNonceMetadata: `fixture:gateway-message/connect-${crypto.randomUUID()}`,
+        replayCounter: nextCounter,
+        idempotencyKey: gatewayIdempotencyKey("session-connect"),
+        temporaryChat,
+      });
+      setSelectedSessionId(session.id);
+    });
+  }
+
+  async function reconnectSession() {
+    if (!selectedSession || selectedSession.status === "revoked") return;
+    await runMutation(async () => {
+      const session = await invoke<GatewaySession>(
+        "reconnect_gateway_session",
+        {
+          agentId,
+          ownerUserId: OWNER_USER_ID,
+          proof: gatewayProof(selectedSession, "session-reconnect"),
+          idempotencyKey: gatewayIdempotencyKey("session-reconnect"),
+          temporaryChat,
+        },
+      );
+      setSelectedSessionId(session.id);
+    });
+  }
+
+  async function requestRecovery() {
+    if (!selectedSession || selectedSession.status !== "connected") return;
+    await runMutation(async () => {
+      const recovery = await invoke<GatewayRecovery>(
+        "request_gateway_recovery",
+        {
+          agentId,
+          ownerUserId: OWNER_USER_ID,
+          proof: gatewayProof(selectedSession, "recovery-request"),
+          recoveryKind: "mobile_administrative",
+          targetMetadata: GATEWAY_FIXTURE_RECOVERY_TARGET,
+          idempotencyKey: gatewayIdempotencyKey("recovery-request"),
+          temporaryChat,
+        },
+      );
+      setSelectedRecoveryId(recovery.id);
+    });
+  }
+
+  async function approveRecovery() {
+    if (!selectedRecovery) return;
+    const recoverySession = sessions.find(
+      (session) => session.id === selectedRecovery.sessionId,
+    );
+    if (!recoverySession) return;
+    await runMutation(async () => {
+      await invoke<GatewayRecovery>("approve_gateway_recovery", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        proof: gatewayProof(recoverySession, "recovery-approve"),
+        recoveryId: selectedRecovery.id,
+        approved: true,
+        idempotencyKey: gatewayIdempotencyKey("recovery-approve"),
+        temporaryChat,
+      });
+    });
+  }
+
+  async function revokeSession() {
+    if (!selectedSession || selectedSession.status === "revoked") return;
+    await runMutation(async () => {
+      await invoke<GatewayRevocation>("revoke_gateway_session", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        sessionId: selectedSession.id,
+        reason: "Revogação solicitada pelo Owner no fixture local",
+        idempotencyKey: gatewayIdempotencyKey("session-revoke"),
+        temporaryChat,
+      });
+    });
+  }
+
+  async function revokeTransfer() {
+    if (!selectedTransfer || selectedTransfer.status === "revoked") return;
+    await runMutation(async () => {
+      await invoke<GatewayRevocation>("revoke_gateway_transfer", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        transferId: selectedTransfer.id,
+        reason: "Revogação solicitada pelo Owner no fixture local",
+        idempotencyKey: gatewayIdempotencyKey("transfer-revoke"),
+        temporaryChat,
+      });
+    });
+  }
+
+  return (
+    <section className="settings-card" aria-label="Gateway AIP local">
+      <header>
+        <h3>Gateway AIP local</h3>
+        <p>
+          Protocolo v{GATEWAY_PROTOCOL_VERSION}; fixture sintética; somente
+          comandos Tauri locais.
+        </p>
+      </header>
+      <ul>
+        <li>Somente local: sem listener de rede, relay, túnel ou BielOS.</li>
+        <li>
+          Cloudflare é apenas configuração metadata; credenciais ausentes e
+          listener desativado.
+        </li>
+        <li>
+          Rust/SQLite mantém a autoridade sobre transferência, autenticação,
+          recuperação, aprovação e revogação.
+        </li>
+      </ul>
+      {temporaryChat ? (
+        <p role="alert">
+          Conversa temporária: mutações do gateway bloqueadas; estado e
+          auditoria continuam somente para leitura.
+        </p>
+      ) : null}
+      {safeMode ? (
+        <p role="alert">
+          Modo seguro: mutações do gateway bloqueadas; estado local permanece
+          visível.
+        </p>
+      ) : null}
+      {error ? <p role="alert">{error}</p> : null}
+
+      <div className="message-actions">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() =>
+            void loadData().catch((loadError: unknown) =>
+              setError(gatewayErrorMessage(loadError)),
+            )
+          }
+        >
+          Atualizar estado e auditoria do gateway
+        </button>
+        <button
+          type="button"
+          disabled={busy || blocked}
+          onClick={() => void prepareTransfer()}
+        >
+          Preparar transferência fixture
+        </button>
+      </div>
+
+      <section>
+        <h4>Protocolo, conta e transferência</h4>
+        {protocol ? (
+          <p>
+            Transporte: <strong>{protocol.transport}</strong>; listener de rede:{" "}
+            <strong>{protocol.networkListener ? "sim" : "não"}</strong>;
+            fallback standalone:{" "}
+            <strong>{protocol.standaloneFallback ? "sim" : "não"}</strong>.
+          </p>
+        ) : (
+          <p>Protocolo ainda não carregado.</p>
+        )}
+        {protocol?.cloudflare ? (
+          <p>
+            Cloudflare: modo <strong>{protocol.cloudflare.mode}</strong>,
+            credenciais <strong>{protocol.cloudflare.credentialState}</strong>,
+            hostname metadata{" "}
+            <code>{protocol.cloudflare.hostnameMetadata}</code>.
+          </p>
+        ) : null}
+        {accounts.length === 0 ? (
+          <p>Nenhuma conta metadata-only registrada.</p>
+        ) : (
+          <ul>
+            {accounts.map((account) => (
+              <li key={account.id}>
+                Conta local <code>{account.localAccountId}</code>; externa
+                metadata <code>{account.externalAccountIdMetadata}</code>;
+                efeito externo: não.
+              </li>
+            ))}
+          </ul>
+        )}
+        <label>
+          Transferência fixture
+          <select
+            value={selectedTransferId}
+            onChange={(event) => setSelectedTransferId(event.target.value)}
+            disabled={busy}
+          >
+            <option value="">Nenhuma transferência</option>
+            {transfers.map((transfer) => (
+              <option key={transfer.id} value={transfer.id}>
+                {transfer.id} — {gatewayTransferStatusLabels[transfer.status]}
+              </option>
+            ))}
+          </select>
+        </label>
+        {selectedTransfer ? (
+          <>
+            <p>
+              Estado: {gatewayTransferStatusLabels[selectedTransfer.status]};
+              aprovação obrigatória; metadata-only; efeito externo: não.
+            </p>
+            <div className="message-actions">
+              <button
+                type="button"
+                disabled={
+                  busy || blocked || selectedTransfer.status !== "previewed"
+                }
+                onClick={() => void approveTransfer()}
+              >
+                Aprovar transferência
+              </button>
+              <button
+                type="button"
+                disabled={
+                  busy || blocked || selectedTransfer.status === "revoked"
+                }
+                onClick={() => void revokeTransfer()}
+              >
+                Revogar transferência
+              </button>
+              <button
+                type="button"
+                disabled={
+                  busy || blocked || selectedTransfer.status !== "approved"
+                }
+                onClick={() => void connectSession()}
+              >
+                Conectar sessão local
+              </button>
+            </div>
+          </>
+        ) : null}
+      </section>
+
+      <section>
+        <h4>Sessão administrativa e recuperação</h4>
+        <label>
+          Sessão gateway
+          <select
+            value={selectedSessionId}
+            onChange={(event) => setSelectedSessionId(event.target.value)}
+            disabled={busy}
+          >
+            <option value="">Nenhuma sessão</option>
+            {sessions.map((session) => (
+              <option key={session.id} value={session.id}>
+                {session.id} — {gatewaySessionStatusLabels[session.status]}
+              </option>
+            ))}
+          </select>
+        </label>
+        {selectedSession ? (
+          <>
+            <p>
+              Sessão {gatewaySessionStatusLabels[selectedSession.status]};
+              autenticação{" "}
+              {selectedSession.authenticated ? "válida" : "inválida"};
+              transporte local:{" "}
+              {selectedSession.localLoopbackOnly ? "sim" : "não"}.
+            </p>
+            <div className="message-actions">
+              <button
+                type="button"
+                disabled={
+                  busy || blocked || selectedSession.status === "revoked"
+                }
+                onClick={() => void reconnectSession()}
+              >
+                Reconectar sessão
+              </button>
+              <button
+                type="button"
+                disabled={
+                  busy || blocked || selectedSession.status !== "connected"
+                }
+                onClick={() => void requestRecovery()}
+              >
+                Solicitar recuperação administrativa
+              </button>
+              <button
+                type="button"
+                disabled={
+                  busy || blocked || selectedSession.status === "revoked"
+                }
+                onClick={() => void revokeSession()}
+              >
+                Revogar sessão
+              </button>
+            </div>
+          </>
+        ) : (
+          <p>Nenhuma sessão administrativa fixture registrada.</p>
+        )}
+        <label>
+          Recuperação
+          <select
+            value={selectedRecoveryId}
+            onChange={(event) => setSelectedRecoveryId(event.target.value)}
+            disabled={busy}
+          >
+            <option value="">Nenhuma recuperação</option>
+            {recoveries.map((recovery) => (
+              <option key={recovery.id} value={recovery.id}>
+                {recovery.id} — {gatewayRecoveryStatusLabels[recovery.status]}
+              </option>
+            ))}
+          </select>
+        </label>
+        {selectedRecovery ? (
+          <>
+            <p>
+              Recuperação {gatewayRecoveryStatusLabels[selectedRecovery.status]}
+              ; aprovação obrigatória; metadata-only; efeito externo: não.
+            </p>
+            <button
+              type="button"
+              disabled={
+                busy ||
+                blocked ||
+                selectedRecovery.status !== "pending_approval"
+              }
+              onClick={() => void approveRecovery()}
+            >
+              Aprovar recuperação
+            </button>
+          </>
+        ) : null}
+      </section>
+
+      <section>
+        <h4>Auditoria e revogações</h4>
+        {audit.length === 0 && revocations.length === 0 ? (
+          <p>Nenhum evento do gateway local registrado.</p>
+        ) : (
+          <ul>
+            {audit.slice(0, 8).map((record) => (
+              <li key={`gateway-audit-${record.id}`}>
+                Auditoria: <strong>{record.event}</strong> — {record.summary}
+              </li>
+            ))}
+            {revocations.slice(0, 8).map((record) => (
+              <li key={`gateway-revocation-${record.id}`}>
+                Revogação: <strong>{record.targetKind}</strong> —{" "}
+                {record.reason}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </section>
+  );
+}
+
 function SettingsSurface({
   snapshot,
   changingMode,
@@ -6879,6 +7472,14 @@ function App() {
             <details>
               <summary>Companion Android local</summary>
               <CompanionControls
+                agentId={activeAgentId}
+                temporaryChat={temporaryChat}
+                safeMode={snapshot?.safeMode ?? true}
+              />
+            </details>
+            <details>
+              <summary>Gateway AIP local</summary>
+              <GatewayControls
                 agentId={activeAgentId}
                 temporaryChat={temporaryChat}
                 safeMode={snapshot?.safeMode ?? true}

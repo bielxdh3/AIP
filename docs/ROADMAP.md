@@ -300,17 +300,21 @@ external accounts, persist media bytes, or claim mobile runtime validation.
 Packaged Android transport, cryptographic key custody, notifications, real
 audio/voice, and human device testing remain reserved.
 
-## Post-v0.1 Phase 13: BielOS integration
+## Post-v0.1 Phase 13: gateway boundary `[IMPLEMENTED — LOCAL METADATA-ONLY CHECKPOINT]`
 
-Potential scope:
+The current checkpoint implements the bounded local architecture described in
+[PHASE_13_GATEWAY_SPEC.md](PHASE_13_GATEWAY_SPEC.md):
 
-- versioned AIP gateway;
-- BielOS accounts and ownership;
-- transfer of girlfriend-oriented agent;
-- Cloudflare Tunnel and Access;
-- mobile administrative recovery;
-- preserved AIP standalone operation;
-- no direct exposure of Python runtime internals.
+- versioned gateway metadata and a synthetic local administrative fixture;
+- Owner-scoped transfer preview/approval, session proof/replay checks,
+  administrative recovery approval, revocation, and audit;
+- Rust/SQLite authority with safe-mode and temporary-chat fail-closed gates;
+- Portuguese desktop Gateway controls and preserved standalone fallback.
+
+This does not integrate BielOS accounts, transfer a real agent, open a network
+listener, provide a relay or tunnel, or use Cloudflare credentials. External
+ownership exchange, remote/mobile delivery, and any real gateway transport
+remain separately authorized future scope.
 
 ## Deferred research
 

@@ -963,6 +963,243 @@ export type CompanionDeviceActionRequest = {
   temporaryChat: boolean;
 };
 
+export const GATEWAY_PROTOCOL_VERSION = 1 as const;
+export const GATEWAY_MIN_PROTOCOL_VERSION = 1 as const;
+export const GATEWAY_FIXTURE_AGENT_ID = "agt_luma_provisional" as const;
+export const GATEWAY_FIXTURE_ACCOUNT_ID = "gateway-account-owner" as const;
+export const GATEWAY_FIXTURE_LOCAL_ACCOUNT_ID = "aip-owner-local" as const;
+export const GATEWAY_FIXTURE_EXTERNAL_ACCOUNT_METADATA =
+  "fixture:external-account/bielos-owner" as const;
+export const GATEWAY_FIXTURE_CLIENT_ID = "mobile-admin-fixture-01" as const;
+export const GATEWAY_FIXTURE_APP_VERSION = "0.1.0-gateway-fixture" as const;
+export const GATEWAY_FIXTURE_AUTH_PROOF_METADATA =
+  "fixture:auth/mobile-admin-01" as const;
+export const GATEWAY_FIXTURE_TRANSFER_INTEGRITY_HASH =
+  "sha256:fixture/girlfriend-agent-v1" as const;
+export const GATEWAY_FIXTURE_RECOVERY_TARGET =
+  "fixture:recovery/owner-access" as const;
+export const GATEWAY_CLOUDFLARE_TUNNEL_ID_METADATA =
+  "fixture:tunnel/aip-gateway" as const;
+export const GATEWAY_CLOUDFLARE_HOSTNAME_METADATA = "example.invalid" as const;
+export const GATEWAY_CLOUDFLARE_ACCESS_AUDIENCE_METADATA =
+  "fixture:access/aip-owner" as const;
+
+export type GatewayAccountStatus = "metadata_only" | "revoked";
+export type GatewayTransferStatus = "previewed" | "approved" | "revoked";
+export type GatewaySessionStatus =
+  "connected" | "disconnected" | "revoked" | "expired";
+export type GatewayRecoveryStatus = "pending_approval" | "approved" | "revoked";
+export type GatewayMessageKind = "session" | "recovery";
+export type GatewayCloudflareMetadata = {
+  provider: "cloudflare_tunnel_access";
+  mode: "metadata_only";
+  tunnelIdMetadata: typeof GATEWAY_CLOUDFLARE_TUNNEL_ID_METADATA;
+  hostnameMetadata: typeof GATEWAY_CLOUDFLARE_HOSTNAME_METADATA;
+  accessAudienceMetadata: typeof GATEWAY_CLOUDFLARE_ACCESS_AUDIENCE_METADATA;
+  credentialState: "absent";
+  networkListener: false;
+};
+export type GatewayProtocolInfo = {
+  schemaVersion: 1;
+  protocolVersion: typeof GATEWAY_PROTOCOL_VERSION;
+  minProtocolVersion: typeof GATEWAY_MIN_PROTOCOL_VERSION;
+  transport: "local_loopback_fixture";
+  networkListener: false;
+  cloudflare: GatewayCloudflareMetadata;
+  standaloneFallback: true;
+};
+export type GatewayProtocolMessage = {
+  schemaVersion: 1;
+  protocolVersion: typeof GATEWAY_PROTOCOL_VERSION;
+  messageId: string;
+  clientId: string;
+  kind: GatewayMessageKind;
+  sessionId: string;
+  nonceMetadata: string;
+  replayCounter: number;
+  payloadKind: string;
+};
+export type GatewayAccount = {
+  id: string;
+  ownerUserId: string;
+  localAccountId: typeof GATEWAY_FIXTURE_LOCAL_ACCOUNT_ID;
+  externalAccountIdMetadata: typeof GATEWAY_FIXTURE_EXTERNAL_ACCOUNT_METADATA;
+  ownershipScope: "owner_only";
+  status: GatewayAccountStatus;
+  metadataOnly: true;
+  externalEffectPerformed: false;
+  standaloneFallback: true;
+  createdAt: number;
+  updatedAt: number;
+};
+export type GatewayTransfer = {
+  id: string;
+  accountId: typeof GATEWAY_FIXTURE_ACCOUNT_ID;
+  sourceAgentId: typeof GATEWAY_FIXTURE_AGENT_ID;
+  ownerUserId: string;
+  destinationAccountMetadata: typeof GATEWAY_FIXTURE_EXTERNAL_ACCOUNT_METADATA;
+  integrityHash: typeof GATEWAY_FIXTURE_TRANSFER_INTEGRITY_HASH;
+  status: GatewayTransferStatus;
+  authorizationStatus: "pending_owner_approval" | "owner_approved" | "revoked";
+  approvalRequired: true;
+  metadataOnly: true;
+  externalEffectPerformed: false;
+  standaloneFallback: true;
+  createdAt: number;
+  approvedAt: number | null;
+  updatedAt: number;
+};
+export type GatewaySessionProof = {
+  sessionId: string;
+  transferId: string;
+  clientId: typeof GATEWAY_FIXTURE_CLIENT_ID;
+  sessionNonceMetadata: string;
+  authProofMetadata: typeof GATEWAY_FIXTURE_AUTH_PROOF_METADATA;
+  appVersion: typeof GATEWAY_FIXTURE_APP_VERSION;
+  protocolVersion: typeof GATEWAY_PROTOCOL_VERSION;
+  messageNonceMetadata: string;
+  replayCounter: number;
+};
+export type GatewaySession = {
+  id: string;
+  accountId: typeof GATEWAY_FIXTURE_ACCOUNT_ID;
+  transferId: string;
+  sourceAgentId: typeof GATEWAY_FIXTURE_AGENT_ID;
+  ownerUserId: string;
+  clientId: typeof GATEWAY_FIXTURE_CLIENT_ID;
+  status: GatewaySessionStatus;
+  protocolVersion: typeof GATEWAY_PROTOCOL_VERSION;
+  appVersion: typeof GATEWAY_FIXTURE_APP_VERSION;
+  negotiatedProtocolVersion: typeof GATEWAY_PROTOCOL_VERSION;
+  sessionNonceMetadata: string;
+  authProofMetadata: typeof GATEWAY_FIXTURE_AUTH_PROOF_METADATA;
+  lastReplayCounter: number;
+  scope: "administrative_recovery";
+  authenticated: true;
+  localLoopbackOnly: true;
+  standaloneFallback: true;
+  connectedAt: number;
+  lastSeenAt: number;
+  disconnectedAt: number | null;
+  protocol: GatewayProtocolInfo;
+  handshake: GatewayProtocolMessage;
+  updatedAt: number;
+};
+export type GatewayRecovery = {
+  id: string;
+  accountId: typeof GATEWAY_FIXTURE_ACCOUNT_ID;
+  transferId: string;
+  sessionId: string;
+  sourceAgentId: typeof GATEWAY_FIXTURE_AGENT_ID;
+  ownerUserId: string;
+  clientId: typeof GATEWAY_FIXTURE_CLIENT_ID;
+  kind: "mobile_administrative";
+  status: GatewayRecoveryStatus;
+  targetMetadata: typeof GATEWAY_FIXTURE_RECOVERY_TARGET;
+  approvalRequired: true;
+  metadataOnly: true;
+  externalEffectPerformed: false;
+  createdAt: number;
+  approvedAt: number | null;
+  updatedAt: number;
+};
+export type GatewayAuditRecord = {
+  id: string;
+  accountId: string | null;
+  transferId: string | null;
+  sessionId: string | null;
+  recoveryId: string | null;
+  sourceAgentId: typeof GATEWAY_FIXTURE_AGENT_ID;
+  ownerUserId: string;
+  event: string;
+  result: string;
+  code: string | null;
+  summary: string;
+  createdAt: number;
+};
+export type GatewayRevocation = {
+  id: string;
+  accountId: typeof GATEWAY_FIXTURE_ACCOUNT_ID;
+  transferId: string | null;
+  sessionId: string | null;
+  ownerUserId: string;
+  targetKind: "transfer" | "session";
+  targetId: string;
+  previousStatus: string;
+  reason: string;
+  createdAt: number;
+};
+export type GatewayTransferRequest = {
+  agentId: typeof GATEWAY_FIXTURE_AGENT_ID;
+  ownerUserId: string;
+  destinationAccountMetadata: typeof GATEWAY_FIXTURE_EXTERNAL_ACCOUNT_METADATA;
+  integrityHash: typeof GATEWAY_FIXTURE_TRANSFER_INTEGRITY_HASH;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type GatewayTransferApprovalRequest = {
+  agentId: typeof GATEWAY_FIXTURE_AGENT_ID;
+  ownerUserId: string;
+  transferId: string;
+  approved: true;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type GatewaySessionRequest = {
+  agentId: typeof GATEWAY_FIXTURE_AGENT_ID;
+  ownerUserId: string;
+  transferId: string;
+  clientId: typeof GATEWAY_FIXTURE_CLIENT_ID;
+  appVersion: typeof GATEWAY_FIXTURE_APP_VERSION;
+  protocolVersion: typeof GATEWAY_PROTOCOL_VERSION;
+  authProofMetadata: typeof GATEWAY_FIXTURE_AUTH_PROOF_METADATA;
+  messageNonceMetadata: string;
+  replayCounter: number;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type GatewayReconnectRequest = {
+  agentId: typeof GATEWAY_FIXTURE_AGENT_ID;
+  ownerUserId: string;
+  proof: GatewaySessionProof;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type GatewayRecoveryRequest = {
+  agentId: typeof GATEWAY_FIXTURE_AGENT_ID;
+  ownerUserId: string;
+  proof: GatewaySessionProof;
+  recoveryKind: "mobile_administrative";
+  targetMetadata: typeof GATEWAY_FIXTURE_RECOVERY_TARGET;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type GatewayRecoveryApprovalRequest = {
+  agentId: typeof GATEWAY_FIXTURE_AGENT_ID;
+  ownerUserId: string;
+  proof: GatewaySessionProof;
+  recoveryId: string;
+  approved: true;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type GatewaySessionActionRequest = {
+  agentId: typeof GATEWAY_FIXTURE_AGENT_ID;
+  ownerUserId: string;
+  sessionId: string;
+  reason: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type GatewayTransferActionRequest = {
+  agentId: typeof GATEWAY_FIXTURE_AGENT_ID;
+  ownerUserId: string;
+  transferId: string;
+  reason: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+
 export type CognitiveTrait = {
   key: string;
   value: number;
