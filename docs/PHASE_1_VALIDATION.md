@@ -1,6 +1,15 @@
 # Phase 1 Validation
 
-## Status
+## Current release status
+
+Phase 1 is DONE at the v0.1 release-evidence level. The later installed-v0.1 package approval
+recorded in [V0_1_MANUAL_VALIDATION.md](V0_1_MANUAL_VALIDATION.md) on 2026-07-30 for packaged
+SHA `6b5dc1a0a18d3e346d04c6bd89de13775c681434` (CI run `30474813207`) supersedes the
+pre-release pending labels in this document for current release status. This is release-level
+status only: it does not reconstruct per-step observations. The failed, incomplete, and pending
+evidence below remains historical and unchanged.
+
+## Historical pre-release status
 
 Phase 1 is implemented but not approved. Automated checks and a local commit do not replace the
 real Windows and Ollama smoke test below. Record the exact commit SHA in the validation report;
@@ -205,7 +214,11 @@ For both Astra and Luma:
    generation runs at a time.
 5. Close AIP and confirm Python exits and `git status` remains clean.
 
-## Approval rule
+## Historical approval rule
+
+The rule below governed the exact pre-release records above. Its pending conclusion is retained as
+historical evidence; it is superseded for current v0.1 release status by the approved installed-
+package record in the section above.
 
 Phase 1 may become `[DONE]` only after all checks pass against the exact local commit, the phase
 review finds no unresolved material defect, push is explicitly authorized, and the exact pushed

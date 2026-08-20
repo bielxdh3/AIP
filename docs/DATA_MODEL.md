@@ -211,6 +211,16 @@ and source filters. Editing a memory preserves its stable ID and source metadata
 
 ## 6. Models
 
+## Phase 7A cognitive events
+
+Migration `0012` adds the deterministic trait-event foundation. `cognitive_events` is append-only and owner/agent scoped: it records the event and idempotency IDs, kind, trait key, source category, reason, confidence, requested/prior/resulting normalized values, policy/schema versions, terminal status, rollback link, and timestamps. `(agent_id, idempotency_key)` is unique and indexes support per-agent history and trait-window checks.
+
+Phase 7A persists the requested value separately from the applied delta, a controlled source reference, sanitized terminal code, checkpoint, and minimal audit row. Ordinary candidates use a typed source category: `controlled_internal` requires a bounded processor and evidence identity; `conversation_message` validates only persisted, owner/agent-scoped, unarchived, complete turns; and `owner_correction` remains exclusive to the dedicated correction operation. The evidence identity is deterministic and independent of the idempotency key, so equivalent evidence cannot apply twice. Conversation references store identifiers only; no message content, prompts, or hidden reasoning enter events or audit metadata. Conversation validation is a future-adapter boundary only: no live extraction is connected.
+
+Only the six typed trait keys are evolvable; all other keys, including identity and explicitly protected fields, are protected by default. Ordinary candidates are internal-only and bounded to `0.05` per event and `0.10` absolute change per trait in a rolling 30-day window. A positive remaining allowance is applied partially; zero allowance is rejected. Reversal creates an immutable compensating event and is only permitted for the latest applied non-rollback event of that trait; otherwise it returns `rollback_conflict`.
+
+`cognitive_processing_checkpoints` records the terminal outcome of a processor/idempotency key for safe replay. Trait values remain in the existing identity-profile JSON projection; the migration does not modify existing Astra/Luma traits or add opinions, relationships, goals, activities, or model-generated learning.
+
 ### `model_providers`
 
 | Field | Type | Notes |

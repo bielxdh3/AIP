@@ -154,6 +154,166 @@ export type AgentSimulatedState = {
   lastSimulatedAt: number;
 };
 
+export type CognitiveTrait = {
+  key: string;
+  value: number;
+  isProtected: boolean;
+};
+export type CognitiveEventSummary = {
+  id: string;
+  agentId: string;
+  kind: "trait_delta" | "owner_correction" | "rollback";
+  traitKey: string;
+  sourceKind: string;
+  sourceReference: string | null;
+  reason: string;
+  confidence: number;
+  requestedValue: number;
+  appliedDelta: number | null;
+  priorValue: number;
+  resultingValue: number;
+  status: "applied" | "rejected" | "rolled_back";
+  code: string | null;
+  rollbackOfEventId: string | null;
+  createdAt: number;
+};
+export type CognitiveEventExplanation = {
+  event: CognitiveEventSummary;
+  traitLabel: string;
+};
+export type OwnerCorrectionRequest = {
+  agentId: string;
+  traitKey: string;
+  value: number;
+  reason: string;
+  idempotencyKey: string;
+};
+export type RollbackRequest = {
+  agentId: string;
+  eventId: string;
+  idempotencyKey: string;
+};
+export type CognitiveErrorCode =
+  | "agent_not_found"
+  | "event_not_found"
+  | "invalid_idempotency_key"
+  | "invalid_reason"
+  | "invalid_value"
+  | "operation_unavailable"
+  | "oscillation_blocked"
+  | "rate_limit_event"
+  | "rate_limit_window"
+  | "rollback_not_allowed"
+  | "source_ineligible"
+  | "source_not_found"
+  | "ownership_mismatch"
+  | "trait_not_found"
+  | "protected_trait"
+  | "idempotency_conflict"
+  | "duplicate_evidence"
+  | "rollback_conflict"
+  | "persistence_failed";
+export type CognitiveErrorResponse = {
+  code: CognitiveErrorCode;
+  message: string;
+};
+
+function cognitiveNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+function cognitiveString(value: unknown): value is string {
+  return typeof value === "string";
+}
+export function parseCognitiveTrait(value: unknown): CognitiveTrait | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Partial<CognitiveTrait>;
+  return typeof candidate.key === "string" &&
+    cognitiveNumber(candidate.value) &&
+    typeof candidate.isProtected === "boolean"
+    ? (candidate as CognitiveTrait)
+    : null;
+}
+export function parseCognitiveEvent(
+  value: unknown,
+): CognitiveEventSummary | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Partial<CognitiveEventSummary>;
+  return cognitiveString(candidate.id) &&
+    cognitiveString(candidate.agentId) &&
+    ["trait_delta", "owner_correction", "rollback"].includes(
+      candidate.kind ?? "",
+    ) &&
+    cognitiveString(candidate.traitKey) &&
+    cognitiveString(candidate.sourceKind) &&
+    (candidate.sourceReference === null ||
+      cognitiveString(candidate.sourceReference)) &&
+    cognitiveString(candidate.reason) &&
+    (candidate.appliedDelta === null ||
+      cognitiveNumber(candidate.appliedDelta)) &&
+    cognitiveNumber(candidate.priorValue) &&
+    cognitiveNumber(candidate.resultingValue) &&
+    cognitiveNumber(candidate.requestedValue) &&
+    cognitiveNumber(candidate.confidence) &&
+    ["applied", "rejected", "rolled_back"].includes(candidate.status ?? "") &&
+    (candidate.code === null || cognitiveString(candidate.code)) &&
+    (candidate.rollbackOfEventId === null ||
+      cognitiveString(candidate.rollbackOfEventId)) &&
+    cognitiveNumber(candidate.createdAt)
+    ? (candidate as CognitiveEventSummary)
+    : null;
+}
+export function parseCognitiveExplanation(
+  value: unknown,
+): CognitiveEventExplanation | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Partial<CognitiveEventExplanation>;
+  return parseCognitiveEvent(candidate.event) !== null &&
+    cognitiveString(candidate.traitLabel)
+    ? (candidate as CognitiveEventExplanation)
+    : null;
+}
+export function parseOwnerCorrectionResult(
+  value: unknown,
+): CognitiveEventSummary | null {
+  return parseCognitiveEvent(value);
+}
+export function parseRollbackResult(
+  value: unknown,
+): CognitiveEventSummary | null {
+  return parseCognitiveEvent(value);
+}
+export function parseCognitiveError(
+  value: unknown,
+): CognitiveErrorResponse | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Partial<CognitiveErrorResponse>;
+  const codes: CognitiveErrorCode[] = [
+    "agent_not_found",
+    "event_not_found",
+    "invalid_idempotency_key",
+    "invalid_reason",
+    "invalid_value",
+    "operation_unavailable",
+    "oscillation_blocked",
+    "rate_limit_event",
+    "rate_limit_window",
+    "rollback_not_allowed",
+    "source_ineligible",
+    "source_not_found",
+    "ownership_mismatch",
+    "trait_not_found",
+    "protected_trait",
+    "idempotency_conflict",
+    "duplicate_evidence",
+    "rollback_conflict",
+    "persistence_failed",
+  ];
+  return codes.includes(candidate.code as CognitiveErrorCode) &&
+    cognitiveString(candidate.message)
+    ? (candidate as CognitiveErrorResponse)
+    : null;
+}
+
 export type QueueEntry = {
   requestId: string;
   agentId: string;
@@ -175,7 +335,8 @@ export type PhaseOneState = {
   selectedModelRef: string | null;
   defaultModelRef: string | null;
   modelOverrideRef: string | null;
-  effectiveModelSource: "agent_default" | "conversation_override" | "temporary_override";
+  effectiveModelSource:
+    "agent_default" | "conversation_override" | "temporary_override";
   selectedModelAvailable: boolean;
   keepAliveMinutes: number;
   queue: QueueEntry[];
