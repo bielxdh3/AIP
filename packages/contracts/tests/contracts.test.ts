@@ -24,6 +24,15 @@ import {
   parseExtensionCatalog,
   parseExtensionManifest,
   parseExtensionProposals,
+  parseScreenVisionAnalysisResult,
+  parseScreenVisionAudit,
+  parseScreenVisionFixture,
+  parseScreenVisionFixtures,
+  parseScreenVisionHypothesis,
+  parseScreenVisionJob,
+  parseScreenVisionPrivacy,
+  parseScreenVisionSession,
+  parseScreenVisionSessions,
 } from "../src/index";
 
 describe("runtime contracts", () => {
@@ -454,5 +463,154 @@ describe("metadata-only extension contracts", () => {
     expect(
       parseExtensionProposals([{ ...proposal, status: "active" }]),
     ).toBeNull();
+  });
+});
+
+describe("metadata-only screen vision contracts", () => {
+  const fixture = {
+    fixtureId: "fixture:screen/monitor-1/desktop-neutral-v1",
+    monitorId: "monitor-1",
+    displayName: "Monitor sintético 1",
+    width: 1280,
+    height: 720,
+    scale: 1,
+    synthetic: true as const,
+    metadataOnly: true as const,
+  };
+  const privacy = {
+    excludeSensitiveContent: true as const,
+    redactionRules: [
+      { kind: "exclude_sensitive_regions" as const, enabled: true },
+    ],
+  };
+  const preview = {
+    fixtureId: fixture.fixtureId,
+    monitorId: fixture.monitorId,
+    displayName: fixture.displayName,
+    width: fixture.width,
+    height: fixture.height,
+    synthetic: true as const,
+    metadataOnly: true as const,
+    confirmationRequired: true as const,
+    redactionRuleCount: 1,
+  };
+  const session = {
+    id: "session-1",
+    agentId: "agt_astra_provisional",
+    ownerUserId: "usr_owner_local",
+    monitorId: fixture.monitorId,
+    fixtureId: fixture.fixtureId,
+    status: "active" as const,
+    permissions: ["capture_fixture", "analyze_fixture"] as const,
+    privacy,
+    maxJobs: 4,
+    maxDurationMs: 5_000,
+    createdAt: 1,
+    updatedAt: 1,
+    closedAt: null,
+  };
+  const job = {
+    id: "job-1",
+    sessionId: session.id,
+    agentId: session.agentId,
+    ownerUserId: session.ownerUserId,
+    monitorId: fixture.monitorId,
+    fixtureId: fixture.fixtureId,
+    modelFixtureId: "fixture:visual-model/screen-neutral-v1" as const,
+    resourceKey: "reference-gpu" as const,
+    resourceStatus: "released" as const,
+    status: "cleaned" as const,
+    terminalStatus: "completed" as const,
+    modelLifecycle: "unloaded" as const,
+    modelLoadedAt: 2,
+    modelRunAt: 2,
+    modelCleanupAt: 2,
+    cleanupStatus: "complete" as const,
+    preview,
+    privacy,
+    frameMetadataPresent: false,
+    resultDurable: false as const,
+    errorCode: null,
+    createdAt: 1,
+    queuedAt: 2,
+    runningAt: 2,
+    completedAt: 2,
+    cleanedAt: 2,
+    updatedAt: 2,
+  };
+  const hypothesis = {
+    text: "Hipótese incerta: confirme visualmente.",
+    confidence: 42,
+    uncertain: true as const,
+    diagnostic: false as const,
+    durable: false as const,
+    sensitiveAttributeInferred: false as const,
+    source: "synthetic_fixture_visual_model",
+  };
+  const result = {
+    job,
+    hypothesis,
+    outputBounded: true as const,
+    screenshotBytesPersisted: false as const,
+  };
+
+  it("accepts bounded synthetic fixtures, lifecycle records, results and audit", () => {
+    expect(parseScreenVisionFixture(fixture)).not.toBeNull();
+    expect(parseScreenVisionFixtures([fixture])).not.toBeNull();
+    expect(parseScreenVisionPrivacy(privacy)).not.toBeNull();
+    expect(parseScreenVisionSession(session)).not.toBeNull();
+    expect(parseScreenVisionSessions([session])).not.toBeNull();
+    expect(parseScreenVisionJob(job)).not.toBeNull();
+    expect(parseScreenVisionHypothesis(hypothesis)).not.toBeNull();
+    expect(parseScreenVisionAnalysisResult(result)).not.toBeNull();
+    expect(
+      parseScreenVisionAudit([
+        {
+          id: "audit-1",
+          sessionId: session.id,
+          jobId: job.id,
+          agentId: session.agentId,
+          event: "job_completed",
+          result: "synthetic",
+          code: null,
+          summary: "Fixture executada sob demanda.",
+          createdAt: 2,
+        },
+      ]),
+    ).not.toBeNull();
+    expect(
+      parseCognitiveError({
+        code: "screen_vision_resource_busy",
+        message: "Recurso visual ocupado",
+      }),
+    ).not.toBeNull();
+  });
+
+  it("rejects pixels, unsafe privacy, durable visual state and certainty", () => {
+    expect(
+      parseScreenVisionFixture({ ...fixture, metadataOnly: false }),
+    ).toBeNull();
+    expect(
+      parseScreenVisionPrivacy({
+        ...privacy,
+        excludeSensitiveContent: false,
+      }),
+    ).toBeNull();
+    expect(
+      parseScreenVisionAnalysisResult({
+        ...result,
+        screenshotBytes: "not allowed",
+      }),
+    ).toBeNull();
+    expect(
+      parseScreenVisionAnalysisResult({
+        ...result,
+        job: { ...job, resultDurable: true },
+      }),
+    ).toBeNull();
+    expect(
+      parseScreenVisionHypothesis({ ...hypothesis, uncertain: false }),
+    ).toBeNull();
+    expect(parseScreenVisionFixtures([fixture, fixture, fixture])).toBeNull();
   });
 });

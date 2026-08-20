@@ -9,6 +9,7 @@ mod native_overlay_region;
 mod overlays;
 mod protocol;
 mod runtime;
+mod screen_vision;
 mod tools;
 mod voice;
 
@@ -46,6 +47,12 @@ use extensions::{
 };
 use overlays::{InteractiveRegion, OverlayInputState};
 use runtime::RuntimeController;
+use screen_vision::{
+    ScreenVisionAnalysisResult, ScreenVisionAuditRecord, ScreenVisionFixture, ScreenVisionJob,
+    ScreenVisionJobCancellationRequest, ScreenVisionJobCleanupRequest,
+    ScreenVisionJobConfirmationRequest, ScreenVisionJobPreviewRequest, ScreenVisionSession,
+    ScreenVisionSessionCancellationRequest, ScreenVisionSessionRequest,
+};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tools::{
     ToolAction, ToolActionCancellationRequest, ToolActionConfirmationRequest,
@@ -1051,6 +1058,173 @@ fn list_extension_audit(
         .map_err(|error| error.code())
 }
 
+fn ensure_screen_vision_mutation_allowed(
+    state: &AppState,
+    agent_id: &str,
+    requested_temporary: bool,
+) -> Result<(), &'static str> {
+    ensure_conversation_not_temporary(state, agent_id, requested_temporary)
+}
+
+#[tauri::command]
+fn list_screen_vision_fixtures(
+    state: State<'_, AppState>,
+) -> Result<Vec<ScreenVisionFixture>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_screen_vision_fixtures()
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_screen_vision_sessions(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ScreenVisionSession>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_screen_vision_sessions(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_screen_vision_jobs(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ScreenVisionJob>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_screen_vision_jobs(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_screen_vision_audit(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ScreenVisionAuditRecord>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_screen_vision_audit(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn create_screen_vision_session(
+    state: State<'_, AppState>,
+    request: ScreenVisionSessionRequest,
+) -> Result<ScreenVisionSession, &'static str> {
+    ensure_screen_vision_mutation_allowed(
+        state.inner(),
+        &request.agent_id,
+        request.temporary_chat,
+    )?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .create_screen_vision_session(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn preview_screen_vision_job(
+    state: State<'_, AppState>,
+    request: ScreenVisionJobPreviewRequest,
+) -> Result<ScreenVisionJob, &'static str> {
+    ensure_screen_vision_mutation_allowed(
+        state.inner(),
+        &request.agent_id,
+        request.temporary_chat,
+    )?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .preview_screen_vision_job(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn confirm_screen_vision_job(
+    state: State<'_, AppState>,
+    request: ScreenVisionJobConfirmationRequest,
+) -> Result<ScreenVisionAnalysisResult, &'static str> {
+    ensure_screen_vision_mutation_allowed(
+        state.inner(),
+        &request.agent_id,
+        request.temporary_chat,
+    )?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .confirm_screen_vision_job(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn cancel_screen_vision_job(
+    state: State<'_, AppState>,
+    request: ScreenVisionJobCancellationRequest,
+) -> Result<ScreenVisionJob, &'static str> {
+    ensure_screen_vision_mutation_allowed(
+        state.inner(),
+        &request.agent_id,
+        request.temporary_chat,
+    )?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .cancel_screen_vision_job(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn cleanup_screen_vision_job(
+    state: State<'_, AppState>,
+    request: ScreenVisionJobCleanupRequest,
+) -> Result<ScreenVisionJob, &'static str> {
+    ensure_screen_vision_mutation_allowed(
+        state.inner(),
+        &request.agent_id,
+        request.temporary_chat,
+    )?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .cleanup_screen_vision_job(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn cancel_screen_vision_session(
+    state: State<'_, AppState>,
+    request: ScreenVisionSessionCancellationRequest,
+) -> Result<ScreenVisionSession, &'static str> {
+    ensure_screen_vision_mutation_allowed(
+        state.inner(),
+        &request.agent_id,
+        request.temporary_chat,
+    )?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .cancel_screen_vision_session(request)
+        .map_err(|error| error.code())
+}
+
 #[tauri::command]
 fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, &'static str> {
     snapshot(&state)
@@ -1818,6 +1992,16 @@ pub fn run() {
             rollback_extension,
             disable_extension,
             list_extension_audit,
+            list_screen_vision_fixtures,
+            list_screen_vision_sessions,
+            list_screen_vision_jobs,
+            list_screen_vision_audit,
+            create_screen_vision_session,
+            preview_screen_vision_job,
+            confirm_screen_vision_job,
+            cancel_screen_vision_job,
+            cleanup_screen_vision_job,
+            cancel_screen_vision_session,
             set_safe_mode,
             get_phase_one_state,
             get_temporary_phase_one_state,
