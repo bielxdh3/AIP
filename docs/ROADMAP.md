@@ -194,94 +194,127 @@ future work must not be represented as released behavior.
 
 The implementation contract is [the cognitive-core specification](COGNITIVE_CORE_SPEC.md).
 The Phase 7 product decisions are resolved and PR #2 is merged. Phase 7A is complete as
-recorded in [its validation record](PHASE_7A_VALIDATION.md); later slices remain unstarted.
+recorded in [its validation record](PHASE_7A_VALIDATION.md); the current development checkpoint
+covers bounded 7B–7D controls and the Phase 7E public conversation path. Phase 7F is the
+validation/documentation checkpoint recorded in [its validation record](PHASE_7F_VALIDATION.md);
+runtime, manual, and remote reservations remain explicit there. This is not a v0.1 release claim.
 
-- **Phase 7A — cognitive event foundation and protected/evolvable boundaries [APPROVED — DONE]:** typed, bounded ordinary candidates, owner correction, safe explanation, and latest-event compensating rollback. The exact commit, CI, and Owner attestation are recorded in the validation record. Live extraction and all Phase 7B–7E capabilities remain excluded.
+- **Phase 7A — cognitive event foundation and protected/evolvable boundaries [APPROVED — DONE]:** typed, bounded ordinary candidates, owner correction, safe explanation, and latest-event compensating rollback. The exact commit, CI, and Owner attestation are recorded in the validation record. Live extraction and later Phase 7E–7F capabilities remain excluded.
   Owner-scoped event processing, typed source eligibility, trait limits, auditability, and temporary-chat exclusion. Conversation-source validation is a future-adapter boundary only; live extraction remains excluded.
-- **Phase 7B — opinions and evidence:** sourced, inspectable opinions with correction,
-  dispute, and supersession workflows.
-- **Phase 7C — relationships:** bounded per-subject relationship dimensions, event history,
-  limits, reset, and rollback.
-- **Phase 7D — goals and fictional activities:** approval-bound durable goals and explicitly
-  fictional, budgeted activity state with no external action.
-- **Phase 7E — bounded agent-to-agent conversation:** visible, purpose-bound interactions
-  with hard resource budgets and deferred candidate processing.
-- **Phase 7F — integrated validation and UX hardening:** Portuguese explanations, restart
-  behavior, safety controls, and full cross-boundary validation.
+- **Phase 7B — opinions and evidence [IMPLEMENTED — LOCAL PATH]:** sourced, inspectable
+  opinions with correction, dispute, and supersession workflows.
+- **Phase 7C — relationships [IMPLEMENTED — LOCAL PATH]:** bounded per-subject relationship
+  dimensions, event history, limits, reset, and rollback.
+- **Phase 7D — goals and fictional activities [IMPLEMENTED — LOCAL PATH]:** approval-bound
+  durable goals and explicitly fictional, budgeted activity state with no external action.
+- **Phase 7E — bounded agent-to-agent conversation [IMPLEMENTED — LOCAL PATH; VALIDATION
+  RESERVED]:** visible, purpose-bound public interactions with hard resource budgets and
+  deferred candidate processing. See [the Phase 7E validation record](PHASE_7E_VALIDATION.md).
+- **Phase 7F — integrated validation and UX hardening [DOCUMENTED CHECKPOINT; RUNTIME
+  RESERVED]:** validation evidence, Portuguese UI boundaries, restart checks, safety controls,
+  and honest documentation. No new capability is introduced; see [the Phase 7F validation
+  record](PHASE_7F_VALIDATION.md).
 
-## Post-v0.1 Phase 8: voice
+## Post-v0.1 Phase 8: voice [IMPLEMENTED — LOCAL ARCHITECTURE CHECKPOINT; RUNTIME/QUALITY RESERVED]
 
-Potential scope:
+The local architecture checkpoint is implemented in Rust/SQLite, Tauri commands,
+versioned contracts, and Portuguese UI controls. It provides bounded local references,
+fixture transcription/synthesis/wake-word paths, custom synthetic-voice consent,
+base-voice protection, uncertain emotional hypotheses, and voice-muted/silent/suspended
+fallback behavior. It does not claim a working audio product or release validation.
 
-- local speech recognition;
-- lightweight wake word;
-- speech synthesis;
-- custom voice and consent flow;
-- base-voice protection;
-- emotional-hypothesis classification;
-- voice-muted and silent-mode completion.
+Reserved validation covers real audio devices and speech models, packaged Windows
+behavior, and subjective voice quality. The checkpoint keeps no microphone capture, raw
+audio persistence, upload/network path, real-person cloning, or hidden listener. See the
+[Phase 8 voice specification](PHASE_8_VOICE_SPEC.md).
 
-## Post-v0.1 Phase 9: supervised tools
+## Post-v0.1 Phase 9: supervised tools `[IMPLEMENTED — LOCAL MOCK CHECKPOINT]`
 
-Potential scope:
+The current checkpoint implements the bounded local architecture described in
+[PHASE_9_TOOLS_SPEC.md](PHASE_9_TOOLS_SPEC.md):
 
-- tool manifest;
-- granular session permissions;
-- action preview;
-- approval and forced-execution flow;
-- read-only and state-changing separation;
-- file organization tools;
-- calendar and messaging tools;
-- audit retention;
-- safe rollback.
+- versioned catalog with read-only/state-changing classification;
+- granular fixture-scoped sessions and permissions;
+- exact action preview, dry-run, Owner approval, and manifest-bound second confirmation;
+- deterministic workspace, calendar, and messaging adapter mocks;
+- bounded untrusted output, cancellation, compensation metadata, and 30-day audit retention;
+- temporary-chat and safe-mode fail-closed controls with Portuguese Owner UI.
 
-## Post-v0.1 Phase 10: extensions
+This does not enable real filesystem, shell, credential, calendar, messaging,
+network, or external-provider access. Live adapters, packaged-Windows runtime
+evidence, and release approval remain reserved validation work.
 
-Potential scope:
+## Post-v0.1 Phase 10: extensions [IMPLEMENTED — LOCAL METADATA-ONLY CHECKPOINT]
 
-- extension SDK;
-- sandbox;
-- private catalog;
-- agent-created extensions;
-- administrator-selected third-party extensions;
-- permission-aware updates;
-- rollback and ratings.
+The current checkpoint implements the bounded local architecture described in
+[PHASE_10_EXTENSIONS_SPEC.md](PHASE_10_EXTENSIONS_SPEC.md):
 
-## Post-v0.1 Phase 11: screen vision
+- versioned, untrusted metadata manifests with local-fixture admission;
+- private catalog and review-only agent proposals;
+- explicit Owner capability review and activation;
+- updates that disable the current revision and force re-review;
+- explicit rollback, disable, bounded audit retention, and Portuguese controls;
+- safe-mode and temporary-chat fail-closed mutation gates.
 
-Potential scope:
+This does not load, compile, interpret, fetch, or execute extension code. It
+does not access the network, shell, host filesystem, credentials, remote code,
+or a public marketplace. Package integrity/signature policy, real plugin
+behavior, ratings, packaged-Windows evidence, and release approval remain
+reserved.
 
-- on-demand screenshot only;
-- explicit user request;
-- separate visual model loaded on demand;
-- no continuous screen analysis;
-- privacy controls;
-- resource scheduling.
+## Post-v0.1 Phase 11: screen vision `[IMPLEMENTED — LOCAL SYNTHETIC METADATA-ONLY CHECKPOINT]`
 
-## Post-v0.1 Phase 12: Android client
+The current checkpoint implements the bounded local architecture described in
+[PHASE_11_SCREEN_VISION_SPEC.md](PHASE_11_SCREEN_VISION_SPEC.md):
 
-Potential scope:
+- explicit local Owner identity and confirmation;
+- synthetic monitor fixture selection only;
+- per-session capture/analyze permissions, privacy policy, and redaction hooks;
+- preview before confirmation, one-job reference-GPU scheduling, and quotas;
+- on-demand synthetic model-fixture lifecycle with automatic cleanup;
+- cancellation, bounded uncertain non-diagnostic hypothesis, and audit history;
+- Rust/SQLite authoritative temporary-chat and safe-mode fail-closed gates;
+- Portuguese Owner-facing Screen Vision controls and versioned contracts.
 
-- BielOS APK agent module;
-- floating icon;
-- text and voice conversation;
-- notifications;
-- read-only offline history;
-- offline message queue;
-- approval flow;
-- authenticated connection to the PC.
+This checkpoint does not capture the Windows desktop, call a screenshot API,
+retain pixels or screenshot bytes, analyze continuously, run in the background,
+access the host filesystem/shell/credentials, use a network or remote model, or
+persist visual state. Real screen adapters, Windows packaging evidence,
+privacy/visual UX validation, and release approval remain reserved work.
 
-## Post-v0.1 Phase 13: BielOS integration
+## Post-v0.1 Phase 12: Android companion `[IMPLEMENTED — LOCAL METADATA-ONLY CHECKPOINT]`
 
-Potential scope:
+The current checkpoint implements the bounded local architecture described in
+[PHASE_12_ANDROID_SPEC.md](PHASE_12_ANDROID_SPEC.md):
 
-- versioned AIP gateway;
-- BielOS accounts and ownership;
-- transfer of girlfriend-oriented agent;
-- Cloudflare Tunnel and Access;
-- mobile administrative recovery;
-- preserved AIP standalone operation;
-- no direct exposure of Python runtime internals.
+- versioned `aip-companion-v1` protocol metadata and synthetic Android fixture;
+- Owner-scoped pairing/confirmation, protocol negotiation, replay protection,
+  reconnect, key rotation, and revocation;
+- bounded read-only history and metadata-only text/audio/image/file/task queue;
+- explicit preview, Owner approval, cancellation, retry, and audit;
+- Rust/SQLite authority with safe-mode and temporary-chat fail-closed gates;
+- Portuguese Companion controls and versioned response parsers.
+
+This does not build an APK, open a listener, provide a relay, access Android or
+external accounts, persist media bytes, or claim mobile runtime validation.
+Packaged Android transport, cryptographic key custody, notifications, real
+audio/voice, and human device testing remain reserved.
+
+## Post-v0.1 Phase 13: gateway boundary `[IMPLEMENTED — LOCAL METADATA-ONLY CHECKPOINT]`
+
+The current checkpoint implements the bounded local architecture described in
+[PHASE_13_GATEWAY_SPEC.md](PHASE_13_GATEWAY_SPEC.md):
+
+- versioned gateway metadata and a synthetic local administrative fixture;
+- Owner-scoped transfer preview/approval, session proof/replay checks,
+  administrative recovery approval, revocation, and audit;
+- Rust/SQLite authority with safe-mode and temporary-chat fail-closed gates;
+- Portuguese desktop Gateway controls and preserved standalone fallback.
+
+This does not integrate BielOS accounts, transfer a real agent, open a network
+listener, provide a relay or tunnel, or use Cloudflare credentials. External
+ownership exchange, remote/mobile delivery, and any real gateway transport
+remain separately authorized future scope.
 
 ## Deferred research
 
