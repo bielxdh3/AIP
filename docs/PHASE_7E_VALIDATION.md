@@ -6,17 +6,20 @@ Phase 7E is implemented as a local Rust/SQLite path on the development branch. T
 record is evidence for the implementation and static review; it is not a claim of
 successful Windows runtime, manual, or remote-CI validation.
 
-The implementation baseline under validation is:
+The exact implementation target under validation is the resulting `HEAD` of this
+single correction commit (parent `0d4aff03b1d7eac0564ffec3dbf5bfc7a36f351c` on
+`feat/phase-7b-7f-cognitive-core`). The symbolic `HEAD` reference resolves to the
+exact commit containing this record.
 
-- HEAD `5ff4807985eb8156f2c59b7644700c43d19c58fc`
-  (`feat(phase-7e): expose public conversation UI`).
 - The 7B–7D baseline is the sequence `0fba15d079f7362e2c017771dc6050733b24958e`,
   `94d26c5088e8c64c3a5b5f12e7c82867dbca8ed4`,
   `e84284b8b90d90ed32b6fc21e6977c0ca1effd49`, and
   `821d8f9d468e50aedb4ec7b3d42dabcf8162d157`.
 - The Phase 7E commits are `4de625841d6b87ad8821cdc98e947877eb61dbe7`
   (wiring), `70ba8fe88049c530cdd53c9585bcef3ede408a21` (boundary hardening),
-  and `5ff4807985eb8156f2c59b7644700c43d19c58fc` (typed UI path).
+  and `5ff4807985eb8156f2c59b7644700c43d19c58fc` (typed UI path), followed by
+  the integrated correction at parent `0d4aff03b1d7eac0564ffec3dbf5bfc7a36f351c`
+  and this focused blocker correction.
 - The relevant migration sequence is `0012_phase7a_cognitive_events.sql` (7A),
   `0013_phase7b_7d_cognitive_core.sql` (7B–7D), and
   `0014_phase7e_7f_conversations.sql` (schema version 14). Database initialization
@@ -44,7 +47,13 @@ The reviewed boundaries are:
 - Temporary chat, safe mode, silent mode, and suspended-agent state block autonomous
   conversation, candidate, and resource work. Owner interruption and candidate
   rejection remain explicit owner controls, while read-only inspection remains
-  owner-scoped; the UI removes durable controls from temporary chat.
+  owner-scoped; every durable 7A–7D Tauri command also requires an explicit
+  `temporaryChat` field and checks the active temporary-chat state, while the UI
+  removes durable controls from temporary chat.
+- After a conversation is created, append, candidate emission, resource reservation,
+  and resource completion re-read both participant policies in their transaction.
+  A false opt-in or non-null revocation blocks the operation, including an otherwise
+  idempotent replay.
 - Purpose, turns, tokens, duration, repetitions, public-turn content, candidate JSON,
   per-job resource units, and cumulative conversation resource usage are bounded.
   Adjacent echo/repetition detection, budget exhaustion, owner interruption, and
@@ -61,7 +70,10 @@ one-heavy-job uniqueness, restart recovery, pending candidates, content screenin
 participant membership, and cumulative resource-budget/complete guards. The typed
 command-path test in `lib.rs` covers the registered Tauri wrappers. The focused
 cognitive-panel test covers the owner-visible UI path, pending-only rejection,
-temporary suppression, and safe Portuguese error rendering.
+temporary suppression, safe Portuguese error rendering, and the authoritative seeded
+participant IDs. The fictional-activity Rust/contracts path is bounded and guarded;
+the Portuguese panel intentionally retains the limitation that activity controls are
+not implemented in this checkpoint.
 
 ## Automated evidence
 

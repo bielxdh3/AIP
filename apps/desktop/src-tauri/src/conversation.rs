@@ -117,7 +117,6 @@ pub struct ResourceJobCompletionRequest {
     pub status: String,
     pub error_code: Option<String>,
     pub idempotency_key: String,
-    #[serde(default)]
     pub temporary_chat: bool,
 }
 
@@ -465,6 +464,7 @@ impl Database {
         {
             return Err(DatabaseError::Cognitive("conversation_participant_invalid"));
         }
+        require_active_policies_tx(&transaction, &record)?;
         if let Some(existing) = load_turn_by_id_tx(&transaction, &turn_id)? {
             if existing.conversation_id != request.conversation_id
                 || existing.speaker_agent_id != speaker_agent_id
@@ -644,6 +644,7 @@ impl Database {
         {
             return Err(DatabaseError::Cognitive("conversation_participant_invalid"));
         }
+        require_active_policies_tx(&transaction, &record)?;
         let candidate_id = derived_id(
             "candidate",
             &format!(
@@ -780,6 +781,7 @@ impl Database {
         {
             return Err(DatabaseError::Cognitive("conversation_participant_invalid"));
         }
+        require_active_policies_tx(&transaction, &record)?;
         if record.summary.status != "active" {
             return Err(DatabaseError::Cognitive("conversation_not_active"));
         }
@@ -903,6 +905,7 @@ impl Database {
         {
             return Err(DatabaseError::Cognitive("conversation_participant_invalid"));
         }
+        require_active_policies_tx(&transaction, &record)?;
         if matches!(
             existing.status.as_str(),
             "completed" | "cancelled" | "failed"
@@ -1018,6 +1021,21 @@ fn active_policy_tx(
         .optional()
         .map(|policy| policy.filter(|policy| policy.opted_in && policy.revoked_at.is_none()))
         .map_err(DatabaseError::from)
+}
+
+fn require_active_policies_tx(
+    transaction: &Transaction<'_>,
+    record: &ConversationRecord,
+) -> Result<(), DatabaseError> {
+    for agent_id in [
+        record.summary.initiator_agent_id.as_str(),
+        record.summary.participant_agent_id.as_str(),
+    ] {
+        if active_policy_tx(transaction, agent_id, &record.summary.purpose)?.is_none() {
+            return Err(DatabaseError::Cognitive("conversation_opt_in_required"));
+        }
+    }
+    Ok(())
 }
 
 fn load_record(
@@ -1841,6 +1859,119 @@ mod tests {
             })
             .unwrap();
         assert_eq!(rejected.status, "rejected");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn revoked_policies_block_existing_public_writes_and_replays() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        prepare(&database, "revoked-append-purpose");
+        let conversation = database
+            .start_agent_conversation(start("revoked-append-purpose", "revoked-append"))
+            .unwrap();
+        let append_request = turn(
+            &conversation.id,
+            ASTRA_ID,
+            "Public turn before revocation",
+            "revoked-append-turn",
+        );
+        database
+            .append_public_conversation_turn(append_request.clone())
+            .unwrap();
+        let mut revoked = policy(LUMA_ID, "revoked-append-purpose");
+        revoked.opted_in = false;
+        database.set_conversation_policy(revoked).unwrap();
+        assert_eq!(
+            database.append_public_conversation_turn(append_request.clone()),
+            Err(DatabaseError::Cognitive("conversation_opt_in_required"))
+        );
+        assert_eq!(
+            database.append_public_conversation_turn(append_request),
+            Err(DatabaseError::Cognitive("conversation_opt_in_required"))
+        );
+        drop(database);
+        cleanup(&path);
+
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let mut one_turn = policy(ASTRA_ID, "revoked-candidate-purpose");
+        one_turn.max_turns = 1;
+        database.set_conversation_policy(one_turn).unwrap();
+        database
+            .set_conversation_policy(policy(LUMA_ID, "revoked-candidate-purpose"))
+            .unwrap();
+        let conversation = database
+            .start_agent_conversation(start("revoked-candidate-purpose", "revoked-candidate"))
+            .unwrap();
+        database
+            .append_public_conversation_turn(turn(
+                &conversation.id,
+                ASTRA_ID,
+                "Public candidate source before revocation",
+                "revoked-candidate-turn",
+            ))
+            .unwrap();
+        let candidate_request = CognitiveCandidateRequest {
+            agent_id: ASTRA_ID.into(),
+            conversation_id: conversation.id,
+            candidate_kind: "opinion".into(),
+            candidate_json: r#"{"subject":"revoked-topic","stance":0.2}"#.into(),
+            idempotency_key: "revoked-candidate-key".into(),
+        };
+        database
+            .emit_cognitive_candidate(candidate_request.clone())
+            .unwrap();
+        let mut revoked = policy(LUMA_ID, "revoked-candidate-purpose");
+        revoked.opted_in = false;
+        database.set_conversation_policy(revoked).unwrap();
+        assert_eq!(
+            database.emit_cognitive_candidate(candidate_request),
+            Err(DatabaseError::Cognitive("conversation_opt_in_required"))
+        );
+        drop(database);
+        cleanup(&path);
+
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        prepare(&database, "revoked-resource-purpose");
+        let conversation = database
+            .start_agent_conversation(start("revoked-resource-purpose", "revoked-resource"))
+            .unwrap();
+        let job = database
+            .reserve_heavy_generation(HeavyGenerationRequest {
+                agent_id: ASTRA_ID.into(),
+                conversation_id: conversation.id.clone(),
+                priority: 10,
+                budget_units: 2,
+                idempotency_key: "revoked-resource-key".into(),
+            })
+            .unwrap();
+        let mut revoked = policy(LUMA_ID, "revoked-resource-purpose");
+        revoked.opted_in = false;
+        database.set_conversation_policy(revoked).unwrap();
+        assert_eq!(
+            database.reserve_heavy_generation(HeavyGenerationRequest {
+                agent_id: ASTRA_ID.into(),
+                conversation_id: conversation.id,
+                priority: 10,
+                budget_units: 2,
+                idempotency_key: "revoked-resource-replay".into(),
+            }),
+            Err(DatabaseError::Cognitive("conversation_opt_in_required"))
+        );
+        assert_eq!(
+            database.complete_resource_job(ResourceJobCompletionRequest {
+                agent_id: ASTRA_ID.into(),
+                job_id: job.id,
+                status: "completed".into(),
+                error_code: None,
+                idempotency_key: "revoked-resource-complete".into(),
+                temporary_chat: false,
+            }),
+            Err(DatabaseError::Cognitive("conversation_opt_in_required"))
+        );
+        drop(database);
         cleanup(&path);
     }
 

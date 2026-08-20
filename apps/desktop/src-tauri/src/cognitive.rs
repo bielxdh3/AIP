@@ -72,6 +72,7 @@ mod tests {
             attribution: None,
             reason: "Owner provided bounded evidence".into(),
             idempotency_key: idempotency_key.into(),
+            temporary_chat: false,
         }
     }
 
@@ -93,6 +94,7 @@ mod tests {
             confidence: 0.8,
             reason: "A calm interaction was observed".into(),
             idempotency_key: idempotency_key.into(),
+            temporary_chat: false,
         }
     }
 
@@ -107,6 +109,7 @@ mod tests {
             expires_at: None,
             parent_goal_id: None,
             idempotency_key: idempotency_key.into(),
+            temporary_chat: false,
         }
     }
 
@@ -170,6 +173,7 @@ mod tests {
             claim_value: "Cross-agent correction".into(),
             reason: "Owner correction".into(),
             idempotency_key: "ownership-correction".into(),
+            temporary_chat: false,
         };
         assert_eq!(
             database.correct_opinion_evidence(correction).unwrap_err(),
@@ -451,6 +455,7 @@ mod tests {
             claim_value: "A corrected fictional topic".into(),
             reason: "Owner supplied a correction".into(),
             idempotency_key: "advanced-correction".into(),
+            temporary_chat: false,
         };
         let corrected = database
             .correct_opinion_evidence(correction.clone())
@@ -585,6 +590,7 @@ pub struct OpinionCandidateRequest {
     pub attribution: Option<String>,
     pub reason: String,
     pub idempotency_key: String,
+    pub temporary_chat: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -595,6 +601,7 @@ pub struct OpinionEvidenceCorrectionRequest {
     pub claim_value: String,
     pub reason: String,
     pub idempotency_key: String,
+    pub temporary_chat: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -707,6 +714,7 @@ pub struct RelationshipCandidateRequest {
     pub confidence: f64,
     pub reason: String,
     pub idempotency_key: String,
+    pub temporary_chat: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -741,6 +749,7 @@ pub struct GoalRequest {
     pub expires_at: Option<i64>,
     pub parent_goal_id: Option<String>,
     pub idempotency_key: String,
+    pub temporary_chat: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

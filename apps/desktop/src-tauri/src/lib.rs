@@ -113,7 +113,9 @@ fn create_owner_trait_correction(
     value: f64,
     reason: String,
     idempotency_key: String,
+    temporary_chat: bool,
 ) -> Result<CognitiveEvent, &'static str> {
+    ensure_conversation_not_temporary(&state, &agent_id, temporary_chat)?;
     state
         .database
         .as_ref()
@@ -128,7 +130,9 @@ fn rollback_cognitive_event(
     agent_id: String,
     event_id: String,
     idempotency_key: String,
+    temporary_chat: bool,
 ) -> Result<CognitiveEvent, &'static str> {
+    ensure_conversation_not_temporary(&state, &agent_id, temporary_chat)?;
     state
         .database
         .as_ref()
@@ -155,6 +159,7 @@ fn propose_cognitive_opinion(
     state: State<'_, AppState>,
     request: OpinionCandidateRequest,
 ) -> Result<CognitiveOpinion, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
     state
         .database
         .as_ref()
@@ -168,6 +173,7 @@ fn correct_cognitive_opinion_evidence(
     state: State<'_, AppState>,
     request: OpinionEvidenceCorrectionRequest,
 ) -> Result<CognitiveOpinion, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
     state
         .database
         .as_ref()
@@ -184,7 +190,9 @@ fn set_cognitive_opinion_status(
     status: String,
     reason: String,
     idempotency_key: String,
+    temporary_chat: bool,
 ) -> Result<CognitiveOpinion, &'static str> {
+    ensure_conversation_not_temporary(&state, &agent_id, temporary_chat)?;
     state
         .database
         .as_ref()
@@ -200,7 +208,9 @@ fn recalculate_cognitive_opinion(
     opinion_id: String,
     reason: String,
     idempotency_key: String,
+    temporary_chat: bool,
 ) -> Result<CognitiveOpinion, &'static str> {
+    ensure_conversation_not_temporary(&state, &agent_id, temporary_chat)?;
     state
         .database
         .as_ref()
@@ -227,6 +237,7 @@ fn propose_cognitive_relationship(
     state: State<'_, AppState>,
     request: RelationshipCandidateRequest,
 ) -> Result<RelationshipState, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
     state
         .database
         .as_ref()
@@ -242,7 +253,9 @@ fn reset_cognitive_relationship(
     relationship_id: String,
     reason: String,
     idempotency_key: String,
+    temporary_chat: bool,
 ) -> Result<RelationshipState, &'static str> {
+    ensure_conversation_not_temporary(&state, &agent_id, temporary_chat)?;
     state
         .database
         .as_ref()
@@ -257,7 +270,9 @@ fn rollback_cognitive_relationship(
     agent_id: String,
     event_id: String,
     idempotency_key: String,
+    temporary_chat: bool,
 ) -> Result<RelationshipState, &'static str> {
+    ensure_conversation_not_temporary(&state, &agent_id, temporary_chat)?;
     state
         .database
         .as_ref()
@@ -284,6 +299,7 @@ fn create_owner_cognitive_goal(
     state: State<'_, AppState>,
     request: GoalRequest,
 ) -> Result<CognitiveGoal, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
     state
         .database
         .as_ref()
@@ -297,6 +313,7 @@ fn propose_agent_cognitive_goal(
     state: State<'_, AppState>,
     request: GoalRequest,
 ) -> Result<CognitiveGoal, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
     state
         .database
         .as_ref()
@@ -311,7 +328,9 @@ fn approve_cognitive_goal(
     agent_id: String,
     goal_id: String,
     idempotency_key: String,
+    temporary_chat: bool,
 ) -> Result<CognitiveGoal, &'static str> {
+    ensure_conversation_not_temporary(&state, &agent_id, temporary_chat)?;
     state
         .database
         .as_ref()
@@ -328,7 +347,9 @@ fn update_cognitive_goal_status(
     status: String,
     completion_evidence: Option<String>,
     idempotency_key: String,
+    temporary_chat: bool,
 ) -> Result<CognitiveGoal, &'static str> {
+    ensure_conversation_not_temporary(&state, &agent_id, temporary_chat)?;
     state
         .database
         .as_ref()

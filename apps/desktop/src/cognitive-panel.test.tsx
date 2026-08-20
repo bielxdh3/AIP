@@ -10,7 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
 const event = {
   id: "event-1",
-  agentId: "astra",
+  agentId: "agt_astra_provisional",
   kind: "trait_delta" as const,
   traitKey: "curiosity",
   sourceKind: "controlled_internal",
@@ -81,7 +81,9 @@ describe("CognitivePanel", () => {
     root = createRoot(container);
 
     expect(container.textContent).toBe("");
-    await act(async () => root.render(<CognitivePanel agentId="astra" />));
+    await act(async () =>
+      root.render(<CognitivePanel agentId="agt_astra_provisional" />),
+    );
     expect(container.textContent).toContain("Valores cognitivos simulados");
     expect(container.textContent).toContain("não representam emoções reais");
     expect(container.textContent).toContain(
@@ -114,13 +116,14 @@ describe("CognitivePanel", () => {
     expect(invoke).toHaveBeenCalledWith(
       "create_owner_trait_correction",
       expect.objectContaining({
-        agentId: "astra",
+        agentId: "agt_astra_provisional",
         value: 0.6,
         reason: "Motivo válido",
+        temporaryChat: false,
       }),
     );
     expect(invoke).toHaveBeenCalledWith("list_cognitive_traits", {
-      agentId: "astra",
+      agentId: "agt_astra_provisional",
     });
     expect(container.textContent).toContain("Correção aplicada.");
 
@@ -141,7 +144,10 @@ describe("CognitivePanel", () => {
     );
     expect(invoke).toHaveBeenCalledWith(
       "rollback_cognitive_event",
-      expect.objectContaining({ eventId: "event-1" }),
+      expect.objectContaining({
+        eventId: "event-1",
+        temporaryChat: false,
+      }),
     );
     expect(container.textContent).toContain("Reversão aplicada.");
   });
@@ -149,7 +155,7 @@ describe("CognitivePanel", () => {
   it("ignores late responses after switching agents and survives unavailable commands", async () => {
     let resolveAstra: ((value: typeof traits) => void) | undefined;
     invoke.mockImplementation((command: string, args: { agentId: string }) => {
-      if (args.agentId === "astra") {
+      if (args.agentId === "agt_astra_provisional") {
         return new Promise((resolve) => {
           resolveAstra = resolve;
         });
@@ -163,8 +169,12 @@ describe("CognitivePanel", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    await act(async () => root.render(<CognitivePanel agentId="astra" />));
-    await act(async () => root.render(<CognitivePanel agentId="luma" />));
+    await act(async () =>
+      root.render(<CognitivePanel agentId="agt_astra_provisional" />),
+    );
+    await act(async () =>
+      root.render(<CognitivePanel agentId="agt_luma_provisional" />),
+    );
     await act(async () => resolveAstra?.(traits));
     expect(container.textContent).toContain("autonomy: 0.70");
     expect(container.textContent).not.toContain("curiosity: 0.50");
@@ -184,7 +194,9 @@ describe("CognitivePanel", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    act(() => root.render(<CognitivePanel agentId="astra" />));
+    act(() =>
+      root.render(<CognitivePanel agentId="agt_astra_provisional" />),
+    );
     expect(container.textContent).toContain("Carregando valores cognitivos");
     await act(async () => {
       resolveTraits?.(traits);
@@ -194,7 +206,9 @@ describe("CognitivePanel", () => {
     expect(container.querySelector('[aria-label^="Reverter"]')).toBeNull();
 
     invoke.mockRejectedValue("operation_unavailable");
-    await act(async () => root.render(<CognitivePanel agentId="luma" />));
+    await act(async () =>
+      root.render(<CognitivePanel agentId="agt_luma_provisional" />),
+    );
     expect(container.textContent).toContain(
       "Não foi possível carregar os valores cognitivos.",
     );
@@ -215,7 +229,9 @@ describe("CognitivePanel", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    await act(async () => root.render(<CognitivePanel agentId="astra" />));
+    await act(async () =>
+      root.render(<CognitivePanel agentId="agt_astra_provisional" />),
+    );
     await act(async () =>
       change(
         container.querySelector("textarea") as HTMLTextAreaElement,
@@ -233,7 +249,7 @@ describe("CognitivePanel", () => {
   it("lists and mutates the Portuguese 7B-7D surface with bounded commands", async () => {
     const opinion = {
       id: "opinion-1",
-      agentId: "astra",
+      agentId: "agt_astra_provisional",
       subjectType: "topic",
       subjectRef: "tema",
       stance: 0.4,
@@ -261,7 +277,7 @@ describe("CognitivePanel", () => {
     };
     const relationship = {
       id: "relationship-1",
-      agentId: "astra",
+      agentId: "agt_astra_provisional",
       subjectType: "agent",
       subjectRef: "agt_related",
       values: {
@@ -313,7 +329,7 @@ describe("CognitivePanel", () => {
     };
     let goal: CognitiveGoal = {
       id: "goal-1",
-      agentId: "astra",
+      agentId: "agt_astra_provisional",
       title: "Objetivo de teste",
       description: "Um objetivo sem ação externa",
       origin: "agent_proposal" as const,
@@ -372,7 +388,9 @@ describe("CognitivePanel", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    await act(async () => root.render(<CognitivePanel agentId="astra" />));
+    await act(async () =>
+      root.render(<CognitivePanel agentId="agt_astra_provisional" />),
+    );
     expect(container.textContent).toContain("Núcleo cognitivo");
     expect(container.textContent).toContain("tema: posição 0.40");
     expect(container.textContent).toContain("Evidência segura");
@@ -393,10 +411,11 @@ describe("CognitivePanel", () => {
     expect(invoke).toHaveBeenCalledWith(
       "propose_cognitive_opinion",
       expect.objectContaining({
-        agentId: "astra",
+        agentId: "agt_astra_provisional",
         subjectRef: "novo tema",
         sourceKind: "owner_testimony",
         sourceReference: null,
+        temporaryChat: false,
       }),
     );
 
@@ -423,9 +442,10 @@ describe("CognitivePanel", () => {
     expect(invoke).toHaveBeenCalledWith(
       "correct_cognitive_opinion_evidence",
       expect.objectContaining({
-        agentId: "astra",
+        agentId: "agt_astra_provisional",
         evidenceId: "evidence-1",
         claimValue: "Evidência corrigida",
+        temporaryChat: false,
       }),
     );
 
@@ -439,9 +459,10 @@ describe("CognitivePanel", () => {
     expect(invoke).toHaveBeenCalledWith(
       "set_cognitive_opinion_status",
       expect.objectContaining({
-        agentId: "astra",
+        agentId: "agt_astra_provisional",
         opinionId: "opinion-1",
         status: "disputed",
+        temporaryChat: false,
       }),
     );
     await act(async () =>
@@ -451,7 +472,11 @@ describe("CognitivePanel", () => {
     );
     expect(invoke).toHaveBeenCalledWith(
       "recalculate_cognitive_opinion",
-      expect.objectContaining({ agentId: "astra", opinionId: "opinion-1" }),
+      expect.objectContaining({
+        agentId: "agt_astra_provisional",
+        opinionId: "opinion-1",
+        temporaryChat: false,
+      }),
     );
 
     const relationshipReason = Array.from(container.querySelectorAll("label"))
@@ -473,8 +498,9 @@ describe("CognitivePanel", () => {
     expect(invoke).toHaveBeenCalledWith(
       "reset_cognitive_relationship",
       expect.objectContaining({
-        agentId: "astra",
+        agentId: "agt_astra_provisional",
         relationshipId: "relationship-1",
+        temporaryChat: false,
       }),
     );
     await act(async () =>
@@ -485,8 +511,9 @@ describe("CognitivePanel", () => {
     expect(invoke).toHaveBeenCalledWith(
       "rollback_cognitive_relationship",
       expect.objectContaining({
-        agentId: "astra",
+        agentId: "agt_astra_provisional",
         eventId: "core-event-1",
+        temporaryChat: false,
       }),
     );
 
@@ -509,8 +536,9 @@ describe("CognitivePanel", () => {
     expect(invoke).toHaveBeenCalledWith(
       "create_owner_cognitive_goal",
       expect.objectContaining({
-        agentId: "astra",
+        agentId: "agt_astra_provisional",
         title: "Objetivo do Owner",
+        temporaryChat: false,
       }),
     );
 
@@ -533,7 +561,11 @@ describe("CognitivePanel", () => {
     );
     expect(invoke).toHaveBeenCalledWith(
       "approve_cognitive_goal",
-      expect.objectContaining({ agentId: "astra", goalId: "goal-1" }),
+      expect.objectContaining({
+        agentId: "agt_astra_provisional",
+        goalId: "goal-1",
+        temporaryChat: false,
+      }),
     );
     await act(async () =>
       Array.from(container.querySelectorAll("button"))
@@ -543,9 +575,10 @@ describe("CognitivePanel", () => {
     expect(invoke).toHaveBeenCalledWith(
       "update_cognitive_goal_status",
       expect.objectContaining({
-        agentId: "astra",
+        agentId: "agt_astra_provisional",
         goalId: "goal-1",
         status: "completed",
+        temporaryChat: false,
       }),
     );
     expect(container.textContent).toContain("estado fictício");
@@ -559,8 +592,8 @@ describe("CognitivePanel", () => {
     ).IS_REACT_ACT_ENVIRONMENT = true;
     let conversation = {
       id: "conversation-1",
-      initiatorAgentId: "astra",
-      participantAgentId: "luma",
+      initiatorAgentId: "agt_astra_provisional",
+      participantAgentId: "agt_luma_provisional",
       purpose: "planejamento fictício",
       status: "active" as const,
       maxTurns: 12,
@@ -577,7 +610,7 @@ describe("CognitivePanel", () => {
       completedAt: null,
     };
     const policy = {
-      agentId: "astra",
+      agentId: "agt_astra_provisional",
       purpose: "planejamento fictício",
       optedIn: true,
       maxTurns: 12,
@@ -591,7 +624,7 @@ describe("CognitivePanel", () => {
     const pendingCandidate = {
       id: "candidate-pending",
       conversationId: conversation.id,
-      agentId: "astra",
+      agentId: "agt_astra_provisional",
       candidateKind: "opinion" as const,
       candidateJson: '{"subject":"tema","stance":0.2}',
       sourceReference: "conversation-1",
@@ -606,7 +639,7 @@ describe("CognitivePanel", () => {
     let candidates = [pendingCandidate, rejectedCandidate];
     const resourceJob = {
       id: "resource-job-1",
-      agentId: "astra",
+      agentId: "agt_astra_provisional",
       conversationId: conversation.id,
       jobKind: "heavy_generation",
       heavy: true,
@@ -624,7 +657,7 @@ describe("CognitivePanel", () => {
         {
           id: "turn-1",
           conversationId: conversation.id,
-          speakerAgentId: "astra",
+          speakerAgentId: "agt_astra_provisional",
           turnIndex: 0,
           content: "Turno público seguro",
           sourceKind: "owner" as const,
@@ -644,7 +677,10 @@ describe("CognitivePanel", () => {
         )
           return Promise.resolve([]);
         if (command === "list_agent_conversation_policies")
-          return Promise.resolve([policy, { ...policy, agentId: "luma" }]);
+          return Promise.resolve([
+            policy,
+            { ...policy, agentId: "agt_luma_provisional" },
+          ]);
         if (command === "list_cognitive_conversations")
           return Promise.resolve([conversation]);
         if (command === "list_cognitive_candidates")
@@ -684,7 +720,9 @@ describe("CognitivePanel", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    await act(async () => root.render(<CognitivePanel agentId="astra" />));
+    await act(async () =>
+      root.render(<CognitivePanel agentId="agt_astra_provisional" />),
+    );
 
     expect(
       Array.from(container.querySelectorAll("button")).filter(
@@ -698,11 +736,17 @@ describe("CognitivePanel", () => {
     );
     expect(invoke).toHaveBeenCalledWith(
       "set_agent_conversation_policy",
-      expect.objectContaining({ agentId: "astra", temporaryChat: false }),
+      expect.objectContaining({
+        agentId: "agt_astra_provisional",
+        temporaryChat: false,
+      }),
     );
     expect(invoke).toHaveBeenCalledWith(
       "set_agent_conversation_policy",
-      expect.objectContaining({ agentId: "luma", temporaryChat: false }),
+      expect.objectContaining({
+        agentId: "agt_luma_provisional",
+        temporaryChat: false,
+      }),
     );
 
     await act(async () =>
@@ -713,8 +757,8 @@ describe("CognitivePanel", () => {
     expect(invoke).toHaveBeenCalledWith(
       "start_agent_conversation",
       expect.objectContaining({
-        initiatorAgentId: "astra",
-        participantAgentId: "luma",
+        initiatorAgentId: "agt_astra_provisional",
+        participantAgentId: "agt_luma_provisional",
         temporaryChat: false,
       }),
     );
@@ -726,7 +770,7 @@ describe("CognitivePanel", () => {
     );
     expect(invoke).toHaveBeenCalledWith(
       "inspect_agent_conversation",
-      expect.objectContaining({ agentId: "astra" }),
+      expect.objectContaining({ agentId: "agt_astra_provisional" }),
     );
     const turn = Array.from(container.querySelectorAll("label"))
       .find((label) => label.textContent?.startsWith("Turno público"))
@@ -781,7 +825,7 @@ describe("CognitivePanel", () => {
     expect(invoke).toHaveBeenCalledWith(
       "interrupt_agent_conversation",
       expect.objectContaining({
-        agentId: "astra",
+        agentId: "agt_astra_provisional",
         temporaryChat: false,
       }),
     );
@@ -833,7 +877,9 @@ describe("CognitivePanel", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    await act(async () => root.render(<CognitivePanel agentId="astra" />));
+    await act(async () =>
+      root.render(<CognitivePanel agentId="agt_astra_provisional" />),
+    );
     await act(async () =>
       Array.from(container.querySelectorAll("button"))
         .find((button) => button.textContent === "Iniciar conversa pública")
@@ -852,7 +898,9 @@ describe("CognitivePanel", () => {
     document.body.append(container);
     root = createRoot(container);
     await act(async () =>
-      root.render(<CognitivePanelGate agentId="astra" temporaryChat />),
+      root.render(
+        <CognitivePanelGate agentId="agt_astra_provisional" temporaryChat />,
+      ),
     );
 
     expect(container.textContent).toContain("Conversa temporária ativa");
