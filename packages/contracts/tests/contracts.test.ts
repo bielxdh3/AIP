@@ -52,6 +52,32 @@ import {
   parseCompanionSession,
   parseCompanionSessionProof,
   parseCompanionSessions,
+  GATEWAY_CLOUDFLARE_ACCESS_AUDIENCE_METADATA,
+  GATEWAY_CLOUDFLARE_HOSTNAME_METADATA,
+  GATEWAY_CLOUDFLARE_TUNNEL_ID_METADATA,
+  GATEWAY_FIXTURE_ACCOUNT_ID,
+  GATEWAY_FIXTURE_AGENT_ID,
+  GATEWAY_FIXTURE_APP_VERSION,
+  GATEWAY_FIXTURE_AUTH_PROOF_METADATA,
+  GATEWAY_FIXTURE_CLIENT_ID,
+  GATEWAY_FIXTURE_EXTERNAL_ACCOUNT_METADATA,
+  GATEWAY_FIXTURE_LOCAL_ACCOUNT_ID,
+  GATEWAY_FIXTURE_RECOVERY_TARGET,
+  GATEWAY_FIXTURE_TRANSFER_INTEGRITY_HASH,
+  GATEWAY_MIN_PROTOCOL_VERSION,
+  GATEWAY_PROTOCOL_VERSION,
+  parseGatewayAccount,
+  parseGatewayAccounts,
+  parseGatewayAudit,
+  parseGatewayProtocolInfo,
+  parseGatewayRecovery,
+  parseGatewayRecoveries,
+  parseGatewayRevocations,
+  parseGatewaySession,
+  parseGatewaySessionProof,
+  parseGatewaySessions,
+  parseGatewayTransfer,
+  parseGatewayTransfers,
 } from "../src/index";
 
 describe("runtime contracts", () => {
@@ -81,6 +107,180 @@ describe("runtime contracts", () => {
         result: { name: "aip-runtime", status: "ready", protocolVersion: 99 },
       }),
     ).toBeNull();
+  });
+});
+
+describe("local-only gateway contracts", () => {
+  const protocol = {
+    schemaVersion: 1 as const,
+    protocolVersion: GATEWAY_PROTOCOL_VERSION,
+    minProtocolVersion: GATEWAY_MIN_PROTOCOL_VERSION,
+    transport: "local_loopback_fixture" as const,
+    networkListener: false as const,
+    cloudflare: {
+      provider: "cloudflare_tunnel_access" as const,
+      mode: "metadata_only" as const,
+      tunnelIdMetadata: GATEWAY_CLOUDFLARE_TUNNEL_ID_METADATA,
+      hostnameMetadata: GATEWAY_CLOUDFLARE_HOSTNAME_METADATA,
+      accessAudienceMetadata: GATEWAY_CLOUDFLARE_ACCESS_AUDIENCE_METADATA,
+      credentialState: "absent" as const,
+      networkListener: false as const,
+    },
+    standaloneFallback: true as const,
+  };
+  const handshake = {
+    schemaVersion: 1 as const,
+    protocolVersion: GATEWAY_PROTOCOL_VERSION,
+    messageId: "gateway-message-1",
+    clientId: GATEWAY_FIXTURE_CLIENT_ID,
+    kind: "session" as const,
+    sessionId: "session-1",
+    nonceMetadata: "fixture:gateway-message/1",
+    replayCounter: 1,
+    payloadKind: "gateway_session",
+  };
+  const account = {
+    id: GATEWAY_FIXTURE_ACCOUNT_ID,
+    ownerUserId: "owner_user",
+    localAccountId: GATEWAY_FIXTURE_LOCAL_ACCOUNT_ID,
+    externalAccountIdMetadata: GATEWAY_FIXTURE_EXTERNAL_ACCOUNT_METADATA,
+    ownershipScope: "owner_only" as const,
+    status: "metadata_only" as const,
+    metadataOnly: true as const,
+    externalEffectPerformed: false as const,
+    standaloneFallback: true as const,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const transfer = {
+    id: "transfer-1",
+    accountId: GATEWAY_FIXTURE_ACCOUNT_ID,
+    sourceAgentId: GATEWAY_FIXTURE_AGENT_ID,
+    ownerUserId: "owner_user",
+    destinationAccountMetadata: GATEWAY_FIXTURE_EXTERNAL_ACCOUNT_METADATA,
+    integrityHash: GATEWAY_FIXTURE_TRANSFER_INTEGRITY_HASH,
+    status: "approved" as const,
+    authorizationStatus: "owner_approved" as const,
+    approvalRequired: true as const,
+    metadataOnly: true as const,
+    externalEffectPerformed: false as const,
+    standaloneFallback: true as const,
+    createdAt: 1,
+    approvedAt: 1,
+    updatedAt: 1,
+  };
+  const session = {
+    id: "session-1",
+    accountId: GATEWAY_FIXTURE_ACCOUNT_ID,
+    transferId: transfer.id,
+    sourceAgentId: GATEWAY_FIXTURE_AGENT_ID,
+    ownerUserId: "owner_user",
+    clientId: GATEWAY_FIXTURE_CLIENT_ID,
+    status: "connected" as const,
+    protocolVersion: GATEWAY_PROTOCOL_VERSION,
+    appVersion: GATEWAY_FIXTURE_APP_VERSION,
+    negotiatedProtocolVersion: GATEWAY_PROTOCOL_VERSION,
+    sessionNonceMetadata: "fixture:gateway-session/1",
+    authProofMetadata: GATEWAY_FIXTURE_AUTH_PROOF_METADATA,
+    lastReplayCounter: 1,
+    scope: "administrative_recovery" as const,
+    authenticated: true as const,
+    localLoopbackOnly: true as const,
+    standaloneFallback: true as const,
+    connectedAt: 1,
+    lastSeenAt: 1,
+    disconnectedAt: null,
+    protocol,
+    handshake,
+    updatedAt: 1,
+  };
+
+  it("accepts bounded local gateway responses", () => {
+    expect(parseGatewayProtocolInfo(protocol)).not.toBeNull();
+    expect(parseGatewayAccount(account)).not.toBeNull();
+    expect(parseGatewayAccounts([account])).not.toBeNull();
+    expect(parseGatewayTransfer(transfer)).not.toBeNull();
+    expect(parseGatewayTransfers([transfer])).not.toBeNull();
+    expect(
+      parseGatewaySessionProof({
+        sessionId: session.id,
+        transferId: session.transferId,
+        clientId: session.clientId,
+        sessionNonceMetadata: session.sessionNonceMetadata,
+        authProofMetadata: session.authProofMetadata,
+        appVersion: session.appVersion,
+        protocolVersion: session.protocolVersion,
+        messageNonceMetadata: "fixture:gateway-message/2",
+        replayCounter: 2,
+      }),
+    ).not.toBeNull();
+    expect(parseGatewaySession(session)).not.toBeNull();
+    expect(parseGatewaySessions([session])).not.toBeNull();
+    const recovery = {
+      id: "recovery-1",
+      accountId: GATEWAY_FIXTURE_ACCOUNT_ID,
+      transferId: transfer.id,
+      sessionId: session.id,
+      sourceAgentId: GATEWAY_FIXTURE_AGENT_ID,
+      ownerUserId: "owner_user",
+      clientId: GATEWAY_FIXTURE_CLIENT_ID,
+      kind: "mobile_administrative" as const,
+      status: "pending_approval" as const,
+      targetMetadata: GATEWAY_FIXTURE_RECOVERY_TARGET,
+      approvalRequired: true as const,
+      metadataOnly: true as const,
+      externalEffectPerformed: false as const,
+      createdAt: 1,
+      approvedAt: null,
+      updatedAt: 1,
+    };
+    expect(parseGatewayRecovery(recovery)).not.toBeNull();
+    expect(parseGatewayRecoveries([recovery])).not.toBeNull();
+    expect(
+      parseGatewayAudit([
+        {
+          id: "audit-1",
+          accountId: account.id,
+          transferId: transfer.id,
+          sessionId: session.id,
+          recoveryId: recovery.id,
+          sourceAgentId: GATEWAY_FIXTURE_AGENT_ID,
+          ownerUserId: "owner_user",
+          event: "session_connected",
+          result: "authenticated",
+          code: null,
+          summary: "Sessão local autenticada",
+          createdAt: 1,
+        },
+      ]),
+    ).not.toBeNull();
+    expect(
+      parseGatewayRevocations([
+        {
+          id: "revoke-1",
+          accountId: GATEWAY_FIXTURE_ACCOUNT_ID,
+          transferId: null,
+          sessionId: session.id,
+          ownerUserId: "owner_user",
+          targetKind: "session",
+          targetId: session.id,
+          previousStatus: "connected",
+          reason: "revogação fixture",
+          createdAt: 1,
+        },
+      ]),
+    ).not.toBeNull();
+  });
+
+  it("rejects incompatible or unsafe gateway responses", () => {
+    expect(
+      parseGatewayProtocolInfo({ ...protocol, networkListener: true }),
+    ).toBeNull();
+    expect(parseGatewaySession({ ...session, privateKey: "no" })).toBeNull();
+    expect(
+      parseGatewayTransfer({ ...transfer, integrityHash: "sha256:wrong" }),
+    ).toBeNull();
+    expect(parseGatewaySessions(new Array(33).fill(session))).toBeNull();
   });
 });
 

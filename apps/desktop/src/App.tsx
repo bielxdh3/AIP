@@ -111,6 +111,17 @@ import {
   parseCompanionRevocation,
   parseCompanionSession,
   parseCompanionSessions,
+  parseGatewayAccounts,
+  parseGatewayAudit,
+  parseGatewayProtocolInfo,
+  parseGatewayRecovery,
+  parseGatewayRecoveries,
+  parseGatewayRevocation,
+  parseGatewayRevocations,
+  parseGatewaySession,
+  parseGatewaySessions,
+  parseGatewayTransfer,
+  parseGatewayTransfers,
   parseExtensionAudit,
   parseExtensionCatalog,
   parseExtensionProposals,
@@ -6635,6 +6646,15 @@ function gatewayProof(
   };
 }
 
+function parseGatewayPayload<T>(
+  value: unknown,
+  parser: (input: unknown) => T | null,
+): T {
+  const parsed = parser(value);
+  if (parsed === null) throw new Error("gateway_payload_invalid");
+  return parsed;
+}
+
 export function GatewayControls({
   agentId,
   temporaryChat,
@@ -6660,22 +6680,41 @@ export function GatewayControls({
 
   const loadData = useCallback(async () => {
     const [
-      nextProtocol,
-      nextAccounts,
-      nextTransfers,
-      nextSessions,
-      nextRecoveries,
-      nextAudit,
-      nextRevocations,
+      rawProtocol,
+      rawAccounts,
+      rawTransfers,
+      rawSessions,
+      rawRecoveries,
+      rawAudit,
+      rawRevocations,
     ] = await Promise.all([
-      invoke<GatewayProtocolInfo>("get_gateway_protocol", { agentId }),
-      invoke<GatewayAccount[]>("list_gateway_accounts", { agentId }),
-      invoke<GatewayTransfer[]>("list_gateway_transfers", { agentId }),
-      invoke<GatewaySession[]>("list_gateway_sessions", { agentId }),
-      invoke<GatewayRecovery[]>("list_gateway_recoveries", { agentId }),
-      invoke<GatewayAuditRecord[]>("list_gateway_audit", { agentId }),
-      invoke<GatewayRevocation[]>("list_gateway_revocations", { agentId }),
+      invoke<unknown>("get_gateway_protocol", { agentId }),
+      invoke<unknown>("list_gateway_accounts", { agentId }),
+      invoke<unknown>("list_gateway_transfers", { agentId }),
+      invoke<unknown>("list_gateway_sessions", { agentId }),
+      invoke<unknown>("list_gateway_recoveries", { agentId }),
+      invoke<unknown>("list_gateway_audit", { agentId }),
+      invoke<unknown>("list_gateway_revocations", { agentId }),
     ]);
+    const nextProtocol = parseGatewayPayload(
+      rawProtocol,
+      parseGatewayProtocolInfo,
+    );
+    const nextAccounts = parseGatewayPayload(rawAccounts, parseGatewayAccounts);
+    const nextTransfers = parseGatewayPayload(
+      rawTransfers,
+      parseGatewayTransfers,
+    );
+    const nextSessions = parseGatewayPayload(rawSessions, parseGatewaySessions);
+    const nextRecoveries = parseGatewayPayload(
+      rawRecoveries,
+      parseGatewayRecoveries,
+    );
+    const nextAudit = parseGatewayPayload(rawAudit, parseGatewayAudit);
+    const nextRevocations = parseGatewayPayload(
+      rawRevocations,
+      parseGatewayRevocations,
+    );
     setProtocol(nextProtocol);
     setAccounts(nextAccounts);
     setTransfers(nextTransfers);
@@ -6732,17 +6771,15 @@ export function GatewayControls({
 
   async function prepareTransfer() {
     await runMutation(async () => {
-      const transfer = await invoke<GatewayTransfer>(
-        "prepare_gateway_transfer",
-        {
-          agentId,
-          ownerUserId: OWNER_USER_ID,
-          destinationAccountMetadata: GATEWAY_FIXTURE_EXTERNAL_ACCOUNT_METADATA,
-          integrityHash: GATEWAY_FIXTURE_TRANSFER_INTEGRITY_HASH,
-          idempotencyKey: gatewayIdempotencyKey("transfer-prepare"),
-          temporaryChat,
-        },
-      );
+      const rawTransfer = await invoke<unknown>("prepare_gateway_transfer", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        destinationAccountMetadata: GATEWAY_FIXTURE_EXTERNAL_ACCOUNT_METADATA,
+        integrityHash: GATEWAY_FIXTURE_TRANSFER_INTEGRITY_HASH,
+        idempotencyKey: gatewayIdempotencyKey("transfer-prepare"),
+        temporaryChat,
+      });
+      const transfer = parseGatewayPayload(rawTransfer, parseGatewayTransfer);
       setSelectedTransferId(transfer.id);
     });
   }
@@ -6750,7 +6787,7 @@ export function GatewayControls({
   async function approveTransfer() {
     if (!selectedTransfer) return;
     await runMutation(async () => {
-      await invoke<GatewayTransfer>("approve_gateway_transfer", {
+      const rawTransfer = await invoke<unknown>("approve_gateway_transfer", {
         agentId,
         ownerUserId: OWNER_USER_ID,
         transferId: selectedTransfer.id,
@@ -6758,6 +6795,7 @@ export function GatewayControls({
         idempotencyKey: gatewayIdempotencyKey("transfer-approve"),
         temporaryChat,
       });
+      parseGatewayPayload(rawTransfer, parseGatewayTransfer);
     });
   }
 
@@ -6771,7 +6809,7 @@ export function GatewayControls({
             .filter((session) => session.clientId === GATEWAY_FIXTURE_CLIENT_ID)
             .map((session) => session.lastReplayCounter),
         ) + 1;
-      const session = await invoke<GatewaySession>("connect_gateway_session", {
+      const rawSession = await invoke<unknown>("connect_gateway_session", {
         agentId,
         ownerUserId: OWNER_USER_ID,
         transferId: selectedTransfer.id,
@@ -6784,6 +6822,7 @@ export function GatewayControls({
         idempotencyKey: gatewayIdempotencyKey("session-connect"),
         temporaryChat,
       });
+      const session = parseGatewayPayload(rawSession, parseGatewaySession);
       setSelectedSessionId(session.id);
     });
   }
@@ -6791,16 +6830,14 @@ export function GatewayControls({
   async function reconnectSession() {
     if (!selectedSession || selectedSession.status === "revoked") return;
     await runMutation(async () => {
-      const session = await invoke<GatewaySession>(
-        "reconnect_gateway_session",
-        {
-          agentId,
-          ownerUserId: OWNER_USER_ID,
-          proof: gatewayProof(selectedSession, "session-reconnect"),
-          idempotencyKey: gatewayIdempotencyKey("session-reconnect"),
-          temporaryChat,
-        },
-      );
+      const rawSession = await invoke<unknown>("reconnect_gateway_session", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        proof: gatewayProof(selectedSession, "session-reconnect"),
+        idempotencyKey: gatewayIdempotencyKey("session-reconnect"),
+        temporaryChat,
+      });
+      const session = parseGatewayPayload(rawSession, parseGatewaySession);
       setSelectedSessionId(session.id);
     });
   }
@@ -6808,18 +6845,16 @@ export function GatewayControls({
   async function requestRecovery() {
     if (!selectedSession || selectedSession.status !== "connected") return;
     await runMutation(async () => {
-      const recovery = await invoke<GatewayRecovery>(
-        "request_gateway_recovery",
-        {
-          agentId,
-          ownerUserId: OWNER_USER_ID,
-          proof: gatewayProof(selectedSession, "recovery-request"),
-          recoveryKind: "mobile_administrative",
-          targetMetadata: GATEWAY_FIXTURE_RECOVERY_TARGET,
-          idempotencyKey: gatewayIdempotencyKey("recovery-request"),
-          temporaryChat,
-        },
-      );
+      const rawRecovery = await invoke<unknown>("request_gateway_recovery", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        proof: gatewayProof(selectedSession, "recovery-request"),
+        recoveryKind: "mobile_administrative",
+        targetMetadata: GATEWAY_FIXTURE_RECOVERY_TARGET,
+        idempotencyKey: gatewayIdempotencyKey("recovery-request"),
+        temporaryChat,
+      });
+      const recovery = parseGatewayPayload(rawRecovery, parseGatewayRecovery);
       setSelectedRecoveryId(recovery.id);
     });
   }
@@ -6831,7 +6866,7 @@ export function GatewayControls({
     );
     if (!recoverySession) return;
     await runMutation(async () => {
-      await invoke<GatewayRecovery>("approve_gateway_recovery", {
+      const rawRecovery = await invoke<unknown>("approve_gateway_recovery", {
         agentId,
         ownerUserId: OWNER_USER_ID,
         proof: gatewayProof(recoverySession, "recovery-approve"),
@@ -6840,13 +6875,14 @@ export function GatewayControls({
         idempotencyKey: gatewayIdempotencyKey("recovery-approve"),
         temporaryChat,
       });
+      parseGatewayPayload(rawRecovery, parseGatewayRecovery);
     });
   }
 
   async function revokeSession() {
     if (!selectedSession || selectedSession.status === "revoked") return;
     await runMutation(async () => {
-      await invoke<GatewayRevocation>("revoke_gateway_session", {
+      const rawRevocation = await invoke<unknown>("revoke_gateway_session", {
         agentId,
         ownerUserId: OWNER_USER_ID,
         sessionId: selectedSession.id,
@@ -6854,13 +6890,14 @@ export function GatewayControls({
         idempotencyKey: gatewayIdempotencyKey("session-revoke"),
         temporaryChat,
       });
+      parseGatewayPayload(rawRevocation, parseGatewayRevocation);
     });
   }
 
   async function revokeTransfer() {
     if (!selectedTransfer || selectedTransfer.status === "revoked") return;
     await runMutation(async () => {
-      await invoke<GatewayRevocation>("revoke_gateway_transfer", {
+      const rawRevocation = await invoke<unknown>("revoke_gateway_transfer", {
         agentId,
         ownerUserId: OWNER_USER_ID,
         transferId: selectedTransfer.id,
@@ -6868,6 +6905,7 @@ export function GatewayControls({
         idempotencyKey: gatewayIdempotencyKey("transfer-revoke"),
         temporaryChat,
       });
+      parseGatewayPayload(rawRevocation, parseGatewayRevocation);
     });
   }
 
