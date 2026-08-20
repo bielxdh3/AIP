@@ -195,20 +195,25 @@ future work must not be represented as released behavior.
 The implementation contract is [the cognitive-core specification](COGNITIVE_CORE_SPEC.md).
 The Phase 7 product decisions are resolved and PR #2 is merged. Phase 7A is complete as
 recorded in [its validation record](PHASE_7A_VALIDATION.md); the current development checkpoint
-covers bounded 7B–7D controls, while 7E–7F remain pending.
+covers bounded 7B–7D controls and the Phase 7E public conversation path. Phase 7F is the
+validation/documentation checkpoint recorded in [its validation record](PHASE_7F_VALIDATION.md);
+runtime, manual, and remote reservations remain explicit there. This is not a v0.1 release claim.
 
 - **Phase 7A — cognitive event foundation and protected/evolvable boundaries [APPROVED — DONE]:** typed, bounded ordinary candidates, owner correction, safe explanation, and latest-event compensating rollback. The exact commit, CI, and Owner attestation are recorded in the validation record. Live extraction and later Phase 7E–7F capabilities remain excluded.
   Owner-scoped event processing, typed source eligibility, trait limits, auditability, and temporary-chat exclusion. Conversation-source validation is a future-adapter boundary only; live extraction remains excluded.
-- **Phase 7B — opinions and evidence:** sourced, inspectable opinions with correction,
-  dispute, and supersession workflows.
-- **Phase 7C — relationships:** bounded per-subject relationship dimensions, event history,
-  limits, reset, and rollback.
-- **Phase 7D — goals and fictional activities:** approval-bound durable goals and explicitly
-  fictional, budgeted activity state with no external action.
-- **Phase 7E — bounded agent-to-agent conversation:** visible, purpose-bound interactions
-  with hard resource budgets and deferred candidate processing.
-- **Phase 7F — integrated validation and UX hardening:** Portuguese explanations, restart
-  behavior, safety controls, and full cross-boundary validation.
+- **Phase 7B — opinions and evidence [IMPLEMENTED — LOCAL PATH]:** sourced, inspectable
+  opinions with correction, dispute, and supersession workflows.
+- **Phase 7C — relationships [IMPLEMENTED — LOCAL PATH]:** bounded per-subject relationship
+  dimensions, event history, limits, reset, and rollback.
+- **Phase 7D — goals and fictional activities [IMPLEMENTED — LOCAL PATH]:** approval-bound
+  durable goals and explicitly fictional, budgeted activity state with no external action.
+- **Phase 7E — bounded agent-to-agent conversation [IMPLEMENTED — LOCAL PATH; VALIDATION
+  RESERVED]:** visible, purpose-bound public interactions with hard resource budgets and
+  deferred candidate processing. See [the Phase 7E validation record](PHASE_7E_VALIDATION.md).
+- **Phase 7F — integrated validation and UX hardening [DOCUMENTED CHECKPOINT; RUNTIME
+  RESERVED]:** validation evidence, Portuguese UI boundaries, restart checks, safety controls,
+  and honest documentation. No new capability is introduced; see [the Phase 7F validation
+  record](PHASE_7F_VALIDATION.md).
 
 ## Post-v0.1 Phase 8: voice
 

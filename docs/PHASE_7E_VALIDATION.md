@@ -1,0 +1,88 @@
+# Phase 7E validation
+
+## Status and exact scope
+
+Phase 7E is implemented as a local Rust/SQLite path on the development branch. This
+record is evidence for the implementation and static review; it is not a claim of
+successful Windows runtime, manual, or remote-CI validation.
+
+The implementation baseline under validation is:
+
+- HEAD `5ff4807985eb8156f2c59b7644700c43d19c58fc`
+  (`feat(phase-7e): expose public conversation UI`).
+- The 7B–7D baseline is the sequence `0fba15d079f7362e2c017771dc6050733b24958e`,
+  `94d26c5088e8c64c3a5b5f12e7c82867dbca8ed4`,
+  `e84284b8b90d90ed32b6fc21e6977c0ca1effd49`, and
+  `821d8f9d468e50aedb4ec7b3d42dabcf8162d157`.
+- The Phase 7E commits are `4de625841d6b87ad8821cdc98e947877eb61dbe7`
+  (wiring), `70ba8fe88049c530cdd53c9585bcef3ede408a21` (boundary hardening),
+  and `5ff4807985eb8156f2c59b7644700c43d19c58fc` (typed UI path).
+- Migration `0014_phase7e_7f_conversations.sql` is schema version 14. Database
+  initialization applies it through the existing migration runner; the migration
+  persists policies, conversations, public turns, candidates, resource jobs, and
+  the one-running-heavy-job constraint.
+
+## Authoritative behavior reviewed
+
+Rust owns validation and SQLite owns durable state. The public path has no private or
+hidden agent channel. Public turns are bounded data, and the Rust boundary rejects
+hidden-reasoning, private-channel, and complete-prompt material by inspecting keys and
+bounded string values without executing or expanding the content. Candidate JSON is
+attributed to its completed public conversation and remains `pending`; this phase has
+no direct candidate-to-opinion, relationship, or goal application path.
+
+The reviewed boundaries are:
+
+- Both participating agents must explicitly opt in to the same stated purpose. The
+  request and stored conversation are owner-scoped. Different owners cannot access
+  the durable state; participant membership is enforced for public turns, candidate
+  emission, and resource reservation/completion. Listing, inspection, interruption,
+  and candidate rejection are owner-scoped Owner controls rather than private agent
+  channels.
+- Temporary chat, safe mode, silent mode, and suspended-agent state block autonomous
+  conversation, candidate, and resource work. Owner interruption and candidate
+  rejection remain explicit owner controls, while read-only inspection remains
+  owner-scoped; the UI removes durable controls from temporary chat.
+- Purpose, turns, tokens, duration, repetitions, public-turn content, candidate JSON,
+  per-job resource units, and cumulative conversation resource usage are bounded.
+  Adjacent echo/repetition detection, budget exhaustion, owner interruption, and
+  errors terminate or prevent further work. A uniqueness constraint permits only one
+  heavy generation at a time.
+- Running resource work is recovered on database restart, idempotency keys replay the
+  existing result where supported, and public turns/candidates/resources remain
+  inspectable after reopen. No hidden reasoning, complete prompt, or private-channel
+  record is persisted.
+
+Focused Rust tests for these invariants exist in `conversation.rs`, including opt-in
+and owner isolation, mode and temporary blocking, bounded termination, interruption,
+one-heavy-job uniqueness, restart recovery, pending candidates, content screening,
+participant membership, and cumulative resource-budget/complete guards. The typed
+command-path test in `lib.rs` covers the registered Tauri wrappers. The focused
+cognitive-panel test covers the owner-visible UI path, pending-only rejection,
+temporary suppression, and safe Portuguese error rendering.
+
+## Automated evidence
+
+| Command                                                                                                                                      | Result   | Evidence boundary                                                                                                                        |
+| -------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check`                                                                        | Passed   | Rust formatting completed locally.                                                                                                       |
+| `cargo check --locked --manifest-path apps/desktop/src-tauri/Cargo.toml`                                                                     | Passed   | Rust/Tauri compilation completed; existing dead-code warnings were emitted, with no compile error.                                       |
+| `cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml conversation --quiet`                                                 | Blocked  | The Windows test binary reached launch and failed with `STATUS_ENTRYPOINT_NOT_FOUND` (`0xc0000139`); no Rust test case is called passed. |
+| `pnpm --filter @aip/desktop exec tsc --noEmit`                                                                                               | Passed   | Desktop TypeScript typecheck completed.                                                                                                  |
+| `pnpm --filter @aip/contracts exec tsc -p tsconfig.json --noEmit`                                                                            | Passed   | Contracts TypeScript typecheck completed.                                                                                                |
+| `pnpm exec eslint apps/desktop/src/App.tsx apps/desktop/src/cognitive-panel.test.tsx packages/contracts/src/index.ts --max-warnings=0`       | Passed   | Focused lint completed.                                                                                                                  |
+| `pnpm exec prettier --check packages/contracts/src/index.ts`                                                                                 | Passed   | Contracts formatting completed.                                                                                                          |
+| `pnpm exec prettier --check apps/desktop/src/App.tsx apps/desktop/src/cognitive-panel.test.tsx packages/contracts/src/index.ts`              | Reserved | Existing App/test formatting differences remain; no product formatting change is part of this validation checkpoint.                     |
+| `pnpm --filter @aip/desktop exec vitest run src/cognitive-panel.test.tsx`                                                                    | Blocked  | Vite/Vitest startup failed before test execution with `spawn EPERM`.                                                                     |
+| `pnpm --filter @aip/desktop exec vitest run src/cognitive-panel.test.tsx --config=false --pool=threads --no-file-parallelism --maxWorkers=1` | Not run  | The installed Vitest interpreted `false` as a config path (`Cannot resolve entry module false`); this did not produce test evidence.     |
+| `git diff --check`                                                                                                                           | Passed   | The implementation baseline had no whitespace errors.                                                                                    |
+
+## Runtime and publication boundary
+
+No installed-Windows package, live model generation, restart session, Owner manual
+attestation, or remote CI result was observed for this checkpoint. The Windows
+`STATUS_ENTRYPOINT_NOT_FOUND` reservation and the pnpm/Vitest `spawn EPERM`
+reservation must be cleared in a suitable environment before claiming runtime test
+completion. Prettier differences remain an explicit baseline reservation. Phase 7E
+therefore has a validated local implementation path, not a release or publication
+approval.
