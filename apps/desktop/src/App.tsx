@@ -13,12 +13,22 @@ import type {
   AgentSimulatedState,
   CognitiveEventExplanation,
   CognitiveEventSummary,
+  CognitiveGoalApprovalRequest,
   CognitiveGoal,
+  CognitiveGoalStatusRequest,
   CognitiveOpinion,
+  CognitiveOpinionRecalculationRequest,
+  CognitiveOpinionStatusRequest,
   CognitiveTrait,
   ConversationMessage,
+  GoalRequest,
+  OpinionCandidateRequest,
+  OpinionEvidenceCorrectionRequest,
   PhaseOneConversation,
   ProvisionalAgent,
+  RelationshipCandidateRequest,
+  RelationshipResetRequest,
+  RelationshipRollbackRequest,
   RelationshipState,
 } from "@aip/contracts";
 import AgentSprite from "./components/AgentSprite";
@@ -1680,12 +1690,19 @@ const coreGoalStatusCopy: Record<CognitiveGoal["status"], string> = {
 };
 
 const coreErrorCopy: Record<string, string> = {
+  ownership_mismatch: "Este registro pertence a outro agente.",
+  invalid_reason: "Informe um motivo válido para a operação.",
+  invalid_idempotency_key: "A chave de idempotência não é válida.",
+  rollback_conflict: "Somente o último evento aplicado pode ser revertido.",
+  rollback_not_allowed: "Esse evento não pode ser revertido.",
   invalid_classification: "A classificação da opinião não é válida.",
   invalid_evidence: "A evidência não é válida.",
   attribution_required: "Informe a atribuição da experiência.",
-  internet_fact_unverified: "Informações externas não podem virar fatos verificados.",
+  internet_fact_unverified:
+    "Informações externas não podem virar fatos verificados.",
   inference_not_fact: "Uma inferência de modelo não pode ser fato verificado.",
-  real_person_uncertain: "Opiniões sobre pessoas reais exigem cautela adicional.",
+  real_person_uncertain:
+    "Opiniões sobre pessoas reais exigem cautela adicional.",
   defamation_blocked: "A descrição foi recusada por segurança.",
   invalid_status: "O status solicitado não é válido.",
   evidence_not_found: "A evidência não foi encontrada.",
@@ -1693,16 +1710,86 @@ const coreErrorCopy: Record<string, string> = {
   invalid_subject: "O assunto informado não é válido.",
   relationship_not_found: "O relacionamento não foi encontrado.",
   relationship_delta_limit: "A alteração do relacionamento excede o limite.",
-  relationship_rate_limit: "O limite de alterações do relacionamento foi atingido.",
+  relationship_rate_limit:
+    "O limite de alterações do relacionamento foi atingido.",
   manipulation_blocked: "A alteração do relacionamento foi recusada.",
   invalid_goal: "Os dados do objetivo não são válidos.",
-  external_action_blocked: "Objetivos fictícios não podem pedir ações externas.",
+  external_action_blocked:
+    "Objetivos fictícios não podem pedir ações externas.",
   invalid_goal_budget: "Use prioridade de 0 a 100 e orçamento de 1 a 1000.",
   invalid_goal_schedule: "O prazo do objetivo não é válido.",
   goal_not_found: "O objetivo não foi encontrado.",
   goal_loop_blocked: "A dependência criaria um ciclo de objetivos.",
   invalid_transition: "Essa mudança de status não é permitida.",
 };
+
+type CognitiveCommandMap = {
+  list_cognitive_opinions: {
+    args: { agentId: string };
+    response: CognitiveOpinion[];
+  };
+  list_cognitive_relationships: {
+    args: { agentId: string };
+    response: RelationshipState[];
+  };
+  list_cognitive_goals: {
+    args: { agentId: string };
+    response: CognitiveGoal[];
+  };
+  propose_cognitive_opinion: {
+    args: OpinionCandidateRequest;
+    response: CognitiveOpinion;
+  };
+  correct_cognitive_opinion_evidence: {
+    args: OpinionEvidenceCorrectionRequest;
+    response: CognitiveOpinion;
+  };
+  set_cognitive_opinion_status: {
+    args: CognitiveOpinionStatusRequest;
+    response: CognitiveOpinion;
+  };
+  recalculate_cognitive_opinion: {
+    args: CognitiveOpinionRecalculationRequest;
+    response: CognitiveOpinion;
+  };
+  propose_cognitive_relationship: {
+    args: RelationshipCandidateRequest;
+    response: RelationshipState;
+  };
+  reset_cognitive_relationship: {
+    args: RelationshipResetRequest;
+    response: RelationshipState;
+  };
+  rollback_cognitive_relationship: {
+    args: RelationshipRollbackRequest;
+    response: RelationshipState;
+  };
+  create_owner_cognitive_goal: {
+    args: GoalRequest;
+    response: CognitiveGoal;
+  };
+  propose_agent_cognitive_goal: {
+    args: GoalRequest;
+    response: CognitiveGoal;
+  };
+  approve_cognitive_goal: {
+    args: CognitiveGoalApprovalRequest;
+    response: CognitiveGoal;
+  };
+  update_cognitive_goal_status: {
+    args: CognitiveGoalStatusRequest;
+    response: CognitiveGoal;
+  };
+};
+
+type CognitiveCommandName = keyof CognitiveCommandMap;
+
+function invokeCognitive<Command extends CognitiveCommandName>(
+  command: Command,
+  args: CognitiveCommandMap[Command]["args"],
+): Promise<CognitiveCommandMap[Command]["response"]> {
+  return invoke<CognitiveCommandMap[Command]["response"]>(command, args);
+}
 
 function CognitiveCorePanel({ agentId }: { agentId: string }) {
   const [opinions, setOpinions] = useState<CognitiveOpinion[]>([]);
@@ -1712,9 +1799,15 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
   const [opinionStance, setOpinionStance] = useState("0");
   const [opinionClaim, setOpinionClaim] = useState("");
   const [opinionReason, setOpinionReason] = useState("");
+  const [opinionActionReason, setOpinionActionReason] = useState("");
+  const [correctionOpinionId, setCorrectionOpinionId] = useState<string | null>(
+    null,
+  );
+  const [correctionClaim, setCorrectionClaim] = useState("");
   const [relationshipSubject, setRelationshipSubject] = useState("");
   const [relationshipTrust, setRelationshipTrust] = useState("0.05");
   const [relationshipReason, setRelationshipReason] = useState("");
+  const [relationshipActionReason, setRelationshipActionReason] = useState("");
   const [goalTitle, setGoalTitle] = useState("");
   const [goalDescription, setGoalDescription] = useState("");
   const [goalPriority, setGoalPriority] = useState("50");
@@ -1729,9 +1822,9 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
   const load = useCallback(async () => {
     const version = ++loadVersion.current;
     const [nextOpinions, nextRelationships, nextGoals] = await Promise.all([
-      invoke<CognitiveOpinion[]>("list_cognitive_opinions", { agentId }),
-      invoke<RelationshipState[]>("list_cognitive_relationships", { agentId }),
-      invoke<CognitiveGoal[]>("list_cognitive_goals", { agentId }),
+      invokeCognitive("list_cognitive_opinions", { agentId }),
+      invokeCognitive("list_cognitive_relationships", { agentId }),
+      invokeCognitive("list_cognitive_goals", { agentId }),
     ]);
     if (version !== loadVersion.current) return;
     setOpinions(nextOpinions);
@@ -1758,16 +1851,16 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
       });
   }, [agentId, load]);
 
-  async function run(
-    command: string,
-    args: Record<string, unknown>,
+  async function runCognitive<Command extends CognitiveCommandName>(
+    command: Command,
+    args: CognitiveCommandMap[Command]["args"],
     message: string,
   ): Promise<boolean> {
     setBusy(true);
     setError(null);
     setSuccess(null);
     try {
-      await invoke(command, args);
+      await invokeCognitive(command, args);
       await load();
       if (activeAgentId.current === agentId) setSuccess(message);
       return true;
@@ -1783,7 +1876,11 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
 
   async function proposeOpinion() {
     const stance = Number(opinionStance);
-    if (!opinionSubject.trim() || !opinionClaim.trim() || !opinionReason.trim()) {
+    if (
+      !opinionSubject.trim() ||
+      !opinionClaim.trim() ||
+      !opinionReason.trim()
+    ) {
       setError("Informe assunto, evidência e motivo da opinião.");
       return;
     }
@@ -1792,7 +1889,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
       return;
     }
     if (
-      await run(
+      await runCognitive(
         "propose_cognitive_opinion",
         {
           agentId,
@@ -1818,6 +1915,82 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
     }
   }
 
+  function selectOpinionCorrection(opinion: CognitiveOpinion) {
+    const evidence = opinion.evidence.find((item) => item.status === "active");
+    if (!evidence) {
+      setError("A opinião não possui evidência ativa para corrigir.");
+      return;
+    }
+    setCorrectionOpinionId(opinion.id);
+    setCorrectionClaim(evidence.claimValue);
+    setError(null);
+    setSuccess(null);
+  }
+
+  async function correctOpinion() {
+    const opinion = opinions.find((item) => item.id === correctionOpinionId);
+    const evidence = opinion?.evidence.find((item) => item.status === "active");
+    if (!evidence) {
+      setError("A opinião não possui evidência ativa para corrigir.");
+      return;
+    }
+    if (!correctionClaim.trim() || !opinionActionReason.trim()) {
+      setError("Informe a nova evidência e o motivo da correção.");
+      return;
+    }
+    if (
+      await runCognitive(
+        "correct_cognitive_opinion_evidence",
+        {
+          agentId,
+          evidenceId: evidence.id,
+          claimValue: correctionClaim.trim(),
+          reason: opinionActionReason.trim(),
+          idempotencyKey: crypto.randomUUID(),
+        },
+        "Evidência corrigida.",
+      )
+    ) {
+      setCorrectionOpinionId(null);
+      setCorrectionClaim("");
+    }
+  }
+
+  async function setOpinionStatus(opinion: CognitiveOpinion) {
+    if (!opinionActionReason.trim()) {
+      setError("Informe o motivo da ação de opinião.");
+      return;
+    }
+    await runCognitive(
+      "set_cognitive_opinion_status",
+      {
+        agentId,
+        opinionId: opinion.id,
+        status: "disputed",
+        reason: opinionActionReason.trim(),
+        idempotencyKey: crypto.randomUUID(),
+      },
+      "Opinião marcada para revisão.",
+    );
+  }
+
+  async function recalculateOpinion(opinion: CognitiveOpinion) {
+    if (!opinionActionReason.trim()) {
+      setError("Informe o motivo da ação de opinião.");
+      return;
+    }
+    await runCognitive(
+      "recalculate_cognitive_opinion",
+      {
+        agentId,
+        opinionId: opinion.id,
+        reason: opinionActionReason.trim(),
+        idempotencyKey: crypto.randomUUID(),
+      },
+      "Opinião recalculada.",
+    );
+  }
+
   async function proposeRelationship() {
     const trust = Number(relationshipTrust);
     if (!relationshipSubject.trim() || !relationshipReason.trim()) {
@@ -1829,7 +2002,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
       return;
     }
     if (
-      await run(
+      await runCognitive(
         "propose_cognitive_relationship",
         {
           agentId,
@@ -1857,7 +2030,41 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
     }
   }
 
-  async function proposeGoal() {
+  async function resetRelationship(relationship: RelationshipState) {
+    if (!relationshipActionReason.trim()) {
+      setError("Informe o motivo da redefinição do relacionamento.");
+      return;
+    }
+    await runCognitive(
+      "reset_cognitive_relationship",
+      {
+        agentId,
+        relationshipId: relationship.id,
+        reason: relationshipActionReason.trim(),
+        idempotencyKey: crypto.randomUUID(),
+      },
+      "Relacionamento redefinido.",
+    );
+  }
+
+  async function rollbackRelationship(relationship: RelationshipState) {
+    const event = relationship.events[0];
+    if (!event || event.status !== "applied") {
+      setError("Não há um último evento aplicado para reverter.");
+      return;
+    }
+    await runCognitive(
+      "rollback_cognitive_relationship",
+      {
+        agentId,
+        eventId: event.eventId,
+        idempotencyKey: crypto.randomUUID(),
+      },
+      "Último evento do relacionamento revertido.",
+    );
+  }
+
+  async function saveGoal(origin: "owner" | "agent_proposal") {
     const priority = Number(goalPriority);
     const budgetUnits = Number(goalBudget);
     if (!goalTitle.trim() || !goalDescription.trim()) {
@@ -1875,9 +2082,13 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
       setError("Use prioridade de 0 a 100 e orçamento de 1 a 1000.");
       return;
     }
+    const command =
+      origin === "owner"
+        ? "create_owner_cognitive_goal"
+        : "propose_agent_cognitive_goal";
     if (
-      await run(
-        "propose_agent_cognitive_goal",
+      await runCognitive(
+        command,
         {
           agentId,
           title: goalTitle,
@@ -1889,7 +2100,9 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
           parentGoalId: null,
           idempotencyKey: crypto.randomUUID(),
         },
-        "Objetivo fictício proposto.",
+        origin === "owner"
+          ? "Objetivo do Owner criado."
+          : "Objetivo fictício proposto.",
       )
     ) {
       setGoalTitle("");
@@ -1898,7 +2111,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
   }
 
   async function approveGoal(goal: CognitiveGoal) {
-    await run(
+    await runCognitive(
       "approve_cognitive_goal",
       { agentId, goalId: goal.id, idempotencyKey: crypto.randomUUID() },
       "Objetivo aprovado.",
@@ -1909,7 +2122,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
     goal: CognitiveGoal,
     status: "active" | "suspended" | "completed" | "rejected",
   ) {
-    await run(
+    await runCognitive(
       "update_cognitive_goal_status",
       {
         agentId,
@@ -1937,8 +2150,34 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
           <li key={opinion.id}>
             {opinion.subjectRef}: posição {opinion.stance.toFixed(2)}, confiança{" "}
             {opinion.confidence.toFixed(2)} ({opinion.status}) —{" "}
-            {opinion.evidence.find((item) => item.status === "active")?.claimValue ??
-              "sem evidência ativa"}
+            {opinion.evidence.find((item) => item.status === "active")
+              ?.claimValue ?? "sem evidência ativa"}
+            <div>
+              {opinion.evidence.some((item) => item.status === "active") ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  aria-label={`Corrigir evidência de ${opinion.subjectRef}`}
+                  onClick={() => selectOpinionCorrection(opinion)}
+                >
+                  Corrigir evidência
+                </button>
+              ) : null}{" "}
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void setOpinionStatus(opinion)}
+              >
+                Marcar opinião como disputada
+              </button>{" "}
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void recalculateOpinion(opinion)}
+              >
+                Recalcular opinião
+              </button>
+            </div>
           </li>
         ))}
       </ul>
@@ -1977,16 +2216,67 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
           onChange={(event) => setOpinionReason(event.target.value)}
         />
       </label>
-      <button type="button" disabled={busy} onClick={() => void proposeOpinion()}>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void proposeOpinion()}
+      >
         Propor opinião
       </button>
+      <label>
+        Motivo da ação de opinião
+        <textarea
+          value={opinionActionReason}
+          maxLength={500}
+          onChange={(event) => setOpinionActionReason(event.target.value)}
+        />
+      </label>
+      {correctionOpinionId ? (
+        <div>
+          <p>Correção da evidência selecionada</p>
+          <label>
+            Nova evidência
+            <textarea
+              value={correctionClaim}
+              maxLength={500}
+              onChange={(event) => setCorrectionClaim(event.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void correctOpinion()}
+          >
+            Confirmar correção da evidência
+          </button>
+        </div>
+      ) : null}
 
       <h4>Relacionamentos</h4>
       <ul>
         {relationships.map((relationship) => (
           <li key={relationship.id}>
-            {relationship.subjectRef}: confiança {relationship.values.trust.toFixed(2)} —{" "}
+            {relationship.subjectRef}: confiança{" "}
+            {relationship.values.trust.toFixed(2)} —{" "}
             {relationship.events.length} evento(s)
+            <div>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void resetRelationship(relationship)}
+              >
+                Redefinir relacionamento
+              </button>{" "}
+              {relationship.events[0]?.status === "applied" ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void rollbackRelationship(relationship)}
+                >
+                  Reverter último evento
+                </button>
+              ) : null}
+            </div>
           </li>
         ))}
       </ul>
@@ -2024,13 +2314,21 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
       >
         Propor alteração de relacionamento
       </button>
+      <label>
+        Motivo da redefinição do relacionamento
+        <textarea
+          value={relationshipActionReason}
+          maxLength={500}
+          onChange={(event) => setRelationshipActionReason(event.target.value)}
+        />
+      </label>
 
       <h4>Objetivos fictícios</h4>
       <ul>
         {goals.map((goal) => (
           <li key={goal.id}>
-            <strong>{goal.title}</strong> — {coreGoalStatusCopy[goal.status]} — orçamento{" "}
-            {goal.budgetUnits}
+            <strong>{goal.title}</strong> — {coreGoalStatusCopy[goal.status]} —
+            orçamento {goal.budgetUnits}
             <p>{goal.description}</p>
             {goal.completionEvidence ? <p>{goal.completionEvidence}</p> : null}
             {goal.status === "proposed" ? (
@@ -2117,12 +2415,25 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
           onChange={(event) => setGoalBudget(event.target.value)}
         />
       </label>
-      <button type="button" disabled={busy} onClick={() => void proposeGoal()}>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void saveGoal("agent_proposal")}
+      >
         Propor objetivo fictício
+      </button>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void saveGoal("owner")}
+      >
+        Criar objetivo do Owner
       </button>
       {error ? <p role="alert">{coreErrorCopy[error] || error}</p> : null}
       {success ? <p role="status">{success}</p> : null}
-      <p>Atividades fictícias ainda não estão implementadas neste checkpoint.</p>
+      <p>
+        Atividades fictícias ainda não estão implementadas neste checkpoint.
+      </p>
     </section>
   );
 }

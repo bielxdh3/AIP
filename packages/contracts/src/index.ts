@@ -230,6 +230,19 @@ export type OpinionEvidenceCorrectionRequest = {
   reason: string;
   idempotencyKey: string;
 };
+export type CognitiveOpinionStatusRequest = {
+  agentId: string;
+  opinionId: string;
+  status: "disputed" | "superseded" | "archived" | "rejected";
+  reason: string;
+  idempotencyKey: string;
+};
+export type CognitiveOpinionRecalculationRequest = {
+  agentId: string;
+  opinionId: string;
+  reason: string;
+  idempotencyKey: string;
+};
 export type RelationshipValues = {
   familiarity: number;
   trust: number;
@@ -273,6 +286,17 @@ export type RelationshipCandidateRequest = {
   reason: string;
   idempotencyKey: string;
 };
+export type RelationshipResetRequest = {
+  agentId: string;
+  relationshipId: string;
+  reason: string;
+  idempotencyKey: string;
+};
+export type RelationshipRollbackRequest = {
+  agentId: string;
+  eventId: string;
+  idempotencyKey: string;
+};
 export type CognitiveGoalStatus =
   | "proposed"
   | "active"
@@ -307,6 +331,18 @@ export type GoalRequest = {
   dueAt: number | null;
   expiresAt: number | null;
   parentGoalId: string | null;
+  idempotencyKey: string;
+};
+export type CognitiveGoalApprovalRequest = {
+  agentId: string;
+  goalId: string;
+  idempotencyKey: string;
+};
+export type CognitiveGoalStatusRequest = {
+  agentId: string;
+  goalId: string;
+  status: Exclude<CognitiveGoalStatus, "proposed">;
+  completionEvidence: string | null;
   idempotencyKey: string;
 };
 export type OwnerCorrectionRequest = {
