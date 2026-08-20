@@ -194,9 +194,10 @@ future work must not be represented as released behavior.
 
 The implementation contract is [the cognitive-core specification](COGNITIVE_CORE_SPEC.md).
 The Phase 7 product decisions are resolved and PR #2 is merged. Phase 7A is complete as
-recorded in [its validation record](PHASE_7A_VALIDATION.md); later slices remain unstarted.
+recorded in [its validation record](PHASE_7A_VALIDATION.md); the current development checkpoint
+covers bounded 7B–7D controls, while 7E–7F remain pending.
 
-- **Phase 7A — cognitive event foundation and protected/evolvable boundaries [APPROVED — DONE]:** typed, bounded ordinary candidates, owner correction, safe explanation, and latest-event compensating rollback. The exact commit, CI, and Owner attestation are recorded in the validation record. Live extraction and all Phase 7B–7E capabilities remain excluded.
+- **Phase 7A — cognitive event foundation and protected/evolvable boundaries [APPROVED — DONE]:** typed, bounded ordinary candidates, owner correction, safe explanation, and latest-event compensating rollback. The exact commit, CI, and Owner attestation are recorded in the validation record. Live extraction and later Phase 7E–7F capabilities remain excluded.
   Owner-scoped event processing, typed source eligibility, trait limits, auditability, and temporary-chat exclusion. Conversation-source validation is a future-adapter boundary only; live extraction remains excluded.
 - **Phase 7B — opinions and evidence:** sourced, inspectable opinions with correction,
   dispute, and supersession workflows.

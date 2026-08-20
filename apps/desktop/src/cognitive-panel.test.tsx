@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CognitiveGoal } from "@aip/contracts";
-import { CognitivePanel } from "./App";
+import { CognitivePanel, CognitivePanelGate } from "./App";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
@@ -549,5 +549,23 @@ describe("CognitivePanel", () => {
       }),
     );
     expect(container.textContent).toContain("estado fictício");
+  });
+
+  it("suppresses durable cognitive controls during temporary chat", async () => {
+    invoke.mockImplementation((command: string) => {
+      throw new Error(`unexpected temporary-chat command: ${command}`);
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () =>
+      root.render(<CognitivePanelGate agentId="astra" temporaryChat />),
+    );
+
+    expect(container.textContent).toContain("Conversa temporária ativa");
+    expect(container.textContent).toContain("somente para leitura");
+    expect(container.textContent).not.toContain("Núcleo cognitivo");
+    expect(container.querySelector("button")).toBeNull();
+    expect(invoke).not.toHaveBeenCalled();
   });
 });
