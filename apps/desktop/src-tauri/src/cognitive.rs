@@ -13,6 +13,7 @@ const MAX_REASON: usize = 500;
 const MAX_CLAIM_KEY: usize = 80;
 const MAX_CLAIM_VALUE: usize = 500;
 const MAX_ACTIVITY_TYPE: usize = 80;
+const MAX_ACTIVITY_BUDGET: i64 = 500;
 const MAX_ACTIVITY_DURATION_MS: i64 = 86_400_000;
 const MAX_RELATIONSHIP_DELTA: f64 = 0.10;
 const MAX_RELATIONSHIP_WINDOW: f64 = 0.20;
@@ -106,6 +107,22 @@ mod tests {
             expires_at: None,
             parent_goal_id: None,
             idempotency_key: idempotency_key.into(),
+        }
+    }
+
+    fn activity_request(
+        agent_id: &str,
+        goal_id: &str,
+        idempotency_key: &str,
+    ) -> FictionalActivityRequest {
+        FictionalActivityRequest {
+            agent_id: agent_id.into(),
+            goal_id: goal_id.into(),
+            activity_type: "fictional-reading".into(),
+            budget_units: 10,
+            duration_ms: 60_000,
+            idempotency_key: idempotency_key.into(),
+            temporary_chat: false,
         }
     }
 
@@ -228,6 +245,139 @@ mod tests {
             database.create_owner_goal(goal).unwrap_err(),
             DatabaseError::Cognitive("invalid_goal_budget")
         );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn fictional_activity_paths_are_bounded_owner_scoped_and_replay_safe() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let goal = database
+            .create_owner_goal(goal_request(ASTRA_ID, "activity-goal"))
+            .unwrap();
+        let request = activity_request(ASTRA_ID, &goal.id, "activity-start");
+        let first = database.start_fictional_activity(request.clone()).unwrap();
+        assert!(first.fictional_only);
+        assert_eq!(first.status, "active");
+        assert_eq!(first.ended_at, Some(first.started_at + request.duration_ms));
+        assert_eq!(
+            database
+                .start_fictional_activity(request.clone())
+                .unwrap()
+                .id,
+            first.id
+        );
+        assert_eq!(
+            database.list_fictional_activities(ASTRA_ID).unwrap().len(),
+            1
+        );
+
+        let mut conflict = request.clone();
+        conflict.activity_type = "fictional-rest".into();
+        assert_eq!(
+            database.start_fictional_activity(conflict).unwrap_err(),
+            DatabaseError::Cognitive("idempotency_conflict")
+        );
+
+        let mut external = request.clone();
+        external.activity_type = "delete file".into();
+        external.idempotency_key = "activity-external".into();
+        assert_eq!(
+            database.start_fictional_activity(external).unwrap_err(),
+            DatabaseError::Cognitive("external_action_blocked")
+        );
+
+        let mut over_budget = request.clone();
+        over_budget.budget_units = MAX_ACTIVITY_BUDGET + 1;
+        over_budget.idempotency_key = "activity-budget".into();
+        assert_eq!(
+            database.start_fictional_activity(over_budget).unwrap_err(),
+            DatabaseError::Cognitive("invalid_activity_budget")
+        );
+
+        let mut over_duration = request.clone();
+        over_duration.duration_ms = MAX_ACTIVITY_DURATION_MS + 1;
+        over_duration.idempotency_key = "activity-duration".into();
+        assert_eq!(
+            database
+                .start_fictional_activity(over_duration)
+                .unwrap_err(),
+            DatabaseError::Cognitive("invalid_activity_budget")
+        );
+
+        let mut temporary = request.clone();
+        temporary.idempotency_key = "activity-temporary".into();
+        temporary.temporary_chat = true;
+        assert_eq!(
+            database.start_fictional_activity(temporary).unwrap_err(),
+            DatabaseError::Cognitive("conversation_temporary_blocked")
+        );
+
+        let status_request = FictionalActivityStatusRequest {
+            agent_id: ASTRA_ID.into(),
+            activity_id: first.id.clone(),
+            status: "completed".into(),
+            idempotency_key: "activity-complete".into(),
+            temporary_chat: false,
+        };
+        let completed = database
+            .update_fictional_activity_status(status_request.clone())
+            .unwrap();
+        assert_eq!(completed.status, "completed");
+        assert!(completed.ended_at.is_some());
+        assert_eq!(
+            database
+                .update_fictional_activity_status(status_request)
+                .unwrap()
+                .status,
+            "completed"
+        );
+
+        let mut invalid_transition = FictionalActivityStatusRequest {
+            agent_id: ASTRA_ID.into(),
+            activity_id: first.id.clone(),
+            status: "active".into(),
+            idempotency_key: "activity-reopen".into(),
+            temporary_chat: false,
+        };
+        assert_eq!(
+            database
+                .update_fictional_activity_status(invalid_transition.clone())
+                .unwrap_err(),
+            DatabaseError::Cognitive("invalid_transition")
+        );
+        invalid_transition.temporary_chat = true;
+        assert_eq!(
+            database
+                .update_fictional_activity_status(invalid_transition)
+                .unwrap_err(),
+            DatabaseError::Cognitive("conversation_temporary_blocked")
+        );
+
+        let proposal = database
+            .propose_agent_goal(goal_request(ASTRA_ID, "activity-proposal"))
+            .unwrap();
+        let proposal_activity = activity_request(ASTRA_ID, &proposal.id, "activity-proposal-start");
+        assert_eq!(
+            database
+                .start_fictional_activity(proposal_activity)
+                .unwrap_err(),
+            DatabaseError::Cognitive("invalid_transition")
+        );
+
+        let connection = database.open().unwrap();
+        connection
+            .execute(
+                "UPDATE agents SET owner_user_id = 'usr_other' WHERE id = ?1",
+                [ASTRA_ID],
+            )
+            .unwrap();
+        drop(connection);
+        assert_eq!(
+            database.list_fictional_activities(ASTRA_ID).unwrap_err(),
+            DatabaseError::OwnershipMismatch
+        );
+
         cleanup(&path);
     }
 
@@ -617,6 +767,17 @@ pub struct FictionalActivityRequest {
     pub budget_units: i64,
     pub duration_ms: i64,
     pub idempotency_key: String,
+    pub temporary_chat: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FictionalActivityStatusRequest {
+    pub agent_id: String,
+    pub activity_id: String,
+    pub status: String,
+    pub idempotency_key: String,
+    pub temporary_chat: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -625,6 +786,23 @@ struct CoreEventRecord {
     kind: String,
     payload_json: String,
     result_ref: Option<String>,
+}
+
+struct CoreEventInput<'a> {
+    agent_id: &'a str,
+    owner_id: &'a str,
+    idempotency_key: &'a str,
+    kind: &'a str,
+    subject_type: &'a str,
+    subject_ref: &'a str,
+    source_kind: &'a str,
+    source_reference: Option<&'a str>,
+    reason: &'a str,
+    confidence: f64,
+    payload: &'a Value,
+    result_ref: Option<&'a str>,
+    related_event_id: Option<&'a str>,
+    now: i64,
 }
 
 fn text(value: &str, max: usize, code: &'static str) -> Result<String, DatabaseError> {
@@ -819,22 +997,9 @@ fn versioned_payload(payload: &Value) -> Value {
 
 fn core_event(
     tx: &Transaction<'_>,
-    agent_id: &str,
-    owner_id: &str,
-    idempotency_key: &str,
-    kind: &str,
-    subject_type: &str,
-    subject_ref: &str,
-    source_kind: &str,
-    source_reference: Option<&str>,
-    reason: &str,
-    confidence: f64,
-    payload: &Value,
-    result_ref: Option<&str>,
-    related_event_id: Option<&str>,
-    now: i64,
+    input: CoreEventInput<'_>,
 ) -> Result<CoreEventRecord, DatabaseError> {
-    let payload_json = serde_json::to_string(&versioned_payload(payload))
+    let payload_json = serde_json::to_string(&versioned_payload(input.payload))
         .map_err(|_| DatabaseError::Cognitive("persistence_failed"))?;
     let id = Uuid::now_v7().to_string();
     tx.execute(
@@ -845,27 +1010,27 @@ fn core_event(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'applied', ?13, ?14, ?15, ?15)",
         params![
             id,
-            agent_id,
-            owner_id,
-            idempotency_key,
-            kind,
-            subject_type,
-            subject_ref,
-            source_kind,
-            source_reference,
-            reason,
-            confidence,
+            input.agent_id,
+            input.owner_id,
+            input.idempotency_key,
+            input.kind,
+            input.subject_type,
+            input.subject_ref,
+            input.source_kind,
+            input.source_reference,
+            input.reason,
+            input.confidence,
             payload_json,
-            result_ref,
-            related_event_id,
-            now
+            input.result_ref,
+            input.related_event_id,
+            input.now
         ],
     )?;
     Ok(CoreEventRecord {
         id,
-        kind: kind.to_owned(),
+        kind: input.kind.to_owned(),
         payload_json,
-        result_ref: result_ref.map(str::to_owned),
+        result_ref: input.result_ref.map(str::to_owned),
     })
 }
 
@@ -1352,20 +1517,22 @@ impl Database {
         }
         let event = core_event(
             &tx,
-            &request.agent_id,
-            &owner_id,
-            &idempotency_key,
-            "opinion_evidence",
-            &subject_type,
-            &subject_ref,
-            source_kind,
-            source_reference.as_deref(),
-            &reason,
-            confidence,
-            &payload,
-            Some(&opinion_id),
-            None,
-            now,
+            CoreEventInput {
+                agent_id: &request.agent_id,
+                owner_id: &owner_id,
+                idempotency_key: &idempotency_key,
+                kind: "opinion_evidence",
+                subject_type: &subject_type,
+                subject_ref: &subject_ref,
+                source_kind,
+                source_reference: source_reference.as_deref(),
+                reason: &reason,
+                confidence,
+                payload: &payload,
+                result_ref: Some(&opinion_id),
+                related_event_id: None,
+                now,
+            },
         )?;
         tx.execute(
             "INSERT INTO opinion_evidence
@@ -1391,13 +1558,12 @@ impl Database {
         )?;
         let (resulting_stance, resulting_confidence, conflicted) =
             recalculate_opinion_values(&tx, &opinion_id)?;
-        let status = if conflicted {
-            "disputed"
-        } else if prior.get("status").and_then(Value::as_str) == Some("disputed") {
-            "disputed"
-        } else {
-            "active"
-        };
+        let status =
+            if conflicted || prior.get("status").and_then(Value::as_str) == Some("disputed") {
+                "disputed"
+            } else {
+                "active"
+            };
         tx.execute(
             "UPDATE opinions SET stance = ?1, confidence = ?2, status = ?3, reason = ?4,
              current_event_id = ?5, updated_at = ?6 WHERE id = ?7 AND agent_id = ?8",
@@ -1527,20 +1693,22 @@ impl Database {
         let now = now_millis();
         let event = core_event(
             &tx,
-            &request.agent_id,
-            &owner_id,
-            &idempotency_key,
-            "opinion_evidence",
-            &subject_type,
-            &subject_ref,
-            "owner_testimony",
-            Some("owner"),
-            &reason,
-            confidence,
-            &payload,
-            Some(&opinion_id),
-            old_event_id.as_deref(),
-            now,
+            CoreEventInput {
+                agent_id: &request.agent_id,
+                owner_id: &owner_id,
+                idempotency_key: &idempotency_key,
+                kind: "opinion_evidence",
+                subject_type: &subject_type,
+                subject_ref: &subject_ref,
+                source_kind: "owner_testimony",
+                source_reference: Some("owner"),
+                reason: &reason,
+                confidence,
+                payload: &payload,
+                result_ref: Some(&opinion_id),
+                related_event_id: old_event_id.as_deref(),
+                now,
+            },
         )?;
         tx.execute(
             "UPDATE opinion_evidence SET status = 'superseded' WHERE id = ?1 AND agent_id = ?2",
@@ -1630,20 +1798,22 @@ impl Database {
         let now = now_millis();
         let event = core_event(
             &tx,
-            agent_id,
-            &owner_id,
-            &idempotency_key,
-            "opinion_status",
-            "opinion",
-            opinion_id,
-            "owner_testimony",
-            Some("owner"),
-            &reason,
-            1.0,
-            &payload,
-            Some(opinion_id),
-            None,
-            now,
+            CoreEventInput {
+                agent_id,
+                owner_id: &owner_id,
+                idempotency_key: &idempotency_key,
+                kind: "opinion_status",
+                subject_type: "opinion",
+                subject_ref: opinion_id,
+                source_kind: "owner_testimony",
+                source_reference: Some("owner"),
+                reason: &reason,
+                confidence: 1.0,
+                payload: &payload,
+                result_ref: Some(opinion_id),
+                related_event_id: None,
+                now,
+            },
         )?;
         tx.execute(
             "UPDATE opinions SET status = ?1, reason = ?2, current_event_id = ?3, updated_at = ?4
@@ -1686,20 +1856,22 @@ impl Database {
         let now = now_millis();
         let event = core_event(
             &tx,
-            agent_id,
-            &owner_id,
-            &idempotency_key,
-            "opinion_recalculate",
-            "opinion",
-            opinion_id,
-            "owner_testimony",
-            Some("owner"),
-            &reason,
-            confidence,
-            &payload,
-            Some(opinion_id),
-            None,
-            now,
+            CoreEventInput {
+                agent_id,
+                owner_id: &owner_id,
+                idempotency_key: &idempotency_key,
+                kind: "opinion_recalculate",
+                subject_type: "opinion",
+                subject_ref: opinion_id,
+                source_kind: "owner_testimony",
+                source_reference: Some("owner"),
+                reason: &reason,
+                confidence,
+                payload: &payload,
+                result_ref: Some(opinion_id),
+                related_event_id: None,
+                now,
+            },
         )?;
         tx.execute(
             "UPDATE opinions SET stance = ?1, confidence = ?2, status = ?3, reason = ?4,
@@ -1886,20 +2058,22 @@ impl Database {
             .map_err(|_| DatabaseError::Cognitive("persistence_failed"))?;
         let event = core_event(
             &tx,
-            &request.agent_id,
-            &owner_id,
-            &idempotency_key,
-            "relationship_event",
-            &subject_type,
-            &subject_ref,
-            source_kind,
-            source_reference.as_deref(),
-            &reason,
-            confidence,
-            &payload,
-            Some(&relationship_id),
-            None,
-            now,
+            CoreEventInput {
+                agent_id: &request.agent_id,
+                owner_id: &owner_id,
+                idempotency_key: &idempotency_key,
+                kind: "relationship_event",
+                subject_type: &subject_type,
+                subject_ref: &subject_ref,
+                source_kind,
+                source_reference: source_reference.as_deref(),
+                reason: &reason,
+                confidence,
+                payload: &payload,
+                result_ref: Some(&relationship_id),
+                related_event_id: None,
+                now,
+            },
         )?;
         tx.execute(
             "INSERT INTO relationship_events
@@ -1974,20 +2148,22 @@ impl Database {
         let resulting = RelationshipValues::default();
         let event = core_event(
             &tx,
-            agent_id,
-            &owner_id,
-            &idempotency_key,
-            "relationship_reset",
-            "relationship",
-            relationship_id,
-            "owner_testimony",
-            Some("owner"),
-            &reason,
-            1.0,
-            &payload,
-            Some(relationship_id),
-            None,
-            now,
+            CoreEventInput {
+                agent_id,
+                owner_id: &owner_id,
+                idempotency_key: &idempotency_key,
+                kind: "relationship_reset",
+                subject_type: "relationship",
+                subject_ref: relationship_id,
+                source_kind: "owner_testimony",
+                source_reference: Some("owner"),
+                reason: &reason,
+                confidence: 1.0,
+                payload: &payload,
+                result_ref: Some(relationship_id),
+                related_event_id: None,
+                now,
+            },
         )?;
         let deltas = RelationshipDeltas {
             familiarity: resulting.familiarity - prior.values.familiarity,
@@ -2134,20 +2310,22 @@ impl Database {
         let now = now_millis();
         let event = core_event(
             &tx,
-            agent_id,
-            &owner_id,
-            &idempotency_key,
-            "relationship_reset",
-            &subject_type,
-            &subject_ref,
-            "owner_testimony",
-            Some("owner"),
-            "Reversão solicitada pelo Owner",
-            1.0,
-            &payload,
-            Some(&relationship_id),
-            Some(&event_id),
-            now,
+            CoreEventInput {
+                agent_id,
+                owner_id: &owner_id,
+                idempotency_key: &idempotency_key,
+                kind: "relationship_reset",
+                subject_type: &subject_type,
+                subject_ref: &subject_ref,
+                source_kind: "owner_testimony",
+                source_reference: Some("owner"),
+                reason: "Reversão solicitada pelo Owner",
+                confidence: 1.0,
+                payload: &payload,
+                result_ref: Some(&relationship_id),
+                related_event_id: Some(&event_id),
+                now,
+            },
         )?;
         tx.execute(
             "UPDATE relationship_events SET status = 'rolled_back' WHERE event_id = ?1 AND agent_id = ?2",
@@ -2198,6 +2376,201 @@ impl Database {
         let relationship = load_relationship_tx(&tx, agent_id, &relationship_id)?;
         tx.commit()?;
         Ok(relationship)
+    }
+
+    pub fn list_fictional_activities(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<FictionalActivity>, DatabaseError> {
+        let connection = self.open()?;
+        ensure_owned(&connection, agent_id)?;
+        let mut statement = connection.prepare(
+            "SELECT id, goal_id, agent_id, activity_type, status, fictional_only,
+                    budget_units, started_at, ended_at, created_at
+             FROM fictional_activities
+             WHERE agent_id = ?1
+             ORDER BY created_at DESC, id DESC",
+        )?;
+        let activities = statement
+            .query_map(params![agent_id], map_activity)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DatabaseError::from);
+        activities
+    }
+
+    pub fn start_fictional_activity(
+        &self,
+        request: FictionalActivityRequest,
+    ) -> Result<FictionalActivity, DatabaseError> {
+        if request.temporary_chat {
+            return Err(DatabaseError::Cognitive("conversation_temporary_blocked"));
+        }
+        let activity_type = text(
+            &request.activity_type,
+            MAX_ACTIVITY_TYPE,
+            "invalid_activity",
+        )?;
+        if unsafe_external_goal_language(&activity_type) {
+            return Err(DatabaseError::Cognitive("external_action_blocked"));
+        }
+        if !(1..=MAX_ACTIVITY_BUDGET).contains(&request.budget_units)
+            || !(1..=MAX_ACTIVITY_DURATION_MS).contains(&request.duration_ms)
+        {
+            return Err(DatabaseError::Cognitive("invalid_activity_budget"));
+        }
+        let goal_id = reference(&request.goal_id, 128, "goal_not_found")?;
+        let idempotency_key = idempotency(&request.idempotency_key)?;
+        let mut connection = self.open()?;
+        let tx = connection.transaction()?;
+        let owner_id = ensure_owned_tx(&tx, &request.agent_id)?;
+        let goal = load_goal_tx(&tx, &request.agent_id, &goal_id)?;
+        if !goal.fictional_only {
+            return Err(DatabaseError::Cognitive("external_action_blocked"));
+        }
+        let payload = json!({
+            "goalId": goal_id,
+            "activityType": activity_type,
+            "budgetUnits": request.budget_units,
+            "durationMs": request.duration_ms,
+        });
+        if let Some(existing) = idempotent_or_conflict(
+            existing_core_event(&tx, &request.agent_id, &idempotency_key)?,
+            "fictional_activity",
+            &payload,
+        )? {
+            let activity_id = existing
+                .result_ref
+                .ok_or(DatabaseError::Cognitive("persistence_failed"))?;
+            let activity = load_activity_tx(&tx, &request.agent_id, &activity_id)?;
+            tx.commit()?;
+            return Ok(activity);
+        }
+        if goal.status != "active" {
+            return Err(DatabaseError::Cognitive("invalid_transition"));
+        }
+        if request.budget_units > goal.budget_units {
+            return Err(DatabaseError::Cognitive("invalid_activity_budget"));
+        }
+        let activity_id = Uuid::now_v7().to_string();
+        let now = now_millis();
+        let ended_at = now.saturating_add(request.duration_ms);
+        tx.execute(
+            "INSERT INTO fictional_activities
+             (id, goal_id, agent_id, owner_user_id, activity_type, status, fictional_only,
+              budget_units, started_at, ended_at, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'active', 1, ?6, ?7, ?8, ?7)",
+            params![
+                activity_id,
+                goal_id,
+                request.agent_id,
+                owner_id,
+                activity_type,
+                request.budget_units,
+                now,
+                ended_at,
+            ],
+        )?;
+        core_event(
+            &tx,
+            CoreEventInput {
+                agent_id: &request.agent_id,
+                owner_id: &owner_id,
+                idempotency_key: &idempotency_key,
+                kind: "fictional_activity",
+                subject_type: "activity",
+                subject_ref: &activity_id,
+                source_kind: "owner_testimony",
+                source_reference: Some("owner"),
+                reason: "Started fictional activity",
+                confidence: 1.0,
+                payload: &payload,
+                result_ref: Some(&activity_id),
+                related_event_id: None,
+                now,
+            },
+        )?;
+        let activity = load_activity_tx(&tx, &request.agent_id, &activity_id)?;
+        tx.commit()?;
+        Ok(activity)
+    }
+
+    pub fn update_fictional_activity_status(
+        &self,
+        request: FictionalActivityStatusRequest,
+    ) -> Result<FictionalActivity, DatabaseError> {
+        if request.temporary_chat {
+            return Err(DatabaseError::Cognitive("conversation_temporary_blocked"));
+        }
+        let status = text(&request.status, 16, "invalid_status")?;
+        if !matches!(
+            status.as_str(),
+            "active" | "paused" | "completed" | "expired" | "archived"
+        ) {
+            return Err(DatabaseError::Cognitive("invalid_status"));
+        }
+        let activity_id = reference(&request.activity_id, 128, "activity_not_found")?;
+        let idempotency_key = idempotency(&request.idempotency_key)?;
+        let mut connection = self.open()?;
+        let tx = connection.transaction()?;
+        let owner_id = ensure_owned_tx(&tx, &request.agent_id)?;
+        let prior = load_activity_tx(&tx, &request.agent_id, &activity_id)?;
+        let payload = json!({
+            "activityId": activity_id,
+            "status": status,
+        });
+        if let Some(existing) = idempotent_or_conflict(
+            existing_core_event(&tx, &request.agent_id, &idempotency_key)?,
+            "fictional_activity",
+            &payload,
+        )? {
+            let activity_id = existing
+                .result_ref
+                .ok_or(DatabaseError::Cognitive("persistence_failed"))?;
+            let activity = load_activity_tx(&tx, &request.agent_id, &activity_id)?;
+            tx.commit()?;
+            return Ok(activity);
+        }
+        if !matches!(
+            (prior.status.as_str(), status.as_str()),
+            ("active", "paused" | "completed" | "expired" | "archived")
+                | ("paused", "active" | "completed" | "expired" | "archived")
+        ) {
+            return Err(DatabaseError::Cognitive("invalid_transition"));
+        }
+        let now = now_millis();
+        let ended_at = if matches!(status.as_str(), "completed" | "expired" | "archived") {
+            Some(now)
+        } else {
+            prior.ended_at
+        };
+        core_event(
+            &tx,
+            CoreEventInput {
+                agent_id: &request.agent_id,
+                owner_id: &owner_id,
+                idempotency_key: &idempotency_key,
+                kind: "fictional_activity",
+                subject_type: "activity",
+                subject_ref: &activity_id,
+                source_kind: "owner_testimony",
+                source_reference: Some("owner"),
+                reason: "Updated fictional activity status",
+                confidence: 1.0,
+                payload: &payload,
+                result_ref: Some(&activity_id),
+                related_event_id: None,
+                now,
+            },
+        )?;
+        tx.execute(
+            "UPDATE fictional_activities
+             SET status = ?1, ended_at = ?2
+             WHERE id = ?3 AND agent_id = ?4",
+            params![status, ended_at, activity_id, request.agent_id],
+        )?;
+        let activity = load_activity_tx(&tx, &request.agent_id, &activity_id)?;
+        tx.commit()?;
+        Ok(activity)
     }
 
     pub fn list_cognitive_goals(
@@ -2324,20 +2697,22 @@ impl Database {
         )?;
         let event = core_event(
             &tx,
-            &request.agent_id,
-            &owner_id,
-            &idempotency_key,
-            "goal_create",
-            "goal",
-            &goal_id,
-            "owner_testimony",
-            Some("owner"),
-            &title,
-            1.0,
-            &payload,
-            Some(&goal_id),
-            None,
-            now,
+            CoreEventInput {
+                agent_id: &request.agent_id,
+                owner_id: &owner_id,
+                idempotency_key: &idempotency_key,
+                kind: "goal_create",
+                subject_type: "goal",
+                subject_ref: &goal_id,
+                source_kind: "owner_testimony",
+                source_reference: Some("owner"),
+                reason: &title,
+                confidence: 1.0,
+                payload: &payload,
+                result_ref: Some(&goal_id),
+                related_event_id: None,
+                now,
+            },
         )?;
         tx.execute(
             "UPDATE goals SET current_event_id = ?1 WHERE id = ?2 AND agent_id = ?3",
@@ -2422,20 +2797,22 @@ impl Database {
         let now = now_millis();
         let event = core_event(
             &tx,
-            agent_id,
-            &owner_id,
-            &idempotency_key,
-            "goal_status",
-            "goal",
-            goal_id,
-            "owner_testimony",
-            Some("owner"),
-            "Atualização de objetivo fictício",
-            1.0,
-            &payload,
-            Some(goal_id),
-            None,
-            now,
+            CoreEventInput {
+                agent_id,
+                owner_id: &owner_id,
+                idempotency_key: &idempotency_key,
+                kind: "goal_status",
+                subject_type: "goal",
+                subject_ref: goal_id,
+                source_kind: "owner_testimony",
+                source_reference: Some("owner"),
+                reason: "Atualização de objetivo fictício",
+                confidence: 1.0,
+                payload: &payload,
+                result_ref: Some(goal_id),
+                related_event_id: None,
+                now,
+            },
         )?;
         tx.execute(
             "UPDATE goals SET status = ?1, completion_evidence = ?2, current_event_id = ?3,

@@ -345,6 +345,36 @@ export type CognitiveGoalStatusRequest = {
   completionEvidence: string | null;
   idempotencyKey: string;
 };
+export type FictionalActivityStatus =
+  "active" | "paused" | "completed" | "expired" | "archived";
+export type FictionalActivity = {
+  id: string;
+  goalId: string;
+  agentId: string;
+  activityType: string;
+  status: FictionalActivityStatus;
+  fictionalOnly: true;
+  budgetUnits: number;
+  startedAt: number;
+  endedAt: number | null;
+  createdAt: number;
+};
+export type FictionalActivityRequest = {
+  agentId: string;
+  goalId: string;
+  activityType: string;
+  budgetUnits: number;
+  durationMs: number;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type FictionalActivityStatusRequest = {
+  agentId: string;
+  activityId: string;
+  status: FictionalActivityStatus;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
 export type ConversationPolicy = {
   agentId: string;
   purpose: string;
@@ -532,6 +562,9 @@ export type CognitiveErrorCode =
   | "goal_not_found"
   | "goal_loop_blocked"
   | "invalid_transition"
+  | "invalid_activity"
+  | "invalid_activity_budget"
+  | "activity_not_found"
   | "conversation_temporary_blocked"
   | "conversation_purpose_invalid"
   | "conversation_budget_invalid"
@@ -669,6 +702,9 @@ export function parseCognitiveError(
     "goal_not_found",
     "goal_loop_blocked",
     "invalid_transition",
+    "invalid_activity",
+    "invalid_activity_budget",
+    "activity_not_found",
     "conversation_temporary_blocked",
     "conversation_purpose_invalid",
     "conversation_budget_invalid",

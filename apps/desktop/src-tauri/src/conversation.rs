@@ -533,11 +533,14 @@ impl Database {
                 |row| row.get::<_, String>(0),
             )
             .optional()?;
-        let loop_count = previous_content
+        let loop_count = if previous_content
             .as_deref()
             .is_some_and(|previous| normalize_turn(previous) == normalize_turn(&content))
-            .then_some(record.summary.loop_count + 1)
-            .unwrap_or(0);
+        {
+            record.summary.loop_count + 1
+        } else {
+            0
+        };
         let is_repetition = loop_count > 0;
         transaction.execute(
             "INSERT INTO agent_conversation_turns

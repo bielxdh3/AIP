@@ -20,7 +20,8 @@ use std::{
 
 use chat::ChatCoordinator;
 use cognitive::{
-    CognitiveGoal, CognitiveOpinion, GoalRequest, OpinionCandidateRequest,
+    CognitiveGoal, CognitiveOpinion, FictionalActivity, FictionalActivityRequest,
+    FictionalActivityStatusRequest, GoalRequest, OpinionCandidateRequest,
     OpinionEvidenceCorrectionRequest, RelationshipCandidateRequest, RelationshipState,
 };
 use conversation::{
@@ -343,6 +344,47 @@ fn update_cognitive_goal_status(
 }
 
 #[tauri::command]
+fn list_fictional_activities(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<FictionalActivity>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_fictional_activities(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn start_fictional_activity(
+    state: State<'_, AppState>,
+    request: FictionalActivityRequest,
+) -> Result<FictionalActivity, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .start_fictional_activity(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn update_fictional_activity_status(
+    state: State<'_, AppState>,
+    request: FictionalActivityStatusRequest,
+) -> Result<FictionalActivity, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .update_fictional_activity_status(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
 fn list_agent_conversation_policies(
     state: State<'_, AppState>,
     agent_id: String,
@@ -471,7 +513,7 @@ fn complete_resource_job_for_state(
     state: &AppState,
     request: ResourceJobCompletionRequest,
 ) -> Result<CognitiveResourceJob, &'static str> {
-    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
+    ensure_conversation_not_temporary(state, &request.agent_id, request.temporary_chat)?;
     state
         .database
         .as_ref()
@@ -1272,6 +1314,9 @@ pub fn run() {
             propose_agent_cognitive_goal,
             approve_cognitive_goal,
             update_cognitive_goal_status,
+            list_fictional_activities,
+            start_fictional_activity,
+            update_fictional_activity_status,
             list_agent_conversation_policies,
             set_agent_conversation_policy,
             start_agent_conversation,
