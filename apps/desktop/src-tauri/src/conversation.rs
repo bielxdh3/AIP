@@ -117,6 +117,8 @@ pub struct ResourceJobCompletionRequest {
     pub status: String,
     pub error_code: Option<String>,
     pub idempotency_key: String,
+    #[serde(default)]
+    pub temporary_chat: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -458,6 +460,11 @@ impl Database {
         if record.owner_user_id != owner_id {
             return Err(DatabaseError::OwnershipMismatch);
         }
+        if request_agent_id != record.summary.initiator_agent_id
+            && request_agent_id != record.summary.participant_agent_id
+        {
+            return Err(DatabaseError::Cognitive("conversation_participant_invalid"));
+        }
         if let Some(existing) = load_turn_by_id_tx(&transaction, &turn_id)? {
             if existing.conversation_id != request.conversation_id
                 || existing.speaker_agent_id != speaker_agent_id
@@ -651,6 +658,13 @@ impl Database {
             transaction.commit()?;
             return Ok(existing);
         }
+        check_modes_tx(
+            &transaction,
+            [
+                &record.summary.initiator_agent_id,
+                &record.summary.participant_agent_id,
+            ],
+        )?;
         let candidate = CognitiveCandidate {
             id: candidate_id,
             conversation_id: request.conversation_id,
@@ -758,6 +772,11 @@ impl Database {
         if record.owner_user_id != owner_id {
             return Err(DatabaseError::OwnershipMismatch);
         }
+        if agent_id != record.summary.initiator_agent_id
+            && agent_id != record.summary.participant_agent_id
+        {
+            return Err(DatabaseError::Cognitive("conversation_participant_invalid"));
+        }
         if record.summary.status != "active" {
             return Err(DatabaseError::Cognitive("conversation_not_active"));
         }
@@ -781,6 +800,15 @@ impl Database {
             }
             transaction.commit()?;
             return Ok(existing);
+        }
+        let consumed_budget: i64 = transaction.query_row(
+            "SELECT COALESCE(SUM(budget_units), 0)
+             FROM cognitive_resource_jobs WHERE conversation_id = ?1",
+            params![request.conversation_id],
+            |row| row.get(0),
+        )?;
+        if consumed_budget.saturating_add(request.budget_units) > record.summary.resource_budget {
+            return Err(DatabaseError::Cognitive("conversation_budget_invalid"));
         }
         let heavy_running: bool = transaction.query_row(
             "SELECT EXISTS(
@@ -829,6 +857,9 @@ impl Database {
         &self,
         request: ResourceJobCompletionRequest,
     ) -> Result<CognitiveResourceJob, DatabaseError> {
+        if request.temporary_chat {
+            return Err(DatabaseError::Cognitive("conversation_temporary_blocked"));
+        }
         let agent_id = agent_id(&request.agent_id)?;
         let _key = idempotency(&request.idempotency_key)?;
         if !matches!(
@@ -855,6 +886,20 @@ impl Database {
         if job_owner != owner_id {
             return Err(DatabaseError::OwnershipMismatch);
         }
+        let conversation_id = existing
+            .conversation_id
+            .as_deref()
+            .ok_or(DatabaseError::Cognitive("conversation_participant_invalid"))?;
+        let record = load_record_tx(&transaction, conversation_id)?
+            .ok_or(DatabaseError::Cognitive("conversation_not_found"))?;
+        if record.owner_user_id != owner_id {
+            return Err(DatabaseError::OwnershipMismatch);
+        }
+        if agent_id != record.summary.initiator_agent_id
+            && agent_id != record.summary.participant_agent_id
+        {
+            return Err(DatabaseError::Cognitive("conversation_participant_invalid"));
+        }
         if matches!(
             existing.status.as_str(),
             "completed" | "cancelled" | "failed"
@@ -862,6 +907,13 @@ impl Database {
             transaction.commit()?;
             return Ok(existing);
         }
+        check_modes_tx(
+            &transaction,
+            [
+                &record.summary.initiator_agent_id,
+                &record.summary.participant_agent_id,
+            ],
+        )?;
         transaction.execute(
             "UPDATE cognitive_resource_jobs
              SET status = ?1, error_code = ?2, ended_at = ?3
@@ -1224,7 +1276,11 @@ fn reason(value: &str) -> Result<String, DatabaseError> {
 }
 
 fn public_content(value: &str) -> Result<String, DatabaseError> {
-    bounded(value, MAX_TURN_CONTENT_BYTES, "conversation_turn_invalid")
+    let content = bounded(value, MAX_TURN_CONTENT_BYTES, "conversation_turn_invalid")?;
+    if contains_private_text(&content) {
+        return Err(DatabaseError::Cognitive("conversation_turn_invalid"));
+    }
+    Ok(content)
 }
 
 fn source_kind(value: &str) -> Result<String, DatabaseError> {
@@ -1247,7 +1303,7 @@ fn public_candidate_json(value: &str) -> Result<String, DatabaseError> {
     }
     let parsed: Value = serde_json::from_str(value)
         .map_err(|_| DatabaseError::Cognitive("conversation_candidate_invalid"))?;
-    if !parsed.is_object() || contains_private_key(&parsed) {
+    if !parsed.is_object() || contains_private_content(&parsed) {
         return Err(DatabaseError::Cognitive("conversation_candidate_invalid"));
     }
     let canonical = serde_json::to_string(&parsed)
@@ -1258,26 +1314,55 @@ fn public_candidate_json(value: &str) -> Result<String, DatabaseError> {
     Ok(canonical)
 }
 
-fn contains_private_key(value: &Value) -> bool {
+fn normalize_private_marker(value: &str) -> String {
+    value
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn contains_private_key(value: &str) -> bool {
+    let normalized = normalize_private_marker(value);
+    normalized.contains("prompt")
+        || normalized.contains("reasoning")
+        || normalized.contains("chainofthought")
+        || normalized.contains("thoughtprocess")
+        || normalized.contains("scratchpad")
+        || normalized.contains("private")
+        || normalized.contains("secret")
+}
+
+fn contains_private_text(value: &str) -> bool {
+    let normalized = normalize_private_marker(value);
+    [
+        "systemprompt",
+        "completeprompt",
+        "assembledprompt",
+        "fullprompt",
+        "hiddenreasoning",
+        "chainofthought",
+        "internalreasoning",
+        "thoughtprocess",
+        "scratchpad",
+        "privatechannel",
+        "privateconversation",
+        "privatemessage",
+        "privatecontent",
+        "donotpersist",
+        "secretprompt",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+fn contains_private_content(value: &Value) -> bool {
     match value {
-        Value::Object(object) => object.iter().any(|(key, value)| {
-            let normalized = key
-                .chars()
-                .filter(char::is_ascii_alphanumeric)
-                .flat_map(char::to_lowercase)
-                .collect::<String>();
-            matches!(
-                normalized.as_str(),
-                "prompt"
-                    | "systemprompt"
-                    | "hiddenreasoning"
-                    | "chainofthought"
-                    | "privateconversation"
-                    | "privatemessage"
-                    | "secret"
-            ) || contains_private_key(value)
-        }),
-        Value::Array(values) => values.iter().any(contains_private_key),
+        Value::Object(object) => object
+            .iter()
+            .any(|(key, value)| contains_private_key(key) || contains_private_content(value)),
+        Value::Array(values) => values.iter().any(contains_private_content),
+        Value::String(value) => contains_private_text(value),
         _ => false,
     }
 }
@@ -1637,6 +1722,7 @@ mod tests {
                 status: "completed".into(),
                 error_code: None,
                 idempotency_key: "finish-1".into(),
+                temporary_chat: false,
             })
             .unwrap();
         assert_eq!(finished.status, "completed");
@@ -1785,6 +1871,211 @@ mod tests {
                 idempotency_key: "private-candidate".into(),
             }),
             Err(DatabaseError::Cognitive("conversation_candidate_invalid"))
+        );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn private_markers_in_public_turns_and_candidate_values_are_rejected() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let mut one_turn = policy(ASTRA_ID, "private-value-purpose");
+        one_turn.max_turns = 1;
+        database.set_conversation_policy(one_turn).unwrap();
+        database
+            .set_conversation_policy(policy(LUMA_ID, "private-value-purpose"))
+            .unwrap();
+        let conversation = database
+            .start_agent_conversation(start("private-value-purpose", "private-value"))
+            .unwrap();
+
+        for (index, content) in [
+            "public text with a system prompt marker",
+            "public text with hidden reasoning marker",
+            "public text with a private channel marker",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                database.append_public_conversation_turn(turn(
+                    &conversation.id,
+                    ASTRA_ID,
+                    content,
+                    &format!("private-turn-{index}"),
+                )),
+                Err(DatabaseError::Cognitive("conversation_turn_invalid"))
+            );
+        }
+        database
+            .append_public_conversation_turn(turn(
+                &conversation.id,
+                ASTRA_ID,
+                "Public source",
+                "private-value-turn",
+            ))
+            .unwrap();
+
+        for (index, candidate_json) in [
+            r#"{"claim":"system prompt material"}"#,
+            r#"{"details":["private channel material"]}"#,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(
+                database.emit_cognitive_candidate(CognitiveCandidateRequest {
+                    agent_id: ASTRA_ID.into(),
+                    conversation_id: conversation.id.clone(),
+                    candidate_kind: "goal".into(),
+                    candidate_json: candidate_json.into(),
+                    idempotency_key: format!("private-value-candidate-{index}"),
+                }),
+                Err(DatabaseError::Cognitive("conversation_candidate_invalid"))
+            );
+        }
+        cleanup(&path);
+    }
+
+    #[test]
+    fn participant_membership_is_required_for_turns_and_resources() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        prepare(&database, "participant-purpose");
+        let conversation = database
+            .start_agent_conversation(start("participant-purpose", "participant"))
+            .unwrap();
+        let job = database
+            .reserve_heavy_generation(HeavyGenerationRequest {
+                agent_id: ASTRA_ID.into(),
+                conversation_id: conversation.id.clone(),
+                priority: 10,
+                budget_units: 2,
+                idempotency_key: "participant-job".into(),
+            })
+            .unwrap();
+
+        let connection = database.open().unwrap();
+        connection
+            .pragma_update(None, "foreign_keys", false)
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE agent_conversations
+                 SET participant_agent_id = 'nonparticipant'
+                 WHERE id = ?1",
+                params![conversation.id],
+            )
+            .unwrap();
+        drop(connection);
+
+        let mut turn_request = turn(
+            &conversation.id,
+            ASTRA_ID,
+            "Public turn",
+            "nonparticipant-turn",
+        );
+        turn_request.agent_id = LUMA_ID.into();
+        assert_eq!(
+            database.append_public_conversation_turn(turn_request),
+            Err(DatabaseError::Cognitive("conversation_participant_invalid"))
+        );
+        assert_eq!(
+            database.reserve_heavy_generation(HeavyGenerationRequest {
+                agent_id: LUMA_ID.into(),
+                conversation_id: conversation.id.clone(),
+                priority: 10,
+                budget_units: 2,
+                idempotency_key: "nonparticipant-reserve".into(),
+            }),
+            Err(DatabaseError::Cognitive("conversation_participant_invalid"))
+        );
+        assert_eq!(
+            database.complete_resource_job(ResourceJobCompletionRequest {
+                agent_id: LUMA_ID.into(),
+                job_id: job.id,
+                status: "completed".into(),
+                error_code: None,
+                idempotency_key: "nonparticipant-complete".into(),
+                temporary_chat: false,
+            }),
+            Err(DatabaseError::Cognitive("conversation_participant_invalid"))
+        );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn cumulative_resource_budget_and_completion_guards_are_enforced() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let mut astra_policy = policy(ASTRA_ID, "resource-guard-purpose");
+        astra_policy.resource_budget = 10;
+        database.set_conversation_policy(astra_policy).unwrap();
+        let mut luma_policy = policy(LUMA_ID, "resource-guard-purpose");
+        luma_policy.resource_budget = 10;
+        database.set_conversation_policy(luma_policy).unwrap();
+        let conversation = database
+            .start_agent_conversation(start(
+                "resource-guard-purpose",
+                "resource-guard-conversation",
+            ))
+            .unwrap();
+        let job = database
+            .reserve_heavy_generation(HeavyGenerationRequest {
+                agent_id: ASTRA_ID.into(),
+                conversation_id: conversation.id.clone(),
+                priority: 10,
+                budget_units: 6,
+                idempotency_key: "resource-guard-job".into(),
+            })
+            .unwrap();
+
+        let completion = |temporary_chat, key: &str| ResourceJobCompletionRequest {
+            agent_id: ASTRA_ID.into(),
+            job_id: job.id.clone(),
+            status: "completed".into(),
+            error_code: None,
+            idempotency_key: key.into(),
+            temporary_chat,
+        };
+        assert_eq!(
+            database.complete_resource_job(completion(true, "resource-temp")),
+            Err(DatabaseError::Cognitive("conversation_temporary_blocked"))
+        );
+        database.set_safe_mode(true).unwrap();
+        assert_eq!(
+            database.complete_resource_job(completion(false, "resource-safe")),
+            Err(DatabaseError::Cognitive("conversation_blocked_safe_mode"))
+        );
+        database.set_safe_mode(false).unwrap();
+        database.set_agent_mode(ASTRA_ID, "silent").unwrap();
+        assert_eq!(
+            database.complete_resource_job(completion(false, "resource-silent")),
+            Err(DatabaseError::Cognitive("conversation_blocked_silent"))
+        );
+        database.set_agent_mode(ASTRA_ID, "normal").unwrap();
+        database.set_agent_suspended(LUMA_ID, true).unwrap();
+        assert_eq!(
+            database.complete_resource_job(completion(false, "resource-suspended")),
+            Err(DatabaseError::Cognitive("conversation_blocked_suspended"))
+        );
+        database.set_agent_suspended(LUMA_ID, false).unwrap();
+        assert_eq!(
+            database
+                .complete_resource_job(completion(false, "resource-complete"))
+                .unwrap()
+                .status,
+            "completed"
+        );
+        assert_eq!(
+            database.reserve_heavy_generation(HeavyGenerationRequest {
+                agent_id: LUMA_ID.into(),
+                conversation_id: conversation.id,
+                priority: 10,
+                budget_units: 5,
+                idempotency_key: "resource-over-budget".into(),
+            }),
+            Err(DatabaseError::Cognitive("conversation_budget_invalid"))
         );
         cleanup(&path);
     }

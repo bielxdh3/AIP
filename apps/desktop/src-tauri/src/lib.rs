@@ -471,6 +471,7 @@ fn complete_resource_job_for_state(
     state: &AppState,
     request: ResourceJobCompletionRequest,
 ) -> Result<CognitiveResourceJob, &'static str> {
+    ensure_conversation_not_temporary(&state, &request.agent_id, request.temporary_chat)?;
     state
         .database
         .as_ref()
@@ -1517,6 +1518,20 @@ mod conversation_command_tests {
         .unwrap();
         assert_eq!(first.status, "running");
         assert_eq!(
+            complete_resource_job_for_state(
+                &state,
+                ResourceJobCompletionRequest {
+                    agent_id: ASTRA_ID.into(),
+                    job_id: first.id.clone(),
+                    status: "completed".into(),
+                    error_code: None,
+                    idempotency_key: "command-heavy-temp-finish".into(),
+                    temporary_chat: true,
+                },
+            ),
+            Err("conversation_temporary_blocked")
+        );
+        assert_eq!(
             reserve_heavy_generation_for_state(
                 &state,
                 HeavyGenerationRequest {
@@ -1538,6 +1553,7 @@ mod conversation_command_tests {
                     status: "completed".into(),
                     error_code: None,
                     idempotency_key: "command-heavy-finish".into(),
+                    temporary_chat: false,
                 },
             )
             .unwrap()
