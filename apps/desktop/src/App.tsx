@@ -19,7 +19,9 @@ import type {
   CognitiveGoal,
   CognitiveGoalStatusRequest,
   CognitiveCandidate,
+  CognitiveCandidateRequest,
   CognitiveCandidateRejectionRequest,
+  CognitiveResourceJob,
   CognitiveOpinion,
   CognitiveOpinionRecalculationRequest,
   CognitiveOpinionStatusRequest,
@@ -28,11 +30,15 @@ import type {
   ConversationInterruptRequest,
   ConversationPolicy,
   ConversationPolicyRequest,
+  ConversationStartRequest,
   GoalRequest,
+  HeavyGenerationRequest,
   OpinionCandidateRequest,
   OpinionEvidenceCorrectionRequest,
   PhaseOneConversation,
+  PublicConversationTurnRequest,
   ProvisionalAgent,
+  ResourceJobCompletionRequest,
   RelationshipCandidateRequest,
   RelationshipResetRequest,
   RelationshipRollbackRequest,
@@ -1829,6 +1835,26 @@ type CognitiveCommandMap = {
     args: CognitiveGoalStatusRequest;
     response: CognitiveGoal;
   };
+  start_agent_conversation: {
+    args: ConversationStartRequest;
+    response: AgentConversationSummary;
+  };
+  append_public_conversation_turn: {
+    args: PublicConversationTurnRequest;
+    response: AgentConversationInspection;
+  };
+  emit_cognitive_candidate: {
+    args: CognitiveCandidateRequest;
+    response: CognitiveCandidate;
+  };
+  reserve_heavy_generation: {
+    args: HeavyGenerationRequest;
+    response: CognitiveResourceJob;
+  };
+  complete_resource_job: {
+    args: ResourceJobCompletionRequest;
+    response: CognitiveResourceJob;
+  };
   list_agent_conversation_policies: {
     args: { agentId: string };
     response: ConversationPolicy[];
@@ -1869,6 +1895,7 @@ function invokeCognitive<Command extends CognitiveCommandName>(
 }
 
 function CognitiveCorePanel({ agentId }: { agentId: string }) {
+  const participantAgentId = agentId === "astra" ? "luma" : "astra";
   const [opinions, setOpinions] = useState<CognitiveOpinion[]>([]);
   const [relationships, setRelationships] = useState<RelationshipState[]>([]);
   const [goals, setGoals] = useState<CognitiveGoal[]>([]);
@@ -1881,6 +1908,17 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
   const [candidates, setCandidates] = useState<CognitiveCandidate[]>([]);
   const [selectedConversation, setSelectedConversation] =
     useState<AgentConversationInspection | null>(null);
+  const [selectedConversationId, setSelectedConversationId] = useState<
+    string | null
+  >(null);
+  const [conversationTurnSpeaker, setConversationTurnSpeaker] =
+    useState(agentId);
+  const [conversationTurnContent, setConversationTurnContent] = useState("");
+  const [resourcePriority, setResourcePriority] = useState("50");
+  const [resourceBudgetUnits, setResourceBudgetUnits] = useState("1");
+  const [resourceJob, setResourceJob] = useState<CognitiveResourceJob | null>(
+    null,
+  );
   const [opinionSubject, setOpinionSubject] = useState("");
   const [opinionStance, setOpinionStance] = useState("0");
   const [opinionClaim, setOpinionClaim] = useState("");
@@ -1949,6 +1987,10 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
     setConversations([]);
     setCandidates([]);
     setSelectedConversation(null);
+    setSelectedConversationId(null);
+    setConversationTurnSpeaker(agentId);
+    setConversationTurnContent("");
+    setResourceJob(null);
     setError(null);
     setSuccess(null);
     setLoading(true);
@@ -1967,13 +2009,17 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
     command: Command,
     args: CognitiveCommandMap[Command]["args"],
     message: string,
+    onResult?: (
+      response: CognitiveCommandMap[Command]["response"],
+    ) => void,
   ): Promise<boolean> {
     setBusy(true);
     setError(null);
     setSuccess(null);
     try {
-      await invokeCognitive(command, args);
+      const response = await invokeCognitive(command, args);
       await load();
+      onResult?.(response);
       if (activeAgentId.current === agentId) setSuccess(message);
       return true;
     } catch (cause) {
@@ -2249,26 +2295,66 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
   }
 
   async function saveConversationPolicy() {
-    if (!conversationPurpose.trim()) {
+    const purpose = conversationPurpose.trim();
+    if (!purpose) {
+      setError("Informe o propósito público da conversa.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      await Promise.all(
+        [agentId, participantAgentId].map((policyAgentId) =>
+          invokeCognitive("set_agent_conversation_policy", {
+            agentId: policyAgentId,
+            purpose,
+            optedIn: conversationOptedIn,
+            maxTurns: 12,
+            maxTokens: 2048,
+            maxDurationMs: 300000,
+            maxRepetitions: 2,
+            resourceBudget: 20,
+            temporaryChat: false,
+          }),
+        ),
+      );
+      await load();
+      setSuccess(
+        conversationOptedIn
+          ? "Opt-in público atualizado nos dois agentes."
+          : "Opt-in público revogado nos dois agentes.",
+      );
+    } catch (cause) {
+      setError(
+        coreErrorCopy[String(cause)] || "A operação cognitiva foi recusada.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function startConversation() {
+    const purpose = conversationPurpose.trim();
+    if (!purpose) {
       setError("Informe o propósito público da conversa.");
       return;
     }
     await runCognitive(
-      "set_agent_conversation_policy",
+      "start_agent_conversation",
       {
-        agentId,
-        purpose: conversationPurpose.trim(),
-        optedIn: conversationOptedIn,
-        maxTurns: 12,
-        maxTokens: 2048,
-        maxDurationMs: 300000,
-        maxRepetitions: 2,
-        resourceBudget: 20,
+        initiatorAgentId: agentId,
+        participantAgentId,
+        purpose,
+        idempotencyKey: crypto.randomUUID(),
         temporaryChat: false,
       },
-      conversationOptedIn
-        ? "Opt-in público atualizado."
-        : "Opt-in público revogado.",
+      "Conversa pública iniciada.",
+      (conversation) => {
+        setSelectedConversationId(conversation.id);
+        setSelectedConversation(null);
+        setResourceJob(null);
+      },
     );
   }
 
@@ -2279,7 +2365,11 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
         agentId,
         conversationId: conversation.id,
       });
+      setSelectedConversationId(conversation.id);
       setSelectedConversation(inspection);
+      setResourceJob((current) =>
+        current?.conversationId === conversation.id ? current : null,
+      );
     } catch (cause) {
       setError(
         coreErrorCopy[String(cause)] ||
@@ -2299,6 +2389,97 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
         temporaryChat: false,
       },
       "Conversa pública interrompida.",
+      () => {
+        setSelectedConversationId(null);
+        setSelectedConversation(null);
+        setResourceJob(null);
+      },
+    );
+  }
+
+  async function appendPublicTurn() {
+    const content = conversationTurnContent.trim();
+    if (!selectedConversationId) {
+      setError("Selecione uma conversa pública antes de registrar um turno.");
+      return;
+    }
+    if (!content) {
+      setError("Informe o conteúdo do turno público.");
+      return;
+    }
+    if (content.length > 4096) {
+      setError("O turno público deve ter no máximo 4096 caracteres.");
+      return;
+    }
+    await runCognitive(
+      "append_public_conversation_turn",
+      {
+        agentId,
+        conversationId: selectedConversationId,
+        speakerAgentId: conversationTurnSpeaker,
+        content,
+        sourceKind: "owner",
+        idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
+      },
+      "Turno público registrado.",
+      (inspection) => {
+        setSelectedConversationId(inspection.conversation.id);
+        setSelectedConversation(inspection);
+        setConversationTurnContent("");
+      },
+    );
+  }
+
+  async function reserveHeavyGeneration() {
+    const priority = Number(resourcePriority);
+    const budgetUnits = Number(resourceBudgetUnits);
+    if (!selectedConversationId) {
+      setError("Selecione uma conversa pública antes de reservar recurso.");
+      return;
+    }
+    if (
+      !Number.isInteger(priority) ||
+      priority < 0 ||
+      priority > 100 ||
+      !Number.isInteger(budgetUnits) ||
+      budgetUnits < 1 ||
+      budgetUnits > 100
+    ) {
+      setError("Use prioridade de 0 a 100 e recurso de 1 a 100.");
+      return;
+    }
+    await runCognitive(
+      "reserve_heavy_generation",
+      {
+        agentId,
+        conversationId: selectedConversationId,
+        priority,
+        budgetUnits,
+        idempotencyKey: crypto.randomUUID(),
+      },
+      "Trabalho pesado reservado.",
+      (job) => setResourceJob(job),
+    );
+  }
+
+  async function completeHeavyGeneration() {
+    if (!resourceJob || resourceJob.status !== "running") {
+      setError("Não há trabalho pesado em andamento para concluir.");
+      return;
+    }
+    await runCognitive(
+      "complete_resource_job",
+      {
+        agentId,
+        jobId: resourceJob.id,
+        status: "completed",
+        errorCode: null,
+        idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
+      },
+      "Trabalho pesado concluído.",
+      (job) => setResourceJob(job),
     );
   }
 
@@ -2315,8 +2496,14 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
     );
   }
 
+  const selectedConversationSummary =
+    conversations.find(
+      (conversation) => conversation.id === selectedConversationId,
+    ) ??
+    selectedConversation?.conversation;
+
   return (
-    <section aria-label="Núcleo cognitivo 7B a 7D">
+    <section aria-label="Núcleo cognitivo 7B a 7E">
       <h3>Núcleo cognitivo</h3>
       <p>
         Opiniões, relacionamentos e objetivos são registros limitados e
@@ -2627,7 +2814,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
           checked={conversationOptedIn}
           onChange={(event) => setConversationOptedIn(event.target.checked)}
         />{" "}
-        Autorizar este propósito para {agentId}
+        Autorizar este propósito para {agentId} e {participantAgentId}
       </label>
       <button
         type="button"
@@ -2635,6 +2822,13 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
         onClick={() => void saveConversationPolicy()}
       >
         Salvar autorização pública
+      </button>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void startConversation()}
+      >
+        Iniciar conversa pública
       </button>
       <ul aria-label="Políticas de conversas públicas">
         {conversationPolicies.map((policy) => (
@@ -2685,6 +2879,93 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
               </li>
             ))}
           </ul>
+        </div>
+      ) : null}
+      {selectedConversationId ? (
+        <div>
+          <h5>Operações públicas da conversa selecionada</h5>
+          <p>
+            {selectedConversationSummary?.purpose ??
+              "Conversa pública selecionada"}
+            . Os limites são aplicados pelo núcleo Rust/SQLite.
+          </p>
+          <label>
+            Agente do turno público
+            <select
+              value={conversationTurnSpeaker}
+              onChange={(event) =>
+                setConversationTurnSpeaker(event.target.value)
+              }
+            >
+              <option value={agentId}>{agentId}</option>
+              <option value={participantAgentId}>{participantAgentId}</option>
+            </select>
+          </label>
+          <label>
+            Turno público (máximo de 4096 caracteres)
+            <textarea
+              value={conversationTurnContent}
+              maxLength={4096}
+              onChange={(event) =>
+                setConversationTurnContent(event.target.value)
+              }
+            />
+          </label>
+          <p>{conversationTurnContent.length}/4096 caracteres</p>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void appendPublicTurn()}
+          >
+            Registrar turno público
+          </button>
+          <h5>Trabalho pesado limitado</h5>
+          <p>
+            Uma geração pesada por vez; as unidades também respeitam o orçamento
+            acumulado desta conversa.
+          </p>
+          <label>
+            Prioridade (0 a 100)
+            <input
+              type="number"
+              min="0"
+              max="100"
+              value={resourcePriority}
+              onChange={(event) => setResourcePriority(event.target.value)}
+            />
+          </label>
+          <label>
+            Unidades de recurso (1 a 100)
+            <input
+              type="number"
+              min="1"
+              max="100"
+              value={resourceBudgetUnits}
+              onChange={(event) => setResourceBudgetUnits(event.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void reserveHeavyGeneration()}
+          >
+            Reservar geração pesada
+          </button>
+          {resourceJob ? (
+            <p>
+              Trabalho pesado {resourceJob.status} — {resourceJob.budgetUnits}{" "}
+              unidades.
+              {resourceJob.status === "running" ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void completeHeavyGeneration()}
+                >
+                  Concluir trabalho pesado
+                </button>
+              ) : null}
+            </p>
+          ) : null}
         </div>
       ) : null}
       <h5>Candidatos cognitivos pendentes</h5>
