@@ -222,6 +222,7 @@ export type OpinionCandidateRequest = {
   attribution: string | null;
   reason: string;
   idempotencyKey: string;
+  temporaryChat: boolean;
 };
 export type OpinionEvidenceCorrectionRequest = {
   agentId: string;
@@ -229,6 +230,7 @@ export type OpinionEvidenceCorrectionRequest = {
   claimValue: string;
   reason: string;
   idempotencyKey: string;
+  temporaryChat: boolean;
 };
 export type CognitiveOpinionStatusRequest = {
   agentId: string;
@@ -236,12 +238,14 @@ export type CognitiveOpinionStatusRequest = {
   status: "disputed" | "superseded" | "archived" | "rejected";
   reason: string;
   idempotencyKey: string;
+  temporaryChat: boolean;
 };
 export type CognitiveOpinionRecalculationRequest = {
   agentId: string;
   opinionId: string;
   reason: string;
   idempotencyKey: string;
+  temporaryChat: boolean;
 };
 export type RelationshipValues = {
   familiarity: number;
@@ -285,17 +289,20 @@ export type RelationshipCandidateRequest = {
   confidence: number;
   reason: string;
   idempotencyKey: string;
+  temporaryChat: boolean;
 };
 export type RelationshipResetRequest = {
   agentId: string;
   relationshipId: string;
   reason: string;
   idempotencyKey: string;
+  temporaryChat: boolean;
 };
 export type RelationshipRollbackRequest = {
   agentId: string;
   eventId: string;
   idempotencyKey: string;
+  temporaryChat: boolean;
 };
 export type CognitiveGoalStatus =
   | "proposed"
@@ -332,11 +339,13 @@ export type GoalRequest = {
   expiresAt: number | null;
   parentGoalId: string | null;
   idempotencyKey: string;
+  temporaryChat: boolean;
 };
 export type CognitiveGoalApprovalRequest = {
   agentId: string;
   goalId: string;
   idempotencyKey: string;
+  temporaryChat: boolean;
 };
 export type CognitiveGoalStatusRequest = {
   agentId: string;
@@ -344,6 +353,7 @@ export type CognitiveGoalStatusRequest = {
   status: Exclude<CognitiveGoalStatus, "proposed">;
   completionEvidence: string | null;
   idempotencyKey: string;
+  temporaryChat: boolean;
 };
 export type FictionalActivityStatus =
   "active" | "paused" | "completed" | "expired" | "archived";
@@ -515,11 +525,13 @@ export type OwnerCorrectionRequest = {
   value: number;
   reason: string;
   idempotencyKey: string;
+  temporaryChat: boolean;
 };
 export type RollbackRequest = {
   agentId: string;
   eventId: string;
   idempotencyKey: string;
+  temporaryChat: boolean;
 };
 export type CognitiveErrorCode =
   | "agent_not_found"

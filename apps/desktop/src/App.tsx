@@ -1553,6 +1553,7 @@ export function CognitivePanel({ agentId }: { agentId: string }) {
         value: numericValue,
         reason,
         idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
       });
       setReason("");
       await load();
@@ -1572,6 +1573,7 @@ export function CognitivePanel({ agentId }: { agentId: string }) {
         agentId,
         eventId,
         idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
       });
       await load();
       if (activeAgentId.current === agentId) setSuccess("Reversão aplicada.");
@@ -1895,7 +1897,10 @@ function invokeCognitive<Command extends CognitiveCommandName>(
 }
 
 function CognitiveCorePanel({ agentId }: { agentId: string }) {
-  const participantAgentId = agentId === "astra" ? "luma" : "astra";
+  const participantAgentId =
+    agentId === "agt_astra_provisional"
+      ? "agt_luma_provisional"
+      : "agt_astra_provisional";
   const [opinions, setOpinions] = useState<CognitiveOpinion[]>([]);
   const [relationships, setRelationships] = useState<RelationshipState[]>([]);
   const [goals, setGoals] = useState<CognitiveGoal[]>([]);
@@ -2063,6 +2068,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
           attribution: null,
           reason: opinionReason,
           idempotencyKey: crypto.randomUUID(),
+          temporaryChat: false,
         },
         "Opinião proposta.",
       )
@@ -2105,6 +2111,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
           claimValue: correctionClaim.trim(),
           reason: opinionActionReason.trim(),
           idempotencyKey: crypto.randomUUID(),
+          temporaryChat: false,
         },
         "Evidência corrigida.",
       )
@@ -2127,6 +2134,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
         status: "disputed",
         reason: opinionActionReason.trim(),
         idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
       },
       "Opinião marcada para revisão.",
     );
@@ -2144,6 +2152,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
         opinionId: opinion.id,
         reason: opinionActionReason.trim(),
         idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
       },
       "Opinião recalculada.",
     );
@@ -2179,6 +2188,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
           confidence: 0.8,
           reason: relationshipReason,
           idempotencyKey: crypto.randomUUID(),
+          temporaryChat: false,
         },
         "Relacionamento atualizado.",
       )
@@ -2200,6 +2210,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
         relationshipId: relationship.id,
         reason: relationshipActionReason.trim(),
         idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
       },
       "Relacionamento redefinido.",
     );
@@ -2217,6 +2228,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
         agentId,
         eventId: event.eventId,
         idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
       },
       "Último evento do relacionamento revertido.",
     );
@@ -2257,6 +2269,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
           expiresAt: null,
           parentGoalId: null,
           idempotencyKey: crypto.randomUUID(),
+          temporaryChat: false,
         },
         origin === "owner"
           ? "Objetivo do Owner criado."
@@ -2271,7 +2284,12 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
   async function approveGoal(goal: CognitiveGoal) {
     await runCognitive(
       "approve_cognitive_goal",
-      { agentId, goalId: goal.id, idempotencyKey: crypto.randomUUID() },
+      {
+        agentId,
+        goalId: goal.id,
+        idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
+      },
       "Objetivo aprovado.",
     );
   }
@@ -2289,6 +2307,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
         completionEvidence:
           status === "completed" ? "Concluído em estado fictício" : null,
         idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
       },
       status === "completed" ? "Objetivo concluído." : "Status atualizado.",
     );
