@@ -20,6 +20,10 @@ import {
   parseToolCatalog,
   parseToolSession,
   parseToolSessions,
+  parseToolExecutionResult,
+  parseWorkspaceRoot,
+  parseWorkspaceRootIdRequest,
+  parseWorkspaceRootRequest,
   parseExtensionAudit,
   parseExtensionCatalog,
   parseExtensionManifest,
@@ -527,6 +531,10 @@ describe("supervised tool contracts", () => {
         },
       ]),
     ).not.toBeNull();
+    expect(parseToolExecutionResult({ status: "executed", output: "moved", changed: true, untrusted: true })).not.toBeNull();
+    expect(parseWorkspaceRoot({ id: "wrt_opaque", enabled: true, createdAt: 1, updatedAt: 2 })).not.toBeNull();
+    expect(parseWorkspaceRootRequest({ path: "C:/workspace", idempotencyKey: "root-1", temporaryChat: false })).not.toBeNull();
+    expect(parseWorkspaceRootIdRequest({ rootId: "wrt_opaque", idempotencyKey: "root-2", temporaryChat: false })).not.toBeNull();
   });
 
   it("rejects unsafe or malformed tool payloads", () => {
@@ -541,6 +549,8 @@ describe("supervised tool contracts", () => {
         },
       }),
     ).toBeNull();
+    expect(parseToolExecutionResult({ status: "executed", output: "moved", changed: "yes", untrusted: true })).toBeNull();
+    expect(parseToolExecutionResult({ status: "unknown", output: "moved", changed: true, untrusted: true })).toBeNull();
     expect(
       parseToolActionInput({ kind: "shell", command: "whoami" }),
     ).toBeNull();

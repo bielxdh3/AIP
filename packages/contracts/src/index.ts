@@ -317,7 +317,7 @@ export type VoiceEmotionHypothesisResult = {
 
 export type ToolClassification = "read_only" | "state_changing";
 export type ToolAdapterKind =
-  "workspace_mock" | "calendar_mock" | "messaging_mock";
+  "workspace_mock" | "workspace_local" | "calendar_mock" | "messaging_mock";
 export type ToolPermission =
   "preview" | "execute_read_only" | "execute_state_changing";
 export type ToolSessionStatus = "active" | "cancelled" | "closed";
@@ -332,7 +332,7 @@ export type ToolActionStatus =
   | "compensated"
   | "rejected";
 export type ToolResultStatus =
-  "dry_run" | "simulated" | "cancelled" | "compensated";
+  "dry_run" | "simulated" | "cancelled" | "compensated" | "executed" | "failed";
 
 export type ToolManifest = {
   toolId: string;
@@ -340,7 +340,7 @@ export type ToolManifest = {
   name: string;
   classification: ToolClassification;
   adapterKind: ToolAdapterKind;
-  scopeKind: "workspace" | "calendar" | "messaging";
+  scopeKind: "workspace" | "workspace_root" | "calendar" | "messaging";
   requiresSecondConfirmation: boolean;
   capabilities: string[];
   updatedAt: number;
@@ -353,6 +353,22 @@ export type ToolSessionRequest = {
   agentId: string;
   scopeRef: string;
   permissions: ToolSessionPermission[];
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type WorkspaceRoot = {
+  id: string;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+export type WorkspaceRootRequest = {
+  path: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type WorkspaceRootIdRequest = {
+  rootId: string;
   idempotencyKey: string;
   temporaryChat: boolean;
 };
@@ -423,7 +439,7 @@ export type ToolSessionCancellationRequest = {
 export type ToolExecutionResult = {
   status: ToolResultStatus;
   output: string;
-  changed: false;
+  changed: boolean;
   untrusted: true;
 };
 export type ToolCompensation = {
@@ -2085,6 +2101,13 @@ export type CognitiveErrorCode =
   | "tool_confirmation_required"
   | "tool_action_not_confirmable"
   | "tool_compensation_unavailable"
+  | "workspace_root_unavailable"
+  | "workspace_root_invalid"
+  | "workspace_path_unavailable"
+  | "workspace_path_invalid"
+  | "workspace_destination_exists"
+  | "workspace_move_failed"
+  | "workspace_move_partial"
   | "extensions_blocked_temporary"
   | "extensions_blocked_safe_mode"
   | "extension_already_exists"
@@ -2358,6 +2381,13 @@ export function parseCognitiveError(
     "tool_confirmation_required",
     "tool_action_not_confirmable",
     "tool_compensation_unavailable",
+    "workspace_root_unavailable",
+    "workspace_root_invalid",
+    "workspace_path_unavailable",
+    "workspace_path_invalid",
+    "workspace_destination_exists",
+    "workspace_move_failed",
+    "workspace_move_partial",
     "extensions_blocked_temporary",
     "extensions_blocked_safe_mode",
     "extension_already_exists",
@@ -2564,6 +2594,7 @@ function isToolClassification(value: unknown): value is ToolClassification {
 function isToolAdapterKind(value: unknown): value is ToolAdapterKind {
   return (
     value === "workspace_mock" ||
+    value === "workspace_local" ||
     value === "calendar_mock" ||
     value === "messaging_mock"
   );
@@ -2592,7 +2623,7 @@ function isToolActionStatus(value: unknown): value is ToolActionStatus {
 }
 
 function isToolResultStatus(value: unknown): value is ToolResultStatus {
-  return ["dry_run", "simulated", "cancelled", "compensated"].includes(
+  return ["dry_run", "simulated", "cancelled", "compensated", "executed", "failed"].includes(
     value as string,
   );
 }
@@ -2647,7 +2678,7 @@ export function parseToolManifest(value: unknown): ToolManifest | null {
     cognitiveString(candidate.name) &&
     isToolClassification(candidate.classification) &&
     isToolAdapterKind(candidate.adapterKind) &&
-    ["workspace", "calendar", "messaging"].includes(
+    ["workspace", "workspace_root", "calendar", "messaging"].includes(
       candidate.scopeKind as string,
     ) &&
     typeof candidate.requiresSecondConfirmation === "boolean" &&
@@ -2692,10 +2723,50 @@ export function parseToolExecutionResult(
   return candidate !== null &&
     isToolResultStatus(candidate.status) &&
     cognitiveString(candidate.output) &&
-    candidate.changed === false &&
+    typeof candidate.changed === "boolean" &&
     candidate.untrusted === true
     ? (candidate as unknown as ToolExecutionResult)
     : null;
+}
+
+function boundedToolPath(value: unknown): value is string {
+  return cognitiveString(value) && value.length <= 512;
+}
+
+function boundedOpaqueRootId(value: unknown): value is string {
+  return cognitiveString(value) && value.length <= 64 && /^[A-Za-z0-9._:-]+$/.test(value);
+}
+
+function boundedIdempotency(value: unknown): value is string {
+  return cognitiveString(value) && value.length <= 128;
+}
+
+export function parseWorkspaceRoot(value: unknown): WorkspaceRoot | null {
+  const candidate = toolRecord(value);
+  return candidate !== null && boundedOpaqueRootId(candidate.id) &&
+    typeof candidate.enabled === "boolean" && cognitiveNumber(candidate.createdAt) &&
+    cognitiveNumber(candidate.updatedAt)
+    ? (candidate as unknown as WorkspaceRoot) : null;
+}
+
+export function parseWorkspaceRoots(value: unknown): WorkspaceRoot[] | null {
+  if (!Array.isArray(value)) return null;
+  const roots = value.map(parseWorkspaceRoot);
+  return roots.every((root): root is WorkspaceRoot => root !== null) ? roots : null;
+}
+
+export function parseWorkspaceRootRequest(value: unknown): WorkspaceRootRequest | null {
+  const candidate = toolRecord(value);
+  return candidate !== null && boundedToolPath(candidate.path) && boundedIdempotency(candidate.idempotencyKey) &&
+    typeof candidate.temporaryChat === "boolean"
+    ? (candidate as unknown as WorkspaceRootRequest) : null;
+}
+
+export function parseWorkspaceRootIdRequest(value: unknown): WorkspaceRootIdRequest | null {
+  const candidate = toolRecord(value);
+  return candidate !== null && boundedOpaqueRootId(candidate.rootId) && boundedIdempotency(candidate.idempotencyKey) &&
+    typeof candidate.temporaryChat === "boolean"
+    ? (candidate as unknown as WorkspaceRootIdRequest) : null;
 }
 
 export function parseToolCompensation(value: unknown): ToolCompensation | null {
