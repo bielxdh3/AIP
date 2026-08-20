@@ -20,7 +20,7 @@ use std::{
 use chat::ChatCoordinator;
 use cognitive::{
     CognitiveGoal, CognitiveOpinion, GoalRequest, OpinionCandidateRequest,
-    RelationshipCandidateRequest, RelationshipState,
+    OpinionEvidenceCorrectionRequest, RelationshipCandidateRequest, RelationshipState,
 };
 use database::Database;
 use domain::{
@@ -138,6 +138,52 @@ fn propose_cognitive_opinion(
 }
 
 #[tauri::command]
+fn correct_cognitive_opinion_evidence(
+    state: State<'_, AppState>,
+    request: OpinionEvidenceCorrectionRequest,
+) -> Result<CognitiveOpinion, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .correct_opinion_evidence(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn set_cognitive_opinion_status(
+    state: State<'_, AppState>,
+    agent_id: String,
+    opinion_id: String,
+    status: String,
+    reason: String,
+    idempotency_key: String,
+) -> Result<CognitiveOpinion, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .set_opinion_status(&agent_id, &opinion_id, &status, &reason, &idempotency_key)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn recalculate_cognitive_opinion(
+    state: State<'_, AppState>,
+    agent_id: String,
+    opinion_id: String,
+    reason: String,
+    idempotency_key: String,
+) -> Result<CognitiveOpinion, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .recalculate_opinion(&agent_id, &opinion_id, &reason, &idempotency_key)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
 fn list_cognitive_relationships(
     state: State<'_, AppState>,
     agent_id: String,
@@ -160,6 +206,37 @@ fn propose_cognitive_relationship(
         .as_ref()
         .ok_or("operation_unavailable")?
         .propose_relationship_event(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn reset_cognitive_relationship(
+    state: State<'_, AppState>,
+    agent_id: String,
+    relationship_id: String,
+    reason: String,
+    idempotency_key: String,
+) -> Result<RelationshipState, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .reset_relationship(&agent_id, &relationship_id, &reason, &idempotency_key)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn rollback_cognitive_relationship(
+    state: State<'_, AppState>,
+    agent_id: String,
+    event_id: String,
+    idempotency_key: String,
+) -> Result<RelationshipState, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .rollback_relationship_event(&agent_id, &event_id, &idempotency_key)
         .map_err(|error| error.code())
 }
 
@@ -952,8 +1029,13 @@ pub fn run() {
             rollback_cognitive_event,
             list_cognitive_opinions,
             propose_cognitive_opinion,
+            correct_cognitive_opinion_evidence,
+            set_cognitive_opinion_status,
+            recalculate_cognitive_opinion,
             list_cognitive_relationships,
             propose_cognitive_relationship,
+            reset_cognitive_relationship,
+            rollback_cognitive_relationship,
             list_cognitive_goals,
             create_owner_cognitive_goal,
             propose_agent_cognitive_goal,

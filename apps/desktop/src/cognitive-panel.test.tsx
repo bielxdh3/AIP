@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CognitiveGoal } from "@aip/contracts";
 import { CognitivePanel } from "./App";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -65,6 +66,12 @@ describe("CognitivePanel", () => {
           event,
           { ...event, id: "rejected", status: "rejected" },
         ]);
+      if (
+        command === "list_cognitive_opinions" ||
+        command === "list_cognitive_relationships" ||
+        command === "list_cognitive_goals"
+      )
+        return Promise.resolve([]);
       if (command === "explain_cognitive_event")
         return Promise.resolve({ event, traitLabel: "Curiosidade" });
       return Promise.resolve(event);
@@ -170,7 +177,8 @@ describe("CognitivePanel", () => {
       (command: string) =>
         new Promise((resolve) => {
           if (command === "list_cognitive_traits") resolveTraits = resolve;
-          else resolveEvents = resolve;
+          else if (command === "list_cognitive_events") resolveEvents = resolve;
+          else resolve([]);
         }),
     );
     container = document.createElement("div");
@@ -196,6 +204,12 @@ describe("CognitivePanel", () => {
     invoke.mockImplementation((command: string) => {
       if (command === "list_cognitive_traits") return Promise.resolve(traits);
       if (command === "list_cognitive_events") return Promise.resolve([]);
+      if (
+        command === "list_cognitive_opinions" ||
+        command === "list_cognitive_relationships" ||
+        command === "list_cognitive_goals"
+      )
+        return Promise.resolve([]);
       return Promise.reject("protected_trait");
     });
     container = document.createElement("div");
@@ -214,5 +228,180 @@ describe("CognitivePanel", () => {
       ).click(),
     );
     expect(container.textContent).toContain("Este traço é protegido.");
+  });
+
+  it("lists and mutates the Portuguese 7B-7D surface with bounded commands", async () => {
+    const opinion = {
+      id: "opinion-1",
+      agentId: "astra",
+      subjectType: "topic",
+      subjectRef: "tema",
+      stance: 0.4,
+      confidence: 0.8,
+      status: "active" as const,
+      reason: "Motivo",
+      createdAt: 1,
+      updatedAt: 1,
+      evidence: [
+        {
+          id: "evidence-1",
+          opinionId: "opinion-1",
+          sourceKind: "owner_testimony",
+          classification: "verified_fact",
+          stance: 0.4,
+          claimKey: "owner_claim",
+          claimValue: "Evidência segura",
+          sourceReference: null,
+          attribution: null,
+          confidence: 0.8,
+          status: "active" as const,
+          createdAt: 1,
+        },
+      ],
+    };
+    const relationship = {
+      id: "relationship-1",
+      agentId: "astra",
+      subjectType: "agent",
+      subjectRef: "agt_related",
+      values: {
+        familiarity: 0.5,
+        trust: 0.55,
+        affinity: 0.5,
+        admiration: 0.5,
+        irritation: 0,
+        reliabilityExpectation: 0.5,
+      },
+      updatedAt: 1,
+      events: [
+        {
+          id: "relationship-event-1",
+          relationshipId: "relationship-1",
+          eventId: "core-event-1",
+          deltas: {
+            familiarity: 0,
+            trust: 0.05,
+            affinity: 0,
+            admiration: 0,
+            irritation: 0,
+            reliabilityExpectation: 0,
+          },
+          prior: {
+            familiarity: 0.5,
+            trust: 0.5,
+            affinity: 0.5,
+            admiration: 0.5,
+            irritation: 0,
+            reliabilityExpectation: 0.5,
+          },
+          resulting: {
+            familiarity: 0.5,
+            trust: 0.55,
+            affinity: 0.5,
+            admiration: 0.5,
+            irritation: 0,
+            reliabilityExpectation: 0.5,
+          },
+          sourceKind: "owner_testimony",
+          sourceReference: null,
+          confidence: 0.8,
+          reason: "Motivo",
+          status: "applied" as const,
+          createdAt: 1,
+        },
+      ],
+    };
+    let goal: CognitiveGoal = {
+      id: "goal-1",
+      agentId: "astra",
+      title: "Objetivo de teste",
+      description: "Um objetivo sem ação externa",
+      origin: "agent_proposal" as const,
+      fictionalOnly: true as const,
+      priority: 50,
+      status: "proposed" as const,
+      budgetUnits: 10,
+      dueAt: null,
+      expiresAt: null,
+      completionEvidence: null,
+      parentGoalId: null,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    invoke.mockImplementation((command: string) => {
+      if (command === "list_cognitive_traits") return Promise.resolve(traits);
+      if (command === "list_cognitive_events") return Promise.resolve([]);
+      if (command === "list_cognitive_opinions") return Promise.resolve([opinion]);
+      if (command === "list_cognitive_relationships")
+        return Promise.resolve([relationship]);
+      if (command === "list_cognitive_goals") return Promise.resolve([goal]);
+      if (command === "approve_cognitive_goal") {
+        goal = { ...goal, status: "active" };
+        return Promise.resolve(goal);
+      }
+      if (command === "update_cognitive_goal_status") {
+        goal = {
+          ...goal,
+          status: "completed",
+          completionEvidence: "Concluído em estado fictício",
+        };
+        return Promise.resolve(goal);
+      }
+      return Promise.resolve(opinion);
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root.render(<CognitivePanel agentId="astra" />));
+    expect(container.textContent).toContain("Núcleo cognitivo");
+    expect(container.textContent).toContain("tema: posição 0.40");
+    expect(container.textContent).toContain("Evidência segura");
+    expect(container.textContent).toContain("Objetivo de teste");
+
+    const inputs = container.querySelectorAll("input");
+    const textareas = container.querySelectorAll("textarea");
+    await act(async () => {
+      change(inputs[1] as HTMLInputElement, "novo tema");
+      change(textareas[1] as HTMLTextAreaElement, "Nova evidência");
+      change(textareas[2] as HTMLTextAreaElement, "Novo motivo");
+    });
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Propor opinião")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "propose_cognitive_opinion",
+      expect.objectContaining({
+        agentId: "astra",
+        subjectRef: "novo tema",
+        sourceKind: "owner_testimony",
+        sourceReference: null,
+      }),
+    );
+
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Aprovar objetivo")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "approve_cognitive_goal",
+      expect.objectContaining({ agentId: "astra", goalId: "goal-1" }),
+    );
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Concluir objetivo")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "update_cognitive_goal_status",
+      expect.objectContaining({
+        agentId: "astra",
+        goalId: "goal-1",
+        status: "completed",
+      }),
+    );
+    expect(container.textContent).toContain("estado fictício");
   });
 });

@@ -181,6 +181,134 @@ export type CognitiveEventExplanation = {
   event: CognitiveEventSummary;
   traitLabel: string;
 };
+export type OpinionEvidence = {
+  id: string;
+  opinionId: string;
+  sourceKind: string;
+  classification: string;
+  stance: number;
+  claimKey: string;
+  claimValue: string;
+  sourceReference: string | null;
+  attribution: string | null;
+  confidence: number;
+  status: "active" | "disputed" | "superseded" | "rejected";
+  createdAt: number;
+};
+export type CognitiveOpinion = {
+  id: string;
+  agentId: string;
+  subjectType: string;
+  subjectRef: string;
+  stance: number;
+  confidence: number;
+  status: "active" | "disputed" | "superseded" | "archived" | "rejected";
+  reason: string;
+  createdAt: number;
+  updatedAt: number;
+  evidence: OpinionEvidence[];
+};
+export type OpinionCandidateRequest = {
+  agentId: string;
+  subjectType: string;
+  subjectRef: string;
+  stance: number;
+  confidence: number;
+  sourceKind: string;
+  classification: string;
+  claimKey: string;
+  claimValue: string;
+  sourceReference: string | null;
+  attribution: string | null;
+  reason: string;
+  idempotencyKey: string;
+};
+export type OpinionEvidenceCorrectionRequest = {
+  agentId: string;
+  evidenceId: string;
+  claimValue: string;
+  reason: string;
+  idempotencyKey: string;
+};
+export type RelationshipValues = {
+  familiarity: number;
+  trust: number;
+  affinity: number;
+  admiration: number;
+  irritation: number;
+  reliabilityExpectation: number;
+};
+export type RelationshipDeltas = RelationshipValues;
+export type RelationshipEvent = {
+  id: string;
+  relationshipId: string;
+  eventId: string;
+  deltas: RelationshipDeltas;
+  prior: RelationshipValues;
+  resulting: RelationshipValues;
+  sourceKind: string;
+  sourceReference: string | null;
+  confidence: number;
+  reason: string;
+  status: "applied" | "superseded" | "rolled_back";
+  createdAt: number;
+};
+export type RelationshipState = {
+  id: string;
+  agentId: string;
+  subjectType: string;
+  subjectRef: string;
+  values: RelationshipValues;
+  updatedAt: number;
+  events: RelationshipEvent[];
+};
+export type RelationshipCandidateRequest = {
+  agentId: string;
+  subjectType: string;
+  subjectRef: string;
+  deltas: RelationshipDeltas;
+  sourceKind: string;
+  sourceReference: string | null;
+  confidence: number;
+  reason: string;
+  idempotencyKey: string;
+};
+export type CognitiveGoalStatus =
+  | "proposed"
+  | "active"
+  | "suspended"
+  | "completed"
+  | "cancelled"
+  | "archived"
+  | "rejected";
+export type CognitiveGoal = {
+  id: string;
+  agentId: string;
+  title: string;
+  description: string;
+  origin: "owner" | "agent_proposal";
+  fictionalOnly: true;
+  priority: number;
+  status: CognitiveGoalStatus;
+  budgetUnits: number;
+  dueAt: number | null;
+  expiresAt: number | null;
+  completionEvidence: string | null;
+  parentGoalId: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+export type GoalRequest = {
+  agentId: string;
+  title: string;
+  description: string;
+  priority: number;
+  budgetUnits: number;
+  dueAt: number | null;
+  expiresAt: number | null;
+  parentGoalId: string | null;
+  idempotencyKey: string;
+};
 export type OwnerCorrectionRequest = {
   agentId: string;
   traitKey: string;
@@ -212,6 +340,28 @@ export type CognitiveErrorCode =
   | "idempotency_conflict"
   | "duplicate_evidence"
   | "rollback_conflict"
+  | "invalid_classification"
+  | "invalid_evidence"
+  | "attribution_required"
+  | "internet_fact_unverified"
+  | "inference_not_fact"
+  | "real_person_uncertain"
+  | "defamation_blocked"
+  | "invalid_status"
+  | "evidence_not_found"
+  | "evidence_not_active"
+  | "invalid_subject"
+  | "relationship_not_found"
+  | "relationship_delta_limit"
+  | "relationship_rate_limit"
+  | "manipulation_blocked"
+  | "invalid_goal"
+  | "external_action_blocked"
+  | "invalid_goal_budget"
+  | "invalid_goal_schedule"
+  | "goal_not_found"
+  | "goal_loop_blocked"
+  | "invalid_transition"
   | "persistence_failed";
 export type CognitiveErrorResponse = {
   code: CognitiveErrorCode;
@@ -306,6 +456,28 @@ export function parseCognitiveError(
     "idempotency_conflict",
     "duplicate_evidence",
     "rollback_conflict",
+    "invalid_classification",
+    "invalid_evidence",
+    "attribution_required",
+    "internet_fact_unverified",
+    "inference_not_fact",
+    "real_person_uncertain",
+    "defamation_blocked",
+    "invalid_status",
+    "evidence_not_found",
+    "evidence_not_active",
+    "invalid_subject",
+    "relationship_not_found",
+    "relationship_delta_limit",
+    "relationship_rate_limit",
+    "manipulation_blocked",
+    "invalid_goal",
+    "external_action_blocked",
+    "invalid_goal_budget",
+    "invalid_goal_schedule",
+    "goal_not_found",
+    "goal_loop_blocked",
+    "invalid_transition",
     "persistence_failed",
   ];
   return codes.includes(candidate.code as CognitiveErrorCode) &&
