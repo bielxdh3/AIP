@@ -73,6 +73,7 @@ use tools::{
     ToolAction, ToolActionCancellationRequest, ToolActionConfirmationRequest,
     ToolActionDecisionRequest, ToolActionExecutionRequest, ToolActionPreviewRequest,
     ToolAuditRecord, ToolManifest, ToolSession, ToolSessionCancellationRequest, ToolSessionRequest,
+    WorkspaceRoot, WorkspaceRootIdRequest, WorkspaceRootRequest,
 };
 use voice::{
     CustomVoiceConsentRequest, VoiceCaptureRequest, VoiceEmotionHypothesisRequest,
@@ -861,6 +862,9 @@ fn ensure_tool_mutation_allowed(
     agent_id: &str,
     requested_temporary: bool,
 ) -> Result<(), &'static str> {
+    if state.safe_mode.load(Ordering::Acquire) {
+        return Err("tools_blocked_safe_mode");
+    }
     ensure_conversation_not_temporary(state, agent_id, requested_temporary)
 }
 
@@ -871,6 +875,52 @@ fn list_tool_catalog(state: State<'_, AppState>) -> Result<Vec<ToolManifest>, &'
         .as_ref()
         .ok_or("operation_unavailable")?
         .list_tool_catalog()
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn add_workspace_root(
+    state: State<'_, AppState>,
+    request: WorkspaceRootRequest,
+) -> Result<WorkspaceRoot, &'static str> {
+    ensure_tool_mutation_allowed(
+        state.inner(),
+        "agt_astra_provisional",
+        request.temporary_chat,
+    )?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .add_workspace_root(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_workspace_roots(state: State<'_, AppState>) -> Result<Vec<WorkspaceRoot>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_workspace_roots()
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn remove_workspace_root(
+    state: State<'_, AppState>,
+    request: WorkspaceRootIdRequest,
+) -> Result<WorkspaceRoot, &'static str> {
+    ensure_tool_mutation_allowed(
+        state.inner(),
+        "agt_astra_provisional",
+        request.temporary_chat,
+    )?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .remove_workspace_root(request)
         .map_err(|error| error.code())
 }
 
@@ -2527,6 +2577,9 @@ pub fn run() {
             get_voice_operation_status,
             classify_voice_emotion,
             list_tool_catalog,
+            add_workspace_root,
+            list_workspace_roots,
+            remove_workspace_root,
             create_tool_session,
             list_tool_sessions,
             preview_tool_action,
