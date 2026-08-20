@@ -21,6 +21,7 @@ import {
   parseToolSession,
   parseToolSessions,
   parseToolExecutionResult,
+  parseToolCompensation,
   parseWorkspaceRoot,
   parseWorkspaceRootIdRequest,
   parseWorkspaceRootRequest,
@@ -532,6 +533,7 @@ describe("supervised tool contracts", () => {
       ]),
     ).not.toBeNull();
     expect(parseToolExecutionResult({ status: "executed", output: "moved", changed: true, untrusted: true })).not.toBeNull();
+    expect(parseToolCompensation({ kind: "workspace_move", available: true, description: "bounded", moves: [{ from: "a.txt", to: "b.txt", identity: "win:1:2" }] })).not.toBeNull();
     expect(parseWorkspaceRoot({ id: "wrt_opaque", enabled: true, createdAt: 1, updatedAt: 2 })).not.toBeNull();
     expect(parseWorkspaceRootRequest({ path: "C:/workspace", idempotencyKey: "root-1", temporaryChat: false })).not.toBeNull();
     expect(parseWorkspaceRootIdRequest({ rootId: "wrt_opaque", idempotencyKey: "root-2", temporaryChat: false })).not.toBeNull();
@@ -551,6 +553,9 @@ describe("supervised tool contracts", () => {
     ).toBeNull();
     expect(parseToolExecutionResult({ status: "executed", output: "moved", changed: "yes", untrusted: true })).toBeNull();
     expect(parseToolExecutionResult({ status: "unknown", output: "moved", changed: true, untrusted: true })).toBeNull();
+    expect(parseToolCompensation({ kind: "workspace_move", available: true, description: "bounded", moves: [{ from: "a.txt\u0000", to: "b.txt", identity: "win:1:2" }] })).toBeNull();
+    expect(parseToolAction({ ...action, summary: "x".repeat(513) })).toBeNull();
+    expect(parseToolAction({ ...action, affectedResources: Array.from({ length: 65 }, (_, index) => `r${index}`) })).toBeNull();
     expect(
       parseToolActionInput({ kind: "shell", command: "whoami" }),
     ).toBeNull();

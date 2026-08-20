@@ -91,8 +91,8 @@ instructions.
 
 ## Persistence and audit
 
-Migration `0016_phase9_tools.sql` adds the catalog, sessions, session
-permissions, actions, and audit tables. Foreign keys preserve agent and Owner
+Migration `0016_phase9_tools.sql` is the original fixture-tool schema for the catalog, sessions, session
+permissions, actions, and audit tables. Migration `0023_phase9_workspace_roots.sql` rebuilds and preserves that schema, including existing fixture rows and foreign keys, while adding `workspace_roots` and the two local manifests. Foreign keys preserve agent and Owner
 isolation. Idempotency keys are unique within the Owner/session boundary.
 
 Audit records contain bounded event metadata and a Portuguese summary, never

@@ -446,6 +446,12 @@ export type ToolCompensation = {
   kind: string;
   available: boolean;
   description: string;
+  moves?: ToolCompensationMove[] | null;
+};
+export type ToolCompensationMove = {
+  from: string;
+  to: string;
+  identity: string;
 };
 export type ToolAction = {
   id: string;
@@ -2108,6 +2114,9 @@ export type CognitiveErrorCode =
   | "workspace_destination_exists"
   | "workspace_move_failed"
   | "workspace_move_partial"
+  | "workspace_compensation_unavailable"
+  | "workspace_compensation_failed"
+  | "action_compensation_failed"
   | "extensions_blocked_temporary"
   | "extensions_blocked_safe_mode"
   | "extension_already_exists"
@@ -2388,6 +2397,9 @@ export function parseCognitiveError(
     "workspace_destination_exists",
     "workspace_move_failed",
     "workspace_move_partial",
+    "workspace_compensation_unavailable",
+    "workspace_compensation_failed",
+    "action_compensation_failed",
     "extensions_blocked_temporary",
     "extensions_blocked_safe_mode",
     "extension_already_exists",
@@ -2583,8 +2595,17 @@ function toolRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function toolStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every(cognitiveString);
+function toolBoundedText(value: unknown, maximum: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= maximum &&
+    !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function toolBoundedArray(value: unknown, maximum: number, itemMaximum: number): value is string[] {
+  return Array.isArray(value) && value.length <= maximum && value.every((item) => toolBoundedText(item, itemMaximum));
+}
+
+function toolBoundedId(value: unknown, maximum = 128): value is string {
+  return toolBoundedText(value, maximum);
 }
 
 function isToolClassification(value: unknown): value is ToolClassification {
@@ -2633,7 +2654,7 @@ export function parseToolActionInput(value: unknown): ToolActionInput | null {
   if (!candidate || !cognitiveString(candidate.kind)) return null;
   switch (candidate.kind) {
     case "workspaceInspect":
-      return toolStringArray(candidate.relativePaths)
+      return toolBoundedArray(candidate.relativePaths, 32, 512)
         ? (candidate as unknown as ToolActionInput)
         : null;
     case "workspaceOrganize": {
@@ -2642,27 +2663,27 @@ export function parseToolActionInput(value: unknown): ToolActionInput | null {
         const item = toolRecord(move);
         return (
           item !== null &&
-          cognitiveString(item.from) &&
-          cognitiveString(item.to)
+          toolBoundedText(item.from, 512) &&
+          toolBoundedText(item.to, 512)
         );
       });
       return moves ? (candidate as unknown as ToolActionInput) : null;
     }
     case "calendarList":
-      return cognitiveString(candidate.date)
+      return toolBoundedText(candidate.date, 32)
         ? (candidate as unknown as ToolActionInput)
         : null;
     case "calendarCreate":
-      return cognitiveString(candidate.title) &&
-        cognitiveString(candidate.date) &&
-        cognitiveString(candidate.start) &&
-        cognitiveString(candidate.end)
+      return toolBoundedText(candidate.title, 160) &&
+        toolBoundedText(candidate.date, 32) &&
+        toolBoundedText(candidate.start, 16) &&
+        toolBoundedText(candidate.end, 16)
         ? (candidate as unknown as ToolActionInput)
         : null;
     case "messagingPreview":
     case "messagingSend":
-      return cognitiveString(candidate.recipient) &&
-        cognitiveString(candidate.body)
+      return toolBoundedText(candidate.recipient, 160) &&
+        toolBoundedText(candidate.body, 2048)
         ? (candidate as unknown as ToolActionInput)
         : null;
     default:
@@ -2673,16 +2694,16 @@ export function parseToolActionInput(value: unknown): ToolActionInput | null {
 export function parseToolManifest(value: unknown): ToolManifest | null {
   const candidate = toolRecord(value);
   return candidate !== null &&
-    cognitiveString(candidate.toolId) &&
+    toolBoundedId(candidate.toolId, 96) &&
     candidate.manifestVersion === 1 &&
-    cognitiveString(candidate.name) &&
+    toolBoundedText(candidate.name, 120) &&
     isToolClassification(candidate.classification) &&
     isToolAdapterKind(candidate.adapterKind) &&
     ["workspace", "workspace_root", "calendar", "messaging"].includes(
       candidate.scopeKind as string,
     ) &&
     typeof candidate.requiresSecondConfirmation === "boolean" &&
-    toolStringArray(candidate.capabilities) &&
+    toolBoundedArray(candidate.capabilities, 16, 64) &&
     cognitiveNumber(candidate.updatedAt)
     ? (candidate as unknown as ToolManifest)
     : null;
@@ -2693,7 +2714,7 @@ export function parseToolSessionPermission(
 ): ToolSessionPermission | null {
   const candidate = toolRecord(value);
   return candidate !== null &&
-    cognitiveString(candidate.toolId) &&
+    toolBoundedId(candidate.toolId, 96) &&
     isToolPermission(candidate.permission)
     ? (candidate as unknown as ToolSessionPermission)
     : null;
@@ -2703,9 +2724,9 @@ export function parseToolSession(value: unknown): ToolSession | null {
   const candidate = toolRecord(value);
   if (!candidate || !Array.isArray(candidate.permissions)) return null;
   const permissions = candidate.permissions.map(parseToolSessionPermission);
-  return cognitiveString(candidate.id) &&
-    cognitiveString(candidate.agentId) &&
-    cognitiveString(candidate.scopeRef) &&
+  return toolBoundedId(candidate.id) &&
+    toolBoundedId(candidate.agentId, 96) &&
+    toolBoundedText(candidate.scopeRef, 128) &&
     ["active", "cancelled", "closed"].includes(candidate.status as string) &&
     permissions.every(
       (permission): permission is ToolSessionPermission => permission !== null,
@@ -2722,7 +2743,7 @@ export function parseToolExecutionResult(
   const candidate = toolRecord(value);
   return candidate !== null &&
     isToolResultStatus(candidate.status) &&
-    cognitiveString(candidate.output) &&
+    toolBoundedText(candidate.output, 4096) &&
     typeof candidate.changed === "boolean" &&
     candidate.untrusted === true
     ? (candidate as unknown as ToolExecutionResult)
@@ -2730,15 +2751,15 @@ export function parseToolExecutionResult(
 }
 
 function boundedToolPath(value: unknown): value is string {
-  return cognitiveString(value) && value.length <= 512;
+  return toolBoundedText(value, 512);
 }
 
 function boundedOpaqueRootId(value: unknown): value is string {
-  return cognitiveString(value) && value.length <= 64 && /^[A-Za-z0-9._:-]+$/.test(value);
+  return toolBoundedText(value, 64) && /^[A-Za-z0-9._:-]+$/.test(value);
 }
 
 function boundedIdempotency(value: unknown): value is string {
-  return cognitiveString(value) && value.length <= 128;
+  return toolBoundedText(value, 128);
 }
 
 export function parseWorkspaceRoot(value: unknown): WorkspaceRoot | null {
@@ -2771,10 +2792,16 @@ export function parseWorkspaceRootIdRequest(value: unknown): WorkspaceRootIdRequ
 
 export function parseToolCompensation(value: unknown): ToolCompensation | null {
   const candidate = toolRecord(value);
-  return candidate !== null &&
-    cognitiveString(candidate.kind) &&
-    typeof candidate.available === "boolean" &&
-    cognitiveString(candidate.description)
+  if (candidate === null || !toolBoundedText(candidate.kind, 64) ||
+    typeof candidate.available !== "boolean" || !toolBoundedText(candidate.description, 1024)) return null;
+  if (candidate.moves === undefined || candidate.moves === null) return candidate as unknown as ToolCompensation;
+  if (!Array.isArray(candidate.moves) || candidate.moves.length > 32) return null;
+  const moves = candidate.moves.every((move) => {
+    const item = toolRecord(move);
+    return item !== null && toolBoundedText(item.from, 512) && toolBoundedText(item.to, 512) &&
+      toolBoundedText(item.identity, 128);
+  });
+  return moves
     ? (candidate as unknown as ToolCompensation)
     : null;
 }
@@ -2790,15 +2817,15 @@ export function parseToolAction(value: unknown): ToolAction | null {
       ? null
       : parseToolCompensation(candidate?.compensation);
   return candidate !== null &&
-    cognitiveString(candidate.id) &&
-    cognitiveString(candidate.sessionId) &&
-    cognitiveString(candidate.agentId) &&
-    cognitiveString(candidate.toolId) &&
+    toolBoundedId(candidate.id) &&
+    toolBoundedId(candidate.sessionId) &&
+    toolBoundedId(candidate.agentId, 96) &&
+    toolBoundedId(candidate.toolId, 96) &&
     isToolClassification(candidate.classification) &&
     parseToolActionInput(candidate.input) !== null &&
-    cognitiveString(candidate.summary) &&
-    toolStringArray(candidate.affectedResources) &&
-    cognitiveString(candidate.exactEffect) &&
+    toolBoundedText(candidate.summary, 512) &&
+    toolBoundedArray(candidate.affectedResources, 64, 512) &&
+    toolBoundedText(candidate.exactEffect, 1024) &&
     isToolActionStatus(candidate.status) &&
     typeof candidate.dryRun === "boolean" &&
     typeof candidate.requiresOwnerApproval === "boolean" &&
@@ -2807,7 +2834,7 @@ export function parseToolAction(value: unknown): ToolAction | null {
     typeof candidate.secondConfirmed === "boolean" &&
     (candidate.result === null || result !== null) &&
     (candidate.compensation === null || compensation !== null) &&
-    (candidate.code === null || cognitiveString(candidate.code)) &&
+    (candidate.code === null || toolBoundedText(candidate.code, 96)) &&
     cognitiveNumber(candidate.createdAt) &&
     cognitiveNumber(candidate.updatedAt)
     ? (candidate as unknown as ToolAction)
@@ -2817,15 +2844,15 @@ export function parseToolAction(value: unknown): ToolAction | null {
 export function parseToolAuditRecord(value: unknown): ToolAuditRecord | null {
   const candidate = toolRecord(value);
   return candidate !== null &&
-    cognitiveString(candidate.id) &&
+    toolBoundedId(candidate.id) &&
     (candidate.actionId === null || cognitiveString(candidate.actionId)) &&
     (candidate.sessionId === null || cognitiveString(candidate.sessionId)) &&
-    cognitiveString(candidate.agentId) &&
-    (candidate.toolId === null || cognitiveString(candidate.toolId)) &&
-    cognitiveString(candidate.event) &&
-    cognitiveString(candidate.result) &&
-    (candidate.code === null || cognitiveString(candidate.code)) &&
-    cognitiveString(candidate.summary) &&
+    toolBoundedId(candidate.agentId, 96) &&
+    (candidate.toolId === null || toolBoundedId(candidate.toolId, 96)) &&
+    toolBoundedText(candidate.event, 64) &&
+    toolBoundedText(candidate.result, 64) &&
+    (candidate.code === null || toolBoundedText(candidate.code, 96)) &&
+    toolBoundedText(candidate.summary, 2048) &&
     cognitiveNumber(candidate.createdAt)
     ? (candidate as unknown as ToolAuditRecord)
     : null;

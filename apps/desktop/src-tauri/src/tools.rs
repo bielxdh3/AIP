@@ -260,6 +260,16 @@ pub struct ToolCompensation {
     pub kind: String,
     pub available: bool,
     pub description: String,
+    #[serde(default)]
+    pub moves: Option<Vec<ToolCompensationMove>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCompensationMove {
+    pub from: String,
+    pub to: String,
+    pub identity: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -870,6 +880,15 @@ impl Database {
                 } else {
                     "O mock não alterou sistemas externos; nenhuma compensação externa é necessária.".into()
                 },
+                moves: if manifest.adapter_kind == ToolAdapterKind::WorkspaceLocal {
+                    Some(local_compensation_moves(
+                        &transaction,
+                        &session.scope_ref,
+                        &action.input,
+                    )?)
+                } else {
+                    None
+                },
             })
         } else {
             None
@@ -1006,11 +1025,48 @@ impl Database {
                 return Err(DatabaseError::Cognitive("tool_compensation_unavailable"));
             };
             let root = workspace_root_path(&transaction, &session.scope_ref)?;
-            for movement in moves {
+            let recorded = action
+                .compensation
+                .as_ref()
+                .and_then(|compensation| compensation.moves.as_ref())
+                .ok_or(DatabaseError::Cognitive(
+                    "workspace_compensation_unavailable",
+                ))?;
+            if recorded.len() != moves.len() {
+                return Err(DatabaseError::Cognitive(
+                    "workspace_compensation_unavailable",
+                ));
+            }
+            let mut reverse = Vec::with_capacity(moves.len());
+            for (movement, identity) in moves.iter().zip(recorded) {
                 let destination = safe_child(&root, &movement.to, true)?;
                 let source = safe_child(&root, &movement.from, false)?;
-                fs::rename(destination, source)
-                    .map_err(|_| DatabaseError::Cognitive("workspace_compensation_failed"))?;
+                let current_identity = capture_file_identity(&destination)?;
+                if current_identity != identity.identity {
+                    record_compensation_failure(
+                        &transaction,
+                        &action,
+                        &request,
+                        "workspace_compensation_unavailable",
+                    )?;
+                    let result = load_tool_action_tx(&transaction, &request.action_id)?;
+                    transaction.commit()?;
+                    return Ok(result);
+                }
+                reverse.push((destination, source));
+            }
+            for (destination, source) in reverse {
+                if fs::rename(destination, source).is_err() {
+                    record_compensation_failure(
+                        &transaction,
+                        &action,
+                        &request,
+                        "workspace_compensation_failed",
+                    )?;
+                    let result = load_tool_action_tx(&transaction, &request.action_id)?;
+                    transaction.commit()?;
+                    return Ok(result);
+                }
             }
             let result_json = serde_json::to_string(&ToolExecutionResult {
                 status: ToolResultStatus::Compensated,
@@ -1311,6 +1367,131 @@ fn safe_child(root: &Path, relative: &str, must_exist: bool) -> Result<PathBuf, 
         }
         Ok(candidate)
     }
+}
+
+fn capture_file_identity(path: &Path) -> Result<String, DatabaseError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| DatabaseError::Cognitive("workspace_compensation_unavailable"))?;
+    if metadata.file_type().is_symlink() {
+        return Err(DatabaseError::Cognitive(
+            "workspace_compensation_unavailable",
+        ));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+            Storage::FileSystem::{
+                CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+                FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+            },
+        };
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(DatabaseError::Cognitive(
+                "workspace_compensation_unavailable",
+            ));
+        }
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        let result = unsafe { GetFileInformationByHandle(handle, &mut info) };
+        unsafe { CloseHandle(handle) };
+        if result == 0 {
+            return Err(DatabaseError::Cognitive(
+                "workspace_compensation_unavailable",
+            ));
+        }
+        Ok(format!(
+            "win:{:x}:{:x}{:08x}",
+            info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow
+        ))
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        return Ok(format!("unix:{:x}:{:x}", metadata.dev(), metadata.ino()));
+    }
+    #[cfg(not(any(unix, windows)))]
+    Err(DatabaseError::Cognitive(
+        "workspace_compensation_unavailable",
+    ))
+}
+
+fn local_compensation_moves(
+    transaction: &Transaction<'_>,
+    scope_ref: &str,
+    input: &ToolActionInput,
+) -> Result<Vec<ToolCompensationMove>, DatabaseError> {
+    let ToolActionInput::WorkspaceOrganize { moves } = input else {
+        return Err(DatabaseError::Cognitive(
+            "workspace_compensation_unavailable",
+        ));
+    };
+    let root = workspace_root_path(transaction, scope_ref)?;
+    moves
+        .iter()
+        .map(|movement| {
+            let destination = safe_child(&root, &movement.to, true)?;
+            Ok(ToolCompensationMove {
+                from: movement.from.clone(),
+                to: movement.to.clone(),
+                identity: capture_file_identity(&destination)?,
+            })
+        })
+        .collect()
+}
+
+fn record_compensation_failure(
+    transaction: &Transaction<'_>,
+    action: &ToolAction,
+    request: &ToolActionCancellationRequest,
+    code: &'static str,
+) -> Result<(), DatabaseError> {
+    let result_json = serde_json::to_string(&ToolExecutionResult {
+        status: ToolResultStatus::Failed,
+        output: "A compensação local não foi aplicada integralmente; nenhum destino inesperado foi movido.".into(),
+        changed: false,
+        untrusted: true,
+    })
+    .map_err(|_| DatabaseError::Unavailable)?;
+    transaction.execute(
+        "UPDATE tool_actions SET status = 'failed', result_json = ?1, error_code = ?2,
+         updated_at = ?3 WHERE id = ?4 AND agent_id = ?5",
+        params![
+            result_json,
+            code,
+            now_millis(),
+            request.action_id,
+            request.agent_id
+        ],
+    )?;
+    audit_tx(
+        transaction,
+        AuditContext {
+            action_id: Some(&request.action_id),
+            session_id: Some(&action.session_id),
+            agent_id: &request.agent_id,
+            owner_id: OWNER_ID,
+            tool_id: Some(&action.tool_id),
+            event: "action_compensation_failed",
+            result: "failed",
+            code: Some(code),
+            summary: "A compensação local falhou e não moveu destino não verificado.",
+        },
+    )?;
+    Ok(())
 }
 
 fn map_tool_manifest(row: &rusqlite::Row<'_>) -> rusqlite::Result<ToolManifest> {
@@ -2574,6 +2755,8 @@ mod tests {
         );
         assert!(executed.result.as_ref().unwrap().changed);
         assert!(workspace.join("organized.txt").is_file());
+        fs::remove_file(workspace.join("organized.txt")).unwrap();
+        fs::write(workspace.join("organized.txt"), b"substituted").unwrap();
         let compensated = database
             .compensate_tool_action(ToolActionCancellationRequest {
                 agent_id: ASTRA_ID.into(),
@@ -2582,9 +2765,12 @@ mod tests {
                 temporary_chat: false,
             })
             .unwrap();
-        assert_eq!(compensated.status, ToolActionStatus::Compensated);
-        assert!(workspace.join("draft.txt").is_file());
-        assert!(!workspace.join("organized.txt").exists());
+        assert_eq!(compensated.status, ToolActionStatus::Failed);
+        assert!(!workspace.join("draft.txt").exists());
+        assert_eq!(
+            fs::read(workspace.join("organized.txt")).unwrap(),
+            b"substituted"
+        );
         cleanup(&path);
     }
 
