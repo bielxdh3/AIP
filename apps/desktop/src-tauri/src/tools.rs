@@ -21,6 +21,8 @@ const MAX_OUTPUT_BYTES: usize = 4_096;
 const MAX_PREVIEW_BYTES: usize = 8_192;
 const MAX_AUDIT_BYTES: usize = 4_096;
 const MAX_AUDIT_ROWS: i64 = 100;
+const MAX_WORKSPACE_ROOTS: i64 = 64;
+const MAX_TOOL_CATALOG_ROWS: i64 = 16;
 const AUDIT_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,6 +158,8 @@ pub struct ToolSession {
 pub struct ToolFileMove {
     pub from: String,
     pub to: String,
+    #[serde(default)]
+    pub source_identity: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -352,6 +356,14 @@ impl Database {
             return Ok(root);
         }
         let now = now_millis();
+        let root_count: i64 = transaction.query_row(
+            "SELECT count(*) FROM workspace_roots WHERE owner_user_id = ?1",
+            params![owner_id],
+            |row| row.get(0),
+        )?;
+        if root_count >= MAX_WORKSPACE_ROOTS {
+            return Err(DatabaseError::Cognitive("workspace_root_limit"));
+        }
         let root_id = format!("wrt_{}", Uuid::now_v7());
         transaction.execute(
             "INSERT INTO workspace_roots
@@ -374,10 +386,10 @@ impl Database {
         let connection = self.open()?;
         let mut statement = connection.prepare(
             "SELECT id, enabled, created_at, updated_at FROM workspace_roots
-             WHERE owner_user_id = ?1 ORDER BY updated_at DESC, id",
+             WHERE owner_user_id = ?1 ORDER BY updated_at DESC, id LIMIT ?2",
         )?;
         let roots = statement
-            .query_map(params![OWNER_ID], map_workspace_root)
+            .query_map(params![OWNER_ID, MAX_WORKSPACE_ROOTS], map_workspace_root)
             .map_err(DatabaseError::from)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(DatabaseError::from);
@@ -408,10 +420,10 @@ impl Database {
         let mut statement = connection.prepare(
             "SELECT tool_id, manifest_version, name, classification, adapter_kind,
                     scope_kind, requires_second_confirmation, capabilities_json, updated_at
-             FROM tool_catalog ORDER BY tool_id",
+             FROM tool_catalog ORDER BY tool_id LIMIT ?1",
         )?;
         let manifests = statement
-            .query_map([], map_tool_manifest)?
+            .query_map(params![MAX_TOOL_CATALOG_ROWS], map_tool_manifest)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(DatabaseError::from);
         manifests
@@ -2097,7 +2109,11 @@ fn validate_action_input(
                 }
                 affected_resources.push(format!("{scope_ref}/{from}"));
                 affected_resources.push(format!("{scope_ref}/{to}"));
-                normalized.push(ToolFileMove { from, to });
+                normalized.push(ToolFileMove {
+                    from,
+                    to,
+                    source_identity: None,
+                });
             }
             Ok(ToolPreviewPlan {
                 input: ToolActionInput::WorkspaceOrganize { moves: normalized },
@@ -2232,7 +2248,15 @@ fn validate_local_action_input(
                 let _destination = safe_child(&root, &to, false)?;
                 affected_resources.push(format!("{scope_ref}/{from}"));
                 affected_resources.push(format!("{scope_ref}/{to}"));
-                normalized.push(ToolFileMove { from, to });
+                let source_identity = movement
+                    .source_identity
+                    .clone()
+                    .unwrap_or(capture_file_identity(&source)?);
+                normalized.push(ToolFileMove {
+                    source_identity: Some(source_identity),
+                    from,
+                    to,
+                });
             }
             Ok(ToolPreviewPlan {
                 input: ToolActionInput::WorkspaceOrganize {
@@ -2300,10 +2324,35 @@ fn execute_adapter(
                     untrusted: true,
                 });
             }
-            let mut completed: Vec<(String, String)> = Vec::new();
+            let mut preflight = Vec::with_capacity(moves.len());
             for movement in moves {
+                let expected =
+                    movement
+                        .source_identity
+                        .as_deref()
+                        .ok_or(DatabaseError::Cognitive(
+                            "workspace_source_identity_unavailable",
+                        ))?;
+                let source = safe_child(&root, &movement.from, true)?;
+                let _destination = safe_child(&root, &movement.to, false)?;
+                if capture_file_identity(&source)? != expected {
+                    return Err(DatabaseError::Cognitive(
+                        "workspace_source_identity_mismatch",
+                    ));
+                }
+                preflight.push(movement);
+            }
+            let mut completed: Vec<(String, String)> = Vec::new();
+            for movement in preflight {
                 let source = safe_child(&root, &movement.from, true)?;
                 let destination = safe_child(&root, &movement.to, false)?;
+                if capture_file_identity(&source)?
+                    != movement.source_identity.as_deref().unwrap_or_default()
+                {
+                    return Err(DatabaseError::Cognitive(
+                        "workspace_source_identity_mismatch",
+                    ));
+                }
                 if fs::rename(&source, &destination).is_err() {
                     let mut rollback_failed = false;
                     for (original, moved) in completed.iter().rev() {
@@ -2653,6 +2702,7 @@ mod tests {
         let workspace = path.parent().unwrap().join("workspace");
         fs::create_dir_all(&workspace).unwrap();
         fs::write(workspace.join("draft.txt"), b"bounded").unwrap();
+        fs::write(workspace.join("substitute.txt"), b"substituted-source").unwrap();
         let database = Database::initialize(&path).unwrap();
         let root = database
             .add_workspace_root(WorkspaceRootRequest {
@@ -2688,7 +2738,8 @@ mod tests {
                 input: ToolActionInput::WorkspaceOrganize {
                     moves: vec![ToolFileMove {
                         from: "../draft.txt".into(),
-                        to: "organized.txt".into()
+                        to: "organized.txt".into(),
+                        source_identity: None,
                     }],
                 },
                 dry_run: false,
@@ -2706,6 +2757,7 @@ mod tests {
                     moves: vec![ToolFileMove {
                         from: "draft.txt".into(),
                         to: "organized.txt".into(),
+                        source_identity: None,
                     }],
                 },
                 dry_run: false,
@@ -2740,7 +2792,13 @@ mod tests {
                 temporary_chat: false,
             })
             .unwrap();
-        let executed = database
+        fs::rename(workspace.join("draft.txt"), workspace.join("original.txt")).unwrap();
+        fs::rename(
+            workspace.join("substitute.txt"),
+            workspace.join("draft.txt"),
+        )
+        .unwrap();
+        let execution_error = database
             .execute_tool_action(ToolActionExecutionRequest {
                 agent_id: ASTRA_ID.into(),
                 action_id: preview.id.clone(),
@@ -2748,29 +2806,23 @@ mod tests {
                 idempotency_key: "local-execute".into(),
                 temporary_chat: false,
             })
-            .unwrap();
+            .unwrap_err();
         assert_eq!(
-            executed.result.as_ref().unwrap().status,
-            ToolResultStatus::Executed
+            execution_error,
+            DatabaseError::Cognitive("workspace_source_identity_mismatch")
         );
-        assert!(executed.result.as_ref().unwrap().changed);
-        assert!(workspace.join("organized.txt").is_file());
-        fs::remove_file(workspace.join("organized.txt")).unwrap();
-        fs::write(workspace.join("organized.txt"), b"substituted").unwrap();
-        let compensated = database
-            .compensate_tool_action(ToolActionCancellationRequest {
-                agent_id: ASTRA_ID.into(),
-                action_id: preview.id,
-                idempotency_key: "local-compensate".into(),
-                temporary_chat: false,
-            })
+        let connection = database.open().unwrap();
+        let (status, error_code): (String, String) = connection
+            .query_row(
+                "SELECT status, error_code FROM tool_actions WHERE id = ?1",
+                [&preview.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
             .unwrap();
-        assert_eq!(compensated.status, ToolActionStatus::Failed);
-        assert!(!workspace.join("draft.txt").exists());
-        assert_eq!(
-            fs::read(workspace.join("organized.txt")).unwrap(),
-            b"substituted"
-        );
+        assert_eq!(status, "failed");
+        assert_eq!(error_code, "workspace_source_identity_mismatch");
+        assert!(workspace.join("draft.txt").is_file());
+        assert!(!workspace.join("organized.txt").exists());
         cleanup(&path);
     }
 
@@ -2816,10 +2868,12 @@ mod tests {
                 ToolFileMove {
                     from: "first.txt".into(),
                     to: "done.txt".into(),
+                    source_identity: None,
                 },
                 ToolFileMove {
                     from: "second.txt".into(),
                     to: "blocked/out.txt".into(),
+                    source_identity: None,
                 },
             ],
         };

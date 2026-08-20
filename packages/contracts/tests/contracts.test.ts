@@ -555,6 +555,9 @@ describe("supervised tool contracts", () => {
     expect(parseToolExecutionResult({ status: "executed", output: "moved", changed: "yes", untrusted: true })).toBeNull();
     expect(parseToolExecutionResult({ status: "unknown", output: "moved", changed: true, untrusted: true })).toBeNull();
     expect(parseToolCompensation({ kind: "workspace_move", available: true, description: "bounded", moves: [{ from: "a.txt\u0000", to: "b.txt", identity: "win:1:2" }] })).toBeNull();
+    expect(parseToolActionInput({ kind: "workspaceOrganize", moves: [{ from: "a.txt", to: "b.txt", sourceIdentity: "unix:1:2" }] })).not.toBeNull();
+    expect(parseToolActionInput({ kind: "workspaceOrganize", moves: [{ from: "a.txt", to: "b.txt", sourceIdentity: "x".repeat(129) }] })).toBeNull();
+    expect(parseToolActionInput({ kind: "workspaceOrganize", moves: [{ from: "a.txt", to: "b.txt", sourceIdentity: "unix:\u00001:2" }] })).toBeNull();
     expect(parseToolAction({ ...action, summary: "x".repeat(513) })).toBeNull();
     expect(parseToolAction({ ...action, affectedResources: Array.from({ length: 65 }, (_, index) => `r${index}`) })).toBeNull();
     expect(parseToolActionInput({ kind: "workspaceOrganize", moves: Array.from({ length: 33 }, () => ({ from: "a.txt", to: "b.txt" })) })).toBeNull();

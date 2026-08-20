@@ -2933,6 +2933,7 @@ mod tests {
                     moves: vec![ToolFileMove {
                         from: "a.txt".into(),
                         to: "b.txt".into(),
+                        source_identity: None,
                     }],
                 },
                 dry_run: false,
