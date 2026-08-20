@@ -80,6 +80,7 @@ pub enum ToolResultStatus {
     Cancelled,
     Compensated,
     Executed,
+    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -809,7 +810,46 @@ impl Database {
         }
         let plan =
             validate_action_input(&transaction, &manifest, &session.scope_ref, &action.input)?;
-        let result = execute_adapter(&transaction, &manifest, &plan, action.dry_run)?;
+        let result = match execute_adapter(&transaction, &manifest, &plan, action.dry_run) {
+            Ok(result) => result,
+            Err(error) => {
+                let failure = ToolExecutionResult {
+                    status: ToolResultStatus::Failed,
+                    output: "A operação local falhou; o estado parcial foi tratado sem sobrescrever destinos inesperados.".into(),
+                    changed: error == DatabaseError::Cognitive("workspace_move_partial"),
+                    untrusted: true,
+                };
+                let result_json =
+                    serde_json::to_string(&failure).map_err(|_| DatabaseError::Unavailable)?;
+                transaction.execute(
+                    "UPDATE tool_actions SET status = 'failed', result_json = ?1,
+                     error_code = ?2, updated_at = ?3 WHERE id = ?4 AND agent_id = ?5",
+                    params![
+                        result_json,
+                        error.code(),
+                        now_millis(),
+                        request.action_id,
+                        request.agent_id
+                    ],
+                )?;
+                audit_tx(
+                    &transaction,
+                    AuditContext {
+                        action_id: Some(&request.action_id),
+                        session_id: Some(&action.session_id),
+                        agent_id: &request.agent_id,
+                        owner_id: OWNER_ID,
+                        tool_id: Some(&action.tool_id),
+                        event: "action_failed",
+                        result: "failed",
+                        code: Some(error.code()),
+                        summary: "Operação local falhou e foi registrada.",
+                    },
+                )?;
+                transaction.commit()?;
+                return Err(error);
+            }
+        };
         let result_json = serde_json::to_string(&result).map_err(|_| DatabaseError::Unavailable)?;
         if result_json.len() > MAX_OUTPUT_BYTES {
             return Err(DatabaseError::Cognitive("tool_output_oversized"));
@@ -1157,27 +1197,62 @@ fn validate_workspace_root(path: &Path) -> Result<PathBuf, DatabaseError> {
     }
     let canonical = fs::canonicalize(path)
         .map_err(|_| DatabaseError::Cognitive("workspace_root_unavailable"))?;
+    if is_broad_workspace_root(&canonical) {
+        return Err(DatabaseError::Cognitive("workspace_root_invalid"));
+    }
+    validate_existing_components(&canonical)?;
     let metadata = fs::symlink_metadata(&canonical)
         .map_err(|_| DatabaseError::Cognitive("workspace_root_unavailable"))?;
     if !metadata.is_dir() || metadata.file_type().is_symlink() || canonical.parent().is_none() {
         return Err(DatabaseError::Cognitive("workspace_root_invalid"));
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        if metadata.file_attributes() & 0x400 != 0 {
-            return Err(DatabaseError::Cognitive("workspace_root_invalid"));
-        }
-        let text = canonical.to_string_lossy().to_ascii_lowercase();
-        if text.ends_with("\\windows")
-            || text.ends_with("\\program files")
-            || text.ends_with("\\program files (x86)")
-            || text.ends_with("\\programdata")
-        {
-            return Err(DatabaseError::Cognitive("workspace_root_invalid"));
-        }
-    }
     Ok(canonical)
+}
+
+fn is_broad_workspace_root(path: &Path) -> bool {
+    let normalized = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    if normalized == "/" || normalized.ends_with(":/") {
+        return true;
+    }
+    [
+        "/home",
+        "/tmp",
+        "/var",
+        "/etc",
+        "/usr",
+        "/opt",
+        "/users",
+        "/windows",
+        "/windows/system32",
+        "/program files",
+        "/program files (x86)",
+        "/programdata",
+    ]
+    .iter()
+    .any(|suffix| normalized == *suffix || normalized.ends_with(suffix))
+}
+
+fn validate_existing_components(path: &Path) -> Result<(), DatabaseError> {
+    let mut current = Some(path);
+    while let Some(component) = current {
+        let metadata = fs::symlink_metadata(component)
+            .map_err(|_| DatabaseError::Cognitive("workspace_root_unavailable"))?;
+        if metadata.file_type().is_symlink() {
+            return Err(DatabaseError::Cognitive("workspace_root_invalid"));
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes() & 0x400 != 0 {
+                return Err(DatabaseError::Cognitive("workspace_root_invalid"));
+            }
+        }
+        current = component.parent();
+    }
+    Ok(())
 }
 
 fn relative_components(value: &str) -> Result<PathBuf, DatabaseError> {
@@ -1195,6 +1270,7 @@ fn relative_components(value: &str) -> Result<PathBuf, DatabaseError> {
 }
 
 fn safe_child(root: &Path, relative: &str, must_exist: bool) -> Result<PathBuf, DatabaseError> {
+    let root = validate_workspace_root(root)?;
     let relative = relative_components(relative)?;
     let candidate = root.join(relative);
     if must_exist {
@@ -2043,11 +2119,29 @@ fn execute_adapter(
                     untrusted: true,
                 });
             }
+            let mut completed: Vec<(String, String)> = Vec::new();
             for movement in moves {
                 let source = safe_child(&root, &movement.from, true)?;
                 let destination = safe_child(&root, &movement.to, false)?;
-                fs::rename(source, destination)
-                    .map_err(|_| DatabaseError::Cognitive("workspace_move_failed"))?;
+                if fs::rename(&source, &destination).is_err() {
+                    let mut rollback_failed = false;
+                    for (original, moved) in completed.iter().rev() {
+                        let current = safe_child(&root, moved, true);
+                        let target = safe_child(&root, original, false);
+                        if current.is_err()
+                            || target.is_err()
+                            || fs::rename(current.unwrap(), target.unwrap()).is_err()
+                        {
+                            rollback_failed = true;
+                        }
+                    }
+                    return Err(DatabaseError::Cognitive(if rollback_failed {
+                        "workspace_move_partial"
+                    } else {
+                        "workspace_move_failed"
+                    }));
+                }
+                completed.push((movement.from.clone(), movement.to.clone()));
             }
             Ok(ToolExecutionResult {
                 status: ToolResultStatus::Executed,
@@ -2491,6 +2585,73 @@ mod tests {
         assert_eq!(compensated.status, ToolActionStatus::Compensated);
         assert!(workspace.join("draft.txt").is_file());
         assert!(!workspace.join("organized.txt").exists());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn workspace_root_policy_rejects_broad_directories_but_allows_nested_workspaces() {
+        for path in [
+            "/", "/home", "/tmp", "/var", "/etc", "/usr", "/opt", "/Users",
+        ] {
+            assert!(is_broad_workspace_root(Path::new(path)));
+        }
+        for path in [
+            "/home/owner/workspace",
+            "/tmp/aip-workspace",
+            "C:/Users/Owner/workspace",
+        ] {
+            assert!(!is_broad_workspace_root(Path::new(path)));
+        }
+        assert!(is_broad_workspace_root(Path::new("C:/")));
+        assert!(is_broad_workspace_root(Path::new("C:/Windows/System32")));
+        assert!(is_broad_workspace_root(Path::new("C:/ProgramData")));
+    }
+
+    #[test]
+    fn local_multi_move_failure_rolls_back_without_overwriting_destination() {
+        let path = test_path();
+        let workspace = path.parent().unwrap().join("partial-workspace");
+        fs::create_dir_all(workspace.join("blocked")).unwrap();
+        fs::write(workspace.join("first.txt"), b"first").unwrap();
+        fs::write(workspace.join("second.txt"), b"second").unwrap();
+        let database = Database::initialize(&path).unwrap();
+        let root = database
+            .add_workspace_root(WorkspaceRootRequest {
+                path: workspace.to_string_lossy().into_owned(),
+                idempotency_key: "partial-root".into(),
+                temporary_chat: false,
+            })
+            .unwrap();
+        let mut connection = database.open().unwrap();
+        let transaction = connection.transaction().unwrap();
+        let manifest = load_tool_manifest_tx(&transaction, "workspace.organize_local").unwrap();
+        let input = ToolActionInput::WorkspaceOrganize {
+            moves: vec![
+                ToolFileMove {
+                    from: "first.txt".into(),
+                    to: "done.txt".into(),
+                },
+                ToolFileMove {
+                    from: "second.txt".into(),
+                    to: "blocked/out.txt".into(),
+                },
+            ],
+        };
+        let plan = validate_local_action_input(
+            &transaction,
+            &manifest,
+            &format!("workspace_root:{}", root.id),
+            &input,
+        )
+        .unwrap();
+        fs::remove_dir(workspace.join("blocked")).unwrap();
+        fs::write(workspace.join("blocked"), b"unexpected").unwrap();
+        let error = execute_adapter(&transaction, &manifest, &plan, false).unwrap_err();
+        assert_eq!(error, DatabaseError::Cognitive("workspace_move_failed"));
+        assert!(workspace.join("first.txt").is_file());
+        assert!(!workspace.join("done.txt").exists());
+        assert_eq!(fs::read(workspace.join("blocked")).unwrap(), b"unexpected");
+        transaction.rollback().unwrap();
         cleanup(&path);
     }
 
