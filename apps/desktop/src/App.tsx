@@ -63,6 +63,14 @@ import type {
   ScreenVisionPermission,
   ScreenVisionPrivacyPolicy,
   ScreenVisionSession,
+  CompanionAuditRecord,
+  CompanionDevice,
+  CompanionHistoryRecord,
+  CompanionKeyRotation,
+  CompanionQueueItem,
+  CompanionRevocation,
+  CompanionSession,
+  CompanionSessionProof,
   ToolAction,
   ToolActionInput,
   ToolManifest,
@@ -70,7 +78,24 @@ import type {
   ToolSession,
 } from "@aip/contracts";
 import {
+  COMPANION_FIXTURE_APP_VERSION,
+  COMPANION_FIXTURE_DEVICE_ID,
+  COMPANION_FIXTURE_FINGERPRINT,
+  COMPANION_FIXTURE_PAIRING_NONCE,
+  COMPANION_PROTOCOL_VERSION,
   parseCognitiveError,
+  parseCompanionAudit,
+  parseCompanionDevice,
+  parseCompanionDevices,
+  parseCompanionHistory,
+  parseCompanionKeyRotations,
+  parseCompanionKeyRotation,
+  parseCompanionQueue,
+  parseCompanionQueueItem,
+  parseCompanionRevocations,
+  parseCompanionRevocation,
+  parseCompanionSession,
+  parseCompanionSessions,
   parseExtensionAudit,
   parseExtensionCatalog,
   parseExtensionProposals,
@@ -5940,6 +5965,580 @@ export function ScreenVisionControls({
   );
 }
 
+const companionDeviceStatusLabels: Record<string, string> = {
+  pairing_requested: "aguardando confirmação",
+  paired: "pareado",
+  expired: "expirado",
+  revoked: "revogado",
+};
+
+const companionQueueStatusLabels: Record<string, string> = {
+  previewed: "prévia aguardando aprovação",
+  queued: "aprovado, sem transporte",
+  cancelled: "cancelado",
+  failed: "falhou",
+};
+
+const companionErrorLabels: Record<string, string> = {
+  companion_blocked_temporary:
+    "Companion bloqueado durante a conversa temporária.",
+  companion_blocked_safe_mode: "Companion bloqueado pelo modo seguro.",
+  companion_blocked_suspended: "O agente suspenso não pode usar o companion.",
+  companion_fixture_invalid: "A fixture Android local não é compatível.",
+  companion_protocol_incompatible: "A versão do protocolo não é compatível.",
+  companion_pairing_confirmation_required:
+    "A confirmação explícita do Owner é necessária.",
+  companion_pairing_required:
+    "Pareie e confirme o dispositivo antes da sessão.",
+  companion_authentication_failed: "A prova da sessão não foi autenticada.",
+  companion_device_revoked: "O dispositivo foi revogado.",
+  companion_replay_rejected:
+    "A prova foi rejeitada por replay ou contador inválido.",
+  companion_approval_required: "A aprovação explícita do Owner é necessária.",
+  companion_queue_state_invalid:
+    "O item não está em um estado válido para a ação.",
+};
+
+function companionErrorMessage(error: unknown): string {
+  const typed = parseCognitiveError(error);
+  const code =
+    typed?.code ??
+    (typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : "operation_unavailable");
+  return (
+    companionErrorLabels[code] ??
+    "A operação do companion local não está disponível."
+  );
+}
+
+function parseCompanionPayload<T>(
+  value: unknown,
+  parser: (input: unknown) => T | null,
+): T {
+  const parsed = parser(value);
+  if (parsed === null) throw new Error("companion_payload_invalid");
+  return parsed;
+}
+
+function companionIdempotencyKey(prefix: string): string {
+  return `${prefix}-${crypto.randomUUID()}`;
+}
+
+function companionProof(
+  session: CompanionSession,
+  purpose: string,
+): CompanionSessionProof {
+  return {
+    sessionId: session.id,
+    deviceId: session.deviceId,
+    sessionNonceMetadata: session.sessionNonceMetadata,
+    keyFingerprint: session.keyFingerprint,
+    appVersion: session.appVersion,
+    protocolVersion: session.protocolVersion,
+    messageNonceMetadata: `fixture:message/${purpose}-${crypto.randomUUID()}`,
+    replayCounter: session.lastReplayCounter + 1,
+  };
+}
+
+export function CompanionControls({
+  agentId,
+  temporaryChat,
+  safeMode,
+}: {
+  agentId: string;
+  temporaryChat: boolean;
+  safeMode: boolean;
+}) {
+  const [devices, setDevices] = useState<CompanionDevice[]>([]);
+  const [sessions, setSessions] = useState<CompanionSession[]>([]);
+  const [queue, setQueue] = useState<CompanionQueueItem[]>([]);
+  const [history, setHistory] = useState<CompanionHistoryRecord[]>([]);
+  const [audit, setAudit] = useState<CompanionAuditRecord[]>([]);
+  const [rotations, setRotations] = useState<CompanionKeyRotation[]>([]);
+  const [revocations, setRevocations] = useState<CompanionRevocation[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState("");
+  const [selectedQueueId, setSelectedQueueId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const blocked = temporaryChat || safeMode;
+
+  const loadData = useCallback(async () => {
+    const [
+      rawDevices,
+      rawSessions,
+      rawQueue,
+      rawHistory,
+      rawAudit,
+      rawRotations,
+      rawRevocations,
+    ] = await Promise.all([
+      invoke<unknown>("list_companion_devices", { agentId }),
+      invoke<unknown>("list_companion_sessions", { agentId }),
+      invoke<unknown>("list_companion_queue", { agentId }),
+      invoke<unknown>("list_companion_history", { agentId }),
+      invoke<unknown>("list_companion_audit", { agentId }),
+      invoke<unknown>("list_companion_key_rotations", { agentId }),
+      invoke<unknown>("list_companion_revocations", { agentId }),
+    ]);
+    const nextDevices = parseCompanionPayload(
+      rawDevices,
+      parseCompanionDevices,
+    );
+    const nextSessions = parseCompanionPayload(
+      rawSessions,
+      parseCompanionSessions,
+    );
+    const nextQueue = parseCompanionPayload(rawQueue, parseCompanionQueue);
+    const nextHistory = parseCompanionPayload(
+      rawHistory,
+      parseCompanionHistory,
+    );
+    const nextAudit = parseCompanionPayload(rawAudit, parseCompanionAudit);
+    const nextRotations = parseCompanionPayload(
+      rawRotations,
+      parseCompanionKeyRotations,
+    );
+    const nextRevocations = parseCompanionPayload(
+      rawRevocations,
+      parseCompanionRevocations,
+    );
+    setDevices(nextDevices);
+    setSessions(nextSessions);
+    setQueue(nextQueue);
+    setHistory(nextHistory);
+    setAudit(nextAudit);
+    setRotations(nextRotations);
+    setRevocations(nextRevocations);
+    setSelectedDeviceId((current) =>
+      nextDevices.some((device) => device.id === current)
+        ? current
+        : (nextDevices[0]?.id ?? ""),
+    );
+    setSelectedQueueId((current) =>
+      nextQueue.some((item) => item.id === current)
+        ? current
+        : (nextQueue[0]?.id ?? ""),
+    );
+  }, [agentId]);
+
+  useEffect(() => {
+    void loadData().catch((loadError: unknown) =>
+      setError(companionErrorMessage(loadError)),
+    );
+  }, [loadData]);
+
+  const selectedDevice = devices.find(
+    (device) => device.id === selectedDeviceId,
+  );
+  const selectedSession = selectedDevice
+    ? sessions.find(
+        (session) =>
+          session.deviceId === selectedDevice.deviceId &&
+          session.status === "connected",
+      )
+    : undefined;
+  const selectedQueueItem = queue.find((item) => item.id === selectedQueueId);
+
+  async function runMutation(operation: () => Promise<void>) {
+    if (blocked || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await operation();
+      await loadData();
+    } catch (operationError: unknown) {
+      setError(companionErrorMessage(operationError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function connectSelectedDevice() {
+    if (!selectedDevice) return;
+    await runMutation(async () => {
+      const nextCounter =
+        Math.max(
+          0,
+          ...sessions
+            .filter((session) => session.deviceId === selectedDevice.deviceId)
+            .map((session) => session.lastReplayCounter),
+        ) + 1;
+      const rawSession = await invoke<unknown>("connect_companion_session", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        deviceId: selectedDevice.deviceId,
+        appVersion: selectedDevice.appVersion,
+        protocolVersion: selectedDevice.protocolVersion,
+        fingerprint: selectedDevice.fingerprint,
+        pairingNonceMetadata: selectedDevice.pairingNonceMetadata,
+        messageNonceMetadata: `fixture:message/connect-${crypto.randomUUID()}`,
+        replayCounter: nextCounter,
+        idempotencyKey: companionIdempotencyKey("session-connect"),
+        temporaryChat,
+      });
+      parseCompanionPayload(rawSession, parseCompanionSession);
+    });
+  }
+
+  async function startPairing() {
+    await runMutation(async () => {
+      const rawDevice = await invoke<unknown>("start_companion_pairing", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        deviceId: COMPANION_FIXTURE_DEVICE_ID,
+        platform: "android",
+        appVersion: COMPANION_FIXTURE_APP_VERSION,
+        protocolVersion: COMPANION_PROTOCOL_VERSION,
+        fingerprint: COMPANION_FIXTURE_FINGERPRINT,
+        pairingNonceMetadata: COMPANION_FIXTURE_PAIRING_NONCE,
+        idempotencyKey: companionIdempotencyKey("pair-start"),
+        temporaryChat,
+      });
+      const device = parseCompanionPayload(rawDevice, parseCompanionDevice);
+      setSelectedDeviceId(device.id);
+    });
+  }
+
+  async function confirmPairing() {
+    if (!selectedDevice) return;
+    await runMutation(async () => {
+      const rawDevice = await invoke<unknown>("confirm_companion_pairing", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        deviceId: selectedDevice.deviceId,
+        fingerprint: selectedDevice.fingerprint,
+        pairingNonceMetadata: selectedDevice.pairingNonceMetadata,
+        confirmed: true,
+        idempotencyKey: companionIdempotencyKey("pair-confirm"),
+        temporaryChat,
+      });
+      const device = parseCompanionPayload(rawDevice, parseCompanionDevice);
+      setSelectedDeviceId(device.id);
+      const rawSession = await invoke<unknown>("connect_companion_session", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        deviceId: device.deviceId,
+        appVersion: device.appVersion,
+        protocolVersion: device.protocolVersion,
+        fingerprint: device.fingerprint,
+        pairingNonceMetadata: device.pairingNonceMetadata,
+        messageNonceMetadata: `fixture:message/connect-${crypto.randomUUID()}`,
+        replayCounter: 1,
+        idempotencyKey: companionIdempotencyKey("session-connect"),
+        temporaryChat,
+      });
+      parseCompanionPayload(rawSession, parseCompanionSession);
+    });
+  }
+
+  async function previewQueue() {
+    if (!selectedSession) return;
+    await runMutation(async () => {
+      const rawItem = await invoke<unknown>("preview_companion_queue", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        proof: companionProof(selectedSession, "queue-preview"),
+        payload: {
+          kind: "text",
+          text: "Mensagem fixture do companion Android",
+        },
+        idempotencyKey: companionIdempotencyKey("queue-preview"),
+        temporaryChat,
+      });
+      const item = parseCompanionPayload(rawItem, parseCompanionQueueItem);
+      setSelectedQueueId(item.id);
+    });
+  }
+
+  async function decideQueue(approved: boolean) {
+    if (!selectedSession || !selectedQueueItem) return;
+    await runMutation(async () => {
+      const rawItem = await invoke<unknown>("approve_companion_queue", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        proof: companionProof(selectedSession, "queue-approve"),
+        queueId: selectedQueueItem.id,
+        approved,
+        idempotencyKey: companionIdempotencyKey("queue-approve"),
+        temporaryChat,
+      });
+      parseCompanionPayload(rawItem, parseCompanionQueueItem);
+    });
+  }
+
+  async function actOnQueue(
+    command: "cancel_companion_queue" | "retry_companion_queue",
+  ) {
+    if (!selectedSession || !selectedQueueItem) return;
+    await runMutation(async () => {
+      const rawItem = await invoke<unknown>(command, {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        proof: companionProof(
+          selectedSession,
+          command.replace("_companion_queue", ""),
+        ),
+        queueId: selectedQueueItem.id,
+        idempotencyKey: companionIdempotencyKey(command),
+        temporaryChat,
+      });
+      parseCompanionPayload(rawItem, parseCompanionQueueItem);
+    });
+  }
+
+  async function rotateKey() {
+    if (!selectedDevice) return;
+    await runMutation(async () => {
+      const rawRotation = await invoke<unknown>("rotate_companion_key", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        deviceId: selectedDevice.deviceId,
+        reason: "Rotação solicitada pelo Owner no fixture local",
+        idempotencyKey: companionIdempotencyKey("key-rotate"),
+        temporaryChat,
+      });
+      parseCompanionPayload(rawRotation, parseCompanionKeyRotation);
+    });
+  }
+
+  async function revokeDevice() {
+    if (!selectedDevice) return;
+    await runMutation(async () => {
+      const rawRevocation = await invoke<unknown>("revoke_companion_device", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        deviceId: selectedDevice.deviceId,
+        reason: "Revogação solicitada pelo Owner no fixture local",
+        idempotencyKey: companionIdempotencyKey("device-revoke"),
+        temporaryChat,
+      });
+      parseCompanionPayload(rawRevocation, parseCompanionRevocation);
+    });
+  }
+
+  return (
+    <section className="settings-card" aria-label="Companion Android local">
+      <header>
+        <h3>Companion Android local</h3>
+        <p>
+          Protocolo v{COMPANION_PROTOCOL_VERSION}; fixture sintética; somente
+          comandos Tauri locais.
+        </p>
+      </header>
+      <ul>
+        <li>Somente local: sem rede, listener, relay ou conta externa.</li>
+        <li>Somente metadados: bytes de mídia nunca são persistidos.</li>
+        <li>Aprovação, prova de sessão, rotação e revogação são do Rust.</li>
+      </ul>
+      {temporaryChat ? (
+        <p role="alert">
+          Conversa temporária: alterações do companion bloqueadas; histórico e
+          auditoria continuam somente para leitura.
+        </p>
+      ) : null}
+      {safeMode ? (
+        <p role="alert">
+          Modo seguro: alterações do companion bloqueadas; estado local
+          permanece visível.
+        </p>
+      ) : null}
+      {error ? <p role="alert">{error}</p> : null}
+
+      <div className="message-actions">
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() =>
+            void loadData().catch((loadError: unknown) =>
+              setError(companionErrorMessage(loadError)),
+            )
+          }
+        >
+          Atualizar dispositivos, fila e auditoria
+        </button>
+        <button
+          type="button"
+          disabled={busy || blocked}
+          onClick={() => void startPairing()}
+        >
+          Solicitar pareamento fixture
+        </button>
+      </div>
+
+      <label>
+        Dispositivo Android fixture
+        <select
+          value={selectedDeviceId}
+          onChange={(event) => setSelectedDeviceId(event.target.value)}
+          disabled={busy}
+        >
+          <option value="">Nenhum dispositivo</option>
+          {devices.map((device) => (
+            <option key={device.id} value={device.id}>
+              {device.deviceId} — {companionDeviceStatusLabels[device.status]}
+            </option>
+          ))}
+        </select>
+      </label>
+      {selectedDevice ? (
+        <>
+          <p>
+            Fingerprint: <code>{selectedDevice.fingerprint}</code>; chave v
+            {selectedDevice.keyVersion}; fallback local ativo.
+          </p>
+          <div className="message-actions">
+            {selectedDevice.status === "pairing_requested" ? (
+              <button
+                type="button"
+                disabled={busy || blocked}
+                onClick={() => void confirmPairing()}
+              >
+                Confirmar pareamento do Owner
+              </button>
+            ) : null}
+            {selectedDevice.status === "paired" && !selectedSession ? (
+              <button
+                type="button"
+                disabled={busy || blocked}
+                onClick={() => void connectSelectedDevice()}
+              >
+                Conectar sessão local
+              </button>
+            ) : null}
+            <button
+              type="button"
+              disabled={busy || blocked || selectedDevice.status !== "paired"}
+              onClick={() => void rotateKey()}
+            >
+              Rotacionar chave
+            </button>
+            <button
+              type="button"
+              disabled={busy || blocked || selectedDevice.status === "revoked"}
+              onClick={() => void revokeDevice()}
+            >
+              Revogar dispositivo
+            </button>
+          </div>
+          <p>
+            {selectedSession
+              ? `Sessão ${selectedSession.id} autenticada; prova usa nonce e contador monotônico.`
+              : "Nenhuma sessão conectada para este dispositivo."}
+          </p>
+        </>
+      ) : (
+        <p>Nenhum dispositivo fixture pareado.</p>
+      )}
+
+      <section>
+        <h4>Fila offline e aprovação</h4>
+        <p>
+          O preview é metadata-only; aprovar não envia nem transporta conteúdo.
+        </p>
+        <div className="message-actions">
+          <button
+            type="button"
+            disabled={busy || blocked || selectedSession === undefined}
+            onClick={() => void previewQueue()}
+          >
+            Criar prévia de texto
+          </button>
+          <select
+            value={selectedQueueId}
+            onChange={(event) => setSelectedQueueId(event.target.value)}
+            disabled={busy}
+            aria-label="Item da fila do companion"
+          >
+            <option value="">Nenhum item</option>
+            {queue.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.kind} — {companionQueueStatusLabels[item.status]}
+              </option>
+            ))}
+          </select>
+        </div>
+        {selectedQueueItem ? (
+          <>
+            <p>
+              {selectedQueueItem.summary}; aprovação obrigatória; metadata-only;
+              bytes persistidos: não.
+            </p>
+            <div className="message-actions">
+              <button
+                type="button"
+                disabled={
+                  busy ||
+                  blocked ||
+                  selectedSession === undefined ||
+                  selectedQueueItem.status !== "previewed"
+                }
+                onClick={() => void decideQueue(true)}
+              >
+                Aprovar item
+              </button>
+              <button
+                type="button"
+                disabled={
+                  busy ||
+                  blocked ||
+                  selectedSession === undefined ||
+                  !["previewed", "queued", "failed"].includes(
+                    selectedQueueItem.status,
+                  )
+                }
+                onClick={() => void actOnQueue("cancel_companion_queue")}
+              >
+                Cancelar item
+              </button>
+              <button
+                type="button"
+                disabled={
+                  busy ||
+                  blocked ||
+                  selectedSession === undefined ||
+                  !["cancelled", "failed"].includes(selectedQueueItem.status)
+                }
+                onClick={() => void actOnQueue("retry_companion_queue")}
+              >
+                Tentar novamente
+              </button>
+            </div>
+          </>
+        ) : null}
+      </section>
+
+      <section>
+        <h4>Histórico e auditoria</h4>
+        {history.length === 0 && audit.length === 0 ? (
+          <p>Nenhum evento do companion registrado.</p>
+        ) : (
+          <ul>
+            {audit.slice(0, 8).map((record) => (
+              <li key={`audit-${record.id}`}>
+                Auditoria: <strong>{record.event}</strong> — {record.summary}
+              </li>
+            ))}
+            {history.slice(0, 8).map((record) => (
+              <li key={`history-${record.id}`}>
+                Histórico: <strong>{record.kind}</strong> — {record.summary}
+              </li>
+            ))}
+          </ul>
+        )}
+        {rotations.length > 0 ? (
+          <p>Última rotação: chave v{rotations[0]?.newKeyVersion} concluída.</p>
+        ) : null}
+        {revocations.length > 0 ? (
+          <p>Última revogação: {revocations[0]?.reason}.</p>
+        ) : null}
+      </section>
+    </section>
+  );
+}
+
 function SettingsSurface({
   snapshot,
   changingMode,
@@ -6272,6 +6871,14 @@ function App() {
             <details>
               <summary>Visão de tela sintética</summary>
               <ScreenVisionControls
+                agentId={activeAgentId}
+                temporaryChat={temporaryChat}
+                safeMode={snapshot?.safeMode ?? true}
+              />
+            </details>
+            <details>
+              <summary>Companion Android local</summary>
+              <CompanionControls
                 agentId={activeAgentId}
                 temporaryChat={temporaryChat}
                 safeMode={snapshot?.safeMode ?? true}

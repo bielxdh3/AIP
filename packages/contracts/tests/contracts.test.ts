@@ -33,6 +33,25 @@ import {
   parseScreenVisionPrivacy,
   parseScreenVisionSession,
   parseScreenVisionSessions,
+  COMPANION_FIXTURE_APP_VERSION,
+  COMPANION_FIXTURE_FINGERPRINT,
+  COMPANION_FIXTURE_PAIRING_NONCE,
+  COMPANION_PROTOCOL_VERSION,
+  parseCompanionAudit,
+  parseCompanionDevice,
+  parseCompanionDevices,
+  parseCompanionHistory,
+  parseCompanionHistoryRecord,
+  parseCompanionKeyRotation,
+  parseCompanionProtocolInfo,
+  parseCompanionQueue,
+  parseCompanionQueueItem,
+  parseCompanionQueuePayload,
+  parseCompanionRevocation,
+  parseCompanionSafetyFlags,
+  parseCompanionSession,
+  parseCompanionSessionProof,
+  parseCompanionSessions,
 } from "../src/index";
 
 describe("runtime contracts", () => {
@@ -612,5 +631,216 @@ describe("metadata-only screen vision contracts", () => {
       parseScreenVisionHypothesis({ ...hypothesis, uncertain: false }),
     ).toBeNull();
     expect(parseScreenVisionFixtures([fixture, fixture, fixture])).toBeNull();
+  });
+});
+
+describe("local-only Android companion contracts", () => {
+  const protocol = {
+    schemaVersion: 1 as const,
+    protocolVersion: COMPANION_PROTOCOL_VERSION,
+    minProtocolVersion: 1 as const,
+    platform: "android" as const,
+    appVersion: COMPANION_FIXTURE_APP_VERSION,
+    transport: "tauri_command_fixture" as const,
+    networkListener: false as const,
+    standaloneFallback: true as const,
+  };
+  const device = {
+    id: "device-1",
+    agentId: "agt_astra_provisional",
+    ownerUserId: "usr_owner_local",
+    deviceId: "android-fixture-01",
+    platform: "android" as const,
+    appVersion: COMPANION_FIXTURE_APP_VERSION,
+    protocolVersion: COMPANION_PROTOCOL_VERSION,
+    status: "paired" as const,
+    fingerprint: COMPANION_FIXTURE_FINGERPRINT,
+    pairingNonceMetadata: COMPANION_FIXTURE_PAIRING_NONCE,
+    keyVersion: 1,
+    pairingExpiresAt: null,
+    pairedAt: 1,
+    revokedAt: null,
+    lastSeenAt: 1,
+    compatible: true as const,
+    standaloneFallback: true as const,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const proof = {
+    sessionId: "session-1",
+    deviceId: device.deviceId,
+    sessionNonceMetadata: "fixture:session/android-fixture-01/one",
+    keyFingerprint: device.fingerprint,
+    appVersion: COMPANION_FIXTURE_APP_VERSION,
+    protocolVersion: COMPANION_PROTOCOL_VERSION,
+    messageNonceMetadata: "fixture:message/queue-1",
+    replayCounter: 2,
+  };
+  const session = {
+    id: proof.sessionId,
+    deviceId: device.deviceId,
+    agentId: device.agentId,
+    ownerUserId: device.ownerUserId,
+    status: "connected" as const,
+    protocolVersion: COMPANION_PROTOCOL_VERSION,
+    appVersion: COMPANION_FIXTURE_APP_VERSION,
+    negotiatedProtocolVersion: COMPANION_PROTOCOL_VERSION,
+    keyFingerprint: device.fingerprint,
+    sessionNonceMetadata: proof.sessionNonceMetadata,
+    lastReplayCounter: 1,
+    connectedAt: 1,
+    lastSeenAt: 1,
+    disconnectedAt: null,
+    protocol,
+    handshake: {
+      schemaVersion: 1 as const,
+      protocolVersion: COMPANION_PROTOCOL_VERSION,
+      messageId: "session-handshake:session-1",
+      deviceId: device.deviceId,
+      platform: "android" as const,
+      appVersion: COMPANION_FIXTURE_APP_VERSION,
+      kind: "session" as const,
+      sessionId: proof.sessionId,
+      nonceMetadata: "fixture:message/connect-1",
+      replayCounter: 1,
+      payloadKind: "session",
+    },
+    updatedAt: 1,
+  };
+  const payload = { kind: "text" as const, text: "mensagem fixture" };
+  const queue = {
+    id: "queue-1",
+    deviceId: device.deviceId,
+    sessionId: session.id,
+    agentId: device.agentId,
+    ownerUserId: device.ownerUserId,
+    kind: "text" as const,
+    status: "previewed" as const,
+    payload,
+    summary: "Texto: mensagem fixture",
+    metadataOnly: true as const,
+    mediaBytesPersisted: false as const,
+    approvalRequired: true as const,
+    retryCount: 0,
+    errorCode: null,
+    createdAt: 1,
+    previewedAt: 1,
+    approvedAt: null,
+    cancelledAt: null,
+    updatedAt: 1,
+  };
+
+  it("accepts protocol, proof, metadata queue, lifecycle, rotation and audit records", () => {
+    expect(parseCompanionProtocolInfo(protocol)).not.toBeNull();
+    expect(parseCompanionDevice(device)).not.toBeNull();
+    expect(parseCompanionDevices([device])).not.toBeNull();
+    expect(parseCompanionSessionProof(proof)).not.toBeNull();
+    expect(parseCompanionSession(session)).not.toBeNull();
+    expect(parseCompanionSessions([session])).not.toBeNull();
+    expect(parseCompanionQueuePayload(payload)).not.toBeNull();
+    expect(parseCompanionQueueItem(queue)).not.toBeNull();
+    expect(parseCompanionQueue([queue])).not.toBeNull();
+    expect(
+      parseCompanionHistoryRecord({
+        id: "history-1",
+        deviceId: device.deviceId,
+        sessionId: session.id,
+        agentId: device.agentId,
+        ownerUserId: device.ownerUserId,
+        direction: "outgoing",
+        kind: "text",
+        summary: "Item criado",
+        metadataOnly: true,
+        mediaBytesPersisted: false,
+        createdAt: 1,
+      }),
+    ).not.toBeNull();
+    expect(
+      parseCompanionHistory([
+        {
+          id: "history-1",
+          deviceId: device.deviceId,
+          sessionId: session.id,
+          agentId: device.agentId,
+          ownerUserId: device.ownerUserId,
+          direction: "outgoing",
+          kind: "text",
+          summary: "Item criado",
+          metadataOnly: true,
+          mediaBytesPersisted: false,
+          createdAt: 1,
+        },
+      ]),
+    ).not.toBeNull();
+    expect(
+      parseCompanionAudit([
+        {
+          id: "audit-1",
+          deviceId: device.deviceId,
+          sessionId: session.id,
+          queueId: queue.id,
+          agentId: device.agentId,
+          ownerUserId: device.ownerUserId,
+          event: "queue_previewed",
+          result: "approval_required",
+          code: null,
+          summary: "Prévia aguardando aprovação",
+          createdAt: 1,
+        },
+      ]),
+    ).not.toBeNull();
+    expect(
+      parseCompanionKeyRotation({
+        id: "rotation-1",
+        deviceId: device.deviceId,
+        agentId: device.agentId,
+        ownerUserId: device.ownerUserId,
+        oldFingerprint: device.fingerprint,
+        newFingerprint: `${device.fingerprint}-key-v2`,
+        oldKeyVersion: 1,
+        newKeyVersion: 2,
+        nonceMetadata: `${device.pairingNonceMetadata}-nonce-v2`,
+        status: "completed",
+        reason: "rotação fixture",
+        createdAt: 1,
+      }),
+    ).not.toBeNull();
+    expect(
+      parseCompanionRevocation({
+        id: "revocation-1",
+        deviceId: device.deviceId,
+        agentId: device.agentId,
+        ownerUserId: device.ownerUserId,
+        previousStatus: "paired",
+        reason: "revogação fixture",
+        createdAt: 1,
+      }),
+    ).not.toBeNull();
+  });
+
+  it("rejects network, raw media, incompatible versions and unsafe flags", () => {
+    expect(
+      parseCompanionProtocolInfo({ ...protocol, networkListener: true }),
+    ).toBeNull();
+    expect(
+      parseCompanionSafetyFlags({
+        metadataOnly: true,
+        mediaBytesPersisted: true,
+        networkListener: false,
+        standaloneFallback: true,
+      }),
+    ).toBeNull();
+    expect(
+      parseCompanionQueuePayload({ ...payload, rawBytes: "no" }),
+    ).toBeNull();
+    expect(
+      parseCompanionQueueItem({ ...queue, metadataOnly: false }),
+    ).toBeNull();
+    expect(
+      parseCompanionSessionProof({ ...proof, protocolVersion: 99 }),
+    ).toBeNull();
+    expect(
+      parseCompanionDevices([device, device, device, device, device]),
+    ).toBeNull();
   });
 });

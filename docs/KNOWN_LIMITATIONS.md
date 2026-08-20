@@ -87,6 +87,24 @@ validation reservations are recorded in
   release approval remain reserved. See
   [PHASE_11_SCREEN_VISION_SPEC.md](PHASE_11_SCREEN_VISION_SPEC.md).
 
+## Phase 12 Android companion checkpoint
+
+- Phase 12 is a local metadata-only protocol checkpoint. It includes a
+  synthetic Android fixture, Rust/SQLite pairing and session state, nonce/replay
+  checks, compatibility negotiation, rotation/revocation, bounded read-only
+  history, metadata-only outgoing queue, explicit Owner approval, audit, and
+  Portuguese controls. It is not an APK or a mobile release.
+- No listener, relay, tunnel, network, Android account, real credential/key
+  material, host filesystem, shell, Python internals, or media bytes are used.
+  Audio/image/file queue entries retain only bounded descriptive metadata and
+  always report `mediaBytesPersisted: false`.
+- Temporary chat and safe mode fail closed for pairing/session/queue/rotation/
+  revocation mutations while history and audit remain read-only. React cannot
+  bypass the Rust authority. Transport cryptography, Android lifecycle and
+  permission UX, notifications, real voice/media, packaged-device tests,
+  recovery, and release approval remain reserved. See
+  [PHASE_12_ANDROID_SPEC.md](PHASE_12_ANDROID_SPEC.md).
+
 ## Deferred usability and agent features
 
 - Phase 7A is approved/DONE for commit `3e591a06129a9d8f27e026490f9bd83028eb2465`. The exact

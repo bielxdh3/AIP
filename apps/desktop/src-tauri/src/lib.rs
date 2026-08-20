@@ -1,5 +1,6 @@
 mod chat;
 mod cognitive;
+mod companion;
 mod conversation;
 mod database;
 mod domain;
@@ -27,6 +28,13 @@ use cognitive::{
     CognitiveGoal, CognitiveOpinion, FictionalActivity, FictionalActivityRequest,
     FictionalActivityStatusRequest, GoalRequest, OpinionCandidateRequest,
     OpinionEvidenceCorrectionRequest, RelationshipCandidateRequest, RelationshipState,
+};
+use companion::{
+    CompanionAuditRecord, CompanionDevice, CompanionDeviceActionRequest, CompanionHistoryRecord,
+    CompanionKeyRotation, CompanionPairingConfirmationRequest, CompanionPairingRequest,
+    CompanionQueueActionRequest, CompanionQueueDecisionRequest, CompanionQueueItem,
+    CompanionQueuePreviewRequest, CompanionReconnectRequest, CompanionRevocation, CompanionSession,
+    CompanionSessionRequest,
 };
 use conversation::{
     AgentConversationInspection, AgentConversationSummary, CognitiveCandidate,
@@ -1058,6 +1066,245 @@ fn list_extension_audit(
         .map_err(|error| error.code())
 }
 
+fn ensure_companion_mutation_allowed(
+    state: &AppState,
+    agent_id: &str,
+    requested_temporary: bool,
+) -> Result<(), &'static str> {
+    ensure_conversation_not_temporary(state, agent_id, requested_temporary)
+}
+
+#[tauri::command]
+fn list_companion_devices(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CompanionDevice>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_companion_devices(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn start_companion_pairing(
+    state: State<'_, AppState>,
+    request: CompanionPairingRequest,
+) -> Result<CompanionDevice, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .start_companion_pairing(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn confirm_companion_pairing(
+    state: State<'_, AppState>,
+    request: CompanionPairingConfirmationRequest,
+) -> Result<CompanionDevice, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .confirm_companion_pairing(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_companion_sessions(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CompanionSession>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_companion_sessions(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn connect_companion_session(
+    state: State<'_, AppState>,
+    request: CompanionSessionRequest,
+) -> Result<CompanionSession, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .connect_companion_session(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn reconnect_companion_session(
+    state: State<'_, AppState>,
+    request: CompanionReconnectRequest,
+) -> Result<CompanionSession, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .reconnect_companion_session(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_companion_queue(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CompanionQueueItem>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_companion_queue(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn preview_companion_queue(
+    state: State<'_, AppState>,
+    request: CompanionQueuePreviewRequest,
+) -> Result<CompanionQueueItem, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .preview_companion_queue(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn approve_companion_queue(
+    state: State<'_, AppState>,
+    request: CompanionQueueDecisionRequest,
+) -> Result<CompanionQueueItem, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .approve_companion_queue(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn cancel_companion_queue(
+    state: State<'_, AppState>,
+    request: CompanionQueueActionRequest,
+) -> Result<CompanionQueueItem, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .cancel_companion_queue(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn retry_companion_queue(
+    state: State<'_, AppState>,
+    request: CompanionQueueActionRequest,
+) -> Result<CompanionQueueItem, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .retry_companion_queue(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_companion_history(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CompanionHistoryRecord>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_companion_history(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_companion_audit(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CompanionAuditRecord>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_companion_audit(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_companion_key_rotations(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CompanionKeyRotation>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_companion_key_rotations(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_companion_revocations(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<CompanionRevocation>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_companion_revocations(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn rotate_companion_key(
+    state: State<'_, AppState>,
+    request: CompanionDeviceActionRequest,
+) -> Result<CompanionKeyRotation, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .rotate_companion_key(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn revoke_companion_device(
+    state: State<'_, AppState>,
+    request: CompanionDeviceActionRequest,
+) -> Result<CompanionRevocation, &'static str> {
+    ensure_companion_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .revoke_companion_device(request)
+        .map_err(|error| error.code())
+}
+
 fn ensure_screen_vision_mutation_allowed(
     state: &AppState,
     agent_id: &str,
@@ -1992,6 +2239,23 @@ pub fn run() {
             rollback_extension,
             disable_extension,
             list_extension_audit,
+            list_companion_devices,
+            start_companion_pairing,
+            confirm_companion_pairing,
+            list_companion_sessions,
+            connect_companion_session,
+            reconnect_companion_session,
+            list_companion_queue,
+            preview_companion_queue,
+            approve_companion_queue,
+            cancel_companion_queue,
+            retry_companion_queue,
+            list_companion_history,
+            list_companion_audit,
+            list_companion_key_rotations,
+            list_companion_revocations,
+            rotate_companion_key,
+            revoke_companion_device,
             list_screen_vision_fixtures,
             list_screen_vision_sessions,
             list_screen_vision_jobs,
