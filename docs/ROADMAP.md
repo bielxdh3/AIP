@@ -1,9 +1,19 @@
 # AIP Roadmap
 
-## Phase 2
+## Historical v0.1 phase status
 
-Persistent identity profiles, per-agent model defaults, and the one-main-conversation
-boundary are implemented. Manual Windows Phase 2 validation remains pending.
+The old Phase 1–5 pending labels described pre-release preparation states. The later
+installed-Windows approval recorded in [the v0.1 manual validation record](V0_1_MANUAL_VALIDATION.md)
+on 2026-07-30 for packaged SHA `6b5dc1a0a18d3e346d04c6bd89de13775c681434` (CI run
+`30474813207`) is the release-level human gate for the v0.1 scope. That record names onboarding,
+profile edits, conversation switching, temporary chat, memory workflows, state/mode behavior,
+pixel editing, overlays, display scaling, multi-monitor recovery, packaged startup, updates, and
+local Ollama interaction. Its recorded result is that the package opened, remained usable, and
+closed and reopened successfully; no unrecorded per-step observations are reconstructed here.
+
+Within that release-level evidence boundary, Phases 1–5 are DONE. Earlier phase-specific
+validation notes remain historical evidence of preparation and earlier attempts; they are not
+new claims about the packaged result or blockers for the post-v0.1 roadmap.
 
 ## Roadmap principles
 
@@ -53,7 +63,7 @@ Excluded:
 
 Expected commit: `chore: bootstrap AIP desktop workspace`
 
-## Phase 1: local conversation vertical slice `[PENDING VALIDATION]`
+## Phase 1: local conversation vertical slice `[DONE — V0.1 INSTALLED-WINDOWS VALIDATION]`
 
 Goal: prove one complete model conversation path without coupling agent identity to the model.
 
@@ -72,12 +82,11 @@ Deliverables:
 
 Expected commit: `feat: add local conversation vertical slice`
 
-Implementation is present locally. Automated fake-provider, persistence, queue, protocol,
-frontend, build, and security gates are required before the local commit. The phase remains
-pending until real Windows and Ollama discovery, streaming, restart, queue, cancellation,
-provider interruption, bubble, and click-through checks pass against the exact commit.
+Implementation and release-level manual validation are recorded in the v0.1 manual validation
+record above. The separate Phase 1 validation document retains historical failed and pending
+pre-release attempts; it does not replace the later installed-package approval.
 
-## Phase 2: two-agent creation and isolation `[IMPLEMENTED — MANUAL VALIDATION PENDING]`
+## Phase 2: two-agent creation and isolation `[DONE — V0.1 INSTALLED-WINDOWS VALIDATION]`
 
 Goal: create and persist two independent agents under the implicit Owner.
 
@@ -94,7 +103,7 @@ Deliverables:
 
 Expected commit: `feat: add two-agent creation and isolation`
 
-## Phase 3: memory and temporary chat `[IMPLEMENTED — MANUAL VALIDATION PENDING]`
+## Phase 3: memory and temporary chat `[DONE — V0.1 INSTALLED-WINDOWS VALIDATION]`
 
 Goal: add initial learning without deep personality evolution.
 
@@ -112,7 +121,7 @@ Deliverables:
 
 Expected commit: `feat: add initial memory and temporary chat`
 
-## Phase 4: states and modes `[IMPLEMENTED — MANUAL VALIDATION PENDING]`
+## Phase 4: states and modes `[DONE — V0.1 INSTALLED-WINDOWS VALIDATION]`
 
 Goal: introduce deterministic fictional state and robust application modes.
 
@@ -131,7 +140,7 @@ Local scheduling is intentionally deferred because calendar integration is outsi
 
 Expected commit: `feat: add agent states and application modes`
 
-## Phase 5: pixel editor and overlay behavior `[IMPLEMENTED — MANUAL VALIDATION PENDING]`
+## Phase 5: pixel editor and overlay behavior `[DONE — V0.1 INSTALLED-WINDOWS VALIDATION]`
 
 Goal: replace provisional appearance handling with the initial complete visual toolset.
 
@@ -183,10 +192,10 @@ future work must not be represented as released behavior.
 ## Post-v0.1 Phase 7: cognitive core
 
 The implementation contract is [the cognitive-core specification](COGNITIVE_CORE_SPEC.md).
-The Phase 7 product decisions are resolved. Phase 7 implementation must not begin until
-PR #2 is merged; no Phase 7 slice has started or is complete.
+The Phase 7 product decisions are resolved and PR #2 is merged. Phase 7A is complete as
+recorded in [its validation record](PHASE_7A_VALIDATION.md); later slices remain unstarted.
 
-- **Phase 7A — cognitive event foundation and protected/evolvable boundaries [AUTOMATED VALIDATION COMPLETE — APPROVAL/MANUAL VALIDATION PENDING]:** typed, bounded ordinary candidates, owner correction, safe explanation, and latest-event compensating rollback. Live extraction and all Phase 7B–7E capabilities remain excluded.
+- **Phase 7A — cognitive event foundation and protected/evolvable boundaries [APPROVED — DONE]:** typed, bounded ordinary candidates, owner correction, safe explanation, and latest-event compensating rollback. The exact commit, CI, and Owner attestation are recorded in the validation record. Live extraction and all Phase 7B–7E capabilities remain excluded.
   Owner-scoped event processing, typed source eligibility, trait limits, auditability, and temporary-chat exclusion. Conversation-source validation is a future-adapter boundary only; live extraction remains excluded.
 - **Phase 7B — opinions and evidence:** sourced, inspectable opinions with correction,
   dispute, and supersession workflows.

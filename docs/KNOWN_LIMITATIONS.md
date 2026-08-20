@@ -1,6 +1,12 @@
 # Known limitations
 
-Installed-Windows manual validation passed for the v0.1 package on 2026-07-30. AIP v0.1.0 was published from commit `b6f74b3793437a647186dd52eeb950ff4b3fb228`. A local Ollama integration test is skipped when its required model is not installed. v0.1.0 has no cloud synchronization, Android client, BielOS integration, voice, supervised external tools, extensions, screen vision, or post-v0.1 cognitive-core behavior.
+Installed-Windows manual validation passed for the v0.1 package on 2026-07-30. The release-level
+approval covers the implemented v0.1 scope, so historical Phases 1–5 are DONE at that evidence
+level; earlier phase-specific notes remain historical preparation evidence and are not repeated as
+new observations here. AIP v0.1.0 was published from commit `b6f74b3793437a647186dd52eeb950ff4b3fb228`.
+A local Ollama integration test is skipped when its required model is not installed. v0.1.0 has
+no cloud synchronization, Android client, BielOS integration, voice, supervised external tools,
+extensions, screen vision, or Phase 7B–7F cognitive-core behavior.
 
 ## Distribution and platform
 
@@ -14,7 +20,17 @@ Installed-Windows manual validation passed for the v0.1 package on 2026-07-30. A
 
 ## Deferred usability and agent features
 
-- Phase 7A automated validation is complete but the phase is not approved. It provides bounded deterministic trait events, explicit owner correction, inspection, latest-event compensating rollback, and typed source-eligibility validation. Persisted conversation sources are validated only for a future adapter; no model extraction is connected. Manual Windows validation remains pending. Opinions, relationships, goals, activities, and agent-to-agent conversations remain excluded.
+- Phase 7A is approved/DONE for commit `3e591a06129a9d8f27e026490f9bd83028eb2465`. The exact
+  automated evidence and the Owner's current manual attestation are recorded in
+  [PHASE_7A_VALIDATION.md](PHASE_7A_VALIDATION.md). It provides bounded deterministic trait
+  events, explicit owner correction, inspection, latest-event compensating rollback, and typed
+  source-eligibility validation. Persisted conversation sources are validated only for a future
+  adapter; no model extraction is connected. Opinions, relationships, goals, activities, and
+  agent-to-agent conversations remain excluded.
+
+- The v0.1 installed-Windows approval is release-level evidence for historical Phases 1–5, not a
+  reconstruction of missing phase-by-phase observations. Those phases are not current release
+  blockers, while their earlier validation notes remain useful historical evidence.
 
 - General, Owner profile, Agents, and Models settings still need their own focused functional UX pass. Safe mode and diagnostics are the currently implemented settings controls; backup/export remains unavailable.
 - The default controls and conversation management layout need a cohesive visual-design pass. This is intentionally separate from generation reliability work.
