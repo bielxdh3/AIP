@@ -5,10 +5,11 @@ approval covers the implemented v0.1 scope, so historical Phases 1–5 are DONE 
 level; earlier phase-specific notes remain historical preparation evidence and are not repeated as
 new observations here. AIP v0.1.0 was published from commit `b6f74b3793437a647186dd52eeb950ff4b3fb228`.
 A local Ollama integration test is skipped when its required model is not installed. v0.1.0 has
-no cloud synchronization, Android client, BielOS integration, voice, supervised external tools,
-extensions, screen vision, or the post-release Phase 7E–7F cognitive-core conversation
-integration. The current development checkpoint implements bounded Phase 7B–7E local paths;
-this is not a v0.1 release claim. Phase 7E and 7F validation reservations are recorded in
+no cloud synchronization, Android client, BielOS integration, released voice feature,
+supervised external tools, extensions, screen vision, or the post-release Phase 7E–7F
+cognitive-core conversation integration. The current development checkpoint implements
+bounded Phase 7B–7E local paths and the Phase 8 local voice architecture checkpoint; this is
+not a v0.1 release claim. Phase 7E and 7F validation reservations are recorded in
 [PHASE_7E_VALIDATION.md](PHASE_7E_VALIDATION.md) and [PHASE_7F_VALIDATION.md](PHASE_7F_VALIDATION.md).
 
 ## Distribution and platform
@@ -20,6 +21,16 @@ this is not a v0.1 release claim. Phase 7E and 7F validation reservations are re
 
 - AIP does not automatically start Ollama; the user must start the Ollama application/service or run an Ollama command before using a local model.
 - Automatic Ollama detection and explicit start controls are deferred to a future UX phase.
+
+## Phase 8 voice checkpoint
+
+- Phase 8 currently exposes a local Rust/SQLite architecture, Tauri commands, versioned
+  contracts, Portuguese controls, and metadata-only fixtures. It does not capture from a
+  microphone, persist raw audio, upload data, clone a real person, or run a hidden listener;
+  text conversation remains the fallback.
+- Real audio-device/model integration, packaged Windows validation, restart/manual runtime
+  evidence, and subjective voice-quality validation remain reserved. The checkpoint is not
+  release approval. See [PHASE_8_VOICE_SPEC.md](PHASE_8_VOICE_SPEC.md).
 
 ## Deferred usability and agent features
 

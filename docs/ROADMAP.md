@@ -215,17 +215,18 @@ runtime, manual, and remote reservations remain explicit there. This is not a v0
   and honest documentation. No new capability is introduced; see [the Phase 7F validation
   record](PHASE_7F_VALIDATION.md).
 
-## Post-v0.1 Phase 8: voice
+## Post-v0.1 Phase 8: voice [IMPLEMENTED — LOCAL ARCHITECTURE CHECKPOINT; RUNTIME/QUALITY RESERVED]
 
-Potential scope:
+The local architecture checkpoint is implemented in Rust/SQLite, Tauri commands,
+versioned contracts, and Portuguese UI controls. It provides bounded local references,
+fixture transcription/synthesis/wake-word paths, custom synthetic-voice consent,
+base-voice protection, uncertain emotional hypotheses, and voice-muted/silent/suspended
+fallback behavior. It does not claim a working audio product or release validation.
 
-- local speech recognition;
-- lightweight wake word;
-- speech synthesis;
-- custom voice and consent flow;
-- base-voice protection;
-- emotional-hypothesis classification;
-- voice-muted and silent-mode completion.
+Reserved validation covers real audio devices and speech models, packaged Windows
+behavior, and subjective voice quality. The checkpoint keeps no microphone capture, raw
+audio persistence, upload/network path, real-person cloning, or hidden listener. See the
+[Phase 8 voice specification](PHASE_8_VOICE_SPEC.md).
 
 ## Post-v0.1 Phase 9: supervised tools
 

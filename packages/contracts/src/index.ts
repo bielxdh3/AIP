@@ -154,6 +154,95 @@ export type AgentSimulatedState = {
   lastSimulatedAt: number;
 };
 
+export type VoiceMode = "normal" | "voice_muted" | "silent";
+export type VoiceConsentState = "not_granted" | "granted" | "revoked";
+export type VoiceSettings = {
+  agentId: string;
+  schemaVersion: 1;
+  baseVoiceId: string;
+  baseVoiceProtected: true;
+  customVoiceRef: string | null;
+  customVoiceConsent: VoiceConsentState;
+  recognitionModelRef: string | null;
+  synthesisModelRef: string | null;
+  inputDeviceRef: string | null;
+  outputDeviceRef: string | null;
+  mode: VoiceMode;
+  voiceMuted: boolean;
+  silent: boolean;
+  suspended: boolean;
+  updatedAt: number;
+};
+export type VoiceSettingsRequest = {
+  agentId: string;
+  recognitionModelRef: string | null;
+  synthesisModelRef: string | null;
+  inputDeviceRef: string | null;
+  outputDeviceRef: string | null;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type CustomVoiceConsentRequest = {
+  agentId: string;
+  granted: boolean;
+  customVoiceRef: string | null;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type VoiceTranscriptionRequest = {
+  agentId: string;
+  fixtureId: string;
+  temporaryChat: boolean;
+};
+export type VoiceSynthesisRequest = {
+  agentId: string;
+  text: string;
+  temporaryChat: boolean;
+};
+export type VoiceWakeWordRequest = {
+  agentId: string;
+  fixtureId: string;
+  temporaryChat: boolean;
+};
+export type VoiceEmotionHypothesisRequest = {
+  text: string;
+  temporaryChat: boolean;
+};
+export type VoiceTranscriptionResult = {
+  status: "ready" | "degraded";
+  code: string | null;
+  fixtureId: string;
+  text: string | null;
+  confidence: number | null;
+  metadataOnly: true;
+  rawAudioPersisted: false;
+  textChatFallback: boolean;
+};
+export type VoiceSynthesisResult = {
+  status: "ready" | "degraded" | "muted";
+  code: string | null;
+  voiceRef: string;
+  durationMs: number;
+  metadataOnly: true;
+  rawAudioPersisted: false;
+  textChatFallback: boolean;
+};
+export type VoiceWakeWordResult = {
+  status: "detected" | "ignored" | "degraded";
+  code: string | null;
+  fixtureId: string;
+  detected: boolean;
+  listenerActive: false;
+  metadataOnly: true;
+};
+export type VoiceEmotionHypothesisResult = {
+  label: "neutral" | "positive" | "concerned";
+  confidence: number;
+  uncertain: true;
+  diagnostic: false;
+  source: string;
+};
+
 export type CognitiveTrait = {
   key: string;
   value: number;
@@ -598,7 +687,18 @@ export type CognitiveErrorCode =
   | "heavy_generation_busy"
   | "invalid_resource_status"
   | "resource_job_not_found"
-  | "persistence_failed";
+  | "persistence_failed"
+  | "voice_settings_not_found"
+  | "voice_reference_invalid"
+  | "voice_consent_invalid"
+  | "voice_blocked_silent"
+  | "voice_blocked_suspended"
+  | "voice_fixture_unavailable"
+  | "voice_device_unavailable"
+  | "voice_model_unavailable"
+  | "voice_device_or_model_unavailable"
+  | "voice_input_invalid"
+  | "voice_muted";
 export type CognitiveErrorResponse = {
   code: CognitiveErrorCode;
   message: string;
@@ -739,10 +839,112 @@ export function parseCognitiveError(
     "invalid_resource_status",
     "resource_job_not_found",
     "persistence_failed",
+    "voice_settings_not_found",
+    "voice_reference_invalid",
+    "voice_consent_invalid",
+    "voice_blocked_silent",
+    "voice_blocked_suspended",
+    "voice_fixture_unavailable",
+    "voice_device_unavailable",
+    "voice_model_unavailable",
+    "voice_device_or_model_unavailable",
+    "voice_input_invalid",
+    "voice_muted",
   ];
   return codes.includes(candidate.code as CognitiveErrorCode) &&
     cognitiveString(candidate.message)
     ? (candidate as CognitiveErrorResponse)
+    : null;
+}
+
+export function parseVoiceSettings(value: unknown): VoiceSettings | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Partial<VoiceSettings>;
+  return cognitiveString(candidate.agentId) &&
+    candidate.schemaVersion === 1 &&
+    cognitiveString(candidate.baseVoiceId) &&
+    candidate.baseVoiceProtected === true &&
+    (candidate.customVoiceRef === null ||
+      cognitiveString(candidate.customVoiceRef)) &&
+    ["not_granted", "granted", "revoked"].includes(
+      candidate.customVoiceConsent ?? "",
+    ) &&
+    (candidate.recognitionModelRef === null ||
+      cognitiveString(candidate.recognitionModelRef)) &&
+    (candidate.synthesisModelRef === null ||
+      cognitiveString(candidate.synthesisModelRef)) &&
+    (candidate.inputDeviceRef === null ||
+      cognitiveString(candidate.inputDeviceRef)) &&
+    (candidate.outputDeviceRef === null ||
+      cognitiveString(candidate.outputDeviceRef)) &&
+    ["normal", "voice_muted", "silent"].includes(candidate.mode ?? "") &&
+    typeof candidate.voiceMuted === "boolean" &&
+    typeof candidate.silent === "boolean" &&
+    typeof candidate.suspended === "boolean" &&
+    cognitiveNumber(candidate.updatedAt)
+    ? (candidate as VoiceSettings)
+    : null;
+}
+
+export function parseVoiceTranscriptionResult(
+  value: unknown,
+): VoiceTranscriptionResult | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Partial<VoiceTranscriptionResult>;
+  return ["ready", "degraded"].includes(candidate.status ?? "") &&
+    (candidate.code === null || cognitiveString(candidate.code)) &&
+    cognitiveString(candidate.fixtureId) &&
+    (candidate.text === null || cognitiveString(candidate.text)) &&
+    (candidate.confidence === null || cognitiveNumber(candidate.confidence)) &&
+    candidate.metadataOnly === true &&
+    candidate.rawAudioPersisted === false &&
+    typeof candidate.textChatFallback === "boolean"
+    ? (candidate as VoiceTranscriptionResult)
+    : null;
+}
+
+export function parseVoiceSynthesisResult(
+  value: unknown,
+): VoiceSynthesisResult | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Partial<VoiceSynthesisResult>;
+  return ["ready", "degraded", "muted"].includes(candidate.status ?? "") &&
+    (candidate.code === null || cognitiveString(candidate.code)) &&
+    cognitiveString(candidate.voiceRef) &&
+    cognitiveNumber(candidate.durationMs) &&
+    candidate.metadataOnly === true &&
+    candidate.rawAudioPersisted === false &&
+    typeof candidate.textChatFallback === "boolean"
+    ? (candidate as VoiceSynthesisResult)
+    : null;
+}
+
+export function parseVoiceWakeWordResult(
+  value: unknown,
+): VoiceWakeWordResult | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Partial<VoiceWakeWordResult>;
+  return ["detected", "ignored", "degraded"].includes(candidate.status ?? "") &&
+    (candidate.code === null || cognitiveString(candidate.code)) &&
+    cognitiveString(candidate.fixtureId) &&
+    typeof candidate.detected === "boolean" &&
+    candidate.listenerActive === false &&
+    candidate.metadataOnly === true
+    ? (candidate as VoiceWakeWordResult)
+    : null;
+}
+
+export function parseVoiceEmotionHypothesis(
+  value: unknown,
+): VoiceEmotionHypothesisResult | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Partial<VoiceEmotionHypothesisResult>;
+  return ["neutral", "positive", "concerned"].includes(candidate.label ?? "") &&
+    cognitiveNumber(candidate.confidence) &&
+    candidate.uncertain === true &&
+    candidate.diagnostic === false &&
+    cognitiveString(candidate.source)
+    ? (candidate as VoiceEmotionHypothesisResult)
     : null;
 }
 

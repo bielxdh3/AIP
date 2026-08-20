@@ -8,6 +8,7 @@ mod native_overlay_region;
 mod overlays;
 mod protocol;
 mod runtime;
+mod voice;
 
 use std::{
     io,
@@ -39,6 +40,11 @@ use domain::{
 use overlays::{InteractiveRegion, OverlayInputState};
 use runtime::RuntimeController;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
+use voice::{
+    CustomVoiceConsentRequest, VoiceEmotionHypothesisRequest, VoiceEmotionHypothesisResult,
+    VoiceSettings, VoiceSettingsRequest, VoiceSynthesisRequest, VoiceSynthesisResult,
+    VoiceTranscriptionRequest, VoiceTranscriptionResult, VoiceWakeWordRequest, VoiceWakeWordResult,
+};
 
 struct AppState {
     database: Option<Database>,
@@ -63,6 +69,20 @@ fn ensure_conversation_not_temporary(
     } else {
         Ok(())
     }
+}
+
+fn ensure_voice_mutation_allowed(
+    state: &AppState,
+    agent_id: &str,
+    requested_temporary: bool,
+) -> Result<(), &'static str> {
+    ensure_conversation_not_temporary(state, agent_id, requested_temporary)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .ensure_voice_mutation_allowed(agent_id)
+        .map_err(|error| error.code())
 }
 
 #[tauri::command]
@@ -608,6 +628,113 @@ fn reject_cognitive_candidate(
         .as_ref()
         .ok_or("operation_unavailable")?
         .reject_cognitive_candidate(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn get_voice_settings(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<VoiceSettings, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .voice_settings(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn update_voice_settings(
+    state: State<'_, AppState>,
+    request: VoiceSettingsRequest,
+) -> Result<VoiceSettings, &'static str> {
+    update_voice_settings_for_state(state.inner(), request)
+}
+
+fn update_voice_settings_for_state(
+    state: &AppState,
+    request: VoiceSettingsRequest,
+) -> Result<VoiceSettings, &'static str> {
+    ensure_voice_mutation_allowed(state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .update_voice_settings(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn set_custom_voice_consent(
+    state: State<'_, AppState>,
+    request: CustomVoiceConsentRequest,
+) -> Result<VoiceSettings, &'static str> {
+    set_custom_voice_consent_for_state(state.inner(), request)
+}
+
+fn set_custom_voice_consent_for_state(
+    state: &AppState,
+    request: CustomVoiceConsentRequest,
+) -> Result<VoiceSettings, &'static str> {
+    ensure_voice_mutation_allowed(state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .set_custom_voice_consent(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn transcribe_voice_fixture(
+    state: State<'_, AppState>,
+    request: VoiceTranscriptionRequest,
+) -> Result<VoiceTranscriptionResult, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .transcribe_voice_fixture(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn synthesize_voice_fixture(
+    state: State<'_, AppState>,
+    request: VoiceSynthesisRequest,
+) -> Result<VoiceSynthesisResult, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .synthesize_voice_fixture(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn detect_voice_wake_word_fixture(
+    state: State<'_, AppState>,
+    request: VoiceWakeWordRequest,
+) -> Result<VoiceWakeWordResult, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .detect_voice_wake_word_fixture(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn classify_voice_emotion(
+    state: State<'_, AppState>,
+    request: VoiceEmotionHypothesisRequest,
+) -> Result<VoiceEmotionHypothesisResult, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .classify_voice_emotion(request)
         .map_err(|error| error.code())
 }
 
@@ -1350,6 +1477,13 @@ pub fn run() {
             interrupt_agent_conversation,
             list_cognitive_candidates,
             reject_cognitive_candidate,
+            get_voice_settings,
+            update_voice_settings,
+            set_custom_voice_consent,
+            transcribe_voice_fixture,
+            synthesize_voice_fixture,
+            detect_voice_wake_word_fixture,
+            classify_voice_emotion,
             set_safe_mode,
             get_phase_one_state,
             get_temporary_phase_one_state,
@@ -1433,7 +1567,8 @@ mod conversation_command_tests {
     use super::{
         append_public_conversation_turn_for_state, complete_resource_job_for_state,
         emit_cognitive_candidate_for_state, reserve_heavy_generation_for_state,
-        start_agent_conversation_for_state, AppState,
+        set_custom_voice_consent_for_state, start_agent_conversation_for_state,
+        update_voice_settings_for_state, AppState,
     };
     use crate::{
         conversation::{
@@ -1443,6 +1578,7 @@ mod conversation_command_tests {
         database::{Database, ASTRA_ID, LUMA_ID},
         overlays::OverlayInputState,
         runtime::RuntimeController,
+        voice::{CustomVoiceConsentRequest, VoiceSettingsRequest},
     };
 
     fn test_path() -> PathBuf {
@@ -1627,6 +1763,61 @@ mod conversation_command_tests {
             "completed"
         );
 
+        cleanup(&path);
+    }
+
+    #[test]
+    fn voice_commands_guard_temporary_chat_and_silent_mode() {
+        let path = test_path();
+        let state = test_state(&path);
+        let request = VoiceSettingsRequest {
+            agent_id: ASTRA_ID.into(),
+            recognition_model_ref: Some("fixture:stt-v1".into()),
+            synthesis_model_ref: Some("fixture:tts-v1".into()),
+            input_device_ref: Some("fixture:microphone-1".into()),
+            output_device_ref: Some("fixture:speaker-1".into()),
+            idempotency_key: "command-voice-settings".into(),
+            temporary_chat: false,
+        };
+        update_voice_settings_for_state(&state, request.clone()).unwrap();
+        let mut temporary = request.clone();
+        temporary.idempotency_key = "command-voice-temporary".into();
+        temporary.temporary_chat = true;
+        assert_eq!(
+            update_voice_settings_for_state(&state, temporary),
+            Err("conversation_temporary_blocked")
+        );
+        state
+            .database
+            .as_ref()
+            .unwrap()
+            .set_agent_mode(ASTRA_ID, "silent")
+            .unwrap();
+        let mut silent = request;
+        silent.idempotency_key = "command-voice-silent".into();
+        assert_eq!(
+            update_voice_settings_for_state(&state, silent),
+            Err("voice_blocked_silent")
+        );
+        state
+            .database
+            .as_ref()
+            .unwrap()
+            .set_agent_mode(ASTRA_ID, "normal")
+            .unwrap();
+        assert_eq!(
+            set_custom_voice_consent_for_state(
+                &state,
+                CustomVoiceConsentRequest {
+                    agent_id: ASTRA_ID.into(),
+                    granted: true,
+                    custom_voice_ref: Some("fixture:custom-neutral-v1".into()),
+                    idempotency_key: "command-voice-consent-temporary".into(),
+                    temporary_chat: true,
+                },
+            ),
+            Err("conversation_temporary_blocked")
+        );
         cleanup(&path);
     }
 }
