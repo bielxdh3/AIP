@@ -244,17 +244,23 @@ This does not enable real filesystem, shell, credential, calendar, messaging,
 network, or external-provider access. Live adapters, packaged-Windows runtime
 evidence, and release approval remain reserved validation work.
 
-## Post-v0.1 Phase 10: extensions
+## Post-v0.1 Phase 10: extensions [IMPLEMENTED — LOCAL METADATA-ONLY CHECKPOINT]
 
-Potential scope:
+The current checkpoint implements the bounded local architecture described in
+[PHASE_10_EXTENSIONS_SPEC.md](PHASE_10_EXTENSIONS_SPEC.md):
 
-- extension SDK;
-- sandbox;
-- private catalog;
-- agent-created extensions;
-- administrator-selected third-party extensions;
-- permission-aware updates;
-- rollback and ratings.
+- versioned, untrusted metadata manifests with local-fixture admission;
+- private catalog and review-only agent proposals;
+- explicit Owner capability review and activation;
+- updates that disable the current revision and force re-review;
+- explicit rollback, disable, bounded audit retention, and Portuguese controls;
+- safe-mode and temporary-chat fail-closed mutation gates.
+
+This does not load, compile, interpret, fetch, or execute extension code. It
+does not access the network, shell, host filesystem, credentials, remote code,
+or a public marketplace. Package integrity/signature policy, real plugin
+behavior, ratings, packaged-Windows evidence, and release approval remain
+reserved. Phase 11 screen vision is unchanged.
 
 ## Post-v0.1 Phase 11: screen vision
 

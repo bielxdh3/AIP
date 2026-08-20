@@ -20,6 +20,10 @@ import {
   parseToolCatalog,
   parseToolSession,
   parseToolSessions,
+  parseExtensionAudit,
+  parseExtensionCatalog,
+  parseExtensionManifest,
+  parseExtensionProposals,
 } from "../src/index";
 
 describe("runtime contracts", () => {
@@ -321,5 +325,134 @@ describe("supervised tool contracts", () => {
         message: "Ferramentas bloqueadas no modo seguro",
       }),
     ).not.toBeNull();
+  });
+});
+
+describe("metadata-only extension contracts", () => {
+  const manifest = {
+    extensionId: "fixture.notes",
+    manifestVersion: 1 as const,
+    extensionVersion: "1.0.0",
+    sdkVersion: "aip-extension-sdk/v1",
+    name: "Notas locais fixture",
+    sandboxPolicy: "metadata_only" as const,
+    admissionPolicy: "local_fixture_only" as const,
+    capabilities: ["tool_catalog" as const, "owner_review" as const],
+    localFixtureRef: "fixture:extension/notes",
+    untrusted: true as const,
+  };
+
+  const proposal = {
+    id: "proposal-1",
+    extensionId: manifest.extensionId,
+    revision: 1,
+    sourceKind: "agent_created" as const,
+    proposerAgentId: "astra",
+    status: "pending" as const,
+    reviewStatus: "pending" as const,
+    manifest,
+    requestedCapabilities: manifest.capabilities,
+    approvedCapabilities: [],
+    permissions: manifest.capabilities.map((capability) => ({
+      capability,
+      status: "pending" as const,
+    })),
+    compatible: true,
+    reviewReason: null,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+
+  it("accepts versioned untrusted proposals and catalog records", () => {
+    expect(parseExtensionManifest(manifest)).not.toBeNull();
+    expect(parseExtensionProposals([proposal])).not.toBeNull();
+    expect(
+      parseExtensionCatalog([
+        {
+          extensionId: manifest.extensionId,
+          catalogScope: "private_local",
+          sourceKind: "agent_created",
+          lifecycle: "review_required",
+          reviewStatus: "pending",
+          manifest,
+          currentRevision: 1,
+          activeRevision: null,
+          approvedCapabilities: [],
+          compatible: true,
+          untrusted: true,
+          updatedAt: 1,
+        },
+      ]),
+    ).not.toBeNull();
+    expect(
+      parseExtensionAudit([
+        {
+          id: "audit-1",
+          extensionId: manifest.extensionId,
+          proposalId: proposal.id,
+          revision: 1,
+          agentId: "astra",
+          event: "proposal_created",
+          result: "pending_review",
+          code: null,
+          summary: "Proposta criada.",
+          createdAt: 1,
+        },
+      ]),
+    ).not.toBeNull();
+  });
+
+  it("rejects code-like, trusted, incompatible and unknown payloads", () => {
+    expect(
+      parseExtensionManifest({
+        ...manifest,
+        untrusted: false,
+      }),
+    ).toBeNull();
+    expect(
+      parseExtensionManifest({
+        ...manifest,
+        sdkVersion: "future-sdk",
+      }),
+    ).toBeNull();
+    expect(
+      parseExtensionManifest({
+        ...manifest,
+        extensionId: "Not.Valid",
+      }),
+    ).toBeNull();
+    expect(
+      parseExtensionManifest({
+        ...manifest,
+        extensionVersion: "1.0.01",
+      }),
+    ).toBeNull();
+    expect(
+      parseExtensionManifest({
+        ...manifest,
+        capabilities: ["tool_catalog", "tool_catalog"],
+      }),
+    ).toBeNull();
+    expect(
+      parseExtensionManifest({
+        ...manifest,
+        localFixtureRef: "fixture:extension/../private",
+      }),
+    ).toBeNull();
+    expect(
+      parseExtensionManifest({
+        ...manifest,
+        code: "return fetch('https://example.invalid')",
+      }),
+    ).toBeNull();
+    expect(
+      parseExtensionManifest({
+        ...manifest,
+        sandboxPolicy: "host_process",
+      }),
+    ).toBeNull();
+    expect(
+      parseExtensionProposals([{ ...proposal, status: "active" }]),
+    ).toBeNull();
   });
 });

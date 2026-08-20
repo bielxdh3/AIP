@@ -6,10 +6,11 @@ level; earlier phase-specific notes remain historical preparation evidence and a
 new observations here. AIP v0.1.0 was published from commit `b6f74b3793437a647186dd52eeb950ff4b3fb228`.
 A local Ollama integration test is skipped when its required model is not installed. v0.1.0 has
 no cloud synchronization, Android client, BielOS integration, released voice feature,
-real supervised external tools, extensions, screen vision, or the post-release Phase 7E–7F
+real supervised external tools, screen vision, or the post-release Phase 7E–7F
 cognitive-core conversation integration. The current development checkpoint implements
 bounded Phase 7B–7E local paths, the Phase 8 local voice architecture checkpoint, and the
-Phase 9 supervised-tools mock checkpoint; this is not a v0.1 release claim. Phase 7E and 7F
+Phase 9 supervised-tools mock checkpoint plus the Phase 10 metadata-only extension
+checkpoint; these are not v0.1 release claims. Phase 7E and 7F
 validation reservations are recorded in
 [PHASE_7E_VALIDATION.md](PHASE_7E_VALIDATION.md) and [PHASE_7F_VALIDATION.md](PHASE_7F_VALIDATION.md).
 
@@ -45,6 +46,25 @@ validation reservations are recorded in
 - Live provider adapters, real external-effect verification, packaged-Windows runtime
   evidence, and release/manual approval remain reserved. See
   [PHASE_9_TOOLS_SPEC.md](PHASE_9_TOOLS_SPEC.md).
+
+## Phase 10 extensions checkpoint
+
+- Phase 10 currently provides only SQLite-backed, private metadata manifests,
+  local-fixture admission, review-only agent proposals, explicit Owner review
+  and activation, re-reviewing updates, rollback, disable, bounded audit
+  retention, and Portuguese controls. It does not load, compile, interpret, or
+  execute extension code.
+- Network fetch, shell, host-filesystem access, credentials, remote code
+  execution, public marketplace behavior, hidden execution, package
+  integrity/signature verification, ratings, and real plugin behavior are not
+  implemented.
+- Safe mode and temporary chat fail closed for all durable extension
+  mutations. Read-only catalog, proposal, and audit inspection remains
+  available. Unsupported SDK and recovery lifecycle values are metadata-only
+  checkpoint states; no package recovery or execution is attempted. Runtime/
+  package validation, manual Windows evidence, and release approval remain
+  reserved. See
+  [PHASE_10_EXTENSIONS_SPEC.md](PHASE_10_EXTENSIONS_SPEC.md).
 
 ## Deferred usability and agent features
 
