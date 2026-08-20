@@ -282,18 +282,23 @@ access the host filesystem/shell/credentials, use a network or remote model, or
 persist visual state. Real screen adapters, Windows packaging evidence,
 privacy/visual UX validation, and release approval remain reserved work.
 
-## Post-v0.1 Phase 12: Android client
+## Post-v0.1 Phase 12: Android companion `[IMPLEMENTED — LOCAL METADATA-ONLY CHECKPOINT]`
 
-Potential scope:
+The current checkpoint implements the bounded local architecture described in
+[PHASE_12_ANDROID_SPEC.md](PHASE_12_ANDROID_SPEC.md):
 
-- BielOS APK agent module;
-- floating icon;
-- text and voice conversation;
-- notifications;
-- read-only offline history;
-- offline message queue;
-- approval flow;
-- authenticated connection to the PC.
+- versioned `aip-companion-v1` protocol metadata and synthetic Android fixture;
+- Owner-scoped pairing/confirmation, protocol negotiation, replay protection,
+  reconnect, key rotation, and revocation;
+- bounded read-only history and metadata-only text/audio/image/file/task queue;
+- explicit preview, Owner approval, cancellation, retry, and audit;
+- Rust/SQLite authority with safe-mode and temporary-chat fail-closed gates;
+- Portuguese Companion controls and versioned response parsers.
+
+This does not build an APK, open a listener, provide a relay, access Android or
+external accounts, persist media bytes, or claim mobile runtime validation.
+Packaged Android transport, cryptographic key custody, notifications, real
+audio/voice, and human device testing remain reserved.
 
 ## Post-v0.1 Phase 13: BielOS integration
 

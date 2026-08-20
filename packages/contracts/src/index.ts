@@ -697,6 +697,272 @@ export type ScreenVisionSessionCancellationRequest = {
   temporaryChat: boolean;
 };
 
+export const COMPANION_PROTOCOL_VERSION = 1 as const;
+export const COMPANION_MIN_PROTOCOL_VERSION = 1 as const;
+export const COMPANION_FIXTURE_DEVICE_ID = "android-fixture-01" as const;
+export const COMPANION_FIXTURE_FINGERPRINT =
+  "fixture:fingerprint/android-01" as const;
+export const COMPANION_FIXTURE_PAIRING_NONCE =
+  "fixture:pairing/android-01" as const;
+export const COMPANION_FIXTURE_APP_VERSION = "0.1.0-fixture" as const;
+
+export type CompanionPlatform = "android";
+export type CompanionDeviceStatus =
+  "pairing_requested" | "paired" | "expired" | "revoked";
+export type CompanionSessionStatus =
+  "connected" | "disconnected" | "revoked" | "expired";
+export type CompanionQueueStatus =
+  "previewed" | "queued" | "cancelled" | "failed";
+export type CompanionMessageKind =
+  | "pairing"
+  | "session"
+  | "queue"
+  | "history"
+  | "key_rotation"
+  | "revocation"
+  | "status";
+export type CompanionSafetyFlags = {
+  metadataOnly: true;
+  mediaBytesPersisted: false;
+  networkListener: false;
+  standaloneFallback: true;
+};
+export type CompanionQueuePayload =
+  | { kind: "text"; text: string }
+  | {
+      kind: "audio";
+      mimeType: string;
+      durationMs: number;
+      byteLength: number;
+    }
+  | {
+      kind: "image";
+      mimeType: string;
+      width: number;
+      height: number;
+      byteLength: number;
+    }
+  | { kind: "file"; fileName: string; mimeType: string; byteLength: number }
+  | { kind: "task"; title: string; summary: string };
+export type CompanionProtocolInfo = {
+  schemaVersion: 1;
+  protocolVersion: typeof COMPANION_PROTOCOL_VERSION;
+  minProtocolVersion: typeof COMPANION_MIN_PROTOCOL_VERSION;
+  platform: CompanionPlatform;
+  appVersion: typeof COMPANION_FIXTURE_APP_VERSION;
+  transport: "tauri_command_fixture";
+  networkListener: false;
+  standaloneFallback: true;
+};
+export type CompanionProtocolMessage = {
+  schemaVersion: 1;
+  protocolVersion: typeof COMPANION_PROTOCOL_VERSION;
+  messageId: string;
+  deviceId: string;
+  platform: CompanionPlatform;
+  appVersion: typeof COMPANION_FIXTURE_APP_VERSION;
+  kind: CompanionMessageKind;
+  sessionId: string | null;
+  nonceMetadata: string;
+  replayCounter: number;
+  payloadKind: string;
+};
+export type CompanionDevice = {
+  id: string;
+  agentId: string;
+  ownerUserId: string;
+  deviceId: string;
+  platform: CompanionPlatform;
+  appVersion: typeof COMPANION_FIXTURE_APP_VERSION;
+  protocolVersion: typeof COMPANION_PROTOCOL_VERSION;
+  status: CompanionDeviceStatus;
+  fingerprint: string;
+  pairingNonceMetadata: string;
+  keyVersion: number;
+  pairingExpiresAt: number | null;
+  pairedAt: number | null;
+  revokedAt: number | null;
+  lastSeenAt: number | null;
+  compatible: true;
+  standaloneFallback: true;
+  createdAt: number;
+  updatedAt: number;
+};
+export type CompanionSession = {
+  id: string;
+  deviceId: string;
+  agentId: string;
+  ownerUserId: string;
+  status: CompanionSessionStatus;
+  protocolVersion: typeof COMPANION_PROTOCOL_VERSION;
+  appVersion: typeof COMPANION_FIXTURE_APP_VERSION;
+  negotiatedProtocolVersion: typeof COMPANION_PROTOCOL_VERSION;
+  keyFingerprint: string;
+  sessionNonceMetadata: string;
+  lastReplayCounter: number;
+  connectedAt: number;
+  lastSeenAt: number;
+  disconnectedAt: number | null;
+  protocol: CompanionProtocolInfo;
+  handshake: CompanionProtocolMessage;
+  updatedAt: number;
+};
+export type CompanionQueueItem = {
+  id: string;
+  deviceId: string;
+  sessionId: string;
+  agentId: string;
+  ownerUserId: string;
+  kind: CompanionQueuePayload["kind"];
+  status: CompanionQueueStatus;
+  payload: CompanionQueuePayload;
+  summary: string;
+  metadataOnly: true;
+  mediaBytesPersisted: false;
+  approvalRequired: true;
+  retryCount: number;
+  errorCode: string | null;
+  createdAt: number;
+  previewedAt: number;
+  approvedAt: number | null;
+  cancelledAt: number | null;
+  updatedAt: number;
+};
+export type CompanionHistoryRecord = {
+  id: string;
+  deviceId: string | null;
+  sessionId: string | null;
+  agentId: string;
+  ownerUserId: string;
+  direction: string;
+  kind: string;
+  summary: string;
+  metadataOnly: true;
+  mediaBytesPersisted: false;
+  createdAt: number;
+};
+export type CompanionAuditRecord = {
+  id: string;
+  deviceId: string | null;
+  sessionId: string | null;
+  queueId: string | null;
+  agentId: string;
+  ownerUserId: string;
+  event: string;
+  result: string;
+  code: string | null;
+  summary: string;
+  createdAt: number;
+};
+export type CompanionKeyRotation = {
+  id: string;
+  deviceId: string;
+  agentId: string;
+  ownerUserId: string;
+  oldFingerprint: string;
+  newFingerprint: string;
+  oldKeyVersion: number;
+  newKeyVersion: number;
+  nonceMetadata: string;
+  status: "completed";
+  reason: string;
+  createdAt: number;
+};
+export type CompanionRevocation = {
+  id: string;
+  deviceId: string;
+  agentId: string;
+  ownerUserId: string;
+  previousStatus: CompanionDeviceStatus;
+  reason: string;
+  createdAt: number;
+};
+export type CompanionPairingRequest = {
+  agentId: string;
+  ownerUserId: string;
+  deviceId: string;
+  platform: CompanionPlatform;
+  appVersion: typeof COMPANION_FIXTURE_APP_VERSION;
+  protocolVersion: typeof COMPANION_PROTOCOL_VERSION;
+  fingerprint: string;
+  pairingNonceMetadata: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type CompanionPairingConfirmationRequest = {
+  agentId: string;
+  ownerUserId: string;
+  deviceId: string;
+  fingerprint: string;
+  pairingNonceMetadata: string;
+  confirmed: true;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type CompanionSessionRequest = {
+  agentId: string;
+  ownerUserId: string;
+  deviceId: string;
+  appVersion: typeof COMPANION_FIXTURE_APP_VERSION;
+  protocolVersion: typeof COMPANION_PROTOCOL_VERSION;
+  fingerprint: string;
+  pairingNonceMetadata: string;
+  messageNonceMetadata: string;
+  replayCounter: number;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type CompanionSessionProof = {
+  sessionId: string;
+  deviceId: string;
+  sessionNonceMetadata: string;
+  keyFingerprint: string;
+  appVersion: typeof COMPANION_FIXTURE_APP_VERSION;
+  protocolVersion: typeof COMPANION_PROTOCOL_VERSION;
+  messageNonceMetadata: string;
+  replayCounter: number;
+};
+export type CompanionReconnectRequest = {
+  agentId: string;
+  ownerUserId: string;
+  proof: CompanionSessionProof;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type CompanionQueuePreviewRequest = {
+  agentId: string;
+  ownerUserId: string;
+  proof: CompanionSessionProof;
+  payload: CompanionQueuePayload;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type CompanionQueueDecisionRequest = {
+  agentId: string;
+  ownerUserId: string;
+  proof: CompanionSessionProof;
+  queueId: string;
+  approved: true;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type CompanionQueueActionRequest = {
+  agentId: string;
+  ownerUserId: string;
+  proof: CompanionSessionProof;
+  queueId: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type CompanionDeviceActionRequest = {
+  agentId: string;
+  ownerUserId: string;
+  deviceId: string;
+  reason: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+
 export type CognitiveTrait = {
   key: string;
   value: number;
@@ -1233,7 +1499,48 @@ export type CognitiveErrorCode =
   | "screen_vision_request_oversized"
   | "screen_vision_result_oversized"
   | "screen_vision_audit_oversized"
-  | "screen_vision_idempotency_invalid";
+  | "screen_vision_idempotency_invalid"
+  | "companion_agent_invalid"
+  | "companion_approval_required"
+  | "companion_audit_oversized"
+  | "companion_authentication_failed"
+  | "companion_blocked_safe_mode"
+  | "companion_blocked_suspended"
+  | "companion_blocked_temporary"
+  | "companion_cancelled"
+  | "companion_device_already_paired"
+  | "companion_device_invalid"
+  | "companion_device_limit"
+  | "companion_device_not_found"
+  | "companion_device_revoked"
+  | "companion_fingerprint_invalid"
+  | "companion_fixture_invalid"
+  | "companion_history_oversized"
+  | "companion_idempotency_conflict"
+  | "companion_idempotency_invalid"
+  | "companion_key_rotation_invalid"
+  | "companion_nonce_invalid"
+  | "companion_owner_required"
+  | "companion_pairing_confirmation_required"
+  | "companion_pairing_expired"
+  | "companion_pairing_invalid"
+  | "companion_pairing_required"
+  | "companion_payload_invalid"
+  | "companion_payload_oversized"
+  | "companion_protocol_incompatible"
+  | "companion_queue_invalid"
+  | "companion_queue_limit"
+  | "companion_queue_not_found"
+  | "companion_queue_state_invalid"
+  | "companion_replay_rejected"
+  | "companion_request_oversized"
+  | "companion_retry_limit"
+  | "companion_revocation_not_found"
+  | "companion_rotation_not_found"
+  | "companion_session_invalid"
+  | "companion_session_not_found"
+  | "companion_session_unavailable"
+  | "companion_text_invalid";
 export type CognitiveErrorResponse = {
   code: CognitiveErrorCode;
   message: string;
@@ -1461,6 +1768,47 @@ export function parseCognitiveError(
     "screen_vision_result_oversized",
     "screen_vision_audit_oversized",
     "screen_vision_idempotency_invalid",
+    "companion_agent_invalid",
+    "companion_approval_required",
+    "companion_audit_oversized",
+    "companion_authentication_failed",
+    "companion_blocked_safe_mode",
+    "companion_blocked_suspended",
+    "companion_blocked_temporary",
+    "companion_cancelled",
+    "companion_device_already_paired",
+    "companion_device_invalid",
+    "companion_device_limit",
+    "companion_device_not_found",
+    "companion_device_revoked",
+    "companion_fingerprint_invalid",
+    "companion_fixture_invalid",
+    "companion_history_oversized",
+    "companion_idempotency_conflict",
+    "companion_idempotency_invalid",
+    "companion_key_rotation_invalid",
+    "companion_nonce_invalid",
+    "companion_owner_required",
+    "companion_pairing_confirmation_required",
+    "companion_pairing_expired",
+    "companion_pairing_invalid",
+    "companion_pairing_required",
+    "companion_payload_invalid",
+    "companion_payload_oversized",
+    "companion_protocol_incompatible",
+    "companion_queue_invalid",
+    "companion_queue_limit",
+    "companion_queue_not_found",
+    "companion_queue_state_invalid",
+    "companion_replay_rejected",
+    "companion_request_oversized",
+    "companion_retry_limit",
+    "companion_revocation_not_found",
+    "companion_rotation_not_found",
+    "companion_session_invalid",
+    "companion_session_not_found",
+    "companion_session_unavailable",
+    "companion_text_invalid",
   ];
   return codes.includes(candidate.code as CognitiveErrorCode) &&
     cognitiveString(candidate.message)
@@ -2476,6 +2824,494 @@ export function parseScreenVisionAudit(
   )
     ? records
     : null;
+}
+
+const MAX_COMPANION_TEXT = 16_384;
+const MAX_COMPANION_REFERENCE = 192;
+const MAX_COMPANION_RETRY_COUNT = 8;
+const MAX_COMPANION_MEDIA_METADATA_BYTES = 100_000_000;
+
+function isCompanionBoundedText(
+  value: unknown,
+  maximum: number,
+): value is string {
+  return (
+    cognitiveString(value) &&
+    value.length > 0 &&
+    value.length <= maximum &&
+    !Array.from(value).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 && ![9, 10, 13].includes(code);
+    })
+  );
+}
+
+function isCompanionReference(
+  value: unknown,
+  maximum = MAX_COMPANION_REFERENCE,
+): value is string {
+  return (
+    isCompanionBoundedText(value, maximum) &&
+    !value.includes("..") &&
+    !value.includes("\\") &&
+    /^[A-Za-z0-9:._/-]+$/.test(value)
+  );
+}
+
+function isCompanionTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isCompanionInteger(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= minimum &&
+    value <= maximum
+  );
+}
+
+function isCompanionProtocolVersion(value: unknown): value is 1 {
+  return value === COMPANION_PROTOCOL_VERSION;
+}
+
+function hasCompanionForbiddenField(
+  candidate: Record<string, unknown>,
+): boolean {
+  return [
+    "rawBytes",
+    "bytes",
+    "mediaBytes",
+    "audioBytes",
+    "imageBytes",
+    "fileBytes",
+    "pixelData",
+    "imageData",
+    "networkUrl",
+    "relay",
+    "credentials",
+    "privateKey",
+    "accessToken",
+    "capturePath",
+    "filePath",
+  ].some((key) => key in candidate);
+}
+
+function isCompanionMessageKind(value: unknown): value is CompanionMessageKind {
+  return [
+    "pairing",
+    "session",
+    "queue",
+    "history",
+    "key_rotation",
+    "revocation",
+    "status",
+  ].includes(value as string);
+}
+
+function isCompanionDeviceStatus(
+  value: unknown,
+): value is CompanionDeviceStatus {
+  return ["pairing_requested", "paired", "expired", "revoked"].includes(
+    value as string,
+  );
+}
+
+function isCompanionSessionStatus(
+  value: unknown,
+): value is CompanionSessionStatus {
+  return ["connected", "disconnected", "revoked", "expired"].includes(
+    value as string,
+  );
+}
+
+function isCompanionQueueStatus(value: unknown): value is CompanionQueueStatus {
+  return ["previewed", "queued", "cancelled", "failed"].includes(
+    value as string,
+  );
+}
+
+function isCompanionMime(value: unknown, prefix: string): value is string {
+  return (
+    isCompanionReference(value, 96) &&
+    value.includes("/") &&
+    (prefix === "" || value.startsWith(prefix))
+  );
+}
+
+function isCompanionFileName(value: unknown): value is string {
+  return (
+    isCompanionBoundedText(value, 192) &&
+    value !== "." &&
+    value !== ".." &&
+    !value.includes("/") &&
+    !value.includes("\\") &&
+    !value.includes(":")
+  );
+}
+
+export function parseCompanionSafetyFlags(
+  value: unknown,
+): CompanionSafetyFlags | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    candidate.metadataOnly === true &&
+    candidate.mediaBytesPersisted === false &&
+    candidate.networkListener === false &&
+    candidate.standaloneFallback === true
+    ? (candidate as unknown as CompanionSafetyFlags)
+    : null;
+}
+
+export function parseCompanionProtocolInfo(
+  value: unknown,
+): CompanionProtocolInfo | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasCompanionForbiddenField(candidate) &&
+    candidate.schemaVersion === 1 &&
+    isCompanionProtocolVersion(candidate.protocolVersion) &&
+    candidate.minProtocolVersion === COMPANION_MIN_PROTOCOL_VERSION &&
+    candidate.platform === "android" &&
+    candidate.appVersion === COMPANION_FIXTURE_APP_VERSION &&
+    candidate.transport === "tauri_command_fixture" &&
+    candidate.networkListener === false &&
+    candidate.standaloneFallback === true
+    ? (candidate as unknown as CompanionProtocolInfo)
+    : null;
+}
+
+export function parseCompanionProtocolMessage(
+  value: unknown,
+): CompanionProtocolMessage | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasCompanionForbiddenField(candidate) &&
+    candidate.schemaVersion === 1 &&
+    isCompanionProtocolVersion(candidate.protocolVersion) &&
+    isCompanionReference(candidate.messageId) &&
+    isCompanionReference(candidate.deviceId, 96) &&
+    candidate.platform === "android" &&
+    candidate.appVersion === COMPANION_FIXTURE_APP_VERSION &&
+    isCompanionMessageKind(candidate.kind) &&
+    (candidate.sessionId === null ||
+      isCompanionReference(candidate.sessionId, 128)) &&
+    isCompanionReference(candidate.nonceMetadata) &&
+    isCompanionInteger(candidate.replayCounter, 1, Number.MAX_SAFE_INTEGER) &&
+    isCompanionReference(candidate.payloadKind, 32)
+    ? (candidate as unknown as CompanionProtocolMessage)
+    : null;
+}
+
+export function parseCompanionQueuePayload(
+  value: unknown,
+): CompanionQueuePayload | null {
+  const candidate = toolRecord(value);
+  if (candidate === null || hasCompanionForbiddenField(candidate)) return null;
+  switch (candidate.kind) {
+    case "text":
+      return isCompanionBoundedText(candidate.text, MAX_COMPANION_TEXT)
+        ? (candidate as unknown as CompanionQueuePayload)
+        : null;
+    case "audio":
+      return isCompanionMime(candidate.mimeType, "audio/") &&
+        isCompanionInteger(candidate.durationMs, 1, 300_000) &&
+        isCompanionInteger(
+          candidate.byteLength,
+          0,
+          MAX_COMPANION_MEDIA_METADATA_BYTES,
+        )
+        ? (candidate as unknown as CompanionQueuePayload)
+        : null;
+    case "image":
+      return isCompanionMime(candidate.mimeType, "image/") &&
+        isCompanionInteger(candidate.width, 1, 8_192) &&
+        isCompanionInteger(candidate.height, 1, 8_192) &&
+        isCompanionInteger(
+          candidate.byteLength,
+          0,
+          MAX_COMPANION_MEDIA_METADATA_BYTES,
+        )
+        ? (candidate as unknown as CompanionQueuePayload)
+        : null;
+    case "file":
+      return isCompanionFileName(candidate.fileName) &&
+        isCompanionMime(candidate.mimeType, "") &&
+        isCompanionInteger(
+          candidate.byteLength,
+          0,
+          MAX_COMPANION_MEDIA_METADATA_BYTES,
+        )
+        ? (candidate as unknown as CompanionQueuePayload)
+        : null;
+    case "task":
+      return isCompanionBoundedText(candidate.title, 256) &&
+        isCompanionBoundedText(candidate.summary, 2_048)
+        ? (candidate as unknown as CompanionQueuePayload)
+        : null;
+    default:
+      return null;
+  }
+}
+
+export function parseCompanionDevice(value: unknown): CompanionDevice | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasCompanionForbiddenField(candidate) &&
+    isCompanionReference(candidate.id, 128) &&
+    isCompanionReference(candidate.agentId, 96) &&
+    isCompanionReference(candidate.ownerUserId, 96) &&
+    isCompanionReference(candidate.deviceId, 96) &&
+    candidate.platform === "android" &&
+    candidate.appVersion === COMPANION_FIXTURE_APP_VERSION &&
+    isCompanionProtocolVersion(candidate.protocolVersion) &&
+    isCompanionDeviceStatus(candidate.status) &&
+    isCompanionReference(candidate.fingerprint) &&
+    isCompanionReference(candidate.pairingNonceMetadata) &&
+    isCompanionInteger(candidate.keyVersion, 1, 32) &&
+    (candidate.pairingExpiresAt === null ||
+      isCompanionTimestamp(candidate.pairingExpiresAt)) &&
+    (candidate.pairedAt === null || isCompanionTimestamp(candidate.pairedAt)) &&
+    (candidate.revokedAt === null ||
+      isCompanionTimestamp(candidate.revokedAt)) &&
+    (candidate.lastSeenAt === null ||
+      isCompanionTimestamp(candidate.lastSeenAt)) &&
+    candidate.compatible === true &&
+    candidate.standaloneFallback === true &&
+    isCompanionTimestamp(candidate.createdAt) &&
+    isCompanionTimestamp(candidate.updatedAt)
+    ? (candidate as unknown as CompanionDevice)
+    : null;
+}
+
+export function parseCompanionSessionProof(
+  value: unknown,
+): CompanionSessionProof | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasCompanionForbiddenField(candidate) &&
+    isCompanionReference(candidate.sessionId, 128) &&
+    isCompanionReference(candidate.deviceId, 96) &&
+    isCompanionReference(candidate.sessionNonceMetadata) &&
+    isCompanionReference(candidate.keyFingerprint) &&
+    candidate.appVersion === COMPANION_FIXTURE_APP_VERSION &&
+    isCompanionProtocolVersion(candidate.protocolVersion) &&
+    isCompanionReference(candidate.messageNonceMetadata) &&
+    isCompanionInteger(candidate.replayCounter, 1, Number.MAX_SAFE_INTEGER)
+    ? (candidate as unknown as CompanionSessionProof)
+    : null;
+}
+
+export function parseCompanionSession(value: unknown): CompanionSession | null {
+  const candidate = toolRecord(value);
+  const protocol = parseCompanionProtocolInfo(candidate?.protocol);
+  const handshake = parseCompanionProtocolMessage(candidate?.handshake);
+  return candidate !== null &&
+    !hasCompanionForbiddenField(candidate) &&
+    isCompanionReference(candidate.id, 128) &&
+    isCompanionReference(candidate.deviceId, 96) &&
+    isCompanionReference(candidate.agentId, 96) &&
+    isCompanionReference(candidate.ownerUserId, 96) &&
+    isCompanionSessionStatus(candidate.status) &&
+    isCompanionProtocolVersion(candidate.protocolVersion) &&
+    candidate.appVersion === COMPANION_FIXTURE_APP_VERSION &&
+    candidate.negotiatedProtocolVersion === COMPANION_PROTOCOL_VERSION &&
+    isCompanionReference(candidate.keyFingerprint) &&
+    isCompanionReference(candidate.sessionNonceMetadata) &&
+    isCompanionInteger(
+      candidate.lastReplayCounter,
+      1,
+      Number.MAX_SAFE_INTEGER,
+    ) &&
+    isCompanionTimestamp(candidate.connectedAt) &&
+    isCompanionTimestamp(candidate.lastSeenAt) &&
+    (candidate.disconnectedAt === null ||
+      isCompanionTimestamp(candidate.disconnectedAt)) &&
+    protocol !== null &&
+    protocol.protocolVersion === candidate.protocolVersion &&
+    handshake !== null &&
+    handshake.kind === "session" &&
+    handshake.sessionId === candidate.id &&
+    handshake.deviceId === candidate.deviceId &&
+    handshake.protocolVersion === candidate.protocolVersion &&
+    isCompanionTimestamp(candidate.updatedAt)
+    ? (candidate as unknown as CompanionSession)
+    : null;
+}
+
+export function parseCompanionQueueItem(
+  value: unknown,
+): CompanionQueueItem | null {
+  const candidate = toolRecord(value);
+  const payload = parseCompanionQueuePayload(candidate?.payload);
+  return candidate !== null &&
+    !hasCompanionForbiddenField(candidate) &&
+    isCompanionReference(candidate.id, 128) &&
+    isCompanionReference(candidate.deviceId, 96) &&
+    isCompanionReference(candidate.sessionId, 128) &&
+    isCompanionReference(candidate.agentId, 96) &&
+    isCompanionReference(candidate.ownerUserId, 96) &&
+    payload !== null &&
+    candidate.kind === payload.kind &&
+    isCompanionQueueStatus(candidate.status) &&
+    isCompanionBoundedText(candidate.summary, 512) &&
+    candidate.metadataOnly === true &&
+    candidate.mediaBytesPersisted === false &&
+    candidate.approvalRequired === true &&
+    isCompanionInteger(candidate.retryCount, 0, MAX_COMPANION_RETRY_COUNT) &&
+    (candidate.errorCode === null ||
+      isCompanionReference(candidate.errorCode)) &&
+    isCompanionTimestamp(candidate.createdAt) &&
+    isCompanionTimestamp(candidate.previewedAt) &&
+    (candidate.approvedAt === null ||
+      isCompanionTimestamp(candidate.approvedAt)) &&
+    (candidate.cancelledAt === null ||
+      isCompanionTimestamp(candidate.cancelledAt)) &&
+    isCompanionTimestamp(candidate.updatedAt)
+    ? (candidate as unknown as CompanionQueueItem)
+    : null;
+}
+
+export function parseCompanionHistoryRecord(
+  value: unknown,
+): CompanionHistoryRecord | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasCompanionForbiddenField(candidate) &&
+    isCompanionReference(candidate.id, 128) &&
+    (candidate.deviceId === null ||
+      isCompanionReference(candidate.deviceId, 96)) &&
+    (candidate.sessionId === null ||
+      isCompanionReference(candidate.sessionId, 128)) &&
+    isCompanionReference(candidate.agentId, 96) &&
+    isCompanionReference(candidate.ownerUserId, 96) &&
+    isCompanionReference(candidate.direction, 32) &&
+    isCompanionReference(candidate.kind, 32) &&
+    isCompanionBoundedText(candidate.summary, 512) &&
+    candidate.metadataOnly === true &&
+    candidate.mediaBytesPersisted === false &&
+    isCompanionTimestamp(candidate.createdAt)
+    ? (candidate as unknown as CompanionHistoryRecord)
+    : null;
+}
+
+export function parseCompanionAuditRecord(
+  value: unknown,
+): CompanionAuditRecord | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasCompanionForbiddenField(candidate) &&
+    isCompanionReference(candidate.id, 128) &&
+    (candidate.deviceId === null ||
+      isCompanionReference(candidate.deviceId, 96)) &&
+    (candidate.sessionId === null ||
+      isCompanionReference(candidate.sessionId, 128)) &&
+    (candidate.queueId === null ||
+      isCompanionReference(candidate.queueId, 128)) &&
+    isCompanionReference(candidate.agentId, 96) &&
+    isCompanionReference(candidate.ownerUserId, 96) &&
+    isCompanionReference(candidate.event, 64) &&
+    isCompanionReference(candidate.result, 64) &&
+    (candidate.code === null || isCompanionReference(candidate.code, 96)) &&
+    isCompanionBoundedText(candidate.summary, 512) &&
+    isCompanionTimestamp(candidate.createdAt)
+    ? (candidate as unknown as CompanionAuditRecord)
+    : null;
+}
+
+export function parseCompanionKeyRotation(
+  value: unknown,
+): CompanionKeyRotation | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasCompanionForbiddenField(candidate) &&
+    isCompanionReference(candidate.id, 128) &&
+    isCompanionReference(candidate.deviceId, 96) &&
+    isCompanionReference(candidate.agentId, 96) &&
+    isCompanionReference(candidate.ownerUserId, 96) &&
+    isCompanionReference(candidate.oldFingerprint) &&
+    isCompanionReference(candidate.newFingerprint) &&
+    isCompanionInteger(candidate.oldKeyVersion, 1, 32) &&
+    candidate.newKeyVersion === candidate.oldKeyVersion + 1 &&
+    isCompanionReference(candidate.nonceMetadata) &&
+    candidate.status === "completed" &&
+    isCompanionBoundedText(candidate.reason, 512) &&
+    isCompanionTimestamp(candidate.createdAt)
+    ? (candidate as unknown as CompanionKeyRotation)
+    : null;
+}
+
+export function parseCompanionRevocation(
+  value: unknown,
+): CompanionRevocation | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    !hasCompanionForbiddenField(candidate) &&
+    isCompanionReference(candidate.id, 128) &&
+    isCompanionReference(candidate.deviceId, 96) &&
+    isCompanionReference(candidate.agentId, 96) &&
+    isCompanionReference(candidate.ownerUserId, 96) &&
+    isCompanionDeviceStatus(candidate.previousStatus) &&
+    isCompanionBoundedText(candidate.reason, 512) &&
+    isCompanionTimestamp(candidate.createdAt)
+    ? (candidate as unknown as CompanionRevocation)
+    : null;
+}
+
+function parseCompanionArray<T>(
+  value: unknown,
+  parser: (item: unknown) => T | null,
+  maximum: number,
+): T[] | null {
+  if (!Array.isArray(value) || value.length > maximum) return null;
+  const parsed = value.map(parser);
+  return parsed.every((item): item is T => item !== null) ? parsed : null;
+}
+
+export function parseCompanionDevices(
+  value: unknown,
+): CompanionDevice[] | null {
+  return parseCompanionArray(value, parseCompanionDevice, 4);
+}
+
+export function parseCompanionSessions(
+  value: unknown,
+): CompanionSession[] | null {
+  return parseCompanionArray(value, parseCompanionSession, 32);
+}
+
+export function parseCompanionQueue(
+  value: unknown,
+): CompanionQueueItem[] | null {
+  return parseCompanionArray(value, parseCompanionQueueItem, 16);
+}
+
+export function parseCompanionHistory(
+  value: unknown,
+): CompanionHistoryRecord[] | null {
+  return parseCompanionArray(value, parseCompanionHistoryRecord, 100);
+}
+
+export function parseCompanionAudit(
+  value: unknown,
+): CompanionAuditRecord[] | null {
+  return parseCompanionArray(value, parseCompanionAuditRecord, 100);
+}
+
+export function parseCompanionKeyRotations(
+  value: unknown,
+): CompanionKeyRotation[] | null {
+  return parseCompanionArray(value, parseCompanionKeyRotation, 32);
+}
+
+export function parseCompanionRevocations(
+  value: unknown,
+): CompanionRevocation[] | null {
+  return parseCompanionArray(value, parseCompanionRevocation, 32);
 }
 
 export type QueueEntry = {
