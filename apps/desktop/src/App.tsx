@@ -44,6 +44,12 @@ import type {
   RelationshipRollbackRequest,
   RelationshipState,
   CustomVoiceConsentRequest,
+  ExtensionAuditRecord,
+  ExtensionCapability,
+  ExtensionCatalogEntry,
+  ExtensionManifest,
+  ExtensionProposal,
+  ExtensionSourceKind,
   VoiceSettings,
   VoiceSettingsRequest,
   VoiceSynthesisRequest,
@@ -58,6 +64,9 @@ import type {
 } from "@aip/contracts";
 import {
   parseCognitiveError,
+  parseExtensionAudit,
+  parseExtensionCatalog,
+  parseExtensionProposals,
   parseToolAction,
   parseToolAudit,
   parseToolCatalog,
@@ -4624,6 +4633,669 @@ function ToolControls({
   );
 }
 
+const extensionCapabilityLabels: Record<ExtensionCapability, string> = {
+  agent_context: "contexto limitado do agente",
+  tool_catalog: "catálogo de ferramentas",
+  owner_review: "revisão do Owner",
+};
+
+const OWNER_USER_ID = "usr_owner_local";
+
+const extensionLifecycleLabels: Record<string, string> = {
+  review_required: "aguarda revisão",
+  approved: "aprovada, não ativada",
+  active: "ativa",
+  disabled: "desativada",
+  rejected: "rejeitada",
+  recovery_required: "requer recuperação",
+};
+
+const extensionProposalStatusLabels: Record<string, string> = {
+  pending: "pendente",
+  approved: "aprovada",
+  rejected: "rejeitada",
+  withdrawn: "retirada",
+};
+
+const extensionErrorLabels: Record<string, string> = {
+  extensions_blocked_temporary:
+    "Extensões bloqueadas durante a conversa temporária.",
+  extensions_blocked_safe_mode: "Extensões bloqueadas pelo modo seguro.",
+  extension_already_exists: "Já existe uma extensão com este identificador.",
+  extension_not_found: "A extensão selecionada não foi encontrada.",
+  extension_proposal_not_found: "A proposta selecionada não foi encontrada.",
+  extension_manifest_invalid: "O manifesto não passou na validação.",
+  extension_sdk_incompatible: "A versão do SDK não é compatível.",
+  extension_id_invalid: "O identificador da extensão é inválido.",
+  extension_version_invalid: "A versão deve seguir o formato x.y.z.",
+  extension_text_invalid: "O texto do manifesto é inválido.",
+  extension_fixture_invalid: "A referência fixture local é inválida.",
+  extension_sandbox_invalid: "Somente a política metadata-only é permitida.",
+  extension_admission_denied: "Somente fixtures locais são admitidos.",
+  extension_untrusted_required: "A extensão precisa permanecer não confiável.",
+  extension_capability_invalid: "A lista de capacidades é inválida.",
+  extension_source_invalid: "A origem da extensão não é válida.",
+  extension_review_required: "A proposta precisa de revisão do Owner.",
+  extension_review_reason_required: "Informe o motivo da rejeição.",
+  extension_permission_invalid: "As capacidades aprovadas não são válidas.",
+  extension_permission_required: "Revise as permissões antes de ativar.",
+  extension_update_requires_review:
+    "A atualização exige nova revisão antes da ativação.",
+  extension_rollback_unavailable:
+    "Não há revisão aprovada disponível para rollback.",
+  extension_owner_required: "Esta ação exige autorização explícita do Owner.",
+  extension_proposal_self_review:
+    "O agente que criou a proposta não pode revisá-la.",
+  idempotency_conflict: "A operação conflita com uma solicitação anterior.",
+  extension_payload_invalid:
+    "A resposta da extensão não passou no contrato seguro.",
+};
+
+function extensionErrorMessage(error: unknown): string {
+  const typed = parseCognitiveError(error);
+  const code =
+    typed?.code ??
+    (typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : "operation_unavailable");
+  return (
+    extensionErrorLabels[code] ?? "A operação de extensões não está disponível."
+  );
+}
+
+function parseExtensionPayload<T>(
+  value: unknown,
+  parser: (input: unknown) => T | null,
+): T {
+  const parsed = parser(value);
+  if (parsed === null) throw new Error("extension_payload_invalid");
+  return parsed;
+}
+
+function ExtensionControls({
+  agentId,
+  temporaryChat,
+  safeMode,
+}: {
+  agentId: string;
+  temporaryChat: boolean;
+  safeMode: boolean;
+}) {
+  const [catalog, setCatalog] = useState<ExtensionCatalogEntry[]>([]);
+  const [proposals, setProposals] = useState<ExtensionProposal[]>([]);
+  const [audit, setAudit] = useState<ExtensionAuditRecord[]>([]);
+  const [selectedExtensionId, setSelectedExtensionId] = useState("");
+  const [selectedProposalId, setSelectedProposalId] = useState("");
+  const [extensionId, setExtensionId] = useState("fixture.notes");
+  const [extensionVersion, setExtensionVersion] = useState("1.0.0");
+  const [extensionName, setExtensionName] = useState("Notas locais fixture");
+  const [fixtureRef, setFixtureRef] = useState("fixture:extension/notes");
+  const [sourceKind, setSourceKind] = useState<ExtensionSourceKind>(
+    "administrator_selected",
+  );
+  const [capabilities, setCapabilities] = useState<ExtensionCapability[]>([
+    "tool_catalog",
+  ]);
+  const [approvedCapabilities, setApprovedCapabilities] = useState<
+    ExtensionCapability[]
+  >([]);
+  const [reviewReason, setReviewReason] = useState("");
+  const [rollbackRevision, setRollbackRevision] = useState("1");
+  const [disableReason, setDisableReason] = useState("Revisão manual do Owner");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const blocked = temporaryChat || safeMode;
+
+  const loadData = useCallback(async () => {
+    const [rawCatalog, rawProposals, rawAudit] = await Promise.all([
+      invoke<unknown>("list_extension_catalog", { agentId }),
+      invoke<unknown>("list_extension_proposals", { agentId }),
+      invoke<unknown>("list_extension_audit", { agentId }),
+    ]);
+    const nextCatalog = parseExtensionPayload(
+      rawCatalog,
+      parseExtensionCatalog,
+    );
+    const nextProposals = parseExtensionPayload(
+      rawProposals,
+      parseExtensionProposals,
+    );
+    const nextAudit = parseExtensionPayload(rawAudit, parseExtensionAudit);
+    setCatalog(nextCatalog);
+    setProposals(nextProposals);
+    setAudit(nextAudit);
+    setSelectedExtensionId((current) =>
+      current && nextCatalog.some((entry) => entry.extensionId === current)
+        ? current
+        : (nextCatalog[0]?.extensionId ?? ""),
+    );
+    setSelectedProposalId((current) =>
+      current && nextProposals.some((proposal) => proposal.id === current)
+        ? current
+        : (nextProposals[0]?.id ?? ""),
+    );
+  }, [agentId]);
+
+  useEffect(() => {
+    void loadData().catch((loadError: unknown) => {
+      setError(extensionErrorMessage(loadError));
+    });
+  }, [loadData]);
+
+  const selectedCatalog = catalog.find(
+    (entry) => entry.extensionId === selectedExtensionId,
+  );
+  const selectedProposal = proposals.find(
+    (proposal) => proposal.id === selectedProposalId,
+  );
+
+  useEffect(() => {
+    if (!selectedProposal) return;
+    setApprovedCapabilities(selectedProposal.requestedCapabilities);
+    setReviewReason("");
+  }, [selectedProposal]);
+
+  useEffect(() => {
+    if (!selectedCatalog) return;
+    setExtensionId(selectedCatalog.extensionId);
+    setExtensionVersion(selectedCatalog.manifest.extensionVersion);
+    setExtensionName(selectedCatalog.manifest.name);
+    setFixtureRef(selectedCatalog.manifest.localFixtureRef ?? "");
+    setSourceKind(selectedCatalog.sourceKind);
+    setCapabilities(selectedCatalog.manifest.capabilities);
+    setRollbackRevision(
+      String(Math.max(1, selectedCatalog.currentRevision - 1)),
+    );
+  }, [selectedCatalog]);
+
+  function buildManifest(id = extensionId): ExtensionManifest {
+    return {
+      extensionId: id.trim(),
+      manifestVersion: 1,
+      extensionVersion: extensionVersion.trim(),
+      sdkVersion: "aip-extension-sdk/v1",
+      name: extensionName.trim(),
+      sandboxPolicy: "metadata_only",
+      admissionPolicy: "local_fixture_only",
+      capabilities,
+      localFixtureRef: fixtureRef.trim() || null,
+      untrusted: true,
+    };
+  }
+
+  async function createProposal(kind: ExtensionSourceKind) {
+    if (blocked) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const manifest = buildManifest();
+      const raw =
+        kind === "agent_created"
+          ? await invoke<unknown>("create_agent_extension_proposal", {
+              agentId,
+              ownerUserId: OWNER_USER_ID,
+              manifest,
+              idempotencyKey: ["extension-agent-", crypto.randomUUID()].join(
+                "",
+              ),
+              temporaryChat,
+            })
+          : await invoke<unknown>("create_extension_proposal", {
+              agentId,
+              ownerUserId: OWNER_USER_ID,
+              sourceKind: kind,
+              proposerAgentId: null,
+              manifest,
+              idempotencyKey: ["extension-owner-", crypto.randomUUID()].join(
+                "",
+              ),
+              temporaryChat,
+            });
+      const next = parseExtensionPayload(raw, (value) => {
+        const parsed = parseExtensionProposals([value]);
+        return parsed?.[0] ?? null;
+      });
+      setSelectedProposalId(next.id);
+      await loadData();
+    } catch (createError: unknown) {
+      setError(extensionErrorMessage(createError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reviewProposal(approved: boolean) {
+    if (!selectedProposal || blocked) return;
+    if (!approved && !reviewReason.trim()) {
+      setError("Informe o motivo para rejeitar a proposta.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("review_extension_proposal", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        proposalId: selectedProposal.id,
+        approved,
+        approvedCapabilities: approved ? approvedCapabilities : [],
+        reason: reviewReason.trim() || null,
+        idempotencyKey: ["extension-review-", crypto.randomUUID()].join(""),
+        temporaryChat,
+      });
+      await loadData();
+    } catch (reviewError: unknown) {
+      setError(extensionErrorMessage(reviewError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function activateProposal() {
+    if (!selectedProposal || blocked) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("activate_extension", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        extensionId: selectedProposal.extensionId,
+        proposalId: selectedProposal.id,
+        idempotencyKey: ["extension-activate-", crypto.randomUUID()].join(""),
+        temporaryChat,
+      });
+      await loadData();
+    } catch (activateError: unknown) {
+      setError(extensionErrorMessage(activateError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateSelectedExtension() {
+    if (!selectedCatalog || blocked) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const raw = await invoke<unknown>("update_extension", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        extensionId: selectedCatalog.extensionId,
+        sourceKind: selectedCatalog.sourceKind,
+        proposerAgentId:
+          selectedCatalog.sourceKind === "agent_created" ? agentId : null,
+        manifest: buildManifest(selectedCatalog.extensionId),
+        idempotencyKey: ["extension-update-", crypto.randomUUID()].join(""),
+        temporaryChat,
+      });
+      const next = parseExtensionPayload(raw, (value) => {
+        const parsed = parseExtensionProposals([value]);
+        return parsed?.[0] ?? null;
+      });
+      setSelectedProposalId(next.id);
+      await loadData();
+    } catch (updateError: unknown) {
+      setError(extensionErrorMessage(updateError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rollbackSelectedExtension() {
+    if (!selectedCatalog || blocked) return;
+    const targetRevision = Number(rollbackRevision);
+    if (!Number.isInteger(targetRevision) || targetRevision < 1) {
+      setError("Informe uma revisão anterior válida para rollback.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("rollback_extension", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        extensionId: selectedCatalog.extensionId,
+        targetRevision,
+        idempotencyKey: ["extension-rollback-", crypto.randomUUID()].join(""),
+        temporaryChat,
+      });
+      await loadData();
+    } catch (rollbackError: unknown) {
+      setError(extensionErrorMessage(rollbackError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disableSelectedExtension() {
+    if (!selectedCatalog || blocked) return;
+    if (!disableReason.trim()) {
+      setError("Informe o motivo da desativação.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke("disable_extension", {
+        agentId,
+        ownerUserId: OWNER_USER_ID,
+        extensionId: selectedCatalog.extensionId,
+        reason: disableReason.trim(),
+        idempotencyKey: ["extension-disable-", crypto.randomUUID()].join(""),
+        temporaryChat,
+      });
+      await loadData();
+    } catch (disableError: unknown) {
+      setError(extensionErrorMessage(disableError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleCapability(capability: ExtensionCapability) {
+    setCapabilities((current) =>
+      current.includes(capability)
+        ? current.filter((value) => value !== capability)
+        : [...current, capability],
+    );
+  }
+
+  function toggleApprovedCapability(capability: ExtensionCapability) {
+    setApprovedCapabilities((current) =>
+      current.includes(capability)
+        ? current.filter((value) => value !== capability)
+        : [...current, capability],
+    );
+  }
+
+  return (
+    <section className="tool-controls" aria-label="Gerenciamento de extensões">
+      <h3>Extensões locais</h3>
+      <p>
+        Catálogo privado de metadados não confiáveis. O A.I.P. não carrega,
+        compila, interpreta ou executa extensões, nem acessa rede, shell,
+        arquivos do sistema ou credenciais.
+      </p>
+      {temporaryChat ? (
+        <p role="alert">
+          Conversa temporária: alterações de extensões bloqueadas.
+        </p>
+      ) : null}
+      {safeMode ? (
+        <p role="alert">Modo seguro: alterações de extensões bloqueadas.</p>
+      ) : null}
+      {error ? <p role="alert">{error}</p> : null}
+
+      <section className="settings-card">
+        <div className="message-actions">
+          <h4>Catálogo privado</h4>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              void loadData().catch((loadError: unknown) =>
+                setError(extensionErrorMessage(loadError)),
+              )
+            }
+          >
+            Atualizar catálogo e auditoria
+          </button>
+        </div>
+        {catalog.length === 0 ? (
+          <p>Nenhuma extensão local registrada.</p>
+        ) : (
+          <ul>
+            {catalog.map((entry) => (
+              <li key={entry.extensionId}>
+                <strong>{entry.manifest.name}</strong> — {entry.extensionId} v
+                {entry.manifest.extensionVersion};{" "}
+                {extensionLifecycleLabels[entry.lifecycle] ??
+                  "estado desconhecido"}
+                ; {entry.untrusted ? "não confiável" : "inválida"}.
+              </li>
+            ))}
+          </ul>
+        )}
+        <label>
+          Extensão selecionada
+          <select
+            value={selectedExtensionId}
+            onChange={(event) => setSelectedExtensionId(event.target.value)}
+            disabled={busy}
+          >
+            <option value="">Nenhuma extensão</option>
+            {catalog.map((entry) => (
+              <option key={entry.extensionId} value={entry.extensionId}>
+                {entry.extensionId} —{" "}
+                {extensionLifecycleLabels[entry.lifecycle]}
+              </option>
+            ))}
+          </select>
+        </label>
+      </section>
+
+      <section className="settings-card">
+        <h4>Propostas e revisão do Owner</h4>
+        <label>
+          Proposta selecionada
+          <select
+            value={selectedProposalId}
+            onChange={(event) => setSelectedProposalId(event.target.value)}
+            disabled={busy}
+          >
+            <option value="">Nenhuma proposta</option>
+            {proposals.map((proposal) => (
+              <option key={proposal.id} value={proposal.id}>
+                {proposal.extensionId} r{proposal.revision} —{" "}
+                {extensionProposalStatusLabels[proposal.status]}
+              </option>
+            ))}
+          </select>
+        </label>
+        {selectedProposal ? (
+          <>
+            <p>
+              Origem:{" "}
+              {selectedProposal.sourceKind === "agent_created"
+                ? "proposta do agente"
+                : "seleção do Owner"}
+              ; revisão {selectedProposal.revision}; capacidades solicitadas:{" "}
+              {selectedProposal.requestedCapabilities
+                .map((capability) => extensionCapabilityLabels[capability])
+                .join(", ") || "nenhuma"}
+              .
+            </p>
+            <fieldset disabled={busy || blocked}>
+              <legend>Permissões que serão aprovadas</legend>
+              {selectedProposal.requestedCapabilities.map((capability) => (
+                <label key={capability}>
+                  <input
+                    type="checkbox"
+                    checked={approvedCapabilities.includes(capability)}
+                    onChange={() => toggleApprovedCapability(capability)}
+                  />{" "}
+                  {extensionCapabilityLabels[capability]}
+                </label>
+              ))}
+              <label>
+                Motivo ou observação da revisão
+                <textarea
+                  value={reviewReason}
+                  onChange={(event) => setReviewReason(event.target.value)}
+                  placeholder="Obrigatório ao rejeitar"
+                />
+              </label>
+              <div className="message-actions">
+                <button type="button" onClick={() => void reviewProposal(true)}>
+                  Aprovar proposta
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void reviewProposal(false)}
+                >
+                  Rejeitar proposta
+                </button>
+              </div>
+            </fieldset>
+            <div className="message-actions">
+              <button
+                type="button"
+                disabled={
+                  busy || blocked || selectedProposal.status !== "approved"
+                }
+                onClick={() => void activateProposal()}
+              >
+                Ativar explicitamente
+              </button>
+            </div>
+          </>
+        ) : (
+          <p>Nenhuma proposta pendente ou selecionada.</p>
+        )}
+      </section>
+
+      <section className="settings-card">
+        <h4>Registrar ou atualizar metadados</h4>
+        <fieldset disabled={busy || blocked}>
+          <label>
+            Identificador
+            <input
+              value={extensionId}
+              onChange={(event) => setExtensionId(event.target.value)}
+            />
+          </label>
+          <label>
+            Nome
+            <input
+              value={extensionName}
+              onChange={(event) => setExtensionName(event.target.value)}
+            />
+          </label>
+          <label>
+            Versão x.y.z
+            <input
+              value={extensionVersion}
+              onChange={(event) => setExtensionVersion(event.target.value)}
+            />
+          </label>
+          <label>
+            Referência fixture local
+            <input
+              value={fixtureRef}
+              onChange={(event) => setFixtureRef(event.target.value)}
+            />
+          </label>
+          <label>
+            Origem da nova proposta
+            <select
+              value={sourceKind}
+              onChange={(event) =>
+                setSourceKind(event.target.value as ExtensionSourceKind)
+              }
+            >
+              <option value="administrator_selected">
+                Selecionada pelo Owner
+              </option>
+              <option value="agent_created">
+                Proposta do agente (somente revisão)
+              </option>
+            </select>
+          </label>
+          <fieldset>
+            <legend>Capacidades declaradas</legend>
+            {(
+              Object.keys(extensionCapabilityLabels) as ExtensionCapability[]
+            ).map((capability) => (
+              <label key={capability}>
+                <input
+                  type="checkbox"
+                  checked={capabilities.includes(capability)}
+                  onChange={() => toggleCapability(capability)}
+                />{" "}
+                {extensionCapabilityLabels[capability]}
+              </label>
+            ))}
+          </fieldset>
+          <div className="message-actions">
+            <button
+              type="button"
+              onClick={() => void createProposal(sourceKind)}
+            >
+              {sourceKind === "agent_created"
+                ? "Registrar proposta do agente"
+                : "Registrar proposta do Owner"}
+            </button>
+            <button
+              type="button"
+              disabled={!selectedCatalog}
+              onClick={() => void updateSelectedExtension()}
+            >
+              Enviar atualização para nova revisão
+            </button>
+          </div>
+        </fieldset>
+        <p>
+          Atualizações desativam a revisão ativa e sempre voltam para revisão;
+          ampliar capacidades não ativa permissões automaticamente.
+        </p>
+      </section>
+
+      <section className="settings-card">
+        <h4>Rollback e desativação explícita</h4>
+        <fieldset disabled={busy || blocked || !selectedCatalog}>
+          <label>
+            Revisão aprovada alvo
+            <input
+              type="number"
+              min="1"
+              value={rollbackRevision}
+              onChange={(event) => setRollbackRevision(event.target.value)}
+            />
+          </label>
+          <label>
+            Motivo da desativação
+            <textarea
+              value={disableReason}
+              onChange={(event) => setDisableReason(event.target.value)}
+            />
+          </label>
+          <div className="message-actions">
+            <button
+              type="button"
+              onClick={() => void rollbackSelectedExtension()}
+            >
+              Fazer rollback
+            </button>
+            <button
+              type="button"
+              onClick={() => void disableSelectedExtension()}
+            >
+              Desativar extensão
+            </button>
+          </div>
+        </fieldset>
+      </section>
+
+      <section className="settings-card">
+        <h4>Auditoria recente</h4>
+        {audit.length === 0 ? (
+          <p>Nenhum evento de extensão registrado para este agente.</p>
+        ) : (
+          <ul>
+            {audit.slice(0, 20).map((record) => (
+              <li key={record.id}>
+                <strong>{record.event}</strong>: {record.summary}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </section>
+  );
+}
+
 function SettingsSurface({
   snapshot,
   changingMode,
@@ -4940,6 +5612,14 @@ function App() {
             <details>
               <summary>Ferramentas supervisionadas</summary>
               <ToolControls
+                agentId={activeAgentId}
+                temporaryChat={temporaryChat}
+                safeMode={snapshot?.safeMode ?? true}
+              />
+            </details>
+            <details>
+              <summary>Extensões locais</summary>
+              <ExtensionControls
                 agentId={activeAgentId}
                 temporaryChat={temporaryChat}
                 safeMode={snapshot?.safeMode ?? true}

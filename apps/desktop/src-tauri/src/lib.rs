@@ -3,6 +3,7 @@ mod cognitive;
 mod conversation;
 mod database;
 mod domain;
+mod extensions;
 mod fullscreen;
 mod native_overlay_region;
 mod overlays;
@@ -37,6 +38,11 @@ use database::Database;
 use domain::{
     AgentMemory, AgentSimulatedState, AppSnapshot, CognitiveEvent, CognitiveEventExplanation,
     CognitiveTrait, ConversationMessage, PhaseOneConversation, PhaseOneState, SendMessageResult,
+};
+use extensions::{
+    ExtensionActivationRequest, ExtensionAgentProposalRequest, ExtensionAuditRecord,
+    ExtensionCatalogEntry, ExtensionDisableRequest, ExtensionProposal, ExtensionProposalRequest,
+    ExtensionReviewRequest, ExtensionRollbackRequest, ExtensionUpdateRequest,
 };
 use overlays::{InteractiveRegion, OverlayInputState};
 use runtime::RuntimeController;
@@ -900,6 +906,151 @@ fn list_tool_audit(
         .map_err(|error| error.code())
 }
 
+fn ensure_extension_mutation_allowed(
+    state: &AppState,
+    agent_id: &str,
+    requested_temporary: bool,
+) -> Result<(), &'static str> {
+    ensure_conversation_not_temporary(state, agent_id, requested_temporary)
+}
+
+#[tauri::command]
+fn list_extension_catalog(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ExtensionCatalogEntry>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_extension_catalog(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_extension_proposals(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ExtensionProposal>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_extension_proposals(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn create_extension_proposal(
+    state: State<'_, AppState>,
+    request: ExtensionProposalRequest,
+) -> Result<ExtensionProposal, &'static str> {
+    ensure_extension_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .create_extension_proposal(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn create_agent_extension_proposal(
+    state: State<'_, AppState>,
+    request: ExtensionAgentProposalRequest,
+) -> Result<ExtensionProposal, &'static str> {
+    ensure_extension_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .create_agent_extension_proposal(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn review_extension_proposal(
+    state: State<'_, AppState>,
+    request: ExtensionReviewRequest,
+) -> Result<ExtensionProposal, &'static str> {
+    ensure_extension_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .review_extension_proposal(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn activate_extension(
+    state: State<'_, AppState>,
+    request: ExtensionActivationRequest,
+) -> Result<ExtensionCatalogEntry, &'static str> {
+    ensure_extension_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .activate_extension(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn update_extension(
+    state: State<'_, AppState>,
+    request: ExtensionUpdateRequest,
+) -> Result<ExtensionProposal, &'static str> {
+    ensure_extension_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .update_extension(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn rollback_extension(
+    state: State<'_, AppState>,
+    request: ExtensionRollbackRequest,
+) -> Result<ExtensionCatalogEntry, &'static str> {
+    ensure_extension_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .rollback_extension(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn disable_extension(
+    state: State<'_, AppState>,
+    request: ExtensionDisableRequest,
+) -> Result<ExtensionCatalogEntry, &'static str> {
+    ensure_extension_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .disable_extension(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_extension_audit(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<Vec<ExtensionAuditRecord>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_extension_audit(&agent_id)
+        .map_err(|error| error.code())
+}
+
 #[tauri::command]
 fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, &'static str> {
     snapshot(&state)
@@ -1657,6 +1808,16 @@ pub fn run() {
             compensate_tool_action,
             cancel_tool_session,
             list_tool_audit,
+            list_extension_catalog,
+            list_extension_proposals,
+            create_extension_proposal,
+            create_agent_extension_proposal,
+            review_extension_proposal,
+            activate_extension,
+            update_extension,
+            rollback_extension,
+            disable_extension,
+            list_extension_audit,
             set_safe_mode,
             get_phase_one_state,
             get_temporary_phase_one_state,

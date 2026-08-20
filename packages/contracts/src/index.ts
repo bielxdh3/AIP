@@ -394,6 +394,145 @@ export type ToolAuditRecord = {
   createdAt: number;
 };
 
+export const EXTENSION_SDK_VERSION = "aip-extension-sdk/v1" as const;
+export type ExtensionCapability =
+  "agent_context" | "tool_catalog" | "owner_review";
+export type ExtensionSandboxPolicy = "metadata_only";
+export type ExtensionAdmissionPolicy = "local_fixture_only";
+export type ExtensionSourceKind = "administrator_selected" | "agent_created";
+export type ExtensionCatalogScope = "private_local";
+export type ExtensionLifecycle =
+  | "review_required"
+  | "approved"
+  | "active"
+  | "disabled"
+  | "rejected"
+  | "recovery_required";
+export type ExtensionReviewStatus = "pending" | "approved" | "rejected";
+export type ExtensionProposalStatus =
+  "pending" | "approved" | "rejected" | "withdrawn";
+export type ExtensionPermissionStatus = "pending" | "approved" | "denied";
+
+export type ExtensionManifest = {
+  extensionId: string;
+  manifestVersion: 1;
+  extensionVersion: string;
+  sdkVersion: string;
+  name: string;
+  sandboxPolicy: ExtensionSandboxPolicy;
+  admissionPolicy: ExtensionAdmissionPolicy;
+  capabilities: ExtensionCapability[];
+  localFixtureRef: string | null;
+  untrusted: true;
+};
+export type ExtensionPermissionRequest = {
+  capability: ExtensionCapability;
+  status: ExtensionPermissionStatus;
+};
+export type ExtensionCatalogEntry = {
+  extensionId: string;
+  catalogScope: ExtensionCatalogScope;
+  sourceKind: ExtensionSourceKind;
+  lifecycle: ExtensionLifecycle;
+  reviewStatus: ExtensionReviewStatus;
+  manifest: ExtensionManifest;
+  currentRevision: number;
+  activeRevision: number | null;
+  approvedCapabilities: ExtensionCapability[];
+  compatible: boolean;
+  untrusted: true;
+  updatedAt: number;
+};
+export type ExtensionProposal = {
+  id: string;
+  extensionId: string;
+  revision: number;
+  sourceKind: ExtensionSourceKind;
+  proposerAgentId: string | null;
+  status: ExtensionProposalStatus;
+  reviewStatus: ExtensionReviewStatus;
+  manifest: ExtensionManifest;
+  requestedCapabilities: ExtensionCapability[];
+  approvedCapabilities: ExtensionCapability[];
+  permissions: ExtensionPermissionRequest[];
+  compatible: boolean;
+  reviewReason: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+export type ExtensionAuditRecord = {
+  id: string;
+  extensionId: string | null;
+  proposalId: string | null;
+  revision: number | null;
+  agentId: string;
+  event: string;
+  result: string;
+  code: string | null;
+  summary: string;
+  createdAt: number;
+};
+export type ExtensionProposalRequest = {
+  agentId: string;
+  ownerUserId: string;
+  sourceKind: ExtensionSourceKind;
+  proposerAgentId: string | null;
+  manifest: ExtensionManifest;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ExtensionAgentProposalRequest = {
+  agentId: string;
+  ownerUserId: string;
+  manifest: ExtensionManifest;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ExtensionUpdateRequest = {
+  agentId: string;
+  ownerUserId: string;
+  extensionId: string;
+  sourceKind: ExtensionSourceKind;
+  proposerAgentId: string | null;
+  manifest: ExtensionManifest;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ExtensionReviewRequest = {
+  agentId: string;
+  ownerUserId: string;
+  proposalId: string;
+  approved: boolean;
+  approvedCapabilities: ExtensionCapability[];
+  reason: string | null;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ExtensionActivationRequest = {
+  agentId: string;
+  ownerUserId: string;
+  extensionId: string;
+  proposalId: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ExtensionRollbackRequest = {
+  agentId: string;
+  ownerUserId: string;
+  extensionId: string;
+  targetRevision: number;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ExtensionDisableRequest = {
+  agentId: string;
+  ownerUserId: string;
+  extensionId: string;
+  reason: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+
 export type CognitiveTrait = {
   key: string;
   value: number;
@@ -875,7 +1014,41 @@ export type CognitiveErrorCode =
   | "tool_confirmation_not_required"
   | "tool_confirmation_required"
   | "tool_action_not_confirmable"
-  | "tool_compensation_unavailable";
+  | "tool_compensation_unavailable"
+  | "extensions_blocked_temporary"
+  | "extensions_blocked_safe_mode"
+  | "extension_already_exists"
+  | "extension_not_found"
+  | "extension_proposal_not_found"
+  | "extension_revision_not_found"
+  | "extension_manifest_invalid"
+  | "extension_manifest_oversized"
+  | "extension_sdk_incompatible"
+  | "extension_id_invalid"
+  | "extension_identity_invalid"
+  | "extension_version_invalid"
+  | "extension_text_invalid"
+  | "extension_fixture_invalid"
+  | "extension_sandbox_invalid"
+  | "extension_admission_denied"
+  | "extension_untrusted_required"
+  | "extension_capability_invalid"
+  | "extension_capability_expansion"
+  | "extension_source_invalid"
+  | "extension_revision_invalid"
+  | "extension_proposal_invalid"
+  | "extension_review_required"
+  | "extension_review_reason_required"
+  | "extension_permission_invalid"
+  | "extension_permission_required"
+  | "extension_update_requires_review"
+  | "extension_rollback_unavailable"
+  | "extension_audit_oversized"
+  | "extension_owner_required"
+  | "extension_proposal_self_review"
+  | "extension_request_oversized"
+  | "extension_result_oversized"
+  | "extension_idempotency_invalid";
 export type CognitiveErrorResponse = {
   code: CognitiveErrorCode;
   message: string;
@@ -1053,6 +1226,35 @@ export function parseCognitiveError(
     "tool_confirmation_required",
     "tool_action_not_confirmable",
     "tool_compensation_unavailable",
+    "extensions_blocked_temporary",
+    "extensions_blocked_safe_mode",
+    "extension_already_exists",
+    "extension_not_found",
+    "extension_proposal_not_found",
+    "extension_revision_not_found",
+    "extension_manifest_invalid",
+    "extension_manifest_oversized",
+    "extension_sdk_incompatible",
+    "extension_id_invalid",
+    "extension_identity_invalid",
+    "extension_version_invalid",
+    "extension_text_invalid",
+    "extension_fixture_invalid",
+    "extension_sandbox_invalid",
+    "extension_admission_denied",
+    "extension_untrusted_required",
+    "extension_capability_invalid",
+    "extension_capability_expansion",
+    "extension_source_invalid",
+    "extension_revision_invalid",
+    "extension_proposal_invalid",
+    "extension_review_required",
+    "extension_review_reason_required",
+    "extension_permission_invalid",
+    "extension_permission_required",
+    "extension_update_requires_review",
+    "extension_rollback_unavailable",
+    "extension_audit_oversized",
   ];
   return codes.includes(candidate.code as CognitiveErrorCode) &&
     cognitiveString(candidate.message)
@@ -1386,6 +1588,334 @@ export function parseToolAudit(value: unknown): ToolAuditRecord[] | null {
   if (!Array.isArray(value)) return null;
   const records = value.map(parseToolAuditRecord);
   return records.every((record): record is ToolAuditRecord => record !== null)
+    ? records
+    : null;
+}
+
+function isExtensionCapability(value: unknown): value is ExtensionCapability {
+  return (
+    value === "agent_context" ||
+    value === "tool_catalog" ||
+    value === "owner_review"
+  );
+}
+
+const MAX_EXTENSION_ID_LENGTH = 96;
+const MAX_EXTENSION_VERSION_LENGTH = 32;
+const MAX_EXTENSION_SDK_LENGTH = 64;
+const MAX_EXTENSION_NAME_LENGTH = 160;
+const MAX_EXTENSION_CAPABILITIES = 8;
+const MAX_EXTENSION_FIXTURE_LENGTH = 160;
+const MAX_EXTENSION_RECORD_ID_LENGTH = 128;
+const MAX_EXTENSION_AGENT_ID_LENGTH = 96;
+const MAX_EXTENSION_REASON_LENGTH = 512;
+const MAX_EXTENSION_AUDIT_TEXT_LENGTH = 2048;
+
+function isExtensionBoundedText(
+  value: unknown,
+  maximum: number,
+): value is string {
+  return (
+    cognitiveString(value) &&
+    value.length > 0 &&
+    value.length <= maximum &&
+    !Array.from(value).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    })
+  );
+}
+
+function isExtensionId(value: unknown): value is string {
+  return (
+    isExtensionBoundedText(value, MAX_EXTENSION_ID_LENGTH) &&
+    !value.startsWith(".") &&
+    !value.endsWith(".") &&
+    /^[a-z0-9._-]+$/.test(value)
+  );
+}
+
+function isExtensionVersion(value: unknown): value is string {
+  return (
+    isExtensionBoundedText(value, MAX_EXTENSION_VERSION_LENGTH) &&
+    /^(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})\.(0|[1-9]\d{0,5})$/.test(value)
+  );
+}
+
+function isExtensionFixtureRef(value: unknown): value is string {
+  return (
+    isExtensionBoundedText(value, MAX_EXTENSION_FIXTURE_LENGTH) &&
+    value.startsWith("fixture:extension/") &&
+    !value.includes("..") &&
+    !value.includes("\\") &&
+    /^[A-Za-z0-9._:/-]+$/.test(value)
+  );
+}
+
+function isExtensionRecordId(value: unknown): value is string {
+  return isExtensionBoundedText(value, MAX_EXTENSION_RECORD_ID_LENGTH);
+}
+
+function isExtensionAgentId(value: unknown): value is string {
+  return isExtensionBoundedText(value, MAX_EXTENSION_AGENT_ID_LENGTH);
+}
+
+function isExtensionRevision(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= 1 &&
+    value <= 2_147_483_647
+  );
+}
+
+function isExtensionTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function parseExtensionCapabilities(
+  value: unknown,
+): ExtensionCapability[] | null {
+  if (
+    !Array.isArray(value) ||
+    value.length > MAX_EXTENSION_CAPABILITIES ||
+    !value.every(isExtensionCapability)
+  ) {
+    return null;
+  }
+  return new Set(value).size === value.length
+    ? (value as ExtensionCapability[])
+    : null;
+}
+
+function hasSameExtensionCapabilities(
+  left: ExtensionCapability[],
+  right: ExtensionCapability[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((capability) => right.includes(capability))
+  );
+}
+
+export function parseExtensionManifest(
+  value: unknown,
+): ExtensionManifest | null {
+  const candidate = toolRecord(value);
+  const capabilities = parseExtensionCapabilities(candidate?.capabilities);
+  if (
+    candidate !== null &&
+    [
+      "code",
+      "entrypoint",
+      "source",
+      "path",
+      "url",
+      "command",
+      "module",
+      "script",
+      "binary",
+      "package",
+      "network",
+      "hostAccess",
+      "shell",
+      "credentials",
+      "executable",
+      "runtime",
+    ].some((key) => key in candidate)
+  ) {
+    return null;
+  }
+  return candidate !== null &&
+    isExtensionId(candidate.extensionId) &&
+    candidate.manifestVersion === 1 &&
+    isExtensionVersion(candidate.extensionVersion) &&
+    isExtensionBoundedText(candidate.sdkVersion, MAX_EXTENSION_SDK_LENGTH) &&
+    candidate.sdkVersion === EXTENSION_SDK_VERSION &&
+    isExtensionBoundedText(candidate.name, MAX_EXTENSION_NAME_LENGTH) &&
+    candidate.sandboxPolicy === "metadata_only" &&
+    candidate.admissionPolicy === "local_fixture_only" &&
+    capabilities !== null &&
+    (candidate.localFixtureRef === null ||
+      isExtensionFixtureRef(candidate.localFixtureRef)) &&
+    candidate.untrusted === true
+    ? (candidate as unknown as ExtensionManifest)
+    : null;
+}
+
+export function parseExtensionPermissionRequest(
+  value: unknown,
+): ExtensionPermissionRequest | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    isExtensionCapability(candidate.capability) &&
+    ["pending", "approved", "denied"].includes(candidate.status as string)
+    ? (candidate as unknown as ExtensionPermissionRequest)
+    : null;
+}
+
+export function parseExtensionCatalogEntry(
+  value: unknown,
+): ExtensionCatalogEntry | null {
+  const candidate = toolRecord(value);
+  const manifest = parseExtensionManifest(candidate?.manifest);
+  const approvedCapabilities = parseExtensionCapabilities(
+    candidate?.approvedCapabilities,
+  );
+  return candidate !== null &&
+    isExtensionId(candidate.extensionId) &&
+    candidate.catalogScope === "private_local" &&
+    ["administrator_selected", "agent_created"].includes(
+      candidate.sourceKind as string,
+    ) &&
+    [
+      "review_required",
+      "approved",
+      "active",
+      "disabled",
+      "rejected",
+      "recovery_required",
+    ].includes(candidate.lifecycle as string) &&
+    ["pending", "approved", "rejected"].includes(
+      candidate.reviewStatus as string,
+    ) &&
+    manifest !== null &&
+    manifest.extensionId === candidate.extensionId &&
+    isExtensionRevision(candidate.currentRevision) &&
+    (candidate.activeRevision === null ||
+      isExtensionRevision(candidate.activeRevision)) &&
+    approvedCapabilities !== null &&
+    approvedCapabilities.every((capability) =>
+      manifest.capabilities.includes(capability),
+    ) &&
+    typeof candidate.compatible === "boolean" &&
+    candidate.compatible === (manifest.sdkVersion === EXTENSION_SDK_VERSION) &&
+    candidate.untrusted === true &&
+    isExtensionTimestamp(candidate.updatedAt)
+    ? (candidate as unknown as ExtensionCatalogEntry)
+    : null;
+}
+
+export function parseExtensionProposal(
+  value: unknown,
+): ExtensionProposal | null {
+  const candidate = toolRecord(value);
+  const manifest = parseExtensionManifest(candidate?.manifest);
+  const requestedCapabilities = parseExtensionCapabilities(
+    candidate?.requestedCapabilities,
+  );
+  const approvedCapabilities = parseExtensionCapabilities(
+    candidate?.approvedCapabilities,
+  );
+  const permissions = Array.isArray(candidate?.permissions)
+    ? candidate.permissions.map(parseExtensionPermissionRequest)
+    : null;
+  return candidate !== null &&
+    isExtensionRecordId(candidate.id) &&
+    isExtensionId(candidate.extensionId) &&
+    isExtensionRevision(candidate.revision) &&
+    ["administrator_selected", "agent_created"].includes(
+      candidate.sourceKind as string,
+    ) &&
+    (candidate.sourceKind === "administrator_selected"
+      ? candidate.proposerAgentId === null
+      : isExtensionAgentId(candidate.proposerAgentId)) &&
+    ["pending", "approved", "rejected", "withdrawn"].includes(
+      candidate.status as string,
+    ) &&
+    ["pending", "approved", "rejected"].includes(
+      candidate.reviewStatus as string,
+    ) &&
+    manifest !== null &&
+    manifest.extensionId === candidate.extensionId &&
+    requestedCapabilities !== null &&
+    hasSameExtensionCapabilities(
+      requestedCapabilities,
+      manifest.capabilities,
+    ) &&
+    approvedCapabilities !== null &&
+    approvedCapabilities.every((capability) =>
+      requestedCapabilities.includes(capability),
+    ) &&
+    permissions !== null &&
+    permissions.length <= MAX_EXTENSION_CAPABILITIES &&
+    permissions.every(
+      (permission): permission is ExtensionPermissionRequest =>
+        permission !== null,
+    ) &&
+    new Set(permissions.map((permission) => permission.capability)).size ===
+      permissions.length &&
+    permissions.every((permission) =>
+      requestedCapabilities.includes(permission.capability),
+    ) &&
+    typeof candidate.compatible === "boolean" &&
+    candidate.compatible === (manifest.sdkVersion === EXTENSION_SDK_VERSION) &&
+    (candidate.reviewReason === null ||
+      isExtensionBoundedText(
+        candidate.reviewReason,
+        MAX_EXTENSION_REASON_LENGTH,
+      )) &&
+    isExtensionTimestamp(candidate.createdAt) &&
+    isExtensionTimestamp(candidate.updatedAt)
+    ? (candidate as unknown as ExtensionProposal)
+    : null;
+}
+
+export function parseExtensionAuditRecord(
+  value: unknown,
+): ExtensionAuditRecord | null {
+  const candidate = toolRecord(value);
+  return candidate !== null &&
+    isExtensionRecordId(candidate.id) &&
+    (candidate.extensionId === null || isExtensionId(candidate.extensionId)) &&
+    (candidate.proposalId === null ||
+      isExtensionRecordId(candidate.proposalId)) &&
+    (candidate.revision === null || isExtensionRevision(candidate.revision)) &&
+    isExtensionAgentId(candidate.agentId) &&
+    isExtensionBoundedText(candidate.event, 64) &&
+    isExtensionBoundedText(candidate.result, 64) &&
+    (candidate.code === null || isExtensionBoundedText(candidate.code, 96)) &&
+    isExtensionBoundedText(
+      candidate.summary,
+      MAX_EXTENSION_AUDIT_TEXT_LENGTH,
+    ) &&
+    isExtensionTimestamp(candidate.createdAt)
+    ? (candidate as unknown as ExtensionAuditRecord)
+    : null;
+}
+
+export function parseExtensionCatalog(
+  value: unknown,
+): ExtensionCatalogEntry[] | null {
+  if (!Array.isArray(value) || value.length > 64) return null;
+  const entries = value.map(parseExtensionCatalogEntry);
+  return entries.every(
+    (entry): entry is ExtensionCatalogEntry => entry !== null,
+  )
+    ? entries
+    : null;
+}
+
+export function parseExtensionProposals(
+  value: unknown,
+): ExtensionProposal[] | null {
+  if (!Array.isArray(value) || value.length > 64) return null;
+  const proposals = value.map(parseExtensionProposal);
+  return proposals.every(
+    (proposal): proposal is ExtensionProposal => proposal !== null,
+  )
+    ? proposals
+    : null;
+}
+
+export function parseExtensionAudit(
+  value: unknown,
+): ExtensionAuditRecord[] | null {
+  if (!Array.isArray(value) || value.length > 100) return null;
+  const records = value.map(parseExtensionAuditRecord);
+  return records.every(
+    (record): record is ExtensionAuditRecord => record !== null,
+  )
     ? records
     : null;
 }
