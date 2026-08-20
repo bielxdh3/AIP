@@ -328,13 +328,33 @@ describe("CognitivePanel", () => {
       createdAt: 1,
       updatedAt: 1,
     };
+    let rejectOpinionStatus = false;
     invoke.mockImplementation((command: string) => {
       if (command === "list_cognitive_traits") return Promise.resolve(traits);
       if (command === "list_cognitive_events") return Promise.resolve([]);
-      if (command === "list_cognitive_opinions") return Promise.resolve([opinion]);
+      if (command === "list_cognitive_opinions")
+        return Promise.resolve([opinion]);
       if (command === "list_cognitive_relationships")
         return Promise.resolve([relationship]);
       if (command === "list_cognitive_goals") return Promise.resolve([goal]);
+      if (command === "set_cognitive_opinion_status") {
+        return rejectOpinionStatus
+          ? Promise.reject("ownership_mismatch")
+          : Promise.resolve(opinion);
+      }
+      if (
+        command === "correct_cognitive_opinion_evidence" ||
+        command === "recalculate_cognitive_opinion" ||
+        command === "reset_cognitive_relationship" ||
+        command === "rollback_cognitive_relationship"
+      )
+        return Promise.resolve(opinion);
+      if (command === "create_owner_cognitive_goal")
+        return Promise.resolve({
+          ...goal,
+          origin: "owner" as const,
+          status: "active" as const,
+        });
       if (command === "approve_cognitive_goal") {
         goal = { ...goal, status: "active" };
         return Promise.resolve(goal);
@@ -378,6 +398,132 @@ describe("CognitivePanel", () => {
         sourceKind: "owner_testimony",
         sourceReference: null,
       }),
+    );
+
+    change(
+      container.querySelectorAll("textarea")[3] as HTMLTextAreaElement,
+      "Owner corrigiu a evidência",
+    );
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Corrigir evidência")
+        ?.click(),
+    );
+    change(
+      container.querySelectorAll("textarea")[4] as HTMLTextAreaElement,
+      "Evidência corrigida",
+    );
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find(
+          (button) => button.textContent === "Confirmar correção da evidência",
+        )
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "correct_cognitive_opinion_evidence",
+      expect.objectContaining({
+        agentId: "astra",
+        evidenceId: "evidence-1",
+        claimValue: "Evidência corrigida",
+      }),
+    );
+
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find(
+          (button) => button.textContent === "Marcar opinião como disputada",
+        )
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "set_cognitive_opinion_status",
+      expect.objectContaining({
+        agentId: "astra",
+        opinionId: "opinion-1",
+        status: "disputed",
+      }),
+    );
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Recalcular opinião")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "recalculate_cognitive_opinion",
+      expect.objectContaining({ agentId: "astra", opinionId: "opinion-1" }),
+    );
+
+    const relationshipReason = Array.from(container.querySelectorAll("label"))
+      .find((label) =>
+        label.textContent?.startsWith(
+          "Motivo da redefinição do relacionamento",
+        ),
+      )
+      ?.querySelector("textarea");
+    change(
+      relationshipReason as HTMLTextAreaElement,
+      "Owner pediu redefinição",
+    );
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Redefinir relacionamento")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "reset_cognitive_relationship",
+      expect.objectContaining({
+        agentId: "astra",
+        relationshipId: "relationship-1",
+      }),
+    );
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Reverter último evento")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "rollback_cognitive_relationship",
+      expect.objectContaining({
+        agentId: "astra",
+        eventId: "core-event-1",
+      }),
+    );
+
+    const goalTitleInput = Array.from(container.querySelectorAll("label"))
+      .find((label) => label.textContent?.startsWith("Título do objetivo"))
+      ?.querySelector("input");
+    const goalDescriptionInput = Array.from(container.querySelectorAll("label"))
+      .find((label) => label.textContent?.startsWith("Descrição do objetivo"))
+      ?.querySelector("textarea");
+    change(goalTitleInput as HTMLInputElement, "Objetivo do Owner");
+    change(
+      goalDescriptionInput as HTMLTextAreaElement,
+      "Objetivo sem ação externa",
+    );
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent === "Criar objetivo do Owner")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith(
+      "create_owner_cognitive_goal",
+      expect.objectContaining({
+        agentId: "astra",
+        title: "Objetivo do Owner",
+      }),
+    );
+
+    rejectOpinionStatus = true;
+    await act(async () =>
+      Array.from(container.querySelectorAll("button"))
+        .find(
+          (button) => button.textContent === "Marcar opinião como disputada",
+        )
+        ?.click(),
+    );
+    expect(container.textContent).toContain(
+      "Este registro pertence a outro agente.",
     );
 
     await act(async () =>
