@@ -36,6 +36,93 @@ pub struct ProvisionalAgent {
     pub appearance_preset: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CognitiveTrait {
+    pub key: String,
+    pub value: f64,
+    pub is_protected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CognitiveEvent {
+    pub id: String,
+    pub agent_id: String,
+    pub kind: String,
+    pub trait_key: String,
+    pub source_kind: String,
+    pub source_reference: Option<String>,
+    pub reason: String,
+    pub confidence: f64,
+    pub requested_value: f64,
+    pub applied_delta: Option<f64>,
+    pub prior_value: f64,
+    pub resulting_value: f64,
+    pub status: String,
+    pub code: Option<String>,
+    pub rollback_of_event_id: Option<String>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CognitiveEventExplanation {
+    pub event: CognitiveEvent,
+    pub trait_label: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
+pub enum CognitiveSource {
+    ControlledInternal {
+        processor_key: String,
+        evidence_id: String,
+    },
+    ConversationMessage {
+        conversation_id: String,
+        message_id: String,
+    },
+    OwnerCorrection,
+}
+
+impl CognitiveSource {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::ControlledInternal { .. } => "controlled_internal",
+            Self::ConversationMessage { .. } => "conversation_message",
+            Self::OwnerCorrection => "owner_correction",
+        }
+    }
+
+    pub fn evidence_identity(&self) -> Option<String> {
+        match self {
+            Self::ControlledInternal {
+                processor_key,
+                evidence_id,
+            } => Some(format!("{processor_key}:{evidence_id}")),
+            Self::ConversationMessage {
+                conversation_id,
+                message_id,
+            } => Some(format!("{conversation_id}:{message_id}")),
+            Self::OwnerCorrection => None,
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraitDeltaCandidate {
+    pub agent_id: String,
+    pub trait_key: String,
+    pub delta: f64,
+    pub confidence: f64,
+    pub source: CognitiveSource,
+    pub reason: String,
+    pub idempotency_key: String,
+    pub schema_version: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeState {
