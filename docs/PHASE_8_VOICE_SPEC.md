@@ -2,11 +2,10 @@
 
 ## Status and scope
 
-Phase 8 is implemented as a local architecture checkpoint. The checkpoint proves the
-authoritative state model, guarded Tauri boundaries, versioned contracts, Portuguese UI
-controls, metadata-only fixtures, and text fallback. It is implementation-ready for a
-future local audio adapter, but it is not a claim that real audio devices or speech models
-are integrated.
+Phase 8 now includes a bounded on-demand local Windows adapter and provider-neutral argv
+path, exposed through guarded Tauri commands and Portuguese UI controls. Supported-device/
+provider availability, packaged/manual hardware checks, quality, and human Owner validation
+remain open.
 
 The implementation remains standalone, local-first, Owner-scoped, and limited to the two
 seeded agents. It does not add remote access, cloud processing, autonomous conversations,
@@ -35,11 +34,18 @@ The registered Tauri commands are:
 - `transcribe_voice_fixture`;
 - `synthesize_voice_fixture`;
 - `detect_voice_wake_word_fixture`;
+- `transcribe_voice_local`;
+- `synthesize_voice_local`;
+- `detect_voice_wake_word_local`;
+- `cancel_voice_operation`;
+- `get_voice_operation_status`;
 - `classify_voice_emotion`.
 
-The TypeScript contracts parse settings and all fixture results at the UI boundary. The
-Portuguese `VoiceControls` panel exposes local references, consent, fixture checks, and
-degraded-state explanations without making text chat depend on voice availability.
+The TypeScript contracts preserve fixture parsers and add explicit runtime request/result/status
+types. The Portuguese `VoiceControls` panel exposes clearly labeled fixture checks and
+on-demand local actions without making text chat depend on voice availability.
+Runtime examples use `local:wavein:0`, `local:waveout:0`, `local:stt:provider`, and
+`local:tts:provider`; these references do not claim that hardware or providers are present.
 
 ## Safety and privacy invariants
 
@@ -48,8 +54,9 @@ degraded-state explanations without making text chat depend on voice availabilit
 - Silent and suspended agents fail closed for voice settings/consent mutations. Wake-word
   handling returns ignored/degraded metadata and never activates a listener. Voice-muted
   synthesis returns a muted result with text fallback.
-- No microphone capture, raw audio persistence, audio table, upload, network call, telemetry
-  path, or hidden listener exists in this checkpoint.
+- On-demand capture/playback uses bounded in-memory Windows wave adapters and a local,
+  provider-neutral argv path only; there is no background listener. Raw audio persistence,
+  upload, network calls, and telemetry do not exist.
 - Fixture and local references are bounded and character-validated. No real-person voice
   cloning path is implemented; custom consent is synthetic-fixture-only.
 - Emotion classification is a bounded text heuristic presented as uncertain and
@@ -61,9 +68,9 @@ degraded-state explanations without making text chat depend on voice availabilit
 
 | Path          | Implemented checkpoint behavior                                                       | Not yet evidenced                                         |
 | ------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| Transcription | Bounded fixtures return text/confidence or a degraded code.                           | Real microphone/device capture and speech model accuracy. |
-| Synthesis     | Bounded text returns metadata-only duration/voice reference or degraded/muted status. | Real output device playback and subjective quality.       |
-| Wake word     | Fixture detection is explicit; `listenerActive` is always false.                      | Any background listener or hardware integration.          |
+| Transcription | On-demand bounded local Windows capture invokes a configured provider; unavailable devices/models degrade. | Supported availability, packaged checks, and accuracy. |
+| Synthesis     | On-demand bounded local Windows playback invokes a configured provider; unavailable devices/models degrade. | Supported availability, packaged checks, and quality. |
+| Wake word     | On-demand bounded local check invokes a configured provider; `listenerActive` remains false. | Provider/device behavior and Owner validation. |
 | Custom voice  | Synthetic fixture reference with explicit durable consent and revocation.             | Real voice assets, cloning, or personal voice samples.    |
 | Emotion       | Uncertain, non-diagnostic text hypothesis.                                            | Audio emotion inference or clinical interpretation.       |
 

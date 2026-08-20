@@ -235,6 +235,78 @@ export type VoiceWakeWordResult = {
   listenerActive: false;
   metadataOnly: true;
 };
+export type VoiceCaptureRuntimeRequest = {
+  agentId: string;
+  operationId: string;
+  idempotencyKey: string;
+  durationMs: number;
+  temporaryChat: boolean;
+};
+export type VoiceSynthesisRuntimeRequest = {
+  agentId: string;
+  operationId: string;
+  idempotencyKey: string;
+  text: string;
+  temporaryChat: boolean;
+};
+export type VoiceOperationCancellationRequest = {
+  agentId: string;
+  operationId: string;
+};
+export type VoiceOperationStatusRequest = {
+  agentId: string;
+  operationId: string;
+};
+export type VoiceRuntimeStatus = "started" | "completed" | "cancelled" | "degraded";
+export type VoiceOperationStatus = {
+  operationId: string;
+  agentId: string;
+  operation: "transcription" | "synthesis" | "wake_word";
+  status: VoiceRuntimeStatus;
+  code: string | null;
+  providerRef: string | null;
+  durationMs: number | null;
+  rawAudioPersisted: false;
+  listenerActive: false;
+  startedAt: number;
+  completedAt: number | null;
+};
+export type VoiceRuntimeTranscriptionResult = {
+  operationId: string;
+  status: "completed" | "cancelled" | "degraded";
+  code: string | null;
+  text: string | null;
+  confidence: number | null;
+  durationMs: number;
+  providerRef: string | null;
+  source: string;
+  metadataOnly: boolean;
+  rawAudioPersisted: false;
+  textChatFallback: boolean;
+};
+export type VoiceRuntimeSynthesisResult = {
+  operationId: string;
+  status: "completed" | "cancelled" | "degraded" | "muted";
+  code: string | null;
+  voiceRef: string;
+  durationMs: number;
+  providerRef: string | null;
+  source: string;
+  metadataOnly: boolean;
+  rawAudioPersisted: false;
+  textChatFallback: boolean;
+};
+export type VoiceRuntimeWakeWordResult = {
+  operationId: string;
+  status: "detected" | "ignored" | "cancelled" | "degraded";
+  code: string | null;
+  detected: boolean;
+  captureDurationMs: number;
+  providerRef: string | null;
+  source: string;
+  listenerActive: false;
+  metadataOnly: boolean;
+};
 export type VoiceEmotionHypothesisResult = {
   label: "neutral" | "positive" | "concerned";
   confidence: number;
