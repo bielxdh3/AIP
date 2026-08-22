@@ -241,7 +241,7 @@ pub struct GatewayRevocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewayTransferRequest {
     pub agent_id: String,
     pub owner_user_id: String,
@@ -252,7 +252,7 @@ pub struct GatewayTransferRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewayTransferApprovalRequest {
     pub agent_id: String,
     pub owner_user_id: String,
@@ -263,7 +263,7 @@ pub struct GatewayTransferApprovalRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewaySessionRequest {
     pub agent_id: String,
     pub owner_user_id: String,
@@ -279,7 +279,7 @@ pub struct GatewaySessionRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewayReconnectRequest {
     pub agent_id: String,
     pub owner_user_id: String,
@@ -289,7 +289,7 @@ pub struct GatewayReconnectRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewayRecoveryRequest {
     pub agent_id: String,
     pub owner_user_id: String,
@@ -301,7 +301,7 @@ pub struct GatewayRecoveryRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewayRecoveryApprovalRequest {
     pub agent_id: String,
     pub owner_user_id: String,
@@ -313,7 +313,7 @@ pub struct GatewayRecoveryApprovalRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewaySessionActionRequest {
     pub agent_id: String,
     pub owner_user_id: String,
@@ -324,7 +324,7 @@ pub struct GatewaySessionActionRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GatewayTransferActionRequest {
     pub agent_id: String,
     pub owner_user_id: String,
