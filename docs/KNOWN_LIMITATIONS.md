@@ -94,13 +94,13 @@ validation reservations are recorded in
 
 ## Phase 12 Android companion checkpoint
 
-- Phase 12 is a local metadata-only protocol checkpoint. It includes a
-  synthetic Android fixture, Rust/SQLite pairing and session state, nonce/replay
+- Phase 12 now includes a real debug APK and authenticated local/private
+  explicit-connect protocol client. It includes Rust/SQLite pairing and session state, nonce/replay
   checks, compatibility negotiation, rotation/revocation, bounded read-only
   history, metadata-only outgoing queue, explicit Owner approval, audit, and
-  Portuguese controls. It is not an APK or a mobile release.
-- No listener, relay, tunnel, network, Android account, real credential/key
-  material, host filesystem, shell, Python internals, or media bytes are used.
+  Portuguese controls. Physical-device UX, private-LAN smoke testing, and release signing are not claimed.
+- No relay, tunnel, Android account, raw credential persistence, host filesystem,
+  shell, Python internals, or media bytes are used.
   Audio/image/file queue entries retain only bounded descriptive metadata and
   always report `mediaBytesPersisted: false`.
 - Temporary chat and safe mode fail closed for pairing/session/queue/rotation/
