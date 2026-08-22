@@ -902,8 +902,15 @@ describe("metadata-only screen vision contracts", () => {
 
   it("rejects pixels, unsafe privacy, durable visual state and certainty", () => {
     expect(
-      parseScreenVisionFixture({ ...fixture, metadataOnly: false }),
-    ).toBeNull();
+      parseScreenVisionFixture({
+        ...fixture,
+        fixtureId: "display:primary",
+        monitorId: "display-primary",
+        displayName: "Tela principal do Windows",
+        synthetic: false,
+        metadataOnly: false,
+      }),
+    ).not.toBeNull();
     expect(
       parseScreenVisionPrivacy({
         ...privacy,

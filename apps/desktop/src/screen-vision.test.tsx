@@ -47,7 +47,7 @@ describe("ScreenVisionControls", () => {
     invoke.mockReset();
   });
 
-  it("renders Portuguese metadata-only controls and sends Owner-scoped session data", async () => {
+  it("renders Portuguese on-demand display controls and sends Owner-scoped session data", async () => {
     let sessions: unknown[] = [];
     invoke.mockImplementation((command: string) => {
       if (command === "list_screen_vision_fixtures")
@@ -75,8 +75,10 @@ describe("ScreenVisionControls", () => {
         />,
       ),
     );
-    expect(container.textContent).toContain("Visão de tela (fixture)");
-    expect(container.textContent).toContain("não há captura do Windows");
+    expect(container.textContent).toContain("Visão de tela sob demanda");
+    expect(container.textContent).toContain(
+      "Displays reais do Windows aparecem quando disponíveis",
+    );
     expect(container.textContent).toContain("Monitor sintético 1");
 
     const createButton = [...container.querySelectorAll("button")].find(
