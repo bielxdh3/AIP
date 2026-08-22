@@ -171,6 +171,12 @@ pub struct ExtensionExecutionCancellationRequest {
     pub execution_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionHostContext {
+    pub agent_id: String,
+    pub tool_ids: Vec<String>,
+}
+
 pub fn extension_package_hash(package: &ExtensionPackage) -> Result<String, DatabaseError> {
     let mut payload = serde_json::to_value(package).map_err(|_| DatabaseError::Unavailable)?;
     payload
@@ -220,6 +226,7 @@ pub fn interpret_extension_package(
     package: &ExtensionPackage,
     input: &str,
     capabilities: &[ExtensionCapability],
+    host: &ExtensionHostContext,
 ) -> Result<String, DatabaseError> {
     validate_package(package)?;
     if input.len() > MAX_EXECUTION_INPUT_BYTES {
@@ -239,13 +246,15 @@ pub fn interpret_extension_package(
                 if !capabilities.contains(&ExtensionCapability::AgentContext) {
                     return Err(DatabaseError::Cognitive("extension_capability_denied"));
                 }
-                output.push_str("agent_context");
+                output.push_str("agent_id:");
+                output.push_str(&host.agent_id);
             }
             ExtensionInstruction::ListToolCatalog => {
                 if !capabilities.contains(&ExtensionCapability::ToolCatalog) {
                     return Err(DatabaseError::Cognitive("extension_capability_denied"));
                 }
-                output.push_str("tool_catalog");
+                output.push_str("tool_ids:");
+                output.push_str(&host.tool_ids.join(","));
             }
             ExtensionInstruction::Yield => {}
         }
@@ -1098,10 +1107,10 @@ impl Database {
             return Err(DatabaseError::Cognitive("extension_execution_denied"));
         }
         static ACTIVE: OnceLock<Mutex<()>> = OnceLock::new();
-        let _active = ACTIVE
-            .get_or_init(|| Mutex::new(()))
-            .try_lock()
-            .map_err(|_| DatabaseError::Cognitive("extension_execution_busy"))?;
+        let _active = match ACTIVE.get_or_init(|| Mutex::new(())).lock() {
+            Ok(guard) => guard,
+            Err(_) => return Err(DatabaseError::Cognitive("extension_execution_busy")),
+        };
         let mut connection = self.open()?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         ensure_owner_agent_tx(&transaction, &request.agent_id, OWNER_ID)?;
@@ -1152,6 +1161,18 @@ impl Database {
         transaction.commit()?;
         drop(connection);
 
+        let tool_ids = self
+            .list_tool_catalog()?
+            .into_iter()
+            .map(|tool| tool.tool_id)
+            .take(64)
+            .collect::<Vec<_>>();
+        let host = ExtensionHostContext {
+            agent_id: request.agent_id.clone(),
+            tool_ids,
+        };
+        validate_host_context(&host)?;
+
         let started = now_millis();
         let mut output = String::new();
         let mut error = None;
@@ -1185,7 +1206,7 @@ impl Database {
                     integrity_sha256: String::new(),
                 })?,
             };
-            match interpret_extension_package(&single, &request.input, &approved) {
+            match interpret_extension_package(&single, &request.input, &approved, &host) {
                 Ok(part) => {
                     output.push_str(&part);
                     if output.len() > MAX_EXECUTION_OUTPUT_BYTES {
@@ -1232,6 +1253,27 @@ impl Database {
         }
         Ok(())
     }
+}
+
+fn validate_host_context(host: &ExtensionHostContext) -> Result<(), DatabaseError> {
+    if host.agent_id.is_empty()
+        || host.agent_id.len() > 96
+        || !host
+            .agent_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_".contains(character))
+        || host.tool_ids.len() > 64
+        || host.tool_ids.iter().any(|tool_id| {
+            tool_id.is_empty()
+                || tool_id.len() > 128
+                || tool_id
+                    .chars()
+                    .any(|character| character == '\0' || character.is_control())
+        })
+    {
+        return Err(DatabaseError::Cognitive("extension_host_context_invalid"));
+    }
+    Ok(())
 }
 
 fn insert_catalog_tx(
@@ -2175,6 +2217,219 @@ mod tests {
                 temporary_chat: false,
             })
             .expect("proposal should be approved")
+    }
+
+    fn package(instructions: Vec<ExtensionInstruction>) -> ExtensionPackage {
+        let mut package = ExtensionPackage {
+            format: "aip-extension-package/v1".into(),
+            entrypoint: "main".into(),
+            instructions,
+            integrity_sha256: String::new(),
+        };
+        package.integrity_sha256 = extension_package_hash(&package).expect("package hash");
+        package
+    }
+
+    fn runtime_manifest() -> ExtensionManifest {
+        let mut result = manifest(
+            "1.0.0",
+            vec![
+                ExtensionCapability::AgentContext,
+                ExtensionCapability::ToolCatalog,
+            ],
+        );
+        result.package = Some(package(vec![
+            ExtensionInstruction::ReadAgentContext,
+            ExtensionInstruction::ListToolCatalog,
+            ExtensionInstruction::EmitText {
+                text: Some("|ok|".into()),
+                echo_input: None,
+            },
+        ]));
+        result
+    }
+
+    fn activate_runtime(database: &Database) -> (ExtensionProposal, String) {
+        let proposal = database
+            .create_extension_proposal(ExtensionProposalRequest {
+                agent_id: ASTRA_ID.into(),
+                owner_user_id: OWNER_ID.into(),
+                source_kind: ExtensionSourceKind::AdministratorSelected,
+                proposer_agent_id: None,
+                manifest: runtime_manifest(),
+                idempotency_key: "runtime-proposal".into(),
+                temporary_chat: false,
+            })
+            .expect("runtime proposal");
+        let approved = approve(database, &proposal);
+        database
+            .activate_extension(ExtensionActivationRequest {
+                agent_id: ASTRA_ID.into(),
+                owner_user_id: OWNER_ID.into(),
+                extension_id: proposal.extension_id.clone(),
+                proposal_id: approved.id,
+                idempotency_key: "runtime-activate".into(),
+                temporary_chat: false,
+            })
+            .expect("runtime activation");
+        let hash = runtime_manifest()
+            .package
+            .expect("package")
+            .integrity_sha256;
+        (proposal, hash)
+    }
+
+    #[test]
+    fn executable_package_runs_with_bounded_host_context_and_replays() {
+        let path = test_path();
+        let database = Database::initialize(&path).expect("database");
+        let (proposal, hash) = activate_runtime(&database);
+        let expected_tool = database
+            .list_tool_catalog()
+            .expect("tool catalog")
+            .first()
+            .expect("seeded tool")
+            .tool_id
+            .clone();
+        let request = ExtensionExecutionRequest {
+            agent_id: ASTRA_ID.into(),
+            owner_user_id: OWNER_ID.into(),
+            extension_id: proposal.extension_id,
+            revision: 1,
+            package_hash: hash,
+            input: "private input must not enter host context".into(),
+            idempotency_key: "runtime-execute".into(),
+            temporary_chat: false,
+        };
+        let first = database
+            .execute_extension(request.clone())
+            .expect("execution");
+        assert_eq!(first.status, "succeeded");
+        assert!(first
+            .output
+            .as_deref()
+            .is_some_and(|value| value.contains("agent_id:agt_astra_provisional")));
+        assert!(first
+            .output
+            .as_deref()
+            .is_some_and(|value| { value.contains(&format!("tool_ids:{expected_tool}")) }));
+        assert!(!first
+            .output
+            .as_deref()
+            .unwrap_or_default()
+            .contains("private input"));
+        assert_eq!(database.execute_extension(request.clone()).unwrap(), first);
+        assert_eq!(
+            database.execute_extension(ExtensionExecutionRequest {
+                input: "conflict".into(),
+                ..request
+            }),
+            Err(DatabaseError::Cognitive("idempotency_conflict"))
+        );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn package_validation_and_execution_gates_fail_closed() {
+        let host = ExtensionHostContext {
+            agent_id: ASTRA_ID.into(),
+            tool_ids: vec!["tool.one".into()],
+        };
+        let valid = package(vec![ExtensionInstruction::EmitText {
+            text: Some("ok".into()),
+            echo_input: None,
+        }]);
+        assert_eq!(
+            interpret_extension_package(&valid, "", &[], &host).unwrap(),
+            "ok"
+        );
+        let mut tampered = valid.clone();
+        tampered.instructions.push(ExtensionInstruction::Yield);
+        assert_eq!(
+            interpret_extension_package(&tampered, "", &[], &host),
+            Err(DatabaseError::Cognitive("extension_package_invalid"))
+        );
+        let duplicate = package(vec![
+            ExtensionInstruction::Yield,
+            ExtensionInstruction::Yield,
+        ]);
+        assert_eq!(
+            interpret_extension_package(&duplicate, "", &[], &host),
+            Err(DatabaseError::Cognitive("extension_instruction_duplicate"))
+        );
+        let oversized = package(vec![ExtensionInstruction::EmitText {
+            text: Some("x".repeat(MAX_PACKAGE_TEXT_BYTES + 1)),
+            echo_input: None,
+        }]);
+        assert_eq!(
+            interpret_extension_package(&oversized, "", &[], &host),
+            Err(DatabaseError::Cognitive("extension_instruction_oversized"))
+        );
+        let denied = package(vec![ExtensionInstruction::ReadAgentContext]);
+        assert_eq!(
+            interpret_extension_package(&denied, "", &[], &host),
+            Err(DatabaseError::Cognitive("extension_capability_denied"))
+        );
+        assert!(serde_json::from_str::<ExtensionInstruction>(r#"{"op":"unknown"}"#).is_err());
+    }
+
+    #[test]
+    fn metadata_only_and_execution_modes_are_denied() {
+        let path = test_path();
+        let database = Database::initialize(&path).expect("database");
+        let proposal = administrator_proposal(&database, "1.0.0");
+        approve(&database, &proposal);
+        database
+            .activate_extension(ExtensionActivationRequest {
+                agent_id: ASTRA_ID.into(),
+                owner_user_id: OWNER_ID.into(),
+                extension_id: proposal.extension_id.clone(),
+                proposal_id: proposal.id,
+                idempotency_key: "metadata-active".into(),
+                temporary_chat: false,
+            })
+            .expect("activate");
+        assert_eq!(
+            database.execute_extension(ExtensionExecutionRequest {
+                agent_id: ASTRA_ID.into(),
+                owner_user_id: OWNER_ID.into(),
+                extension_id: "fixture.notes".into(),
+                revision: 1,
+                package_hash: "0".repeat(64),
+                input: String::new(),
+                idempotency_key: "metadata-execute".into(),
+                temporary_chat: false
+            }),
+            Err(DatabaseError::Cognitive("extension_package_required"))
+        );
+        database.set_safe_mode(true).unwrap();
+        assert_eq!(
+            database.execute_extension(ExtensionExecutionRequest {
+                agent_id: ASTRA_ID.into(),
+                owner_user_id: OWNER_ID.into(),
+                extension_id: "fixture.notes".into(),
+                revision: 1,
+                package_hash: "0".repeat(64),
+                input: String::new(),
+                idempotency_key: "safe-execute".into(),
+                temporary_chat: false
+            }),
+            Err(DatabaseError::Cognitive("extensions_blocked_safe_mode"))
+        );
+        assert_eq!(
+            database.execute_extension(ExtensionExecutionRequest {
+                agent_id: ASTRA_ID.into(),
+                owner_user_id: OWNER_ID.into(),
+                extension_id: "fixture.notes".into(),
+                revision: 1,
+                package_hash: "0".repeat(64),
+                input: String::new(),
+                idempotency_key: "temporary-execute".into(),
+                temporary_chat: true
+            }),
+            Err(DatabaseError::Cognitive("extensions_blocked_temporary"))
+        );
+        cleanup(&path);
     }
 
     #[test]
