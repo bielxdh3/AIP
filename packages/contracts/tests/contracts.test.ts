@@ -14,6 +14,7 @@ import {
   parseVoiceSynthesisResult,
   parseVoiceTranscriptionResult,
   parseVoiceWakeWordResult,
+  parseVoiceDevice,
   parseToolAction,
   parseToolActionInput,
   parseToolAudit,
@@ -379,6 +380,14 @@ describe("cognitive contracts", () => {
 });
 
 describe("voice contracts", () => {
+  it("accepts only bounded local voice device records", () => {
+    expect(parseVoiceDevice({ schemaVersion: 1, reference: "local:wavein:0", direction: "input", displayName: "Microfone" })).not.toBeNull();
+    expect(parseVoiceDevice({ schemaVersion: 1, reference: "local:waveout:0", direction: "output", displayName: "Saída" })).not.toBeNull();
+    expect(parseVoiceDevice({ schemaVersion: 2, reference: "local:wavein:0", direction: "input", displayName: "x" })).toBeNull();
+    expect(parseVoiceDevice({ schemaVersion: 1, reference: "remote:wavein:0", direction: "input", displayName: "x" })).toBeNull();
+    expect(parseVoiceDevice({ schemaVersion: 1, reference: "local:wavein:0", direction: "other", displayName: "x" })).toBeNull();
+  });
+
   const settings = {
     agentId: "agt_astra_provisional",
     schemaVersion: 1 as const,

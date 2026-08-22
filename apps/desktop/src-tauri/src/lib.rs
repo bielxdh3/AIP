@@ -93,7 +93,7 @@ use tools::{
     WorkspaceRoot, WorkspaceRootIdRequest, WorkspaceRootRequest,
 };
 use voice::{
-    CustomVoiceConsentRequest, VoiceCaptureRequest, VoiceEmotionHypothesisRequest,
+    CustomVoiceConsentRequest, VoiceCaptureRequest, VoiceDevice, VoiceEmotionHypothesisRequest,
     VoiceEmotionHypothesisResult, VoiceOperationCancellationRequest, VoiceOperationStatus,
     VoiceOperationStatusRequest, VoiceRuntime, VoiceRuntimeSynthesisResult,
     VoiceRuntimeTranscriptionResult, VoiceRuntimeWakeWordResult, VoiceSettings,
@@ -101,6 +101,11 @@ use voice::{
     VoiceSynthesisRuntimeRequest, VoiceTranscriptionRequest, VoiceTranscriptionResult,
     VoiceWakeWordRequest, VoiceWakeWordResult,
 };
+
+#[tauri::command]
+fn list_voice_devices() -> Vec<VoiceDevice> {
+    voice::list_voice_devices()
+}
 
 struct AppState {
     database: Option<Database>,
@@ -3109,6 +3114,7 @@ pub fn run() {
             list_cognitive_candidates,
             reject_cognitive_candidate,
             get_voice_settings,
+            list_voice_devices,
             update_voice_settings,
             set_custom_voice_consent,
             transcribe_voice_fixture,
