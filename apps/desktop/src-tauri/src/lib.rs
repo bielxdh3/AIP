@@ -51,8 +51,10 @@ use domain::{
 };
 use extensions::{
     ExtensionActivationRequest, ExtensionAgentProposalRequest, ExtensionAuditRecord,
-    ExtensionCatalogEntry, ExtensionDisableRequest, ExtensionProposal, ExtensionProposalRequest,
-    ExtensionReviewRequest, ExtensionRollbackRequest, ExtensionUpdateRequest,
+    ExtensionCatalogEntry, ExtensionDisableRequest, ExtensionExecutionCancellationRequest,
+    ExtensionExecutionRequest, ExtensionExecutionResult, ExtensionProposal,
+    ExtensionProposalRequest, ExtensionReviewRequest, ExtensionRollbackRequest,
+    ExtensionUpdateRequest,
 };
 use gateway::{
     GatewayAccount, GatewayAuditRecord, GatewayProtocolInfo, GatewayReconnectRequest,
@@ -1068,6 +1070,50 @@ fn ensure_extension_mutation_allowed(
     requested_temporary: bool,
 ) -> Result<(), &'static str> {
     ensure_conversation_not_temporary(state, agent_id, requested_temporary)
+}
+
+fn ensure_extension_execution_allowed<'a>(
+    state: &'a AppState,
+    agent_id: &str,
+    temporary_chat: bool,
+) -> Result<&'a Database, &'static str> {
+    if state.safe_mode.load(Ordering::Acquire) {
+        return Err("extensions_blocked_safe_mode");
+    }
+    ensure_extension_mutation_allowed(state, agent_id, temporary_chat)?;
+    state.database.as_ref().ok_or("operation_unavailable")
+}
+
+#[tauri::command]
+fn execute_extension(
+    state: State<'_, AppState>,
+    request: ExtensionExecutionRequest,
+) -> Result<ExtensionExecutionResult, &'static str> {
+    let database = ensure_extension_execution_allowed(
+        state.inner(),
+        &request.agent_id,
+        request.temporary_chat,
+    )?;
+    database
+        .execute_extension(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn cancel_extension_execution(
+    state: State<'_, AppState>,
+    request: ExtensionExecutionCancellationRequest,
+) -> Result<(), &'static str> {
+    if state.safe_mode.load(Ordering::Acquire) {
+        return Err("extensions_blocked_safe_mode");
+    }
+    ensure_extension_mutation_allowed(state.inner(), &request.agent_id, false)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .cancel_extension_execution(request)
+        .map_err(|error| error.code())
 }
 
 #[tauri::command]
@@ -2600,6 +2646,8 @@ pub fn run() {
             rollback_extension,
             disable_extension,
             list_extension_audit,
+            execute_extension,
+            cancel_extension_execution,
             list_companion_devices,
             start_companion_pairing,
             confirm_companion_pairing,
