@@ -1,8 +1,8 @@
 # Phase 12 local Android companion specification
 
-Status: real Android APK with a shared bounded wire contract; desktop listener
-integration remains the next scoped commit. This is not a network release or
-human mobile-validation claim.
+Status: real Android APK with an explicit authenticated local/private transport
+client and deterministic JVM loopback coverage. Physical-device, private-LAN,
+manual, and release-signing validation remain reserved.
 
 ## Purpose and authority
 
@@ -20,6 +20,8 @@ lowercase HMAC-SHA-256 hex. Unknown/missing fields, invalid UTF-8, bad lengths,
 version mismatch, repeated nonce, and non-monotonic counters fail closed.
 No relay, public listener, tunnel, shell, Python runtime, host filesystem, or
 external account exists; offline fallback remains truthful until a valid response.
+Android never auto-connects, scans, or opens a listener; Keystore credentials are
+not logged or persisted in plaintext.
 
 ## Pairing and authenticated session model
 

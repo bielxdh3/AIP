@@ -68,6 +68,7 @@ apps/desktop/src-tauri/binaries/
 
 .tooling/
 android/.gradle/
+android/.kotlin/
 android/app/build/
 android/build/
 android/app/.cxx/
