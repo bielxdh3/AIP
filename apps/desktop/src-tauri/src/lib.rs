@@ -8,6 +8,8 @@ mod domain;
 mod extensions;
 mod fullscreen;
 mod gateway;
+#[cfg(test)]
+mod gateway_integration_tests;
 mod gateway_transport;
 mod native_overlay_region;
 mod overlays;
@@ -1729,7 +1731,7 @@ fn revoke_companion_device(
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GatewayTransportStartRequest {
     agent_id: String,
     owner_confirmed: bool,
