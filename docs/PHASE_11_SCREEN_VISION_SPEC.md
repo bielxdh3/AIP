@@ -6,8 +6,9 @@ prerequisites. This is not release approval.
 
 Phase 11 adds a bounded Screen Vision control path to the standalone AIP
 desktop application. It models an Owner-requested visual analysis using
-synthetic monitor fixtures and a replaceable visual adapter. Windows displays
-are captured only after explicit Owner confirmation; bounded pixels remain
+synthetic monitor fixtures and a replaceable visual adapter. All available
+Windows monitors are enumerated on demand with bounded stable identities and
+selected bounds; capture occurs only after explicit Owner confirmation; pixels remain
 transient in memory and are never uploaded or persisted. Missing local models
 return a bounded unavailable/degraded result, never synthetic success.
 
@@ -77,7 +78,9 @@ The resource schedule is deliberately conservative:
   30 days of records;
 - analysis text is bounded to 1,024 bytes by the Rust result guard.
 
-Cancellation can clean a preview, queued/running fixture job, or failed job.
+Cancellation signals the active per-job in-memory source before the database
+transition; capture, adapter, and cleanup checkpoints observe it. Cancellation
+can clean a preview, queued/running fixture job, or failed job.
 Session cancellation closes the session and cleans its remaining transient
 job metadata. Cleanup releases the model/resource lifecycle and clears
 `frame_metadata_json`; `result_durable` remains false.
