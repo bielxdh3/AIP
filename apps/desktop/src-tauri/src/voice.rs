@@ -2189,7 +2189,19 @@ fn optional_reference(
 fn custom_voice_reference(value: Option<&str>) -> Result<String, DatabaseError> {
     let reference = optional_reference(value, "voice_reference_invalid")?
         .ok_or(DatabaseError::Cognitive("voice_consent_invalid"))?;
-    if !reference.starts_with("fixture:custom-") {
+    if reference.starts_with("fixture:custom-") {
+        return Ok(reference);
+    }
+    let Some(identifier) = reference.strip_prefix("local:custom-") else {
+        return Err(DatabaseError::Cognitive("voice_consent_invalid"));
+    };
+    if identifier.is_empty()
+        || identifier
+            .chars()
+            .any(|character| !(character.is_ascii_alphanumeric() || character == '-'))
+        || identifier.contains("real-person")
+        || identifier.contains("clone")
+    {
         return Err(DatabaseError::Cognitive("voice_consent_invalid"));
     }
     Ok(reference)
@@ -2339,6 +2351,19 @@ mod tests {
             Some("fixture:custom-neutral-v1")
         );
         assert_eq!(granted.base_voice_id, BASE_VOICE_ID);
+        let local = database
+            .set_custom_voice_consent(CustomVoiceConsentRequest {
+                agent_id: ASTRA_ID.into(),
+                granted: true,
+                custom_voice_ref: Some("local:custom-neutral-v1".into()),
+                idempotency_key: "consent-local-grant".into(),
+                temporary_chat: false,
+            })
+            .unwrap();
+        assert_eq!(
+            local.custom_voice_ref.as_deref(),
+            Some("local:custom-neutral-v1")
+        );
         assert_eq!(
             database.set_custom_voice_consent(CustomVoiceConsentRequest {
                 agent_id: ASTRA_ID.into(),
@@ -2349,6 +2374,21 @@ mod tests {
             }),
             Err(DatabaseError::Cognitive("voice_consent_invalid"))
         );
+        for (idempotency_key, custom_voice_ref) in [
+            ("consent-empty", "local:custom-"),
+            ("consent-path", "local:custom-../voice"),
+            ("consent-space", "local:custom-neutral voice"),
+        ] {
+            assert!(database
+                .set_custom_voice_consent(CustomVoiceConsentRequest {
+                    agent_id: ASTRA_ID.into(),
+                    granted: true,
+                    custom_voice_ref: Some(custom_voice_ref.into()),
+                    idempotency_key: idempotency_key.into(),
+                    temporary_chat: false,
+                })
+                .is_err());
+        }
         let revoked = database
             .set_custom_voice_consent(CustomVoiceConsentRequest {
                 agent_id: ASTRA_ID.into(),
