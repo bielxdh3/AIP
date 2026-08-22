@@ -317,7 +317,7 @@ export type VoiceEmotionHypothesisResult = {
 
 export type ToolClassification = "read_only" | "state_changing";
 export type ToolAdapterKind =
-  "workspace_mock" | "calendar_mock" | "messaging_mock";
+  "workspace_mock" | "workspace_local" | "calendar_mock" | "messaging_mock";
 export type ToolPermission =
   "preview" | "execute_read_only" | "execute_state_changing";
 export type ToolSessionStatus = "active" | "cancelled" | "closed";
@@ -332,7 +332,7 @@ export type ToolActionStatus =
   | "compensated"
   | "rejected";
 export type ToolResultStatus =
-  "dry_run" | "simulated" | "cancelled" | "compensated";
+  "dry_run" | "simulated" | "cancelled" | "compensated" | "executed" | "failed";
 
 export type ToolManifest = {
   toolId: string;
@@ -340,7 +340,7 @@ export type ToolManifest = {
   name: string;
   classification: ToolClassification;
   adapterKind: ToolAdapterKind;
-  scopeKind: "workspace" | "calendar" | "messaging";
+  scopeKind: "workspace" | "workspace_root" | "calendar" | "messaging";
   requiresSecondConfirmation: boolean;
   capabilities: string[];
   updatedAt: number;
@@ -356,6 +356,22 @@ export type ToolSessionRequest = {
   idempotencyKey: string;
   temporaryChat: boolean;
 };
+export type WorkspaceRoot = {
+  id: string;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+export type WorkspaceRootRequest = {
+  path: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type WorkspaceRootIdRequest = {
+  rootId: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
 export type ToolSession = {
   id: string;
   agentId: string;
@@ -365,7 +381,7 @@ export type ToolSession = {
   createdAt: number;
   updatedAt: number;
 };
-export type ToolFileMove = { from: string; to: string };
+export type ToolFileMove = { from: string; to: string; sourceIdentity?: string };
 export type ToolActionInput =
   | { kind: "workspaceInspect"; relativePaths: string[] }
   | { kind: "workspaceOrganize"; moves: ToolFileMove[] }
@@ -423,13 +439,19 @@ export type ToolSessionCancellationRequest = {
 export type ToolExecutionResult = {
   status: ToolResultStatus;
   output: string;
-  changed: false;
+  changed: boolean;
   untrusted: true;
 };
 export type ToolCompensation = {
   kind: string;
   available: boolean;
   description: string;
+  moves?: ToolCompensationMove[] | null;
+};
+export type ToolCompensationMove = {
+  from: string;
+  to: string;
+  identity: string;
 };
 export type ToolAction = {
   id: string;
@@ -2085,6 +2107,19 @@ export type CognitiveErrorCode =
   | "tool_confirmation_required"
   | "tool_action_not_confirmable"
   | "tool_compensation_unavailable"
+  | "workspace_root_unavailable"
+  | "workspace_root_invalid"
+  | "workspace_root_limit"
+  | "workspace_path_unavailable"
+  | "workspace_path_invalid"
+  | "workspace_destination_exists"
+  | "workspace_move_failed"
+  | "workspace_move_partial"
+  | "workspace_source_identity_unavailable"
+  | "workspace_source_identity_mismatch"
+  | "workspace_compensation_unavailable"
+  | "workspace_compensation_failed"
+  | "action_compensation_failed"
   | "extensions_blocked_temporary"
   | "extensions_blocked_safe_mode"
   | "extension_already_exists"
@@ -2358,6 +2393,19 @@ export function parseCognitiveError(
     "tool_confirmation_required",
     "tool_action_not_confirmable",
     "tool_compensation_unavailable",
+    "workspace_root_unavailable",
+    "workspace_root_invalid",
+    "workspace_root_limit",
+    "workspace_path_unavailable",
+    "workspace_path_invalid",
+    "workspace_destination_exists",
+    "workspace_move_failed",
+    "workspace_move_partial",
+    "workspace_source_identity_unavailable",
+    "workspace_source_identity_mismatch",
+    "workspace_compensation_unavailable",
+    "workspace_compensation_failed",
+    "action_compensation_failed",
     "extensions_blocked_temporary",
     "extensions_blocked_safe_mode",
     "extension_already_exists",
@@ -2553,8 +2601,17 @@ function toolRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function toolStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every(cognitiveString);
+function toolBoundedText(value: unknown, maximum: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= maximum &&
+    !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+function toolBoundedArray(value: unknown, maximum: number, itemMaximum: number): value is string[] {
+  return Array.isArray(value) && value.length <= maximum && value.every((item) => toolBoundedText(item, itemMaximum));
+}
+
+function toolBoundedId(value: unknown, maximum = 128): value is string {
+  return toolBoundedText(value, maximum);
 }
 
 function isToolClassification(value: unknown): value is ToolClassification {
@@ -2564,6 +2621,7 @@ function isToolClassification(value: unknown): value is ToolClassification {
 function isToolAdapterKind(value: unknown): value is ToolAdapterKind {
   return (
     value === "workspace_mock" ||
+    value === "workspace_local" ||
     value === "calendar_mock" ||
     value === "messaging_mock"
   );
@@ -2592,7 +2650,7 @@ function isToolActionStatus(value: unknown): value is ToolActionStatus {
 }
 
 function isToolResultStatus(value: unknown): value is ToolResultStatus {
-  return ["dry_run", "simulated", "cancelled", "compensated"].includes(
+  return ["dry_run", "simulated", "cancelled", "compensated", "executed", "failed"].includes(
     value as string,
   );
 }
@@ -2602,36 +2660,37 @@ export function parseToolActionInput(value: unknown): ToolActionInput | null {
   if (!candidate || !cognitiveString(candidate.kind)) return null;
   switch (candidate.kind) {
     case "workspaceInspect":
-      return toolStringArray(candidate.relativePaths)
+      return toolBoundedArray(candidate.relativePaths, 32, 512)
         ? (candidate as unknown as ToolActionInput)
         : null;
     case "workspaceOrganize": {
-      if (!Array.isArray(candidate.moves)) return null;
+      if (!Array.isArray(candidate.moves) || candidate.moves.length === 0 || candidate.moves.length > 32) return null;
       const moves = candidate.moves.every((move) => {
         const item = toolRecord(move);
         return (
           item !== null &&
-          cognitiveString(item.from) &&
-          cognitiveString(item.to)
+          toolBoundedText(item.from, 512) &&
+          toolBoundedText(item.to, 512) &&
+          (item.sourceIdentity === undefined || toolBoundedText(item.sourceIdentity, 128))
         );
       });
       return moves ? (candidate as unknown as ToolActionInput) : null;
     }
     case "calendarList":
-      return cognitiveString(candidate.date)
+      return toolBoundedText(candidate.date, 32)
         ? (candidate as unknown as ToolActionInput)
         : null;
     case "calendarCreate":
-      return cognitiveString(candidate.title) &&
-        cognitiveString(candidate.date) &&
-        cognitiveString(candidate.start) &&
-        cognitiveString(candidate.end)
+      return toolBoundedText(candidate.title, 160) &&
+        toolBoundedText(candidate.date, 32) &&
+        toolBoundedText(candidate.start, 16) &&
+        toolBoundedText(candidate.end, 16)
         ? (candidate as unknown as ToolActionInput)
         : null;
     case "messagingPreview":
     case "messagingSend":
-      return cognitiveString(candidate.recipient) &&
-        cognitiveString(candidate.body)
+      return toolBoundedText(candidate.recipient, 160) &&
+        toolBoundedText(candidate.body, 2048)
         ? (candidate as unknown as ToolActionInput)
         : null;
     default:
@@ -2642,16 +2701,16 @@ export function parseToolActionInput(value: unknown): ToolActionInput | null {
 export function parseToolManifest(value: unknown): ToolManifest | null {
   const candidate = toolRecord(value);
   return candidate !== null &&
-    cognitiveString(candidate.toolId) &&
+    toolBoundedId(candidate.toolId, 96) &&
     candidate.manifestVersion === 1 &&
-    cognitiveString(candidate.name) &&
+    toolBoundedText(candidate.name, 120) &&
     isToolClassification(candidate.classification) &&
     isToolAdapterKind(candidate.adapterKind) &&
-    ["workspace", "calendar", "messaging"].includes(
+    ["workspace", "workspace_root", "calendar", "messaging"].includes(
       candidate.scopeKind as string,
     ) &&
     typeof candidate.requiresSecondConfirmation === "boolean" &&
-    toolStringArray(candidate.capabilities) &&
+    toolBoundedArray(candidate.capabilities, 16, 64) &&
     cognitiveNumber(candidate.updatedAt)
     ? (candidate as unknown as ToolManifest)
     : null;
@@ -2662,7 +2721,7 @@ export function parseToolSessionPermission(
 ): ToolSessionPermission | null {
   const candidate = toolRecord(value);
   return candidate !== null &&
-    cognitiveString(candidate.toolId) &&
+    toolBoundedId(candidate.toolId, 96) &&
     isToolPermission(candidate.permission)
     ? (candidate as unknown as ToolSessionPermission)
     : null;
@@ -2670,11 +2729,11 @@ export function parseToolSessionPermission(
 
 export function parseToolSession(value: unknown): ToolSession | null {
   const candidate = toolRecord(value);
-  if (!candidate || !Array.isArray(candidate.permissions)) return null;
+  if (!candidate || !Array.isArray(candidate.permissions) || candidate.permissions.length === 0 || candidate.permissions.length > 12) return null;
   const permissions = candidate.permissions.map(parseToolSessionPermission);
-  return cognitiveString(candidate.id) &&
-    cognitiveString(candidate.agentId) &&
-    cognitiveString(candidate.scopeRef) &&
+  return toolBoundedId(candidate.id) &&
+    toolBoundedId(candidate.agentId, 96) &&
+    toolBoundedText(candidate.scopeRef, 128) &&
     ["active", "cancelled", "closed"].includes(candidate.status as string) &&
     permissions.every(
       (permission): permission is ToolSessionPermission => permission !== null,
@@ -2691,19 +2750,65 @@ export function parseToolExecutionResult(
   const candidate = toolRecord(value);
   return candidate !== null &&
     isToolResultStatus(candidate.status) &&
-    cognitiveString(candidate.output) &&
-    candidate.changed === false &&
+    toolBoundedText(candidate.output, 4096) &&
+    typeof candidate.changed === "boolean" &&
     candidate.untrusted === true
     ? (candidate as unknown as ToolExecutionResult)
     : null;
 }
 
+function boundedToolPath(value: unknown): value is string {
+  return toolBoundedText(value, 512);
+}
+
+function boundedOpaqueRootId(value: unknown): value is string {
+  return toolBoundedText(value, 64) && /^[A-Za-z0-9._:-]+$/.test(value);
+}
+
+function boundedIdempotency(value: unknown): value is string {
+  return toolBoundedText(value, 128);
+}
+
+export function parseWorkspaceRoot(value: unknown): WorkspaceRoot | null {
+  const candidate = toolRecord(value);
+  return candidate !== null && boundedOpaqueRootId(candidate.id) &&
+    typeof candidate.enabled === "boolean" && cognitiveNumber(candidate.createdAt) &&
+    cognitiveNumber(candidate.updatedAt)
+    ? (candidate as unknown as WorkspaceRoot) : null;
+}
+
+export function parseWorkspaceRoots(value: unknown): WorkspaceRoot[] | null {
+  if (!Array.isArray(value) || value.length > 64) return null;
+  const roots = value.map(parseWorkspaceRoot);
+  return roots.every((root): root is WorkspaceRoot => root !== null) ? roots : null;
+}
+
+export function parseWorkspaceRootRequest(value: unknown): WorkspaceRootRequest | null {
+  const candidate = toolRecord(value);
+  return candidate !== null && boundedToolPath(candidate.path) && boundedIdempotency(candidate.idempotencyKey) &&
+    typeof candidate.temporaryChat === "boolean"
+    ? (candidate as unknown as WorkspaceRootRequest) : null;
+}
+
+export function parseWorkspaceRootIdRequest(value: unknown): WorkspaceRootIdRequest | null {
+  const candidate = toolRecord(value);
+  return candidate !== null && boundedOpaqueRootId(candidate.rootId) && boundedIdempotency(candidate.idempotencyKey) &&
+    typeof candidate.temporaryChat === "boolean"
+    ? (candidate as unknown as WorkspaceRootIdRequest) : null;
+}
+
 export function parseToolCompensation(value: unknown): ToolCompensation | null {
   const candidate = toolRecord(value);
-  return candidate !== null &&
-    cognitiveString(candidate.kind) &&
-    typeof candidate.available === "boolean" &&
-    cognitiveString(candidate.description)
+  if (candidate === null || !toolBoundedText(candidate.kind, 64) ||
+    typeof candidate.available !== "boolean" || !toolBoundedText(candidate.description, 1024)) return null;
+  if (candidate.moves === undefined || candidate.moves === null) return candidate as unknown as ToolCompensation;
+  if (!Array.isArray(candidate.moves) || candidate.moves.length > 32) return null;
+  const moves = candidate.moves.every((move) => {
+    const item = toolRecord(move);
+    return item !== null && toolBoundedText(item.from, 512) && toolBoundedText(item.to, 512) &&
+      toolBoundedText(item.identity, 128);
+  });
+  return moves
     ? (candidate as unknown as ToolCompensation)
     : null;
 }
@@ -2719,15 +2824,15 @@ export function parseToolAction(value: unknown): ToolAction | null {
       ? null
       : parseToolCompensation(candidate?.compensation);
   return candidate !== null &&
-    cognitiveString(candidate.id) &&
-    cognitiveString(candidate.sessionId) &&
-    cognitiveString(candidate.agentId) &&
-    cognitiveString(candidate.toolId) &&
+    toolBoundedId(candidate.id) &&
+    toolBoundedId(candidate.sessionId) &&
+    toolBoundedId(candidate.agentId, 96) &&
+    toolBoundedId(candidate.toolId, 96) &&
     isToolClassification(candidate.classification) &&
     parseToolActionInput(candidate.input) !== null &&
-    cognitiveString(candidate.summary) &&
-    toolStringArray(candidate.affectedResources) &&
-    cognitiveString(candidate.exactEffect) &&
+    toolBoundedText(candidate.summary, 512) &&
+    toolBoundedArray(candidate.affectedResources, 64, 512) &&
+    toolBoundedText(candidate.exactEffect, 1024) &&
     isToolActionStatus(candidate.status) &&
     typeof candidate.dryRun === "boolean" &&
     typeof candidate.requiresOwnerApproval === "boolean" &&
@@ -2736,7 +2841,7 @@ export function parseToolAction(value: unknown): ToolAction | null {
     typeof candidate.secondConfirmed === "boolean" &&
     (candidate.result === null || result !== null) &&
     (candidate.compensation === null || compensation !== null) &&
-    (candidate.code === null || cognitiveString(candidate.code)) &&
+    (candidate.code === null || toolBoundedText(candidate.code, 96)) &&
     cognitiveNumber(candidate.createdAt) &&
     cognitiveNumber(candidate.updatedAt)
     ? (candidate as unknown as ToolAction)
@@ -2746,22 +2851,22 @@ export function parseToolAction(value: unknown): ToolAction | null {
 export function parseToolAuditRecord(value: unknown): ToolAuditRecord | null {
   const candidate = toolRecord(value);
   return candidate !== null &&
-    cognitiveString(candidate.id) &&
-    (candidate.actionId === null || cognitiveString(candidate.actionId)) &&
-    (candidate.sessionId === null || cognitiveString(candidate.sessionId)) &&
-    cognitiveString(candidate.agentId) &&
-    (candidate.toolId === null || cognitiveString(candidate.toolId)) &&
-    cognitiveString(candidate.event) &&
-    cognitiveString(candidate.result) &&
-    (candidate.code === null || cognitiveString(candidate.code)) &&
-    cognitiveString(candidate.summary) &&
+    toolBoundedId(candidate.id) &&
+    (candidate.actionId === null || toolBoundedId(candidate.actionId)) &&
+    (candidate.sessionId === null || toolBoundedId(candidate.sessionId)) &&
+    toolBoundedId(candidate.agentId, 96) &&
+    (candidate.toolId === null || toolBoundedId(candidate.toolId, 96)) &&
+    toolBoundedText(candidate.event, 64) &&
+    toolBoundedText(candidate.result, 64) &&
+    (candidate.code === null || toolBoundedText(candidate.code, 96)) &&
+    toolBoundedText(candidate.summary, 2048) &&
     cognitiveNumber(candidate.createdAt)
     ? (candidate as unknown as ToolAuditRecord)
     : null;
 }
 
 export function parseToolCatalog(value: unknown): ToolManifest[] | null {
-  if (!Array.isArray(value)) return null;
+  if (!Array.isArray(value) || value.length > 16) return null;
   const manifests = value.map(parseToolManifest);
   return manifests.every(
     (manifest): manifest is ToolManifest => manifest !== null,
@@ -2771,7 +2876,7 @@ export function parseToolCatalog(value: unknown): ToolManifest[] | null {
 }
 
 export function parseToolSessions(value: unknown): ToolSession[] | null {
-  if (!Array.isArray(value)) return null;
+  if (!Array.isArray(value) || value.length > 32) return null;
   const sessions = value.map(parseToolSession);
   return sessions.every((session): session is ToolSession => session !== null)
     ? sessions
@@ -2779,7 +2884,7 @@ export function parseToolSessions(value: unknown): ToolSession[] | null {
 }
 
 export function parseToolAudit(value: unknown): ToolAuditRecord[] | null {
-  if (!Array.isArray(value)) return null;
+  if (!Array.isArray(value) || value.length > 100) return null;
   const records = value.map(parseToolAuditRecord);
   return records.every((record): record is ToolAuditRecord => record !== null)
     ? records
