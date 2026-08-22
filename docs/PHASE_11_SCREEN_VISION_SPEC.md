@@ -21,7 +21,8 @@ make a visual result durable.
 
 The supported path is:
 
-1. The Owner selects one of the bounded synthetic monitor fixtures.
+1. The Owner selects a bounded synthetic fixture or an enumerated Windows
+   display.
 2. Rust creates an explicit session for one agent with both fixture-capture and
    fixture-analysis permissions, a privacy policy, and per-session quotas.
 3. The Owner requests a preview. The preview contains monitor dimensions and
@@ -107,8 +108,8 @@ allowed.
 
 This phase must not add or imply:
 
-- a Windows screenshot API, desktop/window capture, webcam input, or real
-  pixels;
+- continuous capture, background watching, webcam input, or any capture that is
+  not explicitly confirmed by the Owner;
 - screenshot bytes, image files, thumbnails, or visual embeddings in SQLite,
   logs, backups, exports, or chat history;
 - continuous analysis, polling capture, surveillance, or background capture;
@@ -130,6 +131,7 @@ state, and certain/diagnostic hypotheses. Desktop tests cover Portuguese
 controls, authoritative command wiring, and temporary-chat/safe-mode fail
 closed behavior.
 
-Real screen privacy behavior, Windows packaging, visual usability, and any
+Real screen privacy behavior, Windows packaging, local model installation,
+visual usability, and any
 future real adapter remain human/release validation work. Their absence is not
 represented as an implemented capture capability.

@@ -269,7 +269,7 @@ The current checkpoint implements the bounded local architecture described in
 [PHASE_11_SCREEN_VISION_SPEC.md](PHASE_11_SCREEN_VISION_SPEC.md):
 
 - explicit local Owner identity and confirmation;
-- synthetic monitor fixture selection only;
+- synthetic monitor fixture selection and on-demand Windows display discovery;
 - per-session capture/analyze permissions, privacy policy, and redaction hooks;
 - preview before confirmation, one-job reference-GPU scheduling, and quotas;
 - on-demand synthetic model-fixture lifecycle with automatic cleanup;
@@ -277,10 +277,11 @@ The current checkpoint implements the bounded local architecture described in
 - Rust/SQLite authoritative temporary-chat and safe-mode fail-closed gates;
 - Portuguese Owner-facing Screen Vision controls and versioned contracts.
 
-This checkpoint does not capture the Windows desktop, call a screenshot API,
-retain pixels or screenshot bytes, analyze continuously, run in the background,
+This checkpoint captures a confirmed Windows display only in bounded transient
+memory; it does not retain pixels or screenshot bytes, analyze continuously, run in the background,
 access the host filesystem/shell/credentials, use a network or remote model, or
-persist visual state. Real screen adapters, Windows packaging evidence,
+persist visual state. A local model adapter intentionally reports unavailable
+when no model is installed. Windows packaging evidence,
 privacy/visual UX validation, and release approval remain reserved work.
 
 ## Post-v0.1 Phase 12: Android companion `[IMPLEMENTED — LOCAL METADATA-ONLY CHECKPOINT]`
