@@ -11,6 +11,8 @@ Windows monitors are enumerated on demand with bounded stable identities and
 selected bounds; capture occurs only after explicit Owner confirmation; pixels remain
 transient in memory and are never uploaded or persisted. Missing local models
 return a bounded unavailable/degraded result, never synthetic success.
+The response is bounded to 18 records: two synthetic fixtures and at most 16
+real Windows displays.
 
 ## Scope and invariants
 

@@ -22,6 +22,8 @@ const SCREEN_VISION_PREVIEW_TTL_MS: i64 = 10 * 60 * 1_000;
 const MAX_SCREEN_VISION_REQUEST_BYTES: usize = 16_384;
 const MAX_SCREEN_VISION_RESULT_BYTES: usize = 1_024;
 const MAX_SCREEN_VISION_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_SCREEN_VISION_REAL_DISPLAYS: usize = 16;
+pub const MAX_SCREEN_VISION_FIXTURES: usize = 18;
 
 static SCREEN_VISION_CANCELLATIONS: OnceLock<std::sync::Mutex<HashMap<String, Arc<AtomicBool>>>> =
     OnceLock::new();
@@ -568,6 +570,7 @@ pub fn screen_vision_fixtures() -> Vec<ScreenVisionFixture> {
     ];
     #[cfg(windows)]
     fixtures.extend(windows_displays());
+    fixtures.truncate(MAX_SCREEN_VISION_FIXTURES);
     fixtures
 }
 
@@ -582,6 +585,9 @@ fn windows_displays() -> Vec<ScreenVisionFixture> {
         data: LPARAM,
     ) -> i32 {
         let displays = &mut *(data as *mut Vec<ScreenVisionFixture>);
+        if displays.len() >= MAX_SCREEN_VISION_REAL_DISPLAYS {
+            return 0;
+        }
         let mut info = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..Default::default()
@@ -620,6 +626,7 @@ fn windows_displays() -> Vec<ScreenVisionFixture> {
             (&mut displays as *mut _) as LPARAM,
         );
     }
+    displays.truncate(MAX_SCREEN_VISION_REAL_DISPLAYS);
     displays
 }
 
@@ -2018,6 +2025,7 @@ mod tests {
 
     #[test]
     fn fixture_selection_and_idempotency_are_bounded() {
+        assert!(screen_vision_fixtures().len() <= MAX_SCREEN_VISION_FIXTURES);
         let path = test_path();
         let database = Database::initialize(&path).unwrap();
         let mut invalid = session_request("fixture-1");

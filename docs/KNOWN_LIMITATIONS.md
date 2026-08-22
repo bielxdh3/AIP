@@ -70,6 +70,8 @@ validation reservations are recorded in
 - Phase 11 provides bounded on-demand Windows capture plus synthetic monitor
   fixtures; raw frames remain transient and the local visual adapter reports
   unavailable when no model is configured.
+  Display metadata is capped at 18 records total (two fixtures plus 16 real
+  monitors).
   preview/confirmation, per-session permissions, privacy/redaction hooks,
   reference-GPU scheduling, bounded quotas, cancellation, cleanup, audit, and
   Portuguese Owner controls. It does not call a Windows screenshot API, capture

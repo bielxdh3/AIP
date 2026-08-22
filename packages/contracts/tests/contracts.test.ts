@@ -932,8 +932,9 @@ describe("metadata-only screen vision contracts", () => {
     expect(
       parseScreenVisionHypothesis({ ...hypothesis, uncertain: false }),
     ).toBeNull();
-    expect(parseScreenVisionFixtures([fixture, fixture, fixture])).not.toBeNull();
-    expect(parseScreenVisionFixtures([fixture, fixture, fixture, fixture])).toBeNull();
+    expect(parseScreenVisionFixtures([fixture, fixture, fixture, fixture])).not.toBeNull();
+    expect(parseScreenVisionFixtures(Array.from({ length: 18 }, () => fixture))).not.toBeNull();
+    expect(parseScreenVisionFixtures(Array.from({ length: 19 }, () => fixture))).toBeNull();
   });
 });
 
