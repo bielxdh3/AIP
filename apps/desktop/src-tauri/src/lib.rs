@@ -1,6 +1,7 @@
 mod chat;
 mod cognitive;
 mod companion;
+mod companion_transport;
 mod conversation;
 mod database;
 mod domain;
