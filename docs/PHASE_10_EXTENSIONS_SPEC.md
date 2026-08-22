@@ -51,7 +51,9 @@ The only source kinds are administrator_selected and agent_created.
 Agent-created entries are proposals only: they remain pending until the Owner
 reviews them and explicitly activates an approved revision.
 
-The checkpoint has no package loader, compiler, interpreter, plugin host,
+The checkpoint has no open-ended package loader, compiler, or plugin host;
+the closed declarative Rust VM is the strongly justified sandbox and has an
+actual execution test. It has no
 network fetch, shell, host-filesystem access, credential access, remote code
 execution, public marketplace, hidden execution, or automatic activation.
 

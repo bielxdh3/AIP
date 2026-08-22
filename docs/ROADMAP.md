@@ -215,9 +215,9 @@ runtime, manual, and remote reservations remain explicit there. This is not a v0
   and honest documentation. No new capability is introduced; see [the Phase 7F validation
   record](PHASE_7F_VALIDATION.md).
 
-## Post-v0.1 Phase 8: voice [IMPLEMENTED — LOCAL ARCHITECTURE CHECKPOINT; RUNTIME/QUALITY RESERVED]
+## Post-v0.1 Phase 8: voice [FUNCTIONAL — LOCAL RUNTIME/EFFECTS; HARDWARE/PROVIDER/PACKAGED/MANUAL VALIDATION PENDING]
 
-The local architecture checkpoint is implemented in Rust/SQLite, Tauri commands,
+The functional local runtime/effects checkpoint is implemented in Rust/SQLite, Tauri commands,
 versioned contracts, and Portuguese UI controls. It provides bounded local references,
 fixture transcription/synthesis/wake-word paths, custom synthetic-voice consent,
 base-voice protection, uncertain emotional hypotheses, and voice-muted/silent/suspended
@@ -228,7 +228,7 @@ behavior, and subjective voice quality. The checkpoint keeps no microphone captu
 audio persistence, upload/network path, real-person cloning, or hidden listener. See the
 [Phase 8 voice specification](PHASE_8_VOICE_SPEC.md).
 
-## Post-v0.1 Phase 9: supervised tools `[IMPLEMENTED — LOCAL MOCK CHECKPOINT]`
+## Post-v0.1 Phase 9: supervised tools `[FUNCTIONAL — LOCAL RUNTIME/EFFECTS; PROVIDER/PACKAGED/MANUAL VALIDATION PENDING]`
 
 The current checkpoint implements the bounded local architecture described in
 [PHASE_9_TOOLS_SPEC.md](PHASE_9_TOOLS_SPEC.md):
@@ -246,7 +246,7 @@ evidence, and release approval remain reserved validation work.
 
 ## Post-v0.1 Phase 10: extensions [FUNCTIONAL — AUTOMATED VALIDATION COMPLETE]
 
-The current checkpoint implements the bounded local architecture described in
+The current checkpoint implements the bounded local runtime and effects described in
 [PHASE_10_EXTENSIONS_SPEC.md](PHASE_10_EXTENSIONS_SPEC.md):
 
 - versioned, untrusted metadata manifests with local-fixture admission;

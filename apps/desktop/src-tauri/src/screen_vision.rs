@@ -152,7 +152,11 @@ fn parse_local_visual_provider_output(
 }
 
 fn validate_local_visual_provider_path(path: &Path) -> bool {
-    path.is_absolute() && path.is_file() && path.extension().is_some_and(|ext| ext == "exe")
+    path.is_absolute()
+        && path.is_file()
+        && path
+            .extension()
+            .is_some_and(|ext| ext.to_string_lossy().eq_ignore_ascii_case("exe"))
 }
 
 fn execute_local_visual_provider(
@@ -179,20 +183,29 @@ fn execute_local_visual_provider(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| ScreenVisionAdapterError::Unavailable)?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or(ScreenVisionAdapterError::Unavailable)?;
+    let mut stdin = match child.stdin.take() {
+        Some(stdin) => stdin,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(ScreenVisionAdapterError::Unavailable);
+        }
+    };
     let input = pixels.to_vec();
     let writer = std::thread::spawn(move || {
         let result = stdin.write_all(&input);
         drop(stdin);
         result
     });
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or(ScreenVisionAdapterError::Unavailable)?;
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = writer.join();
+            return Err(ScreenVisionAdapterError::Unavailable);
+        }
+    };
     let reader = std::thread::spawn(move || {
         let mut output = Vec::new();
         let mut bounded = stdout.take((MAX_VISUAL_PROVIDER_OUTPUT_BYTES + 1) as u64);
@@ -207,17 +220,23 @@ fn execute_local_visual_provider(
             let _ = child.wait();
             return Err(ScreenVisionAdapterError::Cancelled);
         }
-        if child
-            .try_wait()
-            .map_err(|_| ScreenVisionAdapterError::Unavailable)?
-            .is_some()
-        {
-            let _ = writer.join();
-            return reader
-                .join()
-                .ok()
-                .and_then(Result::ok)
-                .ok_or(ScreenVisionAdapterError::Unavailable);
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let writer_ok = writer.join().ok().and_then(Result::ok).is_some();
+                let output = reader.join().ok().and_then(Result::ok);
+                if !status.success() || !writer_ok {
+                    return Err(ScreenVisionAdapterError::Unavailable);
+                }
+                return output.ok_or(ScreenVisionAdapterError::Unavailable);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = writer.join();
+                let _ = reader.join();
+                return Err(ScreenVisionAdapterError::Unavailable);
+            }
         }
         if started.elapsed() >= std::time::Duration::from_millis(VISUAL_PROVIDER_TIMEOUT_MS) {
             let _ = child.kill();
