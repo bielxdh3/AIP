@@ -92,8 +92,9 @@ values; the UI never becomes an authority for persistence or capability grants.
 
 Compatibility is computed from the pinned `aip-extension-sdk/v1` contract on
 manifest persistence and readback. The `recovery_required` lifecycle value is
-retained as a metadata-only checkpoint state for inspection; this phase does
-not infer unsupported-package recovery or execute recovery code.
+retained as the bounded `MetadataOnly` closed declarative sandbox policy for
+compatibility; execution remains through the versioned host context with
+limits, cancellation, approval, rollback, and failure containment.
 
 ## Validation boundary
 

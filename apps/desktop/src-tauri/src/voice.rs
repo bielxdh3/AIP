@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::database::{now_millis, Database, DatabaseError, OWNER_ID};
 
 pub const BASE_VOICE_ID: &str = "aip-base-v1";
+pub const MAX_VOICE_DEVICES: usize = 32;
 const VOICE_SCHEMA_VERSION: i64 = 1;
 const MAX_REFERENCE_LENGTH: usize = 160;
 const MAX_IDEMPOTENCY_LENGTH: usize = 128;
@@ -58,6 +59,85 @@ pub struct VoiceSettings {
     pub silent: bool,
     pub suspended: bool,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceDevice {
+    pub schema_version: i64,
+    pub reference: String,
+    pub direction: String,
+    pub display_name: String,
+}
+
+pub fn list_voice_devices() -> Vec<VoiceDevice> {
+    #[cfg(windows)]
+    { list_windows_voice_devices() }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
+#[cfg(windows)]
+fn list_windows_voice_devices() -> Vec<VoiceDevice> {
+    use std::mem::MaybeUninit;
+    use windows_sys::Win32::Media::Audio::{
+        waveInGetDevCapsW, waveInGetNumDevs, waveOutGetDevCapsW, waveOutGetNumDevs, WAVEINCAPSW,
+        WAVEOUTCAPSW,
+    };
+    fn name(chars: &[u16]) -> String {
+        String::from_utf16_lossy(
+            &chars[..chars.iter().position(|c| *c == 0).unwrap_or(chars.len())],
+        )
+        .chars()
+        .take(120)
+        .collect()
+    }
+    let mut devices = Vec::new();
+    for index in 0..unsafe { waveInGetNumDevs() }.min(MAX_VOICE_DEVICES as u32) {
+        let mut caps = MaybeUninit::<WAVEINCAPSW>::zeroed();
+        if unsafe {
+            waveInGetDevCapsW(
+                index as usize,
+                caps.as_mut_ptr(),
+                std::mem::size_of::<WAVEINCAPSW>() as u32,
+            )
+        } == 0
+        {
+            let caps = unsafe { caps.assume_init() };
+            let display_name =
+                name(unsafe { std::ptr::addr_of!(caps.szPname).read_unaligned() }.as_slice());
+            devices.push(VoiceDevice {
+                schema_version: 1,
+                reference: format!("local:wavein:{index}"),
+                direction: "input".into(),
+                display_name,
+            });
+        }
+    }
+    for index in 0..unsafe { waveOutGetNumDevs() }.min(MAX_VOICE_DEVICES as u32) {
+        let mut caps = MaybeUninit::<WAVEOUTCAPSW>::zeroed();
+        if unsafe {
+            waveOutGetDevCapsW(
+                index as usize,
+                caps.as_mut_ptr(),
+                std::mem::size_of::<WAVEOUTCAPSW>() as u32,
+            )
+        } == 0
+        {
+            let caps = unsafe { caps.assume_init() };
+            let display_name =
+                name(unsafe { std::ptr::addr_of!(caps.szPname).read_unaligned() }.as_slice());
+            devices.push(VoiceDevice {
+                schema_version: 1,
+                reference: format!("local:waveout:{index}"),
+                direction: "output".into(),
+                display_name,
+            });
+        }
+    }
+    devices
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

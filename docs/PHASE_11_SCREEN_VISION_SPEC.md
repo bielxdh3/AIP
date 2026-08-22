@@ -59,8 +59,8 @@ fixture reference, and display name are not images. The only model reference is
 Every session must enable `excludeSensitiveContent` and include an enabled
 `exclude_sensitive_regions` redaction hook. The policy is stored with the
 session and copied to each job preview. The redaction hook is a safety contract
-for a future real adapter; it does not authorize a real capture in this
-checkpoint.
+for the real capture path; capture remains explicit, bounded, transient, and
+Owner-confirmed.
 
 No sensitive attribute is inferred. Results are explicitly uncertain,
 non-diagnostic, non-durable, and bounded to a short text hypothesis. Rust

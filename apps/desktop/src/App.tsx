@@ -52,7 +52,7 @@ import type {
   ExtensionExecutionResult,
   ExtensionProposal,
   ExtensionSourceKind,
-  VoiceSettings,
+  VoiceSettings, VoiceDevice,
   VoiceSettingsRequest,
   VoiceCaptureRuntimeRequest,
   VoiceOperationCancellationRequest,
@@ -1609,6 +1609,7 @@ export function VoiceControls({
   const [synthesisModelRef, setSynthesisModelRef] = useState("");
   const [inputDeviceRef, setInputDeviceRef] = useState("");
   const [outputDeviceRef, setOutputDeviceRef] = useState("");
+  const [voiceDevices, setVoiceDevices] = useState<VoiceDevice[]>([]);
   const [customVoiceRef, setCustomVoiceRef] = useState(
     "fixture:custom-neutral-v1",
   );
@@ -1639,6 +1640,7 @@ export function VoiceControls({
 
   useEffect(() => {
     void load();
+    void invoke<VoiceDevice[]>("list_voice_devices").then(setVoiceDevices).catch(() => setVoiceDevices([]));
   }, [load]);
 
   async function saveSettings() {
@@ -1867,6 +1869,10 @@ export function VoiceControls({
       </label>
       <label>
         Dispositivo local de entrada
+        <select value={inputDeviceRef} disabled={temporaryChat || busy} onChange={(event) => setInputDeviceRef(event.target.value)}>
+          <option value="">Selecionar dispositivo (ou use a referência abaixo)</option>
+          {voiceDevices.filter((device) => device.direction === "input").map((device) => <option key={device.reference} value={device.reference}>{device.displayName}</option>)}
+        </select>
         <input
           value={inputDeviceRef}
           placeholder="local:wavein:0"
@@ -1877,6 +1883,10 @@ export function VoiceControls({
       </label>
       <label>
         Dispositivo local de saída
+        <select value={outputDeviceRef} disabled={temporaryChat || busy} onChange={(event) => setOutputDeviceRef(event.target.value)}>
+          <option value="">Selecionar dispositivo (ou use a referência abaixo)</option>
+          {voiceDevices.filter((device) => device.direction === "output").map((device) => <option key={device.reference} value={device.reference}>{device.displayName}</option>)}
+        </select>
         <input
           value={outputDeviceRef}
           placeholder="local:waveout:0"
