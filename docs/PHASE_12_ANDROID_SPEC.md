@@ -1,7 +1,8 @@
 # Phase 12 local Android companion specification
 
-Status: implemented as a local metadata-only architecture checkpoint. This is
-not an Android APK, network-release, or human mobile-validation claim.
+Status: real Android APK with a shared bounded wire contract; desktop listener
+integration remains the next scoped commit. This is not a network release or
+human mobile-validation claim.
 
 ## Purpose and authority
 
@@ -11,11 +12,14 @@ is authoritative for device ownership, pairing, sessions, replay counters,
 queue approval, key rotation, revocation, audit, safe mode, and temporary-chat
 gates. React only renders Portuguese Owner controls and cannot grant authority.
 
-The versioned protocol is `aip-companion-v1`. The current implementation uses a
-synthetic Android fixture and local Tauri commands. `networkListener` is always
-false, `standaloneFallback` is true, and no relay, public listener, tunnel,
-shell, Python runtime, host filesystem, external account, or real Android
-credential path exists.
+The versioned protocol is `aip-companion-v1`: exactly one JSON object per line,
+bounded to 16 KiB, with fixed fields `protocol`, `kind`, `clientId`, nullable
+`sessionId`, `nonce`, `counter`, `payload`, and `mac`. Canonical MAC bytes are
+the UTF-8 values in that order excluding `mac`, joined by U+001F; `mac` is
+lowercase HMAC-SHA-256 hex. Unknown/missing fields, invalid UTF-8, bad lengths,
+version mismatch, repeated nonce, and non-monotonic counters fail closed.
+No relay, public listener, tunnel, shell, Python runtime, host filesystem, or
+external account exists; offline fallback remains truthful until a valid response.
 
 ## Pairing and authenticated session model
 
