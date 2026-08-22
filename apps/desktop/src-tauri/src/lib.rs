@@ -8,6 +8,7 @@ mod domain;
 mod extensions;
 mod fullscreen;
 mod gateway;
+mod gateway_transport;
 mod native_overlay_region;
 mod overlays;
 mod protocol;
@@ -67,6 +68,11 @@ use gateway::{
     GatewaySession, GatewaySessionActionRequest, GatewaySessionRequest, GatewayTransfer,
     GatewayTransferActionRequest, GatewayTransferApprovalRequest, GatewayTransferRequest,
 };
+use gateway_transport::{
+    start_secure as start_gateway_secure, EphemeralPairingKey as GatewayPairingKey,
+    HandlerResponse as GatewayHandlerResponse, SecureHandler as GatewayHandler,
+    TransportHandle as GatewayTransportHandle,
+};
 use overlays::{InteractiveRegion, OverlayInputState};
 use runtime::RuntimeController;
 use screen_vision::{
@@ -102,6 +108,14 @@ struct AppState {
     safe_mode: Arc<AtomicBool>,
     overlay_input: OverlayInputState,
     companion_transport: Arc<Mutex<CompanionTransportState>>,
+    gateway_transport: Arc<Mutex<GatewayTransportState>>,
+}
+
+#[derive(Default)]
+struct GatewayTransportState {
+    handle: Option<GatewayTransportHandle>,
+    endpoint: Option<String>,
+    pairing: Option<GatewayPairingKey>,
 }
 
 #[derive(Default)]
@@ -1714,6 +1728,264 @@ fn revoke_companion_device(
         .map_err(|error| error.code())
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GatewayTransportStartRequest {
+    agent_id: String,
+    owner_confirmed: bool,
+    private_network_confirmed: bool,
+    bind_address: Option<String>,
+    port: Option<u16>,
+    temporary_chat: bool,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GatewayTransportStartResult {
+    enabled: bool,
+    endpoint: String,
+    pairing_code: String,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GatewayTransportStatus {
+    enabled: bool,
+    endpoint: Option<String>,
+    pairing_available: bool,
+}
+
+fn gateway_transport_handler(database: Database, safe_mode: Arc<AtomicBool>) -> GatewayHandler {
+    Arc::new(move |frame| {
+        if safe_mode.load(Ordering::Acquire) {
+            return Err("gateway_blocked_safe_mode".into());
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct AgentRequest {
+            agent_id: String,
+        }
+        let agent = || -> Result<AgentRequest, String> {
+            serde_json::from_str(&frame.payload).map_err(|_| "gateway_payload_invalid".into())
+        };
+        let value = match frame.kind.as_str() {
+            "protocol" => serde_json::to_value(
+                database
+                    .gateway_protocol_info(&agent()?.agent_id)
+                    .map_err(|e| e.code().to_owned())?,
+            )
+            .map_err(|_| "gateway_response_invalid".to_owned())?,
+            "accounts" => serde_json::to_value(
+                database
+                    .list_gateway_accounts(&agent()?.agent_id)
+                    .map_err(|e| e.code().to_owned())?,
+            )
+            .map_err(|_| "gateway_response_invalid".to_owned())?,
+            "transfers" => serde_json::to_value(
+                database
+                    .list_gateway_transfers(&agent()?.agent_id)
+                    .map_err(|e| e.code().to_owned())?,
+            )
+            .map_err(|_| "gateway_response_invalid".to_owned())?,
+            "sessions" => serde_json::to_value(
+                database
+                    .list_gateway_sessions(&agent()?.agent_id)
+                    .map_err(|e| e.code().to_owned())?,
+            )
+            .map_err(|_| "gateway_response_invalid".to_owned())?,
+            "recoveries" => serde_json::to_value(
+                database
+                    .list_gateway_recoveries(&agent()?.agent_id)
+                    .map_err(|e| e.code().to_owned())?,
+            )
+            .map_err(|_| "gateway_response_invalid".to_owned())?,
+            "audit" => serde_json::to_value(
+                database
+                    .list_gateway_audit(&agent()?.agent_id)
+                    .map_err(|e| e.code().to_owned())?,
+            )
+            .map_err(|_| "gateway_response_invalid".to_owned())?,
+            "revocations" => serde_json::to_value(
+                database
+                    .list_gateway_revocations(&agent()?.agent_id)
+                    .map_err(|e| e.code().to_owned())?,
+            )
+            .map_err(|_| "gateway_response_invalid".to_owned())?,
+            "transfer_prepare" => serde_json::to_value(
+                database
+                    .prepare_gateway_transfer(
+                        serde_json::from_str(&frame.payload)
+                            .map_err(|_| "gateway_payload_invalid")?,
+                    )
+                    .map_err(|e| e.code().to_owned())?,
+            )
+            .map_err(|_| "gateway_response_invalid".to_owned())?,
+            "transfer_approve" => serde_json::to_value(
+                database
+                    .approve_gateway_transfer(
+                        serde_json::from_str(&frame.payload)
+                            .map_err(|_| "gateway_payload_invalid")?,
+                    )
+                    .map_err(|e| e.code().to_owned())?,
+            )
+            .map_err(|_| "gateway_response_invalid".to_owned())?,
+            "session_connect" => serde_json::to_value(
+                database
+                    .connect_gateway_session(
+                        serde_json::from_str(&frame.payload)
+                            .map_err(|_| "gateway_payload_invalid")?,
+                    )
+                    .map_err(|e| e.code().to_owned())?,
+            )
+            .map_err(|_| "gateway_response_invalid".to_owned())?,
+            "session_reconnect" => serde_json::to_value(
+                database
+                    .reconnect_gateway_session(
+                        serde_json::from_str(&frame.payload)
+                            .map_err(|_| "gateway_payload_invalid")?,
+                    )
+                    .map_err(|e| e.code().to_owned())?,
+            )
+            .map_err(|_| "gateway_response_invalid".to_owned())?,
+            "recovery_request" => serde_json::to_value(
+                database
+                    .request_gateway_recovery(
+                        serde_json::from_str(&frame.payload)
+                            .map_err(|_| "gateway_payload_invalid")?,
+                    )
+                    .map_err(|e| e.code().to_owned())?,
+            )
+            .map_err(|_| "gateway_response_invalid".to_owned())?,
+            "recovery_approve" => serde_json::to_value(
+                database
+                    .approve_gateway_recovery(
+                        serde_json::from_str(&frame.payload)
+                            .map_err(|_| "gateway_payload_invalid")?,
+                    )
+                    .map_err(|e| e.code().to_owned())?,
+            )
+            .map_err(|_| "gateway_response_invalid".to_owned())?,
+            "session_revoke" => serde_json::to_value(
+                database
+                    .revoke_gateway_session(
+                        serde_json::from_str(&frame.payload)
+                            .map_err(|_| "gateway_payload_invalid")?,
+                    )
+                    .map_err(|e| e.code().to_owned())?,
+            )
+            .map_err(|_| "gateway_response_invalid".to_owned())?,
+            "transfer_revoke" => serde_json::to_value(
+                database
+                    .revoke_gateway_transfer(
+                        serde_json::from_str(&frame.payload)
+                            .map_err(|_| "gateway_payload_invalid")?,
+                    )
+                    .map_err(|e| e.code().to_owned())?,
+            )
+            .map_err(|_| "gateway_response_invalid".to_owned())?,
+            _ => return Err("gateway_payload_invalid".into()),
+        };
+        Ok(Some(GatewayHandlerResponse {
+            kind: format!("{}_result", frame.kind),
+            payload: serde_json::to_string(&value).map_err(|_| "gateway_response_invalid")?,
+        }))
+    })
+}
+
+#[tauri::command]
+fn start_gateway_transport(
+    state: State<'_, AppState>,
+    request: GatewayTransportStartRequest,
+) -> Result<GatewayTransportStartResult, String> {
+    if !request.owner_confirmed {
+        return Err("gateway_owner_confirmation_required".into());
+    }
+    if request.temporary_chat
+        || state
+            .chat
+            .as_ref()
+            .is_some_and(|chat| chat.temporary_chat_active(&request.agent_id))
+    {
+        return Err("gateway_blocked_temporary".into());
+    }
+    if state.safe_mode.load(Ordering::Acquire) {
+        return Err("gateway_blocked_safe_mode".into());
+    }
+    let database = state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .clone();
+    if request.agent_id != database::LUMA_ID {
+        return Err("gateway_owner_required".into());
+    }
+    let ip: IpAddr = request
+        .bind_address
+        .as_deref()
+        .unwrap_or("127.0.0.1")
+        .parse()
+        .map_err(|_| "gateway_bind_invalid")?;
+    let address = SocketAddr::new(ip, request.port.unwrap_or(0));
+    let (pairing, code) =
+        GatewayPairingKey::generate().map_err(|_| "gateway_pairing_unavailable")?;
+    let key = pairing
+        .consume()
+        .map_err(|_| "gateway_pairing_unavailable")?;
+    let handle = start_gateway_secure(
+        address,
+        request.private_network_confirmed,
+        key,
+        gateway_transport_handler(database, Arc::clone(&state.safe_mode)),
+    )
+    .map_err(|e| e.to_string())?;
+    let endpoint = handle.addr.to_string();
+    let mut transport = state
+        .gateway_transport
+        .lock()
+        .map_err(|_| "gateway_state_unavailable")?;
+    if let Some(mut old) = transport.handle.take() {
+        old.stop();
+    }
+    transport.endpoint = Some(endpoint.clone());
+    transport.pairing = Some(pairing);
+    transport.handle = Some(handle);
+    Ok(GatewayTransportStartResult {
+        enabled: true,
+        endpoint,
+        pairing_code: code,
+    })
+}
+
+#[tauri::command]
+fn stop_gateway_transport(state: State<'_, AppState>) -> Result<(), String> {
+    let mut transport = state
+        .gateway_transport
+        .lock()
+        .map_err(|_| "gateway_state_unavailable")?;
+    if let Some(mut handle) = transport.handle.take() {
+        handle.stop();
+    }
+    transport.endpoint = None;
+    transport.pairing = None;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_gateway_transport_status(
+    state: State<'_, AppState>,
+) -> Result<GatewayTransportStatus, String> {
+    let transport = state
+        .gateway_transport
+        .lock()
+        .map_err(|_| "gateway_state_unavailable")?;
+    Ok(GatewayTransportStatus {
+        enabled: transport.handle.is_some(),
+        endpoint: transport.endpoint.clone(),
+        pairing_available: transport
+            .pairing
+            .as_ref()
+            .is_some_and(|p| p.status().available),
+    })
+}
+
 fn ensure_gateway_mutation_allowed(
     state: &AppState,
     agent_id: &str,
@@ -2787,6 +3059,7 @@ pub fn run() {
                 safe_mode: Arc::clone(&safe_mode),
                 overlay_input: overlay_input.clone(),
                 companion_transport: Arc::new(Mutex::new(CompanionTransportState::default())),
+                gateway_transport: Arc::new(Mutex::new(GatewayTransportState::default())),
             });
             if let Some(database) = database.as_ref() {
                 overlays::create_windows(app, database, stored_safe_mode, overlay_input.clone())?;
@@ -2893,6 +3166,9 @@ pub fn run() {
             rotate_companion_key,
             revoke_companion_device,
             get_gateway_protocol,
+            start_gateway_transport,
+            stop_gateway_transport,
+            get_gateway_transport_status,
             list_gateway_accounts,
             list_gateway_transfers,
             prepare_gateway_transfer,
@@ -2975,6 +3251,13 @@ pub fn run() {
         if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
             if let Some(state) = app_handle.try_state::<AppState>() {
                 overlays::close_all(app_handle, &state.overlay_input);
+                if let Ok(mut gateway) = state.gateway_transport.lock() {
+                    if let Some(mut handle) = gateway.handle.take() {
+                        handle.stop();
+                    }
+                    gateway.endpoint = None;
+                    gateway.pairing = None;
+                }
             } else {
                 overlays::reset_native_regions(app_handle);
             }
@@ -3002,7 +3285,7 @@ mod conversation_command_tests {
         complete_resource_job_for_state, emit_cognitive_candidate_for_state,
         reserve_heavy_generation_for_state, set_custom_voice_consent_for_state,
         start_agent_conversation_for_state, update_voice_settings_for_state, AppState,
-        CompanionTransportState,
+        CompanionTransportState, GatewayTransportState,
     };
     use crate::{
         companion::{
@@ -3040,6 +3323,7 @@ mod conversation_command_tests {
             safe_mode: Arc::new(AtomicBool::new(false)),
             overlay_input: OverlayInputState::default(),
             companion_transport: Arc::new(Mutex::new(CompanionTransportState::default())),
+            gateway_transport: Arc::new(Mutex::new(GatewayTransportState::default())),
         }
     }
 
