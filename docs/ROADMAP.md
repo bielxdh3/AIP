@@ -215,20 +215,22 @@ runtime, manual, and remote reservations remain explicit there. This is not a v0
   and honest documentation. No new capability is introduced; see [the Phase 7F validation
   record](PHASE_7F_VALIDATION.md).
 
-## Post-v0.1 Phase 8: voice [FUNCTIONAL — LOCAL RUNTIME/EFFECTS; HARDWARE/PROVIDER/PACKAGED/MANUAL VALIDATION PENDING]
+## Post-v0.1 Phase 8: voice [FUNCTIONAL — HUMAN VALIDATION PENDING]
 
 The functional local runtime/effects checkpoint is implemented in Rust/SQLite, Tauri commands,
-versioned contracts, and Portuguese UI controls. It provides bounded local references,
-fixture transcription/synthesis/wake-word paths, custom synthetic-voice consent,
-base-voice protection, uncertain emotional hypotheses, and voice-muted/silent/suspended
-fallback behavior. It does not claim a working audio product or release validation.
+versioned contracts, native Windows wave-device enumeration, bounded in-memory capture/playback,
+replaceable local STT/TTS argv adapters, wake-word routing, and Portuguese Owner controls.
+Missing devices/models degrade to text fallback; no cloud path, raw-audio persistence, or hidden
+listener exists. Hardware quality, packaged restart behavior, and manual Owner validation remain
+pending.
 
 Reserved validation covers real audio devices and speech models, packaged Windows
-behavior, and subjective voice quality. The checkpoint keeps no microphone capture, raw
-audio persistence, upload/network path, real-person cloning, or hidden listener. See the
+behavior, and subjective voice quality. The checkpoint keeps captured PCM only in bounded
+memory and has no raw-audio persistence, upload/network path, real-person cloning, or hidden
+listener. See the
 [Phase 8 voice specification](PHASE_8_VOICE_SPEC.md).
 
-## Post-v0.1 Phase 9: supervised tools `[FUNCTIONAL — LOCAL RUNTIME/EFFECTS; PROVIDER/PACKAGED/MANUAL VALIDATION PENDING]`
+## Post-v0.1 Phase 9: supervised tools `[FUNCTIONAL — HUMAN VALIDATION PENDING]`
 
 The current checkpoint implements the bounded local architecture described in
 [PHASE_9_TOOLS_SPEC.md](PHASE_9_TOOLS_SPEC.md):
@@ -236,13 +238,15 @@ The current checkpoint implements the bounded local architecture described in
 - versioned catalog with read-only/state-changing classification;
 - granular fixture-scoped sessions and permissions;
 - exact action preview, dry-run, Owner approval, and manifest-bound second confirmation;
-- deterministic workspace, calendar, and messaging adapter mocks;
+- deterministic workspace, calendar, and messaging adapter mocks plus real bounded local
+  workspace inspection and approved move/compensation effects;
 - bounded untrusted output, cancellation, compensation metadata, and 30-day audit retention;
 - temporary-chat and safe-mode fail-closed controls with Portuguese Owner UI.
 
-This does not enable real filesystem, shell, credential, calendar, messaging,
-network, or external-provider access. Live adapters, packaged-Windows runtime
-evidence, and release approval remain reserved validation work.
+The local effects are confined to explicit Owner-configured roots with canonical containment,
+link/system-directory rejection, preview, approval, second confirmation, dry-run, audit, and
+compensation. Shell, credentials, network, and external-provider mutation remain disabled;
+packaged-Windows UX and live provider credentials remain reserved validation work.
 
 ## Post-v0.1 Phase 10: extensions [FUNCTIONAL — AUTOMATED VALIDATION COMPLETE]
 
@@ -263,7 +267,7 @@ does not access the network, shell, host filesystem, credentials, remote code,
 or a public marketplace. Human package review, real plugin usability, ratings,
 packaged-Windows evidence, and release approval remain reserved.
 
-## Post-v0.1 Phase 11: screen vision `[FUNCTIONAL — AUTOMATED CAPTURE/PROVIDER CHECKPOINT]`
+## Post-v0.1 Phase 11: screen vision `[FUNCTIONAL — HUMAN VALIDATION PENDING]`
 
 The current checkpoint implements the bounded local architecture described in
 [PHASE_11_SCREEN_VISION_SPEC.md](PHASE_11_SCREEN_VISION_SPEC.md):
@@ -272,7 +276,8 @@ The current checkpoint implements the bounded local architecture described in
 - synthetic monitor fixture selection and on-demand Windows display discovery;
 - per-session capture/analyze permissions, privacy policy, and redaction hooks;
 - preview before confirmation, one-job reference-GPU scheduling, and quotas;
-- on-demand synthetic model-fixture lifecycle with automatic cleanup;
+- on-demand synthetic model-fixture lifecycle with automatic cleanup and a replaceable local
+  `aip-screen-vision-v1` executable adapter for confirmed real displays;
 - cancellation, bounded uncertain non-diagnostic hypothesis, and audit history;
 - Rust/SQLite authoritative temporary-chat and safe-mode fail-closed gates;
 - Portuguese Owner-facing Screen Vision controls and versioned contracts.
@@ -280,11 +285,11 @@ The current checkpoint implements the bounded local architecture described in
 This checkpoint captures a confirmed Windows display only in bounded transient
 memory; it does not retain pixels or screenshot bytes, analyze continuously, run in the background,
 access the host filesystem/shell/credentials, use a network or remote model, or
-persist visual state. A local model adapter intentionally reports unavailable
-when no model is installed. Windows packaging evidence,
+persist visual state. The local adapter reports unavailable when its explicitly configured
+provider/model is missing. Windows packaging evidence,
 privacy/visual UX validation, and release approval remain reserved work.
 
-## Post-v0.1 Phase 12: Android companion `[FUNCTIONAL — APK/AUTHENTICATED LOCAL TRANSPORT]`
+## Post-v0.1 Phase 12: Android companion `[FUNCTIONAL — HUMAN VALIDATION PENDING]`
 
 The current checkpoint implements the bounded local architecture described in
 [PHASE_12_ANDROID_SPEC.md](PHASE_12_ANDROID_SPEC.md):
@@ -302,7 +307,7 @@ local/private protocol and explicit-connect client. Deterministic loopback is
 covered; physical-device UX, private-LAN smoke testing, and release signing
 remain reserved checks. No relay or external account is claimed.
 
-## Post-v0.1 Phase 13: gateway boundary `[FUNCTIONAL — AUTHENTICATED LOCAL/PRIVATE GATEWAY CHECKPOINT]`
+## Post-v0.1 Phase 13: gateway boundary `[FUNCTIONAL — HUMAN VALIDATION PENDING]`
 
 The current checkpoint implements the bounded local architecture described in
 [PHASE_13_GATEWAY_SPEC.md](PHASE_13_GATEWAY_SPEC.md):

@@ -100,10 +100,11 @@ limits, cancellation, approval, rollback, and failure containment.
 
 ## Validation boundary
 
-Focused Rust tests cover migration-backed proposal/review/activation,
+Focused Rust tests cover migration-backed proposal/review/activation, deterministic
+package execution through the closed sandbox and bounded host contract,
 agent-proposal review-only behavior, update re-review, rollback, audit,
 temporary-chat rejection, safe-mode rejection, and invalid manifests.
 Contract tests reject trusted, code-like, out-of-bounds, incompatible-shape,
-and unknown extension payloads. Runtime package validation, real plugin
-behavior, package integrity/signature policy, external providers, and release
-approval remain reserved work.
+and unknown extension payloads. Arbitrary plugin/native-code behavior, external
+providers, package signing beyond the integrity hash, and release approval remain
+reserved work.
