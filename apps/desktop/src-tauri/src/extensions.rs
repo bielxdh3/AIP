@@ -55,15 +55,34 @@ pub enum ExtensionAdmissionPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op")]
 pub enum ExtensionInstruction {
+    #[serde(rename = "emit_text")]
     EmitText {
         text: Option<String>,
+        #[serde(rename = "echoInput")]
         echo_input: Option<bool>,
     },
+    #[serde(rename = "read_agent_context")]
     ReadAgentContext,
+    #[serde(rename = "list_tool_catalog")]
     ListToolCatalog,
+    #[serde(rename = "yield")]
     Yield,
+}
+
+pub fn build_extension_package(
+    instructions: Vec<ExtensionInstruction>,
+) -> Result<ExtensionPackage, DatabaseError> {
+    let mut package = ExtensionPackage {
+        format: "aip-extension-package/v1".into(),
+        entrypoint: "main".into(),
+        instructions,
+        integrity_sha256: String::new(),
+    };
+    package.integrity_sha256 = extension_package_hash(&package)?;
+    validate_package(&package)?;
+    Ok(package)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

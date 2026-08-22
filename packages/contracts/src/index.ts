@@ -543,7 +543,7 @@ export type ExtensionExecutionRequest = {
 };
 export type ExtensionExecutionResult = {
   executionId: string;
-  status: "succeeded" | "failed" | "terminated" | "denied";
+  status: "succeeded" | "failed" | "terminated" | "cancelled" | "denied";
   output: string | null;
   error: string | null;
   steps: number;
@@ -2963,6 +2963,11 @@ function isExtensionBoundedText(
   );
 }
 
+function isExtensionOutput(value: unknown): value is string {
+  return typeof value === "string" && value.length <= MAX_EXTENSION_EXECUTION_OUTPUT &&
+    !Array.from(value).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127);
+}
+
 function isExtensionId(value: unknown): value is string {
   return (
     isExtensionBoundedText(value, MAX_EXTENSION_ID_LENGTH) &&
@@ -3123,8 +3128,8 @@ export function parseExtensionExecutionRequest(value: unknown): ExtensionExecuti
 export function parseExtensionExecutionResult(value: unknown): ExtensionExecutionResult | null {
   const candidate = toolRecord(value);
   return candidate !== null && extensionKeys(candidate, ["executionId", "status", "output", "error", "steps"]) &&
-    isExtensionRecordId(candidate.executionId) && ["succeeded", "failed", "terminated", "denied"].includes(candidate.status as string) &&
-    (candidate.output === null || isExtensionBoundedText(candidate.output, MAX_EXTENSION_EXECUTION_OUTPUT)) &&
+    isExtensionRecordId(candidate.executionId) && ["succeeded", "failed", "terminated", "cancelled", "denied"].includes(candidate.status as string) &&
+    (candidate.output === null || isExtensionOutput(candidate.output)) &&
     (candidate.error === null || isExtensionBoundedText(candidate.error, 512)) && typeof candidate.steps === "number" && Number.isSafeInteger(candidate.steps) && candidate.steps >= 0 && candidate.steps <= 32
     ? (candidate as unknown as ExtensionExecutionResult) : null;
 }
