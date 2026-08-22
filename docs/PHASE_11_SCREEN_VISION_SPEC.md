@@ -1,6 +1,9 @@
 # Phase 11 on-demand screen vision specification
 
-Status: functional automated capture/provider checkpoint; local model
+Status: functional automated capture/provider checkpoint; a real local visual
+provider is available on demand when `AIP_LOCAL_VISUAL_PROVIDER_PATH` points to
+an explicitly selected local executable. Missing or invalid configuration
+degrades to unavailable and never produces synthetic success. Local model
 installation, packaged Windows/manual UX, and visual quality remain human
 prerequisites. This is not release approval.
 
@@ -36,7 +39,11 @@ The supported path is:
    transient model/frame metadata.
 5. Rust records the lifecycle in the bounded audit log. The hypothesis is
    diagnostic-free, never a sensitive-attribute inference, and never durable
-   visual state.
+   visual state. For a real display, Rust passes only bounded in-memory pixels
+   to the configured executable over stdin. The executable must return one
+   bounded JSON object on stdout with `text`, `confidence`, and
+   `uncertain: true`; malformed, certain, oversized, timed-out, or cancelled
+   output degrades safely.
 
 The operation uses bounded idempotency keys. A replay returns the original
 record; a conflicting request fails closed. Listing sessions, jobs, and audit

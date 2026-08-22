@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -24,6 +26,9 @@ const MAX_SCREEN_VISION_RESULT_BYTES: usize = 1_024;
 const MAX_SCREEN_VISION_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_SCREEN_VISION_REAL_DISPLAYS: usize = 16;
 pub const MAX_SCREEN_VISION_FIXTURES: usize = 18;
+const LOCAL_VISUAL_PROVIDER_ENV: &str = "AIP_LOCAL_VISUAL_PROVIDER_PATH";
+const MAX_VISUAL_PROVIDER_OUTPUT_BYTES: usize = 4 * 1024;
+const VISUAL_PROVIDER_TIMEOUT_MS: u64 = 5_000;
 
 static SCREEN_VISION_CANCELLATIONS: OnceLock<std::sync::Mutex<HashMap<String, Arc<AtomicBool>>>> =
     OnceLock::new();
@@ -111,16 +116,86 @@ impl ScreenVisionVisualAdapter for DeterministicScreenVisionVisualAdapter {
 #[derive(Debug, Default)]
 pub struct LocalScreenVisionVisualAdapter;
 
+#[derive(Debug, Deserialize)]
+struct LocalVisualProviderOutput {
+    text: String,
+    confidence: u8,
+    uncertain: bool,
+}
+
+fn parse_local_visual_provider_output(
+    output: &[u8],
+) -> Result<ScreenVisionHypothesis, ScreenVisionAdapterError> {
+    if output.len() > MAX_VISUAL_PROVIDER_OUTPUT_BYTES {
+        return Err(ScreenVisionAdapterError::Unavailable);
+    }
+    let parsed: LocalVisualProviderOutput =
+        serde_json::from_slice(output).map_err(|_| ScreenVisionAdapterError::Unavailable)?;
+    if parsed.text.is_empty()
+        || parsed.text.len() > MAX_SCREEN_VISION_RESULT_BYTES
+        || !parsed.uncertain
+    {
+        return Err(ScreenVisionAdapterError::Unavailable);
+    }
+    Ok(ScreenVisionHypothesis {
+        text: parsed.text,
+        confidence: i64::from(parsed.confidence.min(100)),
+        uncertain: true,
+        diagnostic: false,
+        durable: false,
+        sensitive_attribute_inferred: false,
+        source: "local_visual_provider_untrusted".into(),
+    })
+}
+
 impl ScreenVisionVisualAdapter for LocalScreenVisionVisualAdapter {
     fn analyze(
         &self,
-        _pixels: &[u8],
+        pixels: &[u8],
         cancelled: &dyn Fn() -> bool,
     ) -> Result<ScreenVisionHypothesis, ScreenVisionAdapterError> {
         if cancelled() {
-            Err(ScreenVisionAdapterError::Cancelled)
-        } else {
-            Err(ScreenVisionAdapterError::Unavailable)
+            return Err(ScreenVisionAdapterError::Cancelled);
+        }
+        if pixels.len() > MAX_SCREEN_VISION_CAPTURE_BYTES {
+            return Err(ScreenVisionAdapterError::Unavailable);
+        }
+        let executable = std::env::var_os(LOCAL_VISUAL_PROVIDER_ENV)
+            .filter(|path| !path.is_empty())
+            .ok_or(ScreenVisionAdapterError::Unavailable)?;
+        let mut child = Command::new(executable)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|_| ScreenVisionAdapterError::Unavailable)?;
+        child
+            .stdin
+            .take()
+            .ok_or(ScreenVisionAdapterError::Unavailable)?
+            .write_all(pixels)
+            .map_err(|_| ScreenVisionAdapterError::Unavailable)?;
+        let started = std::time::Instant::now();
+        loop {
+            if cancelled() {
+                let _ = child.kill();
+                return Err(ScreenVisionAdapterError::Cancelled);
+            }
+            if child
+                .try_wait()
+                .map_err(|_| ScreenVisionAdapterError::Unavailable)?
+                .is_some()
+            {
+                let output = child
+                    .wait_with_output()
+                    .map_err(|_| ScreenVisionAdapterError::Unavailable)?;
+                return parse_local_visual_provider_output(&output.stdout);
+            }
+            if started.elapsed() >= std::time::Duration::from_millis(VISUAL_PROVIDER_TIMEOUT_MS) {
+                let _ = child.kill();
+                return Err(ScreenVisionAdapterError::Unavailable);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
 }
@@ -2153,6 +2228,16 @@ mod tests {
         assert_eq!(
             local_adapter.analyze(&[0; 4], &|| true),
             Err(ScreenVisionAdapterError::Cancelled)
+        );
+        assert!(parse_local_visual_provider_output(
+            br#"{"text":"janela incerta","confidence":61,"uncertain":true}"#
+        )
+        .is_ok());
+        assert_eq!(
+            parse_local_visual_provider_output(
+                br#"{"text":"certeza","confidence":100,"uncertain":false}"#
+            ),
+            Err(ScreenVisionAdapterError::Unavailable)
         );
         let real = ScreenVisionFixture {
             synthetic: false,
