@@ -7,6 +7,7 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { parseVoiceDevice } from "@aip/contracts";
 import type {
   AppSnapshot,
   AgentMemory,
@@ -1640,7 +1641,12 @@ export function VoiceControls({
 
   useEffect(() => {
     void load();
-    void invoke<VoiceDevice[]>("list_voice_devices").then(setVoiceDevices).catch(() => setVoiceDevices([]));
+    void invoke<unknown[]>("list_voice_devices")
+      .then((values) => {
+        const devices = values.map(parseVoiceDevice).filter((device): device is VoiceDevice => device !== null);
+        setVoiceDevices(devices.slice(0, 64));
+      })
+      .catch(() => setVoiceDevices([]));
   }, [load]);
 
   async function saveSettings() {

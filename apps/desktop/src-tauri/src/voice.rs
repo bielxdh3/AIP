@@ -72,7 +72,9 @@ pub struct VoiceDevice {
 
 pub fn list_voice_devices() -> Vec<VoiceDevice> {
     #[cfg(windows)]
-    { list_windows_voice_devices() }
+    {
+        list_windows_voice_devices()
+    }
     #[cfg(not(windows))]
     {
         Vec::new()

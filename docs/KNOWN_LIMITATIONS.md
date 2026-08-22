@@ -29,8 +29,8 @@ validation reservations are recorded in
 
 ## Phase 8 voice checkpoint
 
-- Phase 8 currently exposes a local Rust/SQLite architecture, Tauri commands, versioned
-  contracts, Portuguese controls, and metadata-only fixtures. It does not capture from a
+- Phase 8 provides functional local runtime/effects through bounded Rust/SQLite adapters,
+  Tauri commands, versioned contracts, Portuguese controls, and metadata-only fixtures. It does not capture from a
   microphone, persist raw audio, upload data, clone a real person, or run a hidden listener;
   text conversation remains the fallback.
 - Real audio-device/model integration, packaged Windows validation, restart/manual runtime
@@ -39,7 +39,7 @@ validation reservations are recorded in
 
 ## Phase 9 supervised-tools checkpoint
 
-- Phase 9 currently provides only SQLite-backed manifests, fixture-scoped sessions, typed
+- Phase 9 provides functional local runtime/effects through SQLite-backed manifests, fixture-scoped sessions, typed
   preview/approval/confirmation/cancellation/compensation paths, deterministic mock output,
   audit retention, and Portuguese Owner controls. It does not access the host filesystem,
   shell, credentials, calendars, messaging accounts, network, or external providers.
