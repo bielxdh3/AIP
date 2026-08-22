@@ -26,7 +26,9 @@ Database mapping validates the schema version and base voice against the Rust co
 returning a settings object. SQLite checks provide the durable constraint as well. The base
 voice is protected; a custom reference can only be selected through explicit consent. The safe
 path carries bounded fixture or local custom references to the existing local TTS provider and
-never imports or persists raw personal samples.
+never imports or persists raw personal samples. A `local:custom-...` value is only a provider
+identifier, not an audio-file path or audio-sample import; this metadata-only path performs no
+file access, upload, network call, or listener setup.
 
 The registered Tauri commands are:
 
@@ -62,7 +64,7 @@ hardware is available; missing hardware/providers remain explicit degraded state
   provider-neutral argv path only; there is no background listener. Device loss, cancellation,
   timeout, and model absence degrade safely. Raw audio persistence,
   upload, network calls, and telemetry do not exist.
-- Fixture and local references are bounded and character-validated. No real-person voice
+- Fixture and local provider identifiers are bounded and character-validated. No real-person voice
   cloning path is implemented; custom consent never imports or persists raw voice samples.
 - Emotion classification is a bounded text heuristic presented as uncertain and
   non-diagnostic. It is never a fact, diagnosis, or identity claim.
@@ -76,7 +78,7 @@ hardware is available; missing hardware/providers remain explicit degraded state
 | Transcription | On-demand bounded local Windows capture invokes a configured provider; unavailable devices/models degrade. | Supported availability, packaged checks, and accuracy. |
 | Synthesis     | On-demand bounded local Windows playback invokes a configured provider; unavailable devices/models degrade. | Supported availability, packaged checks, and quality. |
 | Wake word     | On-demand bounded local check invokes a configured provider; `listenerActive` remains false. | Provider/device behavior and Owner validation. |
-| Custom voice  | Bounded fixture/local reference with explicit durable consent and revocation; no sample import/persistence. | Real voice assets, cloning, or personal voice samples.    |
+| Custom voice  | Bounded fixture/local provider identifier with explicit durable consent and revocation; no sample import/persistence. | Real voice assets, cloning, or personal voice samples.    |
 | Emotion       | Uncertain, non-diagnostic text hypothesis.                                            | Audio emotion inference or clinical interpretation.       |
 
 ## Validation boundary

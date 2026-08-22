@@ -1576,7 +1576,7 @@ const voiceErrorCopy: Record<string, string> = {
   voice_reference_invalid:
     "Use uma referência local fixture: ou local: válida.",
   voice_consent_invalid:
-    "O consentimento exige uma referência sintética fixture:custom-.",
+    "O consentimento exige uma referência fixture:custom- ou local:custom- válida.",
   invalid_idempotency_key: "Não foi possível repetir a operação com segurança.",
 };
 
@@ -1912,7 +1912,7 @@ export function VoiceControls({
         Referência de voz customizada sintética
         <input
           value={customVoiceRef}
-          placeholder="fixture:custom-neutral-v1"
+          placeholder="local:custom-neutral-v1"
           maxLength={160}
           disabled={temporaryChat || busy}
           onChange={(event) => setCustomVoiceRef(event.target.value)}
