@@ -3321,6 +3321,7 @@ const SCREEN_VISION_MODEL_FIXTURE_ID = "fixture:visual-model/screen-neutral-v1";
 const SCREEN_VISION_RESOURCE_KEY = "reference-gpu";
 const MAX_SCREEN_VISION_TEXT = 512;
 const MAX_SCREEN_VISION_RESULT_TEXT = 1_024;
+export const MAX_SCREEN_VISION_FIXTURES = 18;
 
 function isScreenVisionBoundedText(
   value: unknown,
@@ -3626,7 +3627,7 @@ export function parseScreenVisionAuditRecord(
 export function parseScreenVisionFixtures(
   value: unknown,
 ): ScreenVisionFixture[] | null {
-  if (!Array.isArray(value) || value.length > 3) return null;
+  if (!Array.isArray(value) || value.length > MAX_SCREEN_VISION_FIXTURES) return null;
   const fixtures = value.map(parseScreenVisionFixture);
   return fixtures.every(
     (fixture): fixture is ScreenVisionFixture => fixture !== null,
