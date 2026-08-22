@@ -143,7 +143,7 @@ state, and certain/diagnostic hypotheses. Desktop tests cover Portuguese
 controls, authoritative command wiring, and temporary-chat/safe-mode fail
 closed behavior.
 
-Real screen privacy behavior, Windows packaging, local model installation,
-visual usability, and any
-future real adapter remain human/release validation work. Their absence is not
-represented as an implemented capture capability.
+Real screen privacy behavior, Windows packaging, local provider/model installation,
+visual usability, and quality remain human/release validation work. The replaceable
+provider boundary is implemented, but missing prerequisites truthfully degrade and do not
+produce synthetic success.
