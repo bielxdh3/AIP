@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     io::{Read, Write},
     net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     sync::{Arc, Mutex},
@@ -283,6 +284,7 @@ type Connection = (Arc<Mutex<bool>>, thread::JoinHandle<()>);
 struct RuntimeState {
     stop: Mutex<bool>,
     connections: Mutex<Vec<Connection>>,
+    sessions: Mutex<HashMap<String, Session>>,
 }
 impl TransportHandle {
     pub fn stop(&mut self) {
@@ -317,6 +319,7 @@ pub fn start(
     let runtime = Arc::new(RuntimeState {
         stop: Mutex::new(false),
         connections: Mutex::new(Vec::new()),
+        sessions: Mutex::new(HashMap::new()),
     });
     let flag = Arc::clone(&runtime);
     let join = thread::spawn(move || {
@@ -325,10 +328,11 @@ pub fn start(
                 Ok((stream, _)) => {
                     let h = Arc::clone(&handler);
                     let k = key.clone();
+                    let sessions = Arc::clone(&flag);
                     let cancel = Arc::new(Mutex::new(false));
                     let child_cancel = Arc::clone(&cancel);
                     let join = thread::spawn(move || {
-                        let _ = serve(stream, k, h, child_cancel);
+                        let _ = serve(stream, k, h, child_cancel, sessions);
                     });
                     flag.connections.lock().unwrap().push((cancel, join));
                 }
@@ -350,6 +354,7 @@ fn serve(
     key: Vec<u8>,
     handler: Handler,
     cancel: Arc<Mutex<bool>>,
+    runtime: Arc<RuntimeState>,
 ) -> Result<(), TransportError> {
     stream.set_read_timeout(Some(Duration::from_millis(100)))?;
     stream.set_write_timeout(Some(Duration::from_secs(3)))?;
@@ -375,9 +380,19 @@ fn serve(
             Err(e) => return Err(e.into()),
         }
     }
-    let mut session = Session::new(&key);
     let f = decode(&line)?;
-    session.authenticate(&f)?;
+    let session_key = format!(
+        "{}\u{1f}{}",
+        f.client_id,
+        f.session_id.as_deref().unwrap_or("")
+    );
+    {
+        let mut sessions = runtime.sessions.lock().unwrap();
+        let session = sessions
+            .entry(session_key)
+            .or_insert_with(|| Session::new(&key));
+        session.authenticate(&f)?;
+    }
     if *cancel.lock().unwrap() {
         return Ok(());
     }
@@ -474,6 +489,71 @@ mod tests {
         assert_eq!(decode(&out).unwrap().kind, "ok");
         let mut t = t;
         t.stop();
+        t.stop();
+    }
+
+    #[test]
+    fn replay_survives_reconnect_and_clients_are_independent() {
+        let key = b"key".to_vec();
+        let handler: Handler = Arc::new(Some);
+        let mut t = start("127.0.0.1:0".parse().unwrap(), false, key.clone(), handler).unwrap();
+        let mut f = frame(String::new());
+        f.mac = hex(&hmac(&key, &canonical(&f)));
+        let mut first = TcpStream::connect(t.addr).unwrap();
+        first.write_all(&encode(&f).unwrap()).unwrap();
+        let mut response = Vec::new();
+        BufReader::new(first)
+            .read_until(b'\n', &mut response)
+            .unwrap();
+        let mut replay = TcpStream::connect(t.addr).unwrap();
+        replay.write_all(&encode(&f).unwrap()).unwrap();
+        let mut buf = [0u8; 1];
+        assert!(replay.read(&mut buf).is_err() || replay.read(&mut buf).unwrap_or(0) == 0);
+        let mut other = f.clone();
+        other.client_id = "other".into();
+        other.nonce = "other-nonce".into();
+        other.mac = hex(&hmac(&key, &canonical(&other)));
+        let mut independent = TcpStream::connect(t.addr).unwrap();
+        independent.write_all(&encode(&other).unwrap()).unwrap();
+        let mut ok = Vec::new();
+        BufReader::new(independent)
+            .read_until(b'\n', &mut ok)
+            .unwrap();
+        assert!(!ok.is_empty());
+        t.stop();
+    }
+
+    #[test]
+    fn concurrent_same_counter_has_one_winner() {
+        let key = b"key".to_vec();
+        let handler: Handler = Arc::new(Some);
+        let mut t = start("127.0.0.1:0".parse().unwrap(), false, key.clone(), handler).unwrap();
+        let mut f = frame(String::new());
+        f.mac = hex(&hmac(&key, &canonical(&f)));
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let barrier = Arc::clone(&barrier);
+            let address = t.addr;
+            let frame = encode(&f).unwrap();
+            workers.push(thread::spawn(move || {
+                let mut stream = TcpStream::connect(address).unwrap();
+                barrier.wait();
+                stream.write_all(&frame).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut response = [0u8; 1];
+                stream.read_exact(&mut response).is_ok()
+            }));
+        }
+        barrier.wait();
+        let wins = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .filter(|won| *won)
+            .count();
+        assert_eq!(wins, 1);
         t.stop();
     }
 }
