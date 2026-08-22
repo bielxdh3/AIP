@@ -65,3 +65,9 @@ apps/desktop/src-tauri/binaries/
 *.exe
 *.appx
 *.zip
+
+.tooling/
+android/.gradle/
+android/app/build/
+android/build/
+android/app/.cxx/
