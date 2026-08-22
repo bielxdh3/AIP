@@ -208,7 +208,7 @@ See [SECURITY.md](SECURITY.md) and [docs/SECURITY_AND_PERMISSIONS.md](docs/SECUR
 - installers are unsigned;
 - the visual design is still being refined;
 - no production model is downloaded automatically;
-- voice, screen vision, and BielOS integration remain future work; Phase 10 extensions are now limited closed declarative packages with explicit Owner review;
+- screen vision now has a bounded on-demand Windows capture/provider checkpoint; local model installation and packaged/manual visual validation remain prerequisites; BielOS integration remains future work; Phase 10 extensions are now limited closed declarative packages with explicit Owner review;
 - Android and other desktop operating systems are not part of the stable baseline.
 
 The evidence boundary is documented in [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) and [docs/V0_1_MANUAL_VALIDATION.md](docs/V0_1_MANUAL_VALIDATION.md).

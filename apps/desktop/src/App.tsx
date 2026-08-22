@@ -5957,11 +5957,12 @@ export function ScreenVisionControls({
   }
 
   return (
-    <section className="tool-controls" aria-label="Visão de tela sintética">
-      <h3>Visão de tela (fixture)</h3>
+    <section className="tool-controls" aria-label="Visão de tela sob demanda">
+      <h3>Visão de tela sob demanda</h3>
       <p>
-        Somente metadados sintéticos: não há captura do Windows, pixels,
-        screenshot, rede, modelo remoto ou análise contínua.
+        Displays reais do Windows aparecem quando disponíveis; a captura só
+        ocorre após confirmação explícita do Owner, em memória e sem upload ou
+        persistência padrão. Fixtures continuam determinísticas para testes.
       </p>
       <p>
         Owner confirmado: <code>{OWNER_USER_ID}</code>. O Rust valida essa
@@ -5977,7 +5978,7 @@ export function ScreenVisionControls({
 
       <section className="settings-card">
         <div className="message-actions">
-          <h4>Monitores sintéticos</h4>
+          <h4>Displays e fixtures disponíveis</h4>
           <button
             type="button"
             disabled={busy}
@@ -5991,11 +5992,11 @@ export function ScreenVisionControls({
           </button>
         </div>
         {fixtures.length === 0 ? (
-          <p>Nenhuma fixture sintética disponível.</p>
+          <p>Nenhum display ou fixture disponível.</p>
         ) : (
           <>
             <label>
-              Monitor fixture
+              Display ou fixture
               <select
                 value={selectedFixtureId}
                 onChange={(event) => setSelectedFixtureId(event.target.value)}
@@ -6010,8 +6011,10 @@ export function ScreenVisionControls({
             </label>
             {selectedFixture ? (
               <p>
-                Monitor {selectedFixture.monitorId}; escala{" "}
-                {selectedFixture.scale}; metadata-only confirmado.
+                {selectedFixture.synthetic
+                  ? `Fixture sintética; monitor ${selectedFixture.monitorId}; metadata-only.`
+                  : `Display real; monitor ${selectedFixture.monitorId}; captura sob demanda.`}{" "}
+                Escala {selectedFixture.scale}.
               </p>
             ) : null}
           </>
@@ -6028,7 +6031,7 @@ export function ScreenVisionControls({
               checked={allowCapture}
               onChange={(event) => setAllowCapture(event.target.checked)}
             />{" "}
-            Permitir fixture de captura sintética
+            Permitir captura do display selecionado
           </label>
           <label>
             <input
@@ -6036,7 +6039,7 @@ export function ScreenVisionControls({
               checked={allowAnalyze}
               onChange={(event) => setAllowAnalyze(event.target.checked)}
             />{" "}
-            Permitir análise da fixture
+            Permitir análise local limitada
           </label>
           <legend>Exclusão e redaction</legend>
           <label>

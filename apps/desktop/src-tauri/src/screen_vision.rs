@@ -1,4 +1,7 @@
+use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
@@ -18,6 +21,254 @@ const SCREEN_VISION_AUDIT_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
 const SCREEN_VISION_PREVIEW_TTL_MS: i64 = 10 * 60 * 1_000;
 const MAX_SCREEN_VISION_REQUEST_BYTES: usize = 16_384;
 const MAX_SCREEN_VISION_RESULT_BYTES: usize = 1_024;
+const MAX_SCREEN_VISION_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_SCREEN_VISION_REAL_DISPLAYS: usize = 16;
+pub const MAX_SCREEN_VISION_FIXTURES: usize = 18;
+
+static SCREEN_VISION_CANCELLATIONS: OnceLock<std::sync::Mutex<HashMap<String, Arc<AtomicBool>>>> =
+    OnceLock::new();
+
+fn cancellation_registry() -> &'static std::sync::Mutex<HashMap<String, Arc<AtomicBool>>> {
+    SCREEN_VISION_CANCELLATIONS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn register_cancellation(job_id: &str) -> Arc<AtomicBool> {
+    let token = Arc::new(AtomicBool::new(false));
+    if let Ok(mut registry) = cancellation_registry().lock() {
+        registry.insert(job_id.to_owned(), token.clone());
+    }
+    token
+}
+
+fn signal_cancellation(job_id: &str) {
+    if let Ok(registry) = cancellation_registry().lock() {
+        if let Some(token) = registry.get(job_id) {
+            token.store(true, Ordering::Release);
+        }
+    }
+}
+
+fn unregister_cancellation(job_id: &str) {
+    if let Ok(mut registry) = cancellation_registry().lock() {
+        registry.remove(job_id);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScreenVisionCaptureError {
+    Unavailable,
+    Cancelled,
+    Oversized,
+    Failed,
+}
+
+pub trait ScreenVisionCaptureProvider {
+    fn capture(
+        &self,
+        fixture: &ScreenVisionFixture,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, ScreenVisionCaptureError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScreenVisionAdapterError {
+    Unavailable,
+    Cancelled,
+}
+
+pub trait ScreenVisionVisualAdapter {
+    fn analyze(
+        &self,
+        pixels: &[u8],
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<ScreenVisionHypothesis, ScreenVisionAdapterError>;
+}
+
+#[derive(Debug, Default)]
+pub struct DeterministicScreenVisionVisualAdapter;
+
+impl ScreenVisionVisualAdapter for DeterministicScreenVisionVisualAdapter {
+    fn analyze(
+        &self,
+        _pixels: &[u8],
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<ScreenVisionHypothesis, ScreenVisionAdapterError> {
+        if cancelled() {
+            return Err(ScreenVisionAdapterError::Cancelled);
+        }
+        Ok(ScreenVisionHypothesis {
+            text: "Hipótese incerta: fixture visual neutra; confirme visualmente.".into(),
+            confidence: 42,
+            uncertain: true,
+            diagnostic: false,
+            durable: false,
+            sensitive_attribute_inferred: false,
+            source: "synthetic_fixture_visual_model".into(),
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct LocalScreenVisionVisualAdapter;
+
+impl ScreenVisionVisualAdapter for LocalScreenVisionVisualAdapter {
+    fn analyze(
+        &self,
+        _pixels: &[u8],
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<ScreenVisionHypothesis, ScreenVisionAdapterError> {
+        if cancelled() {
+            Err(ScreenVisionAdapterError::Cancelled)
+        } else {
+            Err(ScreenVisionAdapterError::Unavailable)
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct DeterministicScreenVisionCaptureProvider;
+
+impl ScreenVisionCaptureProvider for DeterministicScreenVisionCaptureProvider {
+    fn capture(
+        &self,
+        fixture: &ScreenVisionFixture,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, ScreenVisionCaptureError> {
+        if cancelled() {
+            return Err(ScreenVisionCaptureError::Cancelled);
+        }
+        if !fixture.synthetic || !fixture.metadata_only {
+            return Err(ScreenVisionCaptureError::Unavailable);
+        }
+        Ok(Vec::new())
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Default)]
+pub struct WindowsScreenVisionCaptureProvider;
+
+#[cfg(windows)]
+impl ScreenVisionCaptureProvider for WindowsScreenVisionCaptureProvider {
+    fn capture(
+        &self,
+        fixture: &ScreenVisionFixture,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, ScreenVisionCaptureError> {
+        use windows_sys::Win32::Graphics::Gdi::{
+            BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
+            GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+            DIB_RGB_COLORS, HGDIOBJ, RGBQUAD, SRCCOPY,
+        };
+        if fixture.synthetic || fixture.metadata_only || cancelled() {
+            return Err(if cancelled() {
+                ScreenVisionCaptureError::Cancelled
+            } else {
+                ScreenVisionCaptureError::Unavailable
+            });
+        }
+        let width = i32::try_from(fixture.width).map_err(|_| ScreenVisionCaptureError::Failed)?;
+        let height = i32::try_from(fixture.height).map_err(|_| ScreenVisionCaptureError::Failed)?;
+        if width <= 0 || height <= 0 {
+            return Err(ScreenVisionCaptureError::Failed);
+        }
+        let bytes = usize::try_from(width)
+            .ok()
+            .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or(ScreenVisionCaptureError::Oversized)?;
+        if bytes > MAX_SCREEN_VISION_CAPTURE_BYTES {
+            return Err(ScreenVisionCaptureError::Oversized);
+        }
+        let mut origin = (0i32, 0i32);
+        let parts = fixture
+            .monitor_id
+            .strip_prefix("display:")
+            .and_then(|value| {
+                let values = value.split(':').collect::<Vec<_>>();
+                if values.len() == 4 {
+                    Some(values)
+                } else {
+                    None
+                }
+            });
+        if let Some(values) = parts {
+            origin.0 = values[0]
+                .parse()
+                .map_err(|_| ScreenVisionCaptureError::Failed)?;
+            origin.1 = values[1]
+                .parse()
+                .map_err(|_| ScreenVisionCaptureError::Failed)?;
+        } else {
+            return Err(ScreenVisionCaptureError::Unavailable);
+        }
+        unsafe {
+            let source = GetDC(std::ptr::null_mut());
+            if source.is_null() {
+                return Err(ScreenVisionCaptureError::Unavailable);
+            }
+            let memory = CreateCompatibleDC(source);
+            let bitmap = CreateCompatibleBitmap(source, width, height);
+            if memory.is_null() || bitmap.is_null() {
+                if !memory.is_null() {
+                    DeleteDC(memory);
+                }
+                ReleaseDC(std::ptr::null_mut(), source);
+                return Err(ScreenVisionCaptureError::Unavailable);
+            }
+            let previous = SelectObject(memory, bitmap as HGDIOBJ);
+            let copied = BitBlt(
+                memory, 0, 0, width, height, source, origin.0, origin.1, SRCCOPY,
+            ) != 0;
+            let mut output = vec![0u8; bytes];
+            let mut info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: width,
+                    biHeight: -height,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB,
+                    biSizeImage: 0,
+                    biXPelsPerMeter: 0,
+                    biYPelsPerMeter: 0,
+                    biClrUsed: 0,
+                    biClrImportant: 0,
+                },
+                bmiColors: [RGBQUAD {
+                    rgbBlue: 0,
+                    rgbGreen: 0,
+                    rgbRed: 0,
+                    rgbReserved: 0,
+                }],
+            };
+            let rows = if copied {
+                GetDIBits(
+                    memory,
+                    bitmap,
+                    0,
+                    height as u32,
+                    output.as_mut_ptr().cast(),
+                    &mut info,
+                    DIB_RGB_COLORS,
+                )
+            } else {
+                0
+            };
+            SelectObject(memory, previous);
+            DeleteObject(bitmap as HGDIOBJ);
+            DeleteDC(memory);
+            ReleaseDC(std::ptr::null_mut(), source);
+            if cancelled() {
+                return Err(ScreenVisionCaptureError::Cancelled);
+            }
+            if rows == 0 {
+                return Err(ScreenVisionCaptureError::Failed);
+            }
+            Ok(output)
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -295,7 +546,7 @@ struct ScreenVisionIdempotencyContext<'a> {
 }
 
 pub fn screen_vision_fixtures() -> Vec<ScreenVisionFixture> {
-    vec![
+    let mut fixtures = vec![
         ScreenVisionFixture {
             fixture_id: "fixture:screen/monitor-1/desktop-neutral-v1".into(),
             monitor_id: "monitor-1".into(),
@@ -316,7 +567,67 @@ pub fn screen_vision_fixtures() -> Vec<ScreenVisionFixture> {
             synthetic: true,
             metadata_only: true,
         },
-    ]
+    ];
+    #[cfg(windows)]
+    fixtures.extend(windows_displays());
+    fixtures.truncate(MAX_SCREEN_VISION_FIXTURES);
+    fixtures
+}
+
+#[cfg(windows)]
+fn windows_displays() -> Vec<ScreenVisionFixture> {
+    use windows_sys::Win32::Foundation::LPARAM;
+    use windows_sys::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, MONITORINFO};
+    unsafe extern "system" fn callback(
+        monitor: windows_sys::Win32::Graphics::Gdi::HMONITOR,
+        _dc: windows_sys::Win32::Graphics::Gdi::HDC,
+        _clip: *mut windows_sys::Win32::Foundation::RECT,
+        data: LPARAM,
+    ) -> i32 {
+        let displays = &mut *(data as *mut Vec<ScreenVisionFixture>);
+        if displays.len() >= MAX_SCREEN_VISION_REAL_DISPLAYS {
+            return 0;
+        }
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return 1;
+        }
+        let rect = info.rcMonitor;
+        let width = i64::from(rect.right - rect.left);
+        let height = i64::from(rect.bottom - rect.top);
+        if !(1..=16_384).contains(&width) || !(1..=16_384).contains(&height) {
+            return 1;
+        }
+        let identity = format!(
+            "display:{}:{}:{}:{}",
+            rect.left, rect.top, rect.right, rect.bottom
+        );
+        displays.push(ScreenVisionFixture {
+            fixture_id: identity.clone(),
+            monitor_id: identity,
+            display_name: "Display Windows enumerado".into(),
+            width,
+            height,
+            scale: 1.0,
+            synthetic: false,
+            metadata_only: false,
+        });
+        1
+    }
+    let mut displays = Vec::new();
+    unsafe {
+        EnumDisplayMonitors(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            Some(callback),
+            (&mut displays as *mut _) as LPARAM,
+        );
+    }
+    displays.truncate(MAX_SCREEN_VISION_REAL_DISPLAYS);
+    displays
 }
 
 impl Database {
@@ -616,6 +927,7 @@ impl Database {
             return Err(DatabaseError::Cognitive("screen_vision_session_cancelled"));
         }
         require_permission(&session, ScreenVisionPermission::AnalyzeFixture)?;
+        let fixture = fixture_for(&job.monitor_id, &job.fixture_id)?;
         let resource_busy: bool = transaction.query_row(
             "SELECT EXISTS(
                SELECT 1 FROM screen_vision_jobs
@@ -627,6 +939,59 @@ impl Database {
         if resource_busy {
             return Err(DatabaseError::Cognitive("screen_vision_resource_busy"));
         }
+        if !fixture.synthetic {
+            let cancellation = register_cancellation(&job_id);
+            let cancelled = || cancellation.load(Ordering::Acquire);
+            #[cfg(windows)]
+            let capture = WindowsScreenVisionCaptureProvider.capture(&fixture, &cancelled);
+            #[cfg(not(windows))]
+            let capture = Err(ScreenVisionCaptureError::Unavailable);
+            let pixels = match capture {
+                Ok(pixels) => pixels,
+                Err(error) => {
+                    unregister_cancellation(&job_id);
+                    return Err(match error {
+                        ScreenVisionCaptureError::Cancelled => {
+                            DatabaseError::Cognitive("screen_vision_cancelled")
+                        }
+                        ScreenVisionCaptureError::Oversized => {
+                            DatabaseError::Cognitive("screen_vision_capture_oversized")
+                        }
+                        ScreenVisionCaptureError::Unavailable
+                        | ScreenVisionCaptureError::Failed => {
+                            DatabaseError::Cognitive("screen_vision_unavailable")
+                        }
+                    });
+                }
+            };
+            let adapter = LocalScreenVisionVisualAdapter;
+            let code = match adapter.analyze(&pixels, &cancelled) {
+                Ok(_) => "screen_vision_model_unavailable",
+                Err(ScreenVisionAdapterError::Cancelled) => "screen_vision_cancelled",
+                Err(ScreenVisionAdapterError::Unavailable) => "screen_vision_model_unavailable",
+            };
+            let now = now_millis();
+            transaction.execute("UPDATE screen_vision_jobs SET status='cleaned', terminal_status='failed', model_lifecycle='unavailable', resource_status='released', cleanup_status='complete', frame_metadata_json=NULL, error_code=?1, model_cleanup_at=?2, cleaned_at=?2, updated_at=?2 WHERE id=?3 AND status='previewed'", params![code, now, job_id])?;
+            insert_audit_tx(
+                &transaction,
+                ScreenVisionAuditContext {
+                    session_id: Some(&job.session_id),
+                    job_id: Some(&job_id),
+                    agent_id: &agent_id,
+                    owner_user_id: &owner_user_id,
+                    event: "job_degraded",
+                    result: "unavailable",
+                    code: Some(code),
+                    summary: "Captura real limpa; adaptador visual local indisponível",
+                },
+            )?;
+            unregister_cancellation(&job_id);
+            transaction.commit()?;
+            return Err(DatabaseError::Cognitive(code));
+        }
+        DeterministicScreenVisionCaptureProvider
+            .capture(&fixture, &|| false)
+            .map_err(|_| DatabaseError::Cognitive("screen_vision_capture_failed"))?;
         let now = now_millis();
         transaction.execute(
             "UPDATE screen_vision_jobs
@@ -697,6 +1062,7 @@ impl Database {
         &self,
         request: ScreenVisionJobCancellationRequest,
     ) -> Result<ScreenVisionJob, DatabaseError> {
+        signal_cancellation(&request.job_id);
         self.transition_screen_vision_job(ScreenVisionJobTransitionContext {
             agent_id: request.agent_id,
             owner_user_id: request.owner_user_id,
@@ -1175,17 +1541,13 @@ fn analysis_result_for_job(
     if text.len() > MAX_SCREEN_VISION_RESULT_BYTES {
         return Err(DatabaseError::Cognitive("screen_vision_result_oversized"));
     }
+    let mut hypothesis = DeterministicScreenVisionVisualAdapter
+        .analyze(&[], &|| false)
+        .map_err(|_| DatabaseError::Cognitive("screen_vision_model_unavailable"))?;
+    hypothesis.text = text.into();
     Ok(ScreenVisionAnalysisResult {
         job,
-        hypothesis: ScreenVisionHypothesis {
-            text: text.into(),
-            confidence: 42,
-            uncertain: true,
-            diagnostic: false,
-            durable: false,
-            sensitive_attribute_inferred: false,
-            source: "synthetic_fixture_visual_model".into(),
-        },
+        hypothesis,
         output_bounded: true,
         screenshot_bytes_persisted: false,
     })
@@ -1663,6 +2025,7 @@ mod tests {
 
     #[test]
     fn fixture_selection_and_idempotency_are_bounded() {
+        assert!(screen_vision_fixtures().len() <= MAX_SCREEN_VISION_FIXTURES);
         let path = test_path();
         let database = Database::initialize(&path).unwrap();
         let mut invalid = session_request("fixture-1");
@@ -1765,5 +2128,69 @@ mod tests {
             .unwrap();
         assert_eq!(result.job.status, ScreenVisionJobStatus::Cleaned);
         cleanup(&path);
+    }
+
+    #[test]
+    fn capture_providers_are_bounded_and_fail_closed() {
+        let fixture = screen_vision_fixtures().remove(0);
+        let provider = DeterministicScreenVisionCaptureProvider;
+        assert_eq!(provider.capture(&fixture, &|| false), Ok(Vec::new()));
+        assert_eq!(
+            provider.capture(&fixture, &|| true),
+            Err(ScreenVisionCaptureError::Cancelled)
+        );
+        let fake_adapter = DeterministicScreenVisionVisualAdapter;
+        assert!(fake_adapter.analyze(&[], &|| false).is_ok());
+        assert_eq!(
+            fake_adapter.analyze(&[], &|| true),
+            Err(ScreenVisionAdapterError::Cancelled)
+        );
+        let local_adapter = LocalScreenVisionVisualAdapter;
+        assert_eq!(
+            local_adapter.analyze(&[0; 4], &|| false),
+            Err(ScreenVisionAdapterError::Unavailable)
+        );
+        assert_eq!(
+            local_adapter.analyze(&[0; 4], &|| true),
+            Err(ScreenVisionAdapterError::Cancelled)
+        );
+        let real = ScreenVisionFixture {
+            synthetic: false,
+            metadata_only: false,
+            ..fixture
+        };
+        #[cfg(windows)]
+        match WindowsScreenVisionCaptureProvider.capture(&real, &|| false) {
+            Ok(bytes) => {
+                assert!(!bytes.is_empty());
+                assert!(bytes.len() <= MAX_SCREEN_VISION_CAPTURE_BYTES);
+            }
+            Err(
+                ScreenVisionCaptureError::Unavailable
+                | ScreenVisionCaptureError::Oversized
+                | ScreenVisionCaptureError::Failed,
+            ) => {}
+            Err(ScreenVisionCaptureError::Cancelled) => panic!("non-cancelled capture cancelled"),
+        }
+        #[cfg(windows)]
+        assert_eq!(
+            WindowsScreenVisionCaptureProvider.capture(&real, &|| true),
+            Err(ScreenVisionCaptureError::Cancelled)
+        );
+        #[cfg(not(windows))]
+        let _ = real;
+    }
+
+    #[test]
+    fn cancellation_registry_signals_and_cleans_tokens() {
+        let token = register_cancellation("screen-test-cancel");
+        assert!(!token.load(Ordering::Acquire));
+        signal_cancellation("screen-test-cancel");
+        assert!(token.load(Ordering::Acquire));
+        unregister_cancellation("screen-test-cancel");
+        assert!(!cancellation_registry()
+            .lock()
+            .unwrap()
+            .contains_key("screen-test-cancel"));
     }
 }
