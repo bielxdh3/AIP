@@ -244,7 +244,7 @@ This does not enable real filesystem, shell, credential, calendar, messaging,
 network, or external-provider access. Live adapters, packaged-Windows runtime
 evidence, and release approval remain reserved validation work.
 
-## Post-v0.1 Phase 10: extensions [IMPLEMENTED — LOCAL METADATA-ONLY CHECKPOINT]
+## Post-v0.1 Phase 10: extensions [FUNCTIONAL — AUTOMATED VALIDATION COMPLETE]
 
 The current checkpoint implements the bounded local architecture described in
 [PHASE_10_EXTENSIONS_SPEC.md](PHASE_10_EXTENSIONS_SPEC.md):
@@ -256,11 +256,12 @@ The current checkpoint implements the bounded local architecture described in
 - explicit rollback, disable, bounded audit retention, and Portuguese controls;
 - safe-mode and temporary-chat fail-closed mutation gates.
 
-This does not load, compile, interpret, fetch, or execute extension code. It
+This executes only closed declarative packages through Rust; it does not load,
+compile, fetch, or execute native extension code. Human extension usability,
+package review, and release approval remain pending. It
 does not access the network, shell, host filesystem, credentials, remote code,
-or a public marketplace. Package integrity/signature policy, real plugin
-behavior, ratings, packaged-Windows evidence, and release approval remain
-reserved.
+or a public marketplace. Human package review, real plugin usability, ratings,
+packaged-Windows evidence, and release approval remain reserved.
 
 ## Post-v0.1 Phase 11: screen vision `[IMPLEMENTED — LOCAL SYNTHETIC METADATA-ONLY CHECKPOINT]`
 

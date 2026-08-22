@@ -1,5 +1,10 @@
+#![allow(dead_code)]
+
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
 use uuid::Uuid;
 
 use crate::database::{now_millis, Database, DatabaseError, OWNER_ID};
@@ -9,6 +14,12 @@ const EXTENSION_MANIFEST_VERSION: i64 = 1;
 const MAX_EXTENSION_ID_BYTES: usize = 96;
 const MAX_EXTENSION_CAPABILITIES: usize = 8;
 const MAX_EXTENSION_MANIFEST_BYTES: usize = 8_192;
+const MAX_PACKAGE_INSTRUCTIONS: usize = 32;
+const MAX_PACKAGE_TEXT_BYTES: usize = 4_096;
+const MAX_EXECUTION_INPUT_BYTES: usize = 4_096;
+const MAX_EXECUTION_OUTPUT_BYTES: usize = 8_192;
+const MAX_EXECUTION_STEPS: usize = 32;
+const MAX_EXECUTION_MS: i64 = 5_000;
 const MAX_EXTENSION_AUDIT_BYTES: usize = 2_048;
 const MAX_EXTENSION_AUDIT_ROWS: i64 = 100;
 const EXTENSION_AUDIT_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
@@ -40,6 +51,48 @@ pub enum ExtensionSandboxPolicy {
 #[serde(rename_all = "snake_case")]
 pub enum ExtensionAdmissionPolicy {
     LocalFixtureOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "op")]
+pub enum ExtensionInstruction {
+    #[serde(rename = "emit_text")]
+    EmitText {
+        text: Option<String>,
+        #[serde(rename = "echoInput")]
+        echo_input: Option<bool>,
+    },
+    #[serde(rename = "read_agent_context")]
+    ReadAgentContext,
+    #[serde(rename = "list_tool_catalog")]
+    ListToolCatalog,
+    #[serde(rename = "yield")]
+    Yield,
+}
+
+pub fn build_extension_package(
+    instructions: Vec<ExtensionInstruction>,
+) -> Result<ExtensionPackage, DatabaseError> {
+    let mut package = ExtensionPackage {
+        format: "aip-extension-package/v1".into(),
+        entrypoint: "main".into(),
+        instructions,
+        integrity_sha256: String::new(),
+    };
+    package.integrity_sha256 = extension_package_hash(&package)?;
+    validate_package(&package)?;
+    Ok(package)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionPackage {
+    pub format: String,
+    pub entrypoint: String,
+    pub instructions: Vec<ExtensionInstruction>,
+    pub integrity_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +157,131 @@ pub struct ExtensionManifest {
     pub capabilities: Vec<ExtensionCapability>,
     pub local_fixture_ref: Option<String>,
     pub untrusted: bool,
+    #[serde(default)]
+    pub package: Option<ExtensionPackage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionExecutionRequest {
+    pub agent_id: String,
+    pub owner_user_id: String,
+    pub extension_id: String,
+    pub revision: i64,
+    pub package_hash: String,
+    pub input: String,
+    pub idempotency_key: String,
+    pub temporary_chat: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionExecutionResult {
+    pub execution_id: String,
+    pub status: String,
+    pub output: Option<String>,
+    pub error: Option<String>,
+    pub steps: i64,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionExecutionCancellationRequest {
+    pub agent_id: String,
+    pub owner_user_id: String,
+    pub execution_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionHostContext {
+    pub agent_id: String,
+    pub tool_ids: Vec<String>,
+}
+
+pub fn extension_package_hash(package: &ExtensionPackage) -> Result<String, DatabaseError> {
+    let mut payload = serde_json::to_value(package).map_err(|_| DatabaseError::Unavailable)?;
+    payload
+        .as_object_mut()
+        .ok_or(DatabaseError::Cognitive("extension_package_invalid"))?
+        .remove("integritySha256");
+    let payload = serde_json::to_vec(&payload).map_err(|_| DatabaseError::Unavailable)?;
+    Ok(format!("{:x}", Sha256::digest(payload)))
+}
+
+fn validate_package(package: &ExtensionPackage) -> Result<(), DatabaseError> {
+    if package.format != "aip-extension-package/v1"
+        || package.entrypoint != "main"
+        || package.instructions.is_empty()
+        || package.instructions.len() > MAX_PACKAGE_INSTRUCTIONS
+        || package.integrity_sha256.len() != 64
+        || !package
+            .integrity_sha256
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+        || extension_package_hash(package)? != package.integrity_sha256
+    {
+        return Err(DatabaseError::Cognitive("extension_package_invalid"));
+    }
+    let mut seen = HashSet::new();
+    for instruction in &package.instructions {
+        let encoded = serde_json::to_string(instruction).map_err(|_| DatabaseError::Unavailable)?;
+        if !seen.insert(encoded) {
+            return Err(DatabaseError::Cognitive("extension_instruction_duplicate"));
+        }
+        if let ExtensionInstruction::EmitText { text, echo_input } = instruction {
+            if text.is_none() && *echo_input != Some(true) {
+                return Err(DatabaseError::Cognitive("extension_instruction_invalid"));
+            }
+            if text
+                .as_deref()
+                .is_some_and(|v| v.len() > MAX_PACKAGE_TEXT_BYTES)
+            {
+                return Err(DatabaseError::Cognitive("extension_instruction_oversized"));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn interpret_extension_package(
+    package: &ExtensionPackage,
+    input: &str,
+    capabilities: &[ExtensionCapability],
+    host: &ExtensionHostContext,
+) -> Result<String, DatabaseError> {
+    validate_package(package)?;
+    if input.len() > MAX_EXECUTION_INPUT_BYTES {
+        return Err(DatabaseError::Cognitive("extension_input_oversized"));
+    }
+    let mut output = String::new();
+    for instruction in &package.instructions {
+        match instruction {
+            ExtensionInstruction::EmitText { text, echo_input } => {
+                output.push_str(text.as_deref().unwrap_or(if *echo_input == Some(true) {
+                    input
+                } else {
+                    ""
+                }))
+            }
+            ExtensionInstruction::ReadAgentContext => {
+                if !capabilities.contains(&ExtensionCapability::AgentContext) {
+                    return Err(DatabaseError::Cognitive("extension_capability_denied"));
+                }
+                output.push_str("agent_id:");
+                output.push_str(&host.agent_id);
+            }
+            ExtensionInstruction::ListToolCatalog => {
+                if !capabilities.contains(&ExtensionCapability::ToolCatalog) {
+                    return Err(DatabaseError::Cognitive("extension_capability_denied"));
+                }
+                output.push_str("tool_ids:");
+                output.push_str(&host.tool_ids.join(","));
+            }
+            ExtensionInstruction::Yield => {}
+        }
+        if output.len() > MAX_EXECUTION_OUTPUT_BYTES {
+            return Err(DatabaseError::Cognitive("extension_output_oversized"));
+        }
+    }
+    Ok(output)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -935,6 +1113,188 @@ impl Database {
     }
 }
 
+impl Database {
+    pub fn execute_extension(
+        &self,
+        request: ExtensionExecutionRequest,
+    ) -> Result<ExtensionExecutionResult, DatabaseError> {
+        ensure_not_temporary(request.temporary_chat)?;
+        if request.owner_user_id != OWNER_ID
+            || request.input.len() > MAX_EXECUTION_INPUT_BYTES
+            || request.idempotency_key.len() > 128
+        {
+            return Err(DatabaseError::Cognitive("extension_execution_denied"));
+        }
+        static ACTIVE: OnceLock<Mutex<()>> = OnceLock::new();
+        let _active = match ACTIVE.get_or_init(|| Mutex::new(())).lock() {
+            Ok(guard) => guard,
+            Err(_) => return Err(DatabaseError::Cognitive("extension_execution_busy")),
+        };
+        let mut connection = self.open()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_owner_agent_tx(&transaction, &request.agent_id, OWNER_ID)?;
+        ensure_extensions_enabled_tx(&transaction)?;
+        let agent_state: (String, bool) = transaction.query_row(
+            "SELECT mode, suspended FROM agent_simulated_states WHERE agent_id=?1",
+            params![request.agent_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if agent_state.1 || agent_state.0 == "safe" {
+            return Err(DatabaseError::Cognitive(
+                "extension_execution_blocked_suspended",
+            ));
+        }
+        let catalog = load_catalog_row_tx(&transaction, &request.extension_id)?;
+        if catalog.lifecycle != ExtensionLifecycle::Active
+            || catalog.active_revision != Some(request.revision)
+            || !catalog.untrusted
+        {
+            return Err(DatabaseError::Cognitive("extension_execution_denied"));
+        }
+        let (manifest, _, _) =
+            load_manifest_tx(&transaction, &request.extension_id, request.revision)?;
+        let package = manifest
+            .package
+            .as_ref()
+            .ok_or(DatabaseError::Cognitive("extension_package_required"))?;
+        if extension_package_hash(package)? != request.package_hash.to_ascii_lowercase() {
+            return Err(DatabaseError::Cognitive("extension_integrity_mismatch"));
+        }
+        let approved: Vec<ExtensionCapability> = transaction
+            .query_row("SELECT approved_capabilities_json FROM extension_proposals WHERE extension_id=?1 AND revision=?2 AND status='approved'", params![request.extension_id, request.revision], |r| r.get::<_, Option<String>>(0))?
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_default();
+        let id = Uuid::now_v7().to_string();
+        let now = now_millis();
+        let request_json =
+            serde_json::to_string(&request).map_err(|_| DatabaseError::Unavailable)?;
+        let request_hash = format!("{:x}", Sha256::digest(request_json.as_bytes()));
+        if let Some((old_hash, old_result)) = transaction
+            .query_row("SELECT request_hash,result_json FROM extension_execution_idempotency WHERE owner_user_id=?1 AND idempotency_key=?2", params![OWNER_ID, request.idempotency_key], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .optional()?
+        {
+            if old_hash != request_hash { return Err(DatabaseError::Cognitive("idempotency_conflict")); }
+            return serde_json::from_str(&old_result).map_err(|_| DatabaseError::Unavailable);
+        }
+        transaction.execute("INSERT INTO extension_executions(id,owner_user_id,agent_id,extension_id,revision,package_hash,input,status,steps,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", params![id, OWNER_ID, request.agent_id, request.extension_id, request.revision, request.package_hash.to_ascii_lowercase(), request.input, "running", 0_i64, now, now])?;
+        transaction.commit()?;
+        drop(connection);
+
+        let tool_ids = self
+            .list_tool_catalog()?
+            .into_iter()
+            .map(|tool| tool.tool_id)
+            .take(64)
+            .collect::<Vec<_>>();
+        let host = ExtensionHostContext {
+            agent_id: request.agent_id.clone(),
+            tool_ids,
+        };
+        validate_host_context(&host)?;
+
+        let started = now_millis();
+        let mut output = String::new();
+        let mut error = None;
+        let mut status = "succeeded";
+        let mut steps = 0_i64;
+        for instruction in &package.instructions {
+            steps += 1;
+            if steps as usize > MAX_EXECUTION_STEPS || now_millis() - started > MAX_EXECUTION_MS {
+                status = "terminated";
+                error = Some("extension_execution_limit".to_string());
+                break;
+            }
+            let check = self.open()?.query_row(
+                "SELECT cancellation_requested FROM extension_executions WHERE id=?1",
+                params![id],
+                |r| r.get::<_, bool>(0),
+            );
+            if check.unwrap_or(true) {
+                status = "terminated";
+                error = Some("extension_execution_cancelled".to_string());
+                break;
+            }
+            let single = ExtensionPackage {
+                format: package.format.clone(),
+                entrypoint: package.entrypoint.clone(),
+                instructions: vec![instruction.clone()],
+                integrity_sha256: extension_package_hash(&ExtensionPackage {
+                    format: package.format.clone(),
+                    entrypoint: package.entrypoint.clone(),
+                    instructions: vec![instruction.clone()],
+                    integrity_sha256: String::new(),
+                })?,
+            };
+            match interpret_extension_package(&single, &request.input, &approved, &host) {
+                Ok(part) => {
+                    output.push_str(&part);
+                    if output.len() > MAX_EXECUTION_OUTPUT_BYTES {
+                        status = "failed";
+                        error = Some("extension_output_oversized".into());
+                        break;
+                    }
+                }
+                Err(e) => {
+                    status = "failed";
+                    error = Some(e.code().into());
+                    break;
+                }
+            }
+        }
+        let result = ExtensionExecutionResult {
+            execution_id: id.clone(),
+            status: status.into(),
+            output: (status == "succeeded").then_some(output),
+            error,
+            steps,
+        };
+        let result_json = serde_json::to_string(&result).map_err(|_| DatabaseError::Unavailable)?;
+        let mut final_connection = self.open()?;
+        let final_tx =
+            final_connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        final_tx.execute("UPDATE extension_executions SET status=?1,output=?2,error=?3,steps=?4,updated_at=?5 WHERE id=?6 AND status='running'", params![result.status, result.output, result.error, result.steps, now_millis(), id])?;
+        final_tx.execute("INSERT INTO extension_execution_idempotency(owner_user_id,idempotency_key,request_hash,result_json,created_at) VALUES(?,?,?,?,?)", params![OWNER_ID, request.idempotency_key, request_hash, result_json, now_millis()])?;
+        final_tx.commit()?;
+        Ok(result)
+    }
+
+    pub fn cancel_extension_execution(
+        &self,
+        request: ExtensionExecutionCancellationRequest,
+    ) -> Result<(), DatabaseError> {
+        if request.owner_user_id != OWNER_ID {
+            return Err(DatabaseError::OwnershipMismatch);
+        }
+        let connection = self.open()?;
+        let changed = connection.execute("UPDATE extension_executions SET cancellation_requested=1,status='terminated',updated_at=?1 WHERE id=?2 AND owner_user_id=?3 AND agent_id=?4 AND status='running'", params![now_millis(), request.execution_id, OWNER_ID, request.agent_id])?;
+        if changed == 0 {
+            return Err(DatabaseError::Cognitive("extension_execution_not_found"));
+        }
+        Ok(())
+    }
+}
+
+fn validate_host_context(host: &ExtensionHostContext) -> Result<(), DatabaseError> {
+    if host.agent_id.is_empty()
+        || host.agent_id.len() > 96
+        || !host
+            .agent_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_".contains(character))
+        || host.tool_ids.len() > 64
+        || host.tool_ids.iter().any(|tool_id| {
+            tool_id.is_empty()
+                || tool_id.len() > 128
+                || tool_id
+                    .chars()
+                    .any(|character| character == '\0' || character.is_control())
+        })
+    {
+        return Err(DatabaseError::Cognitive("extension_host_context_invalid"));
+    }
+    Ok(())
+}
+
 fn insert_catalog_tx(
     transaction: &Transaction<'_>,
     extension_id: &str,
@@ -1546,6 +1906,11 @@ fn normalize_manifest(mut manifest: ExtensionManifest) -> Result<ExtensionManife
     if let Some(local_fixture_ref) = manifest.local_fixture_ref.as_mut() {
         *local_fixture_ref = validate_fixture_ref(local_fixture_ref)?;
     }
+    // Metadata-only manifests remain valid; executable admission requires an explicitly
+    // untrusted, integrity-checked closed package.
+    if let Some(package) = manifest.package.as_ref() {
+        validate_package(package)?;
+    }
     let manifest_json = serde_json::to_string(&manifest).map_err(|_| DatabaseError::Unavailable)?;
     if manifest_json.len() > MAX_EXTENSION_MANIFEST_BYTES {
         return Err(DatabaseError::Cognitive("extension_manifest_oversized"));
@@ -1567,6 +1932,10 @@ fn manifest_is_compatible(manifest: &ExtensionManifest) -> bool {
             .local_fixture_ref
             .as_deref()
             .is_none_or(|value| validate_fixture_ref(value).is_ok())
+        && manifest
+            .package
+            .as_ref()
+            .is_none_or(|package| validate_package(package).is_ok())
 }
 
 fn validate_extension_id(value: &str) -> Result<(), DatabaseError> {
@@ -1836,6 +2205,7 @@ mod tests {
             capabilities,
             local_fixture_ref: Some("fixture:extension/notes".into()),
             untrusted: true,
+            package: None,
         }
     }
 
@@ -1866,6 +2236,228 @@ mod tests {
                 temporary_chat: false,
             })
             .expect("proposal should be approved")
+    }
+
+    fn package(instructions: Vec<ExtensionInstruction>) -> ExtensionPackage {
+        let mut package = ExtensionPackage {
+            format: "aip-extension-package/v1".into(),
+            entrypoint: "main".into(),
+            instructions,
+            integrity_sha256: String::new(),
+        };
+        package.integrity_sha256 = extension_package_hash(&package).expect("package hash");
+        package
+    }
+
+    fn runtime_manifest() -> ExtensionManifest {
+        let mut result = manifest(
+            "1.0.0",
+            vec![
+                ExtensionCapability::AgentContext,
+                ExtensionCapability::ToolCatalog,
+            ],
+        );
+        result.package = Some(package(vec![
+            ExtensionInstruction::ReadAgentContext,
+            ExtensionInstruction::ListToolCatalog,
+            ExtensionInstruction::EmitText {
+                text: Some("|ok|".into()),
+                echo_input: None,
+            },
+        ]));
+        result
+    }
+
+    fn activate_runtime(database: &Database) -> (ExtensionProposal, String) {
+        let proposal = database
+            .create_extension_proposal(ExtensionProposalRequest {
+                agent_id: ASTRA_ID.into(),
+                owner_user_id: OWNER_ID.into(),
+                source_kind: ExtensionSourceKind::AdministratorSelected,
+                proposer_agent_id: None,
+                manifest: runtime_manifest(),
+                idempotency_key: "runtime-proposal".into(),
+                temporary_chat: false,
+            })
+            .expect("runtime proposal");
+        let approved = approve(database, &proposal);
+        database
+            .activate_extension(ExtensionActivationRequest {
+                agent_id: ASTRA_ID.into(),
+                owner_user_id: OWNER_ID.into(),
+                extension_id: proposal.extension_id.clone(),
+                proposal_id: approved.id,
+                idempotency_key: "runtime-activate".into(),
+                temporary_chat: false,
+            })
+            .expect("runtime activation");
+        let hash = runtime_manifest()
+            .package
+            .expect("package")
+            .integrity_sha256;
+        (proposal, hash)
+    }
+
+    #[test]
+    fn executable_package_runs_with_bounded_host_context_and_replays() {
+        let path = test_path();
+        let database = Database::initialize(&path).expect("database");
+        let (proposal, hash) = activate_runtime(&database);
+        let expected_tool = database
+            .list_tool_catalog()
+            .expect("tool catalog")
+            .first()
+            .expect("seeded tool")
+            .tool_id
+            .clone();
+        let request = ExtensionExecutionRequest {
+            agent_id: ASTRA_ID.into(),
+            owner_user_id: OWNER_ID.into(),
+            extension_id: proposal.extension_id,
+            revision: 1,
+            package_hash: hash,
+            input: "private input must not enter host context".into(),
+            idempotency_key: "runtime-execute".into(),
+            temporary_chat: false,
+        };
+        let first = database
+            .execute_extension(request.clone())
+            .expect("execution");
+        assert_eq!(first.status, "succeeded");
+        assert!(first
+            .output
+            .as_deref()
+            .is_some_and(|value| value.contains("agent_id:agt_astra_provisional")));
+        assert!(first
+            .output
+            .as_deref()
+            .is_some_and(|value| { value.contains(&format!("tool_ids:{expected_tool}")) }));
+        assert!(!first
+            .output
+            .as_deref()
+            .unwrap_or_default()
+            .contains("private input"));
+        assert_eq!(database.execute_extension(request.clone()).unwrap(), first);
+        assert_eq!(
+            database.execute_extension(ExtensionExecutionRequest {
+                input: "conflict".into(),
+                ..request
+            }),
+            Err(DatabaseError::Cognitive("idempotency_conflict"))
+        );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn package_validation_and_execution_gates_fail_closed() {
+        let host = ExtensionHostContext {
+            agent_id: ASTRA_ID.into(),
+            tool_ids: vec!["tool.one".into()],
+        };
+        let valid = package(vec![ExtensionInstruction::EmitText {
+            text: Some("ok".into()),
+            echo_input: None,
+        }]);
+        let mut uppercase = valid.clone();
+        uppercase.integrity_sha256 = uppercase.integrity_sha256.to_ascii_uppercase();
+        if uppercase.integrity_sha256 == valid.integrity_sha256 {
+            uppercase.integrity_sha256.replace_range(0..1, "A");
+        }
+        assert_eq!(
+            validate_package(&uppercase),
+            Err(DatabaseError::Cognitive("extension_package_invalid"))
+        );
+        assert_eq!(
+            interpret_extension_package(&valid, "", &[], &host).unwrap(),
+            "ok"
+        );
+        let mut tampered = valid.clone();
+        tampered.instructions.push(ExtensionInstruction::Yield);
+        assert_eq!(
+            interpret_extension_package(&tampered, "", &[], &host),
+            Err(DatabaseError::Cognitive("extension_package_invalid"))
+        );
+        let duplicate = package(vec![
+            ExtensionInstruction::Yield,
+            ExtensionInstruction::Yield,
+        ]);
+        assert_eq!(
+            interpret_extension_package(&duplicate, "", &[], &host),
+            Err(DatabaseError::Cognitive("extension_instruction_duplicate"))
+        );
+        let oversized = package(vec![ExtensionInstruction::EmitText {
+            text: Some("x".repeat(MAX_PACKAGE_TEXT_BYTES + 1)),
+            echo_input: None,
+        }]);
+        assert_eq!(
+            interpret_extension_package(&oversized, "", &[], &host),
+            Err(DatabaseError::Cognitive("extension_instruction_oversized"))
+        );
+        let denied = package(vec![ExtensionInstruction::ReadAgentContext]);
+        assert_eq!(
+            interpret_extension_package(&denied, "", &[], &host),
+            Err(DatabaseError::Cognitive("extension_capability_denied"))
+        );
+        assert!(serde_json::from_str::<ExtensionInstruction>(r#"{"op":"unknown"}"#).is_err());
+    }
+
+    #[test]
+    fn metadata_only_and_execution_modes_are_denied() {
+        let path = test_path();
+        let database = Database::initialize(&path).expect("database");
+        let proposal = administrator_proposal(&database, "1.0.0");
+        approve(&database, &proposal);
+        database
+            .activate_extension(ExtensionActivationRequest {
+                agent_id: ASTRA_ID.into(),
+                owner_user_id: OWNER_ID.into(),
+                extension_id: proposal.extension_id.clone(),
+                proposal_id: proposal.id,
+                idempotency_key: "metadata-active".into(),
+                temporary_chat: false,
+            })
+            .expect("activate");
+        assert_eq!(
+            database.execute_extension(ExtensionExecutionRequest {
+                agent_id: ASTRA_ID.into(),
+                owner_user_id: OWNER_ID.into(),
+                extension_id: "fixture.notes".into(),
+                revision: 1,
+                package_hash: "0".repeat(64),
+                input: String::new(),
+                idempotency_key: "metadata-execute".into(),
+                temporary_chat: false
+            }),
+            Err(DatabaseError::Cognitive("extension_package_required"))
+        );
+        database.set_safe_mode(true).unwrap();
+        assert_eq!(
+            database.execute_extension(ExtensionExecutionRequest {
+                agent_id: ASTRA_ID.into(),
+                owner_user_id: OWNER_ID.into(),
+                extension_id: "fixture.notes".into(),
+                revision: 1,
+                package_hash: "0".repeat(64),
+                input: String::new(),
+                idempotency_key: "safe-execute".into(),
+                temporary_chat: false
+            }),
+            Err(DatabaseError::Cognitive("extensions_blocked_safe_mode"))
+        );
+        assert_eq!(
+            database.execute_extension(ExtensionExecutionRequest {
+                agent_id: ASTRA_ID.into(),
+                owner_user_id: OWNER_ID.into(),
+                extension_id: "fixture.notes".into(),
+                revision: 1,
+                package_hash: "0".repeat(64),
+                input: String::new(),
+                idempotency_key: "temporary-execute".into(),
+                temporary_chat: true
+            }),
+            Err(DatabaseError::Cognitive("extensions_blocked_temporary"))
+        );
+        cleanup(&path);
     }
 
     #[test]

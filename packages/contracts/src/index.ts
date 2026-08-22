@@ -506,6 +506,17 @@ export type ExtensionReviewStatus = "pending" | "approved" | "rejected";
 export type ExtensionProposalStatus =
   "pending" | "approved" | "rejected" | "withdrawn";
 export type ExtensionPermissionStatus = "pending" | "approved" | "denied";
+export type ExtensionInstruction =
+  | { op: "emit_text"; text: string | null; echoInput: boolean | null }
+  | { op: "read_agent_context" }
+  | { op: "list_tool_catalog" }
+  | { op: "yield" };
+export type ExtensionPackage = {
+  format: "aip-extension-package/v1";
+  entrypoint: "main";
+  instructions: ExtensionInstruction[];
+  integritySha256: string;
+};
 
 export type ExtensionManifest = {
   extensionId: string;
@@ -518,6 +529,29 @@ export type ExtensionManifest = {
   capabilities: ExtensionCapability[];
   localFixtureRef: string | null;
   untrusted: true;
+  package?: ExtensionPackage | null;
+};
+export type ExtensionExecutionRequest = {
+  agentId: string;
+  ownerUserId: string;
+  extensionId: string;
+  revision: number;
+  packageHash: string;
+  input: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+export type ExtensionExecutionResult = {
+  executionId: string;
+  status: "succeeded" | "failed" | "terminated" | "cancelled" | "denied";
+  output: string | null;
+  error: string | null;
+  steps: number;
+};
+export type ExtensionExecutionCancellationRequest = {
+  agentId: string;
+  ownerUserId: string;
+  executionId: string;
 };
 export type ExtensionPermissionRequest = {
   capability: ExtensionCapability;
@@ -2909,6 +2943,10 @@ const MAX_EXTENSION_RECORD_ID_LENGTH = 128;
 const MAX_EXTENSION_AGENT_ID_LENGTH = 96;
 const MAX_EXTENSION_REASON_LENGTH = 512;
 const MAX_EXTENSION_AUDIT_TEXT_LENGTH = 2048;
+const MAX_EXTENSION_PACKAGE_INSTRUCTIONS = 32;
+const MAX_EXTENSION_PACKAGE_TEXT = 4096;
+const MAX_EXTENSION_EXECUTION_INPUT = 4096;
+const MAX_EXTENSION_EXECUTION_OUTPUT = 8192;
 
 function isExtensionBoundedText(
   value: unknown,
@@ -2923,6 +2961,11 @@ function isExtensionBoundedText(
       return code < 32 || code === 127;
     })
   );
+}
+
+function isExtensionOutput(value: unknown): value is string {
+  return typeof value === "string" && value.length <= MAX_EXTENSION_EXECUTION_OUTPUT &&
+    !Array.from(value).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127);
 }
 
 function isExtensionId(value: unknown): value is string {
@@ -2997,11 +3040,42 @@ function hasSameExtensionCapabilities(
   );
 }
 
+function extensionKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  return Object.keys(value).every((key) => keys.includes(key));
+}
+
+function parseExtensionInstruction(value: unknown): ExtensionInstruction | null {
+  const candidate = toolRecord(value);
+  if (candidate === null || typeof candidate.op !== "string") return null;
+  if (candidate.op === "read_agent_context" || candidate.op === "list_tool_catalog" || candidate.op === "yield") {
+    return Object.keys(candidate).length === 1 ? (candidate as ExtensionInstruction) : null;
+  }
+  return candidate.op === "emit_text" && extensionKeys(candidate, ["op", "text", "echoInput"]) &&
+    (candidate.text === null || isExtensionBoundedText(candidate.text, MAX_EXTENSION_PACKAGE_TEXT)) &&
+    (candidate.echoInput === null || typeof candidate.echoInput === "boolean") &&
+    (candidate.text !== null || candidate.echoInput === true)
+    ? (candidate as ExtensionInstruction)
+    : null;
+}
+
+export function parseExtensionPackage(value: unknown): ExtensionPackage | null {
+  const candidate = toolRecord(value);
+  if (candidate === null || !extensionKeys(candidate, ["format", "entrypoint", "instructions", "integritySha256"])) return null;
+  const instructions = Array.isArray(candidate.instructions) && candidate.instructions.length > 0 && candidate.instructions.length <= MAX_EXTENSION_PACKAGE_INSTRUCTIONS
+    ? candidate.instructions.map(parseExtensionInstruction) : null;
+  if (instructions === null || instructions.some((instruction) => instruction === null)) return null;
+  const encoded = instructions.map((instruction) => JSON.stringify(instruction));
+  return candidate.format === "aip-extension-package/v1" && candidate.entrypoint === "main" &&
+    new Set(encoded).size === encoded.length && typeof candidate.integritySha256 === "string" && /^[0-9a-f]{64}$/.test(candidate.integritySha256)
+    ? (candidate as unknown as ExtensionPackage) : null;
+}
+
 export function parseExtensionManifest(
   value: unknown,
 ): ExtensionManifest | null {
   const candidate = toolRecord(value);
   const capabilities = parseExtensionCapabilities(candidate?.capabilities);
+  const packageValue = candidate?.package === null ? null : parseExtensionPackage(candidate?.package);
   if (
     candidate !== null &&
     [
@@ -3014,7 +3088,6 @@ export function parseExtensionManifest(
       "module",
       "script",
       "binary",
-      "package",
       "network",
       "hostAccess",
       "shell",
@@ -3037,9 +3110,34 @@ export function parseExtensionManifest(
     capabilities !== null &&
     (candidate.localFixtureRef === null ||
       isExtensionFixtureRef(candidate.localFixtureRef)) &&
-    candidate.untrusted === true
+    candidate.untrusted === true &&
+    (candidate.package === null || candidate.package === undefined || packageValue !== null)
     ? (candidate as unknown as ExtensionManifest)
     : null;
+}
+
+export function parseExtensionExecutionRequest(value: unknown): ExtensionExecutionRequest | null {
+  const candidate = toolRecord(value);
+  return candidate !== null && extensionKeys(candidate, ["agentId", "ownerUserId", "extensionId", "revision", "packageHash", "input", "idempotencyKey", "temporaryChat"]) &&
+    isExtensionAgentId(candidate.agentId) && isExtensionAgentId(candidate.ownerUserId) && isExtensionId(candidate.extensionId) &&
+    isExtensionRevision(candidate.revision) && typeof candidate.packageHash === "string" && /^[0-9a-f]{64}$/.test(candidate.packageHash) &&
+    isExtensionBoundedText(candidate.input, MAX_EXTENSION_EXECUTION_INPUT) && isExtensionBoundedText(candidate.idempotencyKey, 128) && typeof candidate.temporaryChat === "boolean"
+    ? (candidate as unknown as ExtensionExecutionRequest) : null;
+}
+
+export function parseExtensionExecutionResult(value: unknown): ExtensionExecutionResult | null {
+  const candidate = toolRecord(value);
+  return candidate !== null && extensionKeys(candidate, ["executionId", "status", "output", "error", "steps"]) &&
+    isExtensionRecordId(candidate.executionId) && ["succeeded", "failed", "terminated", "cancelled", "denied"].includes(candidate.status as string) &&
+    (candidate.output === null || isExtensionOutput(candidate.output)) &&
+    (candidate.error === null || isExtensionBoundedText(candidate.error, 512)) && typeof candidate.steps === "number" && Number.isSafeInteger(candidate.steps) && candidate.steps >= 0 && candidate.steps <= 32
+    ? (candidate as unknown as ExtensionExecutionResult) : null;
+}
+
+export function parseExtensionExecutionCancellationRequest(value: unknown): ExtensionExecutionCancellationRequest | null {
+  const candidate = toolRecord(value);
+  return candidate !== null && extensionKeys(candidate, ["agentId", "ownerUserId", "executionId"]) && isExtensionAgentId(candidate.agentId) && isExtensionAgentId(candidate.ownerUserId) && isExtensionRecordId(candidate.executionId)
+    ? (candidate as unknown as ExtensionExecutionCancellationRequest) : null;
 }
 
 export function parseExtensionPermissionRequest(
