@@ -1,0 +1,16 @@
+package com.aip.companion
+import kotlin.test.*
+class ProtocolTest {
+ private class FakeSocket(private val server:CompanionProtocol):SocketTransport{val requests=mutableListOf<Long>();override fun request(frame:String):String?{val request=server.accept(frame);requests+=request.counter;return server.frame(request.kind,request.payload,request.sessionId,"response-${request.counter}")}}
+ @Test fun jsonRoundTripAndMac(){val p=CompanionProtocol(ByteArray(32){it.toByte()});val raw=p.frame("hello","{\"ok\":true}","s1","abc");assertEquals("hello",FrameCodec.decode(raw).kind);assertEquals(64,FrameCodec.decode(raw).mac.length)}
+ @Test fun authVersionBounds(){val p=CompanionProtocol(ByteArray(32));val raw=p.frame("x");val receiver=CompanionProtocol(ByteArray(32));val tampered=raw.replace("\"kind\":\"x\"","\"kind\":\"tampered\"");assertFailsWith<ProtocolError.Auth>{receiver.accept(tampered)};assertFails{p.frame("x","x".repeat(MAX_PAYLOAD+1))};assertFails{receiver.accept(raw.replace(PROTOCOL,"bad"))}}
+ @Test fun escapingRoundTrip(){val p=CompanionProtocol(ByteArray(32));val raw=p.frame("escape", "quote=\" slash=\\ newline=\n tab=\t");assertEquals("quote=\" slash=\\ newline=\n tab=\t",FrameCodec.decode(raw).payload)}
+ @Test fun rejectsRawControlsAndNonLineFrames(){val p=CompanionProtocol(ByteArray(32));val raw=p.frame("control","a\nb");assertFailsWith<ProtocolError.Fields>{FrameCodec.decode(raw.replace("\\n","\n"))};assertFailsWith<ProtocolError.Fields>{FrameCodec.decode(raw.removeSuffix("\n"))};assertFailsWith<ProtocolError.Fields>{FrameCodec.decode(raw+"x")}}
+ @Test fun replayNonceChallengeRotationRevocation(){val p=CompanionProtocol(ByteArray(32));val raw=p.frame("x","","s","same");val receiver=CompanionProtocol(ByteArray(32));receiver.accept(raw);assertFailsWith<ProtocolError.Replay>{receiver.accept(raw)};assertEquals(64,p.challenge("c").length);p.rotate(ByteArray(32){1});p.revoke();assertFailsWith<ProtocolError.Revoked>{p.frame("x")}}
+ @Test fun offlineTimeout(){assertNull(CompanionSocketTransport("127.0.0.1",1,20).request("x\n"))}
+ @Test fun queue(){val q=OutgoingQueue();repeat(MAX_QUEUE){q.preview("x")};assertFails{q.preview("x")}}
+ @Test fun queueApproveCancelRetry(){val q=OutgoingQueue();q.preview("one");assertEquals("one",q.approve());q.preview("two");assertEquals("two",q.cancel());q.retry("two");assertEquals("two",q.approve())}
+ @Test fun boundedHistory(){val h=ReadOnlyHistory(2);h.add("one");h.add("two");h.add("three");assertEquals(listOf("two","three"),h.snapshot());h.add("x".repeat(MAX_TEXT+1));assertEquals(listOf("two","three"),h.snapshot())}
+ @Test fun signedClientServerRoundTrips(){val key=ByteArray(32){7};val client=CompanionClient(FakeSocket(CompanionProtocol(key)),CompanionProtocol(key));assertIs<ClientResult.Online<*>>(client.pair("pair","session-1"));assertIs<ClientResult.Online<*>>(client.session("session"));assertIs<ClientResult.Online<*>>(client.reconnect("reconnect"));assertIs<ClientResult.Online<*>>(client.history("history"));assertIs<ClientResult.Online<*>>(client.queuePreview("queue"))}
+ @Test fun desktopSingleCounterDuplex(){val key=ByteArray(32){9};val socket=FakeSocket(CompanionProtocol(key));val client=CompanionClient(socket,CompanionProtocol(key));client.pair("pair","s");client.session("session","s");client.history("history","s");assertEquals(listOf(1L,3L,5L),socket.requests)}
+}

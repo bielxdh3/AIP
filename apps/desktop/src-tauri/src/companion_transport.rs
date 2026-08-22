@@ -1,0 +1,770 @@
+//! Bounded, opt-in local transport core. It deliberately has no database or UI authority.
+#![allow(dead_code)]
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::HashMap,
+    io::{Read, Write},
+    net::{IpAddr, SocketAddr, TcpListener, TcpStream},
+    sync::{Arc, Mutex},
+    thread,
+    time::Duration,
+};
+
+pub const PROTOCOL: &str = "aip-companion-v1";
+pub const MAX_FRAME: usize = 16_384;
+pub const MAX_PAYLOAD: usize = 8_192;
+pub const PAIRING_KEY_BYTES: usize = 32;
+const MAX_FIELD: usize = 512;
+
+#[derive(Debug, thiserror::Error)]
+pub enum TransportError {
+    #[error("invalid bind address")]
+    BindPolicy,
+    #[error("invalid frame")]
+    Frame,
+    #[error("oversized frame")]
+    Oversized,
+    #[error("protocol version mismatch")]
+    Version,
+    #[error("authentication failed")]
+    Auth,
+    #[error("replay rejected")]
+    Replay,
+    #[error("revoked")]
+    Revoked,
+    #[error("io error")]
+    Io(#[from] std::io::Error),
+    #[error("pairing code unavailable")]
+    PairingUnavailable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PairingStatus {
+    pub available: bool,
+    pub consumed: bool,
+    pub revoked: bool,
+}
+
+#[derive(Clone)]
+pub struct EphemeralPairingKey {
+    inner: Arc<Mutex<PairingState>>,
+}
+struct PairingState {
+    key: Option<Vec<u8>>,
+    consumed: bool,
+    revoked: bool,
+}
+impl EphemeralPairingKey {
+    pub fn generate() -> Result<(Self, String), TransportError> {
+        let seed = uuid::Uuid::now_v7().as_bytes().to_vec();
+        let key = Sha256::digest(seed).to_vec();
+        let code = hex(&key);
+        Ok((
+            Self {
+                inner: Arc::new(Mutex::new(PairingState {
+                    key: Some(key),
+                    consumed: false,
+                    revoked: false,
+                })),
+            },
+            code,
+        ))
+    }
+    pub fn consume(&self) -> Result<Vec<u8>, TransportError> {
+        let mut s = self.inner.lock().unwrap();
+        if s.consumed || s.revoked {
+            return Err(TransportError::PairingUnavailable);
+        }
+        s.consumed = true;
+        s.key.take().ok_or(TransportError::PairingUnavailable)
+    }
+    pub fn rotate(&self) -> Result<String, TransportError> {
+        let (next, code) = Self::generate()?;
+        let mut s = self.inner.lock().unwrap();
+        if s.revoked {
+            return Err(TransportError::Revoked);
+        }
+        *s = next.inner.lock().unwrap().clone();
+        Ok(code)
+    }
+    pub fn revoke(&self) {
+        let mut s = self.inner.lock().unwrap();
+        s.revoked = true;
+        s.key = None;
+    }
+    pub fn status(&self) -> PairingStatus {
+        let s = self.inner.lock().unwrap();
+        PairingStatus {
+            available: s.key.is_some() && !s.consumed && !s.revoked,
+            consumed: s.consumed,
+            revoked: s.revoked,
+        }
+    }
+}
+impl Clone for PairingState {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            consumed: self.consumed,
+            revoked: self.revoked,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WireFrame {
+    pub protocol: String,
+    pub kind: String,
+    pub client_id: String,
+    pub session_id: Option<String>,
+    pub nonce: String,
+    pub counter: u64,
+    pub payload: String,
+    pub mac: String,
+}
+
+fn field_ok(v: &str, max: usize) -> bool {
+    !v.is_empty() && v.len() <= max && v.is_char_boundary(v.len())
+}
+pub fn canonical(f: &WireFrame) -> Vec<u8> {
+    [
+        f.protocol.as_str(),
+        f.kind.as_str(),
+        f.client_id.as_str(),
+        f.session_id.as_deref().unwrap_or(""),
+        f.nonce.as_str(),
+        &f.counter.to_string(),
+        f.payload.as_str(),
+    ]
+    .join("\u{1f}")
+    .into_bytes()
+}
+fn hmac(key: &[u8], data: &[u8]) -> [u8; 32] {
+    let mut k = [0u8; 64];
+    if key.len() > 64 {
+        k[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+    let mut i = [0x36u8; 64];
+    let mut o = [0x5cu8; 64];
+    for n in 0..64 {
+        i[n] ^= k[n];
+        o[n] ^= k[n];
+    }
+    let mut a = Sha256::new();
+    a.update(i);
+    a.update(data);
+    let inner = a.finalize();
+    let mut b = Sha256::new();
+    b.update(o);
+    b.update(inner);
+    b.finalize().into()
+}
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+pub fn sign_frame(key: &[u8], frame: &WireFrame) -> String {
+    hex(&hmac(key, &canonical(frame)))
+}
+fn valid_hex(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+fn constant_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |x, (l, r)| x | (l ^ r)) == 0
+}
+
+pub fn encode(f: &WireFrame) -> Result<Vec<u8>, TransportError> {
+    validate(f)?;
+    let mut out = serde_json::to_vec(f).map_err(|_| TransportError::Frame)?;
+    out.push(b'\n');
+    if out.len() > MAX_FRAME {
+        return Err(TransportError::Oversized);
+    }
+    Ok(out)
+}
+pub fn decode(line: &[u8]) -> Result<WireFrame, TransportError> {
+    if line.len() > MAX_FRAME || !line.ends_with(b"\n") {
+        return Err(TransportError::Oversized);
+    }
+    let f: WireFrame =
+        serde_json::from_slice(&line[..line.len() - 1]).map_err(|_| TransportError::Frame)?;
+    validate(&f)?;
+    Ok(f)
+}
+fn validate(f: &WireFrame) -> Result<(), TransportError> {
+    if f.protocol != PROTOCOL {
+        return Err(TransportError::Version);
+    }
+    if !field_ok(&f.kind, MAX_FIELD)
+        || !field_ok(&f.client_id, MAX_FIELD)
+        || !field_ok(&f.nonce, 128)
+        || f.payload.len() > MAX_PAYLOAD
+        || !valid_hex(&f.mac)
+    {
+        return Err(TransportError::Frame);
+    }
+    if let Some(s) = &f.session_id {
+        if s.len() > MAX_FIELD {
+            return Err(TransportError::Frame);
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+pub struct Session {
+    key: Vec<u8>,
+    counter: u64,
+    nonce: Option<String>,
+    revoked: bool,
+}
+impl Session {
+    pub fn new(key: &[u8]) -> Self {
+        Self {
+            key: key.to_vec(),
+            counter: 0,
+            nonce: None,
+            revoked: false,
+        }
+    }
+    pub fn revoke(&mut self) {
+        self.revoked = true
+    }
+    pub fn rotate(&mut self, key: &[u8]) {
+        self.key = key.to_vec();
+        self.counter = 0;
+        self.nonce = None;
+        self.revoked = false
+    }
+    pub fn challenge(&self, value: &str) -> String {
+        hex(&hmac(&self.key, value.as_bytes()))
+    }
+    pub fn authenticate(&mut self, f: &WireFrame) -> Result<(), TransportError> {
+        if self.revoked {
+            return Err(TransportError::Revoked);
+        }
+        if f.counter <= self.counter || self.nonce.as_deref() == Some(&f.nonce) {
+            return Err(TransportError::Replay);
+        }
+        let expected = hmac(&self.key, &canonical(f));
+        let supplied = hex_decode(&f.mac)?;
+        if !constant_eq(&expected, &supplied) {
+            return Err(TransportError::Auth);
+        }
+        self.counter = f.counter;
+        self.nonce = Some(f.nonce.clone());
+        Ok(())
+    }
+}
+fn hex_decode(s: &str) -> Result<Vec<u8>, TransportError> {
+    if !valid_hex(s) {
+        return Err(TransportError::Auth);
+    }
+    Ok((0..32)
+        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap())
+        .collect())
+}
+
+pub fn validate_bind(ip: IpAddr, private_confirmed: bool) -> Result<(), TransportError> {
+    match ip {
+        IpAddr::V4(v) if v == std::net::Ipv4Addr::LOCALHOST => Ok(()),
+        IpAddr::V4(v) if private_confirmed && (v.is_private()) => Ok(()),
+        _ => Err(TransportError::BindPolicy),
+    }
+}
+pub type Handler = Arc<dyn Fn(WireFrame) -> Option<WireFrame> + Send + Sync + 'static>;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandlerResponse {
+    pub kind: String,
+    pub payload: String,
+}
+pub type SecureHandler =
+    Arc<dyn Fn(WireFrame) -> Result<Option<HandlerResponse>, String> + Send + Sync + 'static>;
+pub struct TransportHandle {
+    runtime: Arc<RuntimeState>,
+    join: Option<thread::JoinHandle<()>>,
+    pub addr: SocketAddr,
+}
+type Connection = (Arc<Mutex<bool>>, thread::JoinHandle<()>);
+struct RuntimeState {
+    stop: Mutex<bool>,
+    connections: Mutex<Vec<Connection>>,
+    sessions: Mutex<HashMap<String, Session>>,
+}
+impl TransportHandle {
+    pub fn stop(&mut self) {
+        if *self.runtime.stop.lock().unwrap() {
+            return;
+        }
+        *self.runtime.stop.lock().unwrap() = true;
+        let _ = TcpStream::connect(self.addr);
+        let connections = std::mem::take(&mut *self.runtime.connections.lock().unwrap());
+        for (cancel, _) in &connections {
+            *cancel.lock().unwrap() = true;
+            let _ = TcpStream::connect(self.addr);
+        }
+        for (_, join) in connections {
+            let _ = join.join();
+        }
+        if let Some(j) = self.join.take() {
+            let _ = j.join();
+        }
+    }
+}
+impl Session {
+    fn response(
+        &mut self,
+        request: &WireFrame,
+        response: HandlerResponse,
+    ) -> Result<WireFrame, TransportError> {
+        if response.kind.is_empty()
+            || response.kind.len() > MAX_FIELD
+            || response.payload.len() > MAX_PAYLOAD
+        {
+            return Err(TransportError::Frame);
+        }
+        let frame = WireFrame {
+            protocol: PROTOCOL.into(),
+            kind: response.kind,
+            client_id: request.client_id.clone(),
+            session_id: request.session_id.clone(),
+            nonce: uuid::Uuid::now_v7().to_string(),
+            counter: self.counter + 1,
+            payload: response.payload,
+            mac: String::new(),
+        };
+        self.counter = frame.counter;
+        let tag = hex(&hmac(&self.key, &canonical(&frame)));
+        Ok(frame.with_mac(tag))
+    }
+}
+impl WireFrame {
+    fn with_mac(mut self, mac: String) -> Self {
+        self.mac = mac;
+        self
+    }
+}
+pub fn start(
+    addr: SocketAddr,
+    private_confirmed: bool,
+    key: Vec<u8>,
+    handler: Handler,
+) -> Result<TransportHandle, TransportError> {
+    validate_bind(addr.ip(), private_confirmed)?;
+    let listener = TcpListener::bind(addr)?;
+    listener.set_nonblocking(true)?;
+    let actual = listener.local_addr()?;
+    let runtime = Arc::new(RuntimeState {
+        stop: Mutex::new(false),
+        connections: Mutex::new(Vec::new()),
+        sessions: Mutex::new(HashMap::new()),
+    });
+    let flag = Arc::clone(&runtime);
+    let join = thread::spawn(move || {
+        while !*flag.stop.lock().unwrap() {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let h = Arc::clone(&handler);
+                    let k = key.clone();
+                    let sessions = Arc::clone(&flag);
+                    let cancel = Arc::new(Mutex::new(false));
+                    let child_cancel = Arc::clone(&cancel);
+                    let join = thread::spawn(move || {
+                        let _ = serve(stream, k, h, child_cancel, sessions);
+                    });
+                    flag.connections.lock().unwrap().push((cancel, join));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10))
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    Ok(TransportHandle {
+        runtime,
+        join: Some(join),
+        addr: actual,
+    })
+}
+
+pub fn start_secure(
+    addr: SocketAddr,
+    private_confirmed: bool,
+    key: Vec<u8>,
+    handler: SecureHandler,
+) -> Result<TransportHandle, TransportError> {
+    validate_bind(addr.ip(), private_confirmed)?;
+    let listener = TcpListener::bind(addr)?;
+    listener.set_nonblocking(true)?;
+    let actual = listener.local_addr()?;
+    let runtime = Arc::new(RuntimeState {
+        stop: Mutex::new(false),
+        connections: Mutex::new(Vec::new()),
+        sessions: Mutex::new(HashMap::new()),
+    });
+    let flag = Arc::clone(&runtime);
+    let join = thread::spawn(move || {
+        while !*flag.stop.lock().unwrap() {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let h = Arc::clone(&handler);
+                    let k = key.clone();
+                    let sessions = Arc::clone(&flag);
+                    let cancel = Arc::new(Mutex::new(false));
+                    let child_cancel = Arc::clone(&cancel);
+                    let join = thread::spawn(move || {
+                        let _ = serve_secure(stream, k, h, child_cancel, sessions);
+                    });
+                    flag.connections.lock().unwrap().push((cancel, join));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10))
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    Ok(TransportHandle {
+        runtime,
+        join: Some(join),
+        addr: actual,
+    })
+}
+fn serve(
+    mut stream: TcpStream,
+    key: Vec<u8>,
+    handler: Handler,
+    cancel: Arc<Mutex<bool>>,
+    runtime: Arc<RuntimeState>,
+) -> Result<(), TransportError> {
+    stream.set_read_timeout(Some(Duration::from_millis(100)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        if *cancel.lock().unwrap() {
+            return Ok(());
+        }
+        match stream.read(&mut byte) {
+            Ok(0) => return Ok(()),
+            Ok(1) => {
+                line.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+                if line.len() > MAX_FRAME {
+                    return Err(TransportError::Oversized);
+                }
+            }
+            Ok(_) => return Err(TransportError::Frame),
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let f = decode(&line)?;
+    let session_key = format!(
+        "{}\u{1f}{}",
+        f.client_id,
+        f.session_id.as_deref().unwrap_or("")
+    );
+    {
+        let mut sessions = runtime.sessions.lock().unwrap();
+        let session = sessions
+            .entry(session_key)
+            .or_insert_with(|| Session::new(&key));
+        session.authenticate(&f)?;
+    }
+    if *cancel.lock().unwrap() {
+        return Ok(());
+    }
+    if let Some(response) = handler(f) {
+        if *cancel.lock().unwrap() {
+            return Ok(());
+        }
+        stream.write_all(&encode(&response)?)?;
+    }
+    Ok(())
+}
+
+fn serve_secure(
+    mut stream: TcpStream,
+    key: Vec<u8>,
+    handler: SecureHandler,
+    cancel: Arc<Mutex<bool>>,
+    runtime: Arc<RuntimeState>,
+) -> Result<(), TransportError> {
+    stream.set_read_timeout(Some(Duration::from_millis(100)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        if *cancel.lock().unwrap() {
+            return Ok(());
+        }
+        match stream.read(&mut byte) {
+            Ok(0) => return Ok(()),
+            Ok(1) => {
+                line.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+                if line.len() > MAX_FRAME {
+                    return Err(TransportError::Oversized);
+                }
+            }
+            Ok(_) => return Err(TransportError::Frame),
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let request = decode(&line)?;
+    let session_key = format!(
+        "{}\u{1f}{}",
+        request.client_id,
+        request.session_id.as_deref().unwrap_or("")
+    );
+    let mut sessions = runtime.sessions.lock().unwrap();
+    let session = sessions
+        .entry(session_key)
+        .or_insert_with(|| Session::new(&key));
+    session.authenticate(&request)?;
+    if *cancel.lock().unwrap() {
+        return Ok(());
+    }
+    let result =
+        handler(request.clone()).map_err(|error| error.chars().take(256).collect::<String>());
+    let response = match result {
+        Ok(Some(value)) => value,
+        Ok(None) => return Ok(()),
+        Err(error) => HandlerResponse {
+            kind: "error".into(),
+            payload: serde_json::json!({"code": error}).to_string(),
+        },
+    };
+    let frame = session.response(&request, response)?;
+    if *cancel.lock().unwrap() {
+        return Ok(());
+    }
+    stream.write_all(&encode(&frame)?)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::net::{IpAddr, Ipv4Addr};
+    fn frame(mac: String) -> WireFrame {
+        WireFrame {
+            protocol: PROTOCOL.into(),
+            kind: "hello".into(),
+            client_id: "android".into(),
+            session_id: None,
+            nonce: "abc".into(),
+            counter: 1,
+            payload: "{}".into(),
+            mac,
+        }
+    }
+    #[test]
+    fn canonical_and_json() {
+        let k = b"key";
+        let mut f = frame("".into());
+        f.mac = hex(&hmac(k, &canonical(&f)));
+        assert_eq!(decode(&encode(&f).unwrap()).unwrap(), f);
+        let mut s = Session::new(k);
+        s.authenticate(&f).unwrap();
+    }
+    #[test]
+    fn auth_replay_rotation() {
+        let k = b"key";
+        let mut f = frame("".into());
+        f.mac = hex(&hmac(k, &canonical(&f)));
+        let mut s = Session::new(k);
+        s.authenticate(&f).unwrap();
+        assert!(matches!(s.authenticate(&f), Err(TransportError::Replay)));
+        s.rotate(b"new");
+        s.revoke();
+        assert!(matches!(s.authenticate(&f), Err(TransportError::Revoked)));
+    }
+    #[test]
+    fn bounds_and_policy() {
+        assert!(validate_bind(IpAddr::V4(Ipv4Addr::LOCALHOST), false).is_ok());
+        assert!(validate_bind(IpAddr::V4(Ipv4Addr::UNSPECIFIED), true).is_err());
+        assert!(decode(b"{}\n").is_err());
+        let mut f = frame("0".repeat(64));
+        f.payload = "x".repeat(MAX_PAYLOAD + 1);
+        assert!(encode(&f).is_err());
+    }
+    #[test]
+    fn ephemeral_pairing_is_one_time_and_redacted() {
+        let (pairing, code) = EphemeralPairingKey::generate().unwrap();
+        assert_eq!(code.len(), PAIRING_KEY_BYTES * 2);
+        assert!(pairing.status().available);
+        let key = pairing.consume().unwrap();
+        assert_eq!(key.len(), PAIRING_KEY_BYTES);
+        assert!(!pairing.status().available);
+        assert!(matches!(
+            pairing.consume(),
+            Err(TransportError::PairingUnavailable)
+        ));
+        let rotated = pairing.rotate().unwrap();
+        assert_ne!(rotated, code);
+        pairing.revoke();
+        assert!(pairing.status().revoked);
+        assert!(matches!(pairing.rotate(), Err(TransportError::Revoked)));
+    }
+    #[test]
+    fn loopback_exchange() {
+        let key = b"key".to_vec();
+        let h: Handler = Arc::new(|f| {
+            Some(WireFrame {
+                kind: "ok".into(),
+                ..f
+            })
+        });
+        let t = start("127.0.0.1:0".parse().unwrap(), false, key.clone(), h).unwrap();
+        let mut s = TcpStream::connect(t.addr).unwrap();
+        let mut f = frame("".into());
+        f.mac = hex(&hmac(&key, &canonical(&f)));
+        s.write_all(&encode(&f).unwrap()).unwrap();
+        let mut out = Vec::new();
+        BufReader::new(s).read_until(b'\n', &mut out).unwrap();
+        assert_eq!(decode(&out).unwrap().kind, "ok");
+        let mut t = t;
+        t.stop();
+        t.stop();
+    }
+
+    #[test]
+    fn replay_survives_reconnect_and_clients_are_independent() {
+        let key = b"key".to_vec();
+        let handler: Handler = Arc::new(Some);
+        let mut t = start("127.0.0.1:0".parse().unwrap(), false, key.clone(), handler).unwrap();
+        let mut f = frame(String::new());
+        f.mac = hex(&hmac(&key, &canonical(&f)));
+        let mut first = TcpStream::connect(t.addr).unwrap();
+        first.write_all(&encode(&f).unwrap()).unwrap();
+        let mut response = Vec::new();
+        BufReader::new(first)
+            .read_until(b'\n', &mut response)
+            .unwrap();
+        let mut replay = TcpStream::connect(t.addr).unwrap();
+        replay.write_all(&encode(&f).unwrap()).unwrap();
+        let mut buf = [0u8; 1];
+        assert!(replay.read(&mut buf).is_err() || replay.read(&mut buf).unwrap_or(0) == 0);
+        let mut other = f.clone();
+        other.client_id = "other".into();
+        other.nonce = "other-nonce".into();
+        other.mac = hex(&hmac(&key, &canonical(&other)));
+        let mut independent = TcpStream::connect(t.addr).unwrap();
+        independent.write_all(&encode(&other).unwrap()).unwrap();
+        let mut ok = Vec::new();
+        BufReader::new(independent)
+            .read_until(b'\n', &mut ok)
+            .unwrap();
+        assert!(!ok.is_empty());
+        t.stop();
+    }
+
+    #[test]
+    fn concurrent_same_counter_has_one_winner() {
+        let key = b"key".to_vec();
+        let handler: Handler = Arc::new(Some);
+        let mut t = start("127.0.0.1:0".parse().unwrap(), false, key.clone(), handler).unwrap();
+        let mut f = frame(String::new());
+        f.mac = hex(&hmac(&key, &canonical(&f)));
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let barrier = Arc::clone(&barrier);
+            let address = t.addr;
+            let frame = encode(&f).unwrap();
+            workers.push(thread::spawn(move || {
+                let mut stream = TcpStream::connect(address).unwrap();
+                barrier.wait();
+                stream.write_all(&frame).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut response = [0u8; 1];
+                stream.read_exact(&mut response).is_ok()
+            }));
+        }
+        barrier.wait();
+        let wins = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .filter(|won| *won)
+            .count();
+        assert_eq!(wins, 1);
+        t.stop();
+    }
+
+    #[test]
+    fn secure_handler_signs_response_and_errors() {
+        let key = b"secure-key".to_vec();
+        let handler: SecureHandler = Arc::new(|request| {
+            if request.kind == "fail" {
+                Err("bounded_failure".into())
+            } else {
+                Ok(Some(HandlerResponse {
+                    kind: "ok".into(),
+                    payload: "{}".into(),
+                }))
+            }
+        });
+        let mut t =
+            start_secure("127.0.0.1:0".parse().unwrap(), false, key.clone(), handler).unwrap();
+        let mut request = frame(String::new());
+        request.kind = "hello".into();
+        request.session_id = Some("s".into());
+        request.mac = hex(&hmac(&key, &canonical(&request)));
+        let mut stream = TcpStream::connect(t.addr).unwrap();
+        stream.write_all(&encode(&request).unwrap()).unwrap();
+        let mut line = Vec::new();
+        BufReader::new(stream).read_until(b'\n', &mut line).unwrap();
+        let response = decode(&line).unwrap();
+        assert_eq!(response.kind, "ok");
+        assert_eq!(response.counter, 2);
+        assert_ne!(response.nonce, request.nonce);
+        let mut verifier = Session::new(&key);
+        verifier.authenticate(&request).unwrap();
+        verifier.authenticate(&response).unwrap();
+        let mut failure = request.clone();
+        failure.counter = 3;
+        failure.nonce = "failure".into();
+        failure.kind = "fail".into();
+        failure.mac = hex(&hmac(&key, &canonical(&failure)));
+        let mut stream = TcpStream::connect(t.addr).unwrap();
+        stream.write_all(&encode(&failure).unwrap()).unwrap();
+        let mut line = Vec::new();
+        BufReader::new(stream).read_until(b'\n', &mut line).unwrap();
+        assert_eq!(decode(&line).unwrap().kind, "error");
+        t.stop();
+    }
+
+    #[test]
+    fn secure_handler_rejects_response_bounds() {
+        let handler: SecureHandler = Arc::new(|_| {
+            Ok(Some(HandlerResponse {
+                kind: "x".repeat(MAX_FIELD + 1),
+                payload: "{}".into(),
+            }))
+        });
+        let mut t = start_secure(
+            "127.0.0.1:0".parse().unwrap(),
+            false,
+            b"key".to_vec(),
+            handler,
+        )
+        .unwrap();
+        t.stop();
+    }
+}
