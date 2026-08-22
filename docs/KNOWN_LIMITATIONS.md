@@ -6,8 +6,8 @@ level; earlier phase-specific notes remain historical preparation evidence and a
 new observations here. AIP v0.1.0 was published from commit `b6f74b3793437a647186dd52eeb950ff4b3fb228`.
 A local Ollama integration test is skipped when its required model is not installed. v0.1.0 has
 no cloud synchronization or released Android client; the post-v0.1 Phase 12 Android APK/protocol
-slice is functional locally, while authenticated desktop transport and physical-device validation
-remain next/reserved. BielOS integration, released voice feature,
+slice is functional locally, while physical-device and release validation
+remain reserved. BielOS integration, released voice feature,
 real supervised external tools, released screen vision analysis, or the post-release Phase 7E–7F
 cognitive-core conversation integration. The current development checkpoint implements
 bounded Phase 7B–7E local paths, the Phase 8 local voice architecture checkpoint, and the
@@ -95,7 +95,7 @@ validation reservations are recorded in
 ## Phase 12 Android companion checkpoint
 
 - Phase 12 now includes a real debug APK and authenticated local/private
-  explicit-connect protocol client. It includes Rust/SQLite pairing and session state, nonce/replay
+  explicit-connect socket client. It includes Rust/SQLite pairing and session state, nonce/replay
   checks, compatibility negotiation, rotation/revocation, bounded read-only
   history, metadata-only outgoing queue, explicit Owner approval, audit, and
   Portuguese controls. Physical-device UX, private-LAN smoke testing, and release signing are not claimed.
@@ -105,9 +105,9 @@ validation reservations are recorded in
   always report `mediaBytesPersisted: false`.
 - Temporary chat and safe mode fail closed for pairing/session/queue/rotation/
   revocation mutations while history and audit remain read-only. React cannot
-  bypass the Rust authority. Transport cryptography, Android lifecycle and
-  permission UX, notifications, real voice/media, packaged-device tests,
-  recovery, and release approval remain reserved. See
+  bypass the Rust authority. Android lifecycle and permission/overlay UX,
+  notifications, real voice/media, packaged-device tests, recovery, and
+  release approval remain reserved. See
   [PHASE_12_ANDROID_SPEC.md](PHASE_12_ANDROID_SPEC.md).
 
 ## Phase 13 gateway checkpoint
