@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{Read, Write},
     net::{IpAddr, SocketAddr, TcpListener, TcpStream},
     sync::{Arc, Mutex},
     thread,
@@ -13,6 +13,7 @@ use std::{
 pub const PROTOCOL: &str = "aip-companion-v1";
 pub const MAX_FRAME: usize = 16_384;
 pub const MAX_PAYLOAD: usize = 8_192;
+pub const PAIRING_KEY_BYTES: usize = 32;
 const MAX_FIELD: usize = 512;
 
 #[derive(Debug, thiserror::Error)]
@@ -33,6 +34,81 @@ pub enum TransportError {
     Revoked,
     #[error("io error")]
     Io(#[from] std::io::Error),
+    #[error("pairing code unavailable")]
+    PairingUnavailable,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PairingStatus {
+    pub available: bool,
+    pub consumed: bool,
+    pub revoked: bool,
+}
+
+#[derive(Clone)]
+pub struct EphemeralPairingKey {
+    inner: Arc<Mutex<PairingState>>,
+}
+struct PairingState {
+    key: Option<Vec<u8>>,
+    consumed: bool,
+    revoked: bool,
+}
+impl EphemeralPairingKey {
+    pub fn generate() -> Result<(Self, String), TransportError> {
+        let seed = uuid::Uuid::now_v7().as_bytes().to_vec();
+        let key = Sha256::digest(seed).to_vec();
+        let code = hex(&key);
+        Ok((
+            Self {
+                inner: Arc::new(Mutex::new(PairingState {
+                    key: Some(key),
+                    consumed: false,
+                    revoked: false,
+                })),
+            },
+            code,
+        ))
+    }
+    pub fn consume(&self) -> Result<Vec<u8>, TransportError> {
+        let mut s = self.inner.lock().unwrap();
+        if s.consumed || s.revoked {
+            return Err(TransportError::PairingUnavailable);
+        }
+        s.consumed = true;
+        s.key.take().ok_or(TransportError::PairingUnavailable)
+    }
+    pub fn rotate(&self) -> Result<String, TransportError> {
+        let (next, code) = Self::generate()?;
+        let mut s = self.inner.lock().unwrap();
+        if s.revoked {
+            return Err(TransportError::Revoked);
+        }
+        *s = next.inner.lock().unwrap().clone();
+        Ok(code)
+    }
+    pub fn revoke(&self) {
+        let mut s = self.inner.lock().unwrap();
+        s.revoked = true;
+        s.key = None;
+    }
+    pub fn status(&self) -> PairingStatus {
+        let s = self.inner.lock().unwrap();
+        PairingStatus {
+            available: s.key.is_some() && !s.consumed && !s.revoked,
+            consumed: s.consumed,
+            revoked: s.revoked,
+        }
+    }
+}
+impl Clone for PairingState {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            consumed: self.consumed,
+            revoked: self.revoked,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -199,14 +275,30 @@ pub fn validate_bind(ip: IpAddr, private_confirmed: bool) -> Result<(), Transpor
 }
 pub type Handler = Arc<dyn Fn(WireFrame) -> Option<WireFrame> + Send + Sync + 'static>;
 pub struct TransportHandle {
-    stop: Arc<Mutex<bool>>,
+    runtime: Arc<RuntimeState>,
     join: Option<thread::JoinHandle<()>>,
     pub addr: SocketAddr,
 }
+type Connection = (Arc<Mutex<bool>>, thread::JoinHandle<()>);
+struct RuntimeState {
+    stop: Mutex<bool>,
+    connections: Mutex<Vec<Connection>>,
+}
 impl TransportHandle {
-    pub fn stop(mut self) {
-        *self.stop.lock().unwrap() = true;
+    pub fn stop(&mut self) {
+        if *self.runtime.stop.lock().unwrap() {
+            return;
+        }
+        *self.runtime.stop.lock().unwrap() = true;
         let _ = TcpStream::connect(self.addr);
+        let connections = std::mem::take(&mut *self.runtime.connections.lock().unwrap());
+        for (cancel, _) in &connections {
+            *cancel.lock().unwrap() = true;
+            let _ = TcpStream::connect(self.addr);
+        }
+        for (_, join) in connections {
+            let _ = join.join();
+        }
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
@@ -222,17 +314,23 @@ pub fn start(
     let listener = TcpListener::bind(addr)?;
     listener.set_nonblocking(true)?;
     let actual = listener.local_addr()?;
-    let stop = Arc::new(Mutex::new(false));
-    let flag = Arc::clone(&stop);
+    let runtime = Arc::new(RuntimeState {
+        stop: Mutex::new(false),
+        connections: Mutex::new(Vec::new()),
+    });
+    let flag = Arc::clone(&runtime);
     let join = thread::spawn(move || {
-        while !*flag.lock().unwrap() {
+        while !*flag.stop.lock().unwrap() {
             match listener.accept() {
                 Ok((stream, _)) => {
                     let h = Arc::clone(&handler);
                     let k = key.clone();
-                    thread::spawn(move || {
-                        let _ = serve(stream, k, h);
+                    let cancel = Arc::new(Mutex::new(false));
+                    let child_cancel = Arc::clone(&cancel);
+                    let join = thread::spawn(move || {
+                        let _ = serve(stream, k, h, child_cancel);
                     });
+                    flag.connections.lock().unwrap().push((cancel, join));
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(10))
@@ -242,20 +340,51 @@ pub fn start(
         }
     });
     Ok(TransportHandle {
-        stop,
+        runtime,
         join: Some(join),
         addr: actual,
     })
 }
-fn serve(mut stream: TcpStream, key: Vec<u8>, handler: Handler) -> Result<(), TransportError> {
-    stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+fn serve(
+    mut stream: TcpStream,
+    key: Vec<u8>,
+    handler: Handler,
+    cancel: Arc<Mutex<bool>>,
+) -> Result<(), TransportError> {
+    stream.set_read_timeout(Some(Duration::from_millis(100)))?;
     stream.set_write_timeout(Some(Duration::from_secs(3)))?;
     let mut line = Vec::new();
-    BufReader::new(stream.try_clone()?).read_until(b'\n', &mut line)?;
+    let mut byte = [0u8; 1];
+    loop {
+        if *cancel.lock().unwrap() {
+            return Ok(());
+        }
+        match stream.read(&mut byte) {
+            Ok(0) => return Ok(()),
+            Ok(1) => {
+                line.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+                if line.len() > MAX_FRAME {
+                    return Err(TransportError::Oversized);
+                }
+            }
+            Ok(_) => return Err(TransportError::Frame),
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
     let mut session = Session::new(&key);
     let f = decode(&line)?;
     session.authenticate(&f)?;
+    if *cancel.lock().unwrap() {
+        return Ok(());
+    }
     if let Some(response) = handler(f) {
+        if *cancel.lock().unwrap() {
+            return Ok(());
+        }
         stream.write_all(&encode(&response)?)?;
     }
     Ok(())
@@ -264,6 +393,7 @@ fn serve(mut stream: TcpStream, key: Vec<u8>, handler: Handler) -> Result<(), Tr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader};
     use std::net::{IpAddr, Ipv4Addr};
     fn frame(mac: String) -> WireFrame {
         WireFrame {
@@ -308,6 +438,24 @@ mod tests {
         assert!(encode(&f).is_err());
     }
     #[test]
+    fn ephemeral_pairing_is_one_time_and_redacted() {
+        let (pairing, code) = EphemeralPairingKey::generate().unwrap();
+        assert_eq!(code.len(), PAIRING_KEY_BYTES * 2);
+        assert!(pairing.status().available);
+        let key = pairing.consume().unwrap();
+        assert_eq!(key.len(), PAIRING_KEY_BYTES);
+        assert!(!pairing.status().available);
+        assert!(matches!(
+            pairing.consume(),
+            Err(TransportError::PairingUnavailable)
+        ));
+        let rotated = pairing.rotate().unwrap();
+        assert_ne!(rotated, code);
+        pairing.revoke();
+        assert!(pairing.status().revoked);
+        assert!(matches!(pairing.rotate(), Err(TransportError::Revoked)));
+    }
+    #[test]
     fn loopback_exchange() {
         let key = b"key".to_vec();
         let h: Handler = Arc::new(|f| {
@@ -324,6 +472,8 @@ mod tests {
         let mut out = Vec::new();
         BufReader::new(s).read_until(b'\n', &mut out).unwrap();
         assert_eq!(decode(&out).unwrap().kind, "ok");
+        let mut t = t;
+        t.stop();
         t.stop();
     }
 }
