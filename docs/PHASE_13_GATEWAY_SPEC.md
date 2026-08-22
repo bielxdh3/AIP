@@ -1,8 +1,9 @@
 # Phase 13 local gateway specification
 
-Status: implemented as a standalone, local metadata-only architecture
-checkpoint. This is not BielOS integration, a network release, or a remote
-recovery claim.
+Status: FUNCTIONAL — AUTHENTICATED LOCAL/PRIVATE GATEWAY CHECKPOINT. The
+standalone AIP desktop implements and tests a bounded `aip-gateway-v1` framed
+HMAC TCP transport and Rust/SQLite authority. Loopback is the validated path;
+this is not BielOS integration, a stable release, or a remote recovery claim.
 
 ## Purpose and authority
 
@@ -16,8 +17,8 @@ independently.
 
 The current fixture is the local Owner's `agt_luma_provisional` agent and a
 synthetic administrative client. Contracts use protocol version 1, bounded
-references, idempotency keys, metadata-only account and transfer records, and
-an explicit standalone fallback.
+newline-delimited frames, lower-case HMAC-SHA256, replay/idempotency checks,
+metadata-only account and transfer records, and an explicit standalone fallback.
 
 ## Local state and lifecycle
 
@@ -39,10 +40,10 @@ visible when mutations are blocked.
 ## Cloudflare and external boundaries
 
 Cloudflare Tunnel/Access values are configuration metadata only: the fixture
-reports a metadata-only mode, an absent credential state, and no network
-listener. Phase 13 does not open a socket, bind a listener, create a tunnel,
-relay traffic, contact BielOS, access a remote account, or perform a recovery
-outside the local database.
+reports a metadata-only mode and absent credentials. The gateway binds only
+localhost by default; private-LAN binding requires explicit confirmation. It
+does not create a tunnel, relay traffic, contact BielOS, access a remote
+account, or perform recovery outside the local database.
 
 The checkpoint imports neither BielOS runtime code nor Python internals. It
 does not read credentials, `.env` files, the host filesystem, or the shell,
@@ -51,14 +52,14 @@ records are synthetic metadata for validating ownership and approval paths.
 
 ## Desktop validation boundary
 
-`GatewayControls` renders Portuguese local-only status and delegates actions
-through the existing Tauri gateway command names. Focused Vitest coverage
-checks local read commands, transfer-preparation delegation, metadata-only
-copy, and fail-closed controls for temporary chat and safe mode. Rust module
-coverage remains responsible for lifecycle, replay, ownership, idempotency,
-revocation, and safety invariants.
+`GatewayControls` renders Portuguese local/private listener status and exposes
+explicit Owner-confirmed start/stop controls. The one-time pairing code stays
+in transient component state. Vitest coverage checks status loading, exact
+start arguments, transient pairing display, stop, and blocked-mode behavior;
+Rust loopback coverage drives signed TCP frames through SQLite authority for
+the complete transfer/session/recovery/revocation lifecycle.
 
-This checkpoint does not implement a public gateway, BielOS account exchange,
-Cloudflare credentials, transport cryptography, remote/mobile delivery, or
-end-to-end recovery. Those require a separately authorized phase and security
-and release review.
+Private-LAN smoke testing, hardware/manual permission and recovery UX, packaged
+device tests, release signing, remote CI, Cloudflare credentials, BielOS
+ownership exchange, external accounts, public relay/tunnel behavior, and
+stable-release approval remain pending.

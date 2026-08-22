@@ -112,21 +112,23 @@ validation reservations are recorded in
 
 ## Phase 13 gateway checkpoint
 
-- Phase 13 is a local metadata-only gateway checkpoint. It includes a
-  synthetic protocol/account fixture, Owner-scoped transfer and approval,
+- Phase 13 is a functional authenticated local/private gateway checkpoint. It
+  includes a bounded `aip-gateway-v1` framed HMAC TCP transport, synthetic
+  protocol/account fixture, Owner-scoped transfer and approval,
   session proof/replay checks, administrative recovery approval, revocation,
-  bounded audit, and Portuguese desktop controls. It is not BielOS
-  integration or a remote-access release.
-- Cloudflare Tunnel/Access values are metadata only. No listener, relay,
-  tunnel, network, external account, credential, `.env`, host filesystem,
+  bounded audit, Portuguese desktop controls, and deterministic loopback
+  authority tests. It is not BielOS integration or a stable release.
+- Cloudflare Tunnel/Access values are metadata only. The listener is local by
+  default; there is no relay, tunnel, external account, credential, `.env`, host filesystem,
   shell, or Python-runtime path is used, and no external effect is performed.
 - Rust/SQLite owns ownership, authentication, replay, lifecycle, approval,
   revocation, idempotency, safe mode, and temporary-chat gates. Read-only
   protocol/state/audit visibility can remain available while mutations fail
   closed; React cannot bypass those controls.
-- Real BielOS ownership exchange, transfer of a real agent, transport
-  cryptography, Cloudflare credentials, remote/mobile recovery, packaged
-  gateway validation, and release approval remain reserved. See
+- Private-LAN smoke, hardware/manual permission and recovery UX, remote CI,
+  real BielOS ownership exchange, transfer of a real agent, Cloudflare
+  credentials, remote/mobile recovery, packaged-device validation, and release
+  approval remain reserved. See
   [PHASE_13_GATEWAY_SPEC.md](PHASE_13_GATEWAY_SPEC.md).
 
 ## Deferred usability and agent features
