@@ -215,7 +215,7 @@ fn validate_package(package: &ExtensionPackage) -> Result<(), DatabaseError> {
         || !package
             .integrity_sha256
             .chars()
-            .all(|c| c.is_ascii_hexdigit())
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
         || extension_package_hash(package)? != package.integrity_sha256
     {
         return Err(DatabaseError::Cognitive("extension_package_invalid"));
@@ -2358,6 +2358,15 @@ mod tests {
             text: Some("ok".into()),
             echo_input: None,
         }]);
+        let mut uppercase = valid.clone();
+        uppercase.integrity_sha256 = uppercase.integrity_sha256.to_ascii_uppercase();
+        if uppercase.integrity_sha256 == valid.integrity_sha256 {
+            uppercase.integrity_sha256.replace_range(0..1, "A");
+        }
+        assert_eq!(
+            validate_package(&uppercase),
+            Err(DatabaseError::Cognitive("extension_package_invalid"))
+        );
         assert_eq!(
             interpret_extension_package(&valid, "", &[], &host).unwrap(),
             "ok"
