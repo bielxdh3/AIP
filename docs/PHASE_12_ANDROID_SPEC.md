@@ -1,21 +1,28 @@
 # Phase 12 local Android companion specification
 
-Status: implemented as a local metadata-only architecture checkpoint. This is
-not an Android APK, network-release, or human mobile-validation claim.
+Status: real Android APK with an explicit authenticated local/private transport
+client and deterministic JVM loopback coverage. Physical-device, private-LAN,
+manual, and release-signing validation remain reserved.
 
 ## Purpose and authority
 
-Phase 12 defines the contract between the standalone AIP desktop and a future
-Android companion without importing BielOS or opening a transport. Rust/SQLite
-is authoritative for device ownership, pairing, sessions, replay counters,
+Phase 12 defines the contract between the standalone AIP desktop and the
+Android companion without importing BielOS. The debug APK uses an explicit,
+authenticated local/private socket client; deterministic JVM loopback tests
+cover the host-side transport boundary. Rust/SQLite is authoritative for device ownership, pairing, sessions, replay counters,
 queue approval, key rotation, revocation, audit, safe mode, and temporary-chat
 gates. React only renders Portuguese Owner controls and cannot grant authority.
 
-The versioned protocol is `aip-companion-v1`. The current implementation uses a
-synthetic Android fixture and local Tauri commands. `networkListener` is always
-false, `standaloneFallback` is true, and no relay, public listener, tunnel,
-shell, Python runtime, host filesystem, external account, or real Android
-credential path exists.
+The versioned protocol is `aip-companion-v1`: exactly one JSON object per line,
+bounded to 16 KiB, with fixed fields `protocol`, `kind`, `clientId`, nullable
+`sessionId`, `nonce`, `counter`, `payload`, and `mac`. Canonical MAC bytes are
+the UTF-8 values in that order excluding `mac`, joined by U+001F; `mac` is
+lowercase HMAC-SHA-256 hex. Unknown/missing fields, invalid UTF-8, bad lengths,
+version mismatch, repeated nonce, and non-monotonic counters fail closed.
+No relay, public listener, tunnel, shell, Python runtime, host filesystem, or
+external account exists; offline fallback remains truthful until a valid response.
+Android never auto-connects, scans, or opens a listener; Keystore credentials are
+not logged or persisted in plaintext.
 
 ## Pairing and authenticated session model
 
@@ -62,9 +69,11 @@ and cancellation, revocation, key rotation, idempotency, and safety gates.
 
 ## Explicit non-goals and follow-up
 
-This checkpoint does not build or sign an APK, capture microphone/camera data,
-persist media, connect to an Android account, open a socket, run a relay, or
-claim end-to-end mobile delivery. A future implementation must separately
-specify transport cryptography, Android lifecycle/permission UX, packaged-device
-testing, recovery, and release review before any network or APK work is
-authorized. Phase 13 gateway/BielOS integration is intentionally out of scope.
+This checkpoint builds a real debug APK and exercises the authenticated local/
+private socket client through deterministic JVM loopback tests; it does not
+claim physical-device or private-LAN delivery. Microphone/camera capture, media
+persistence, Android accounts, relay/tunnel access, and end-to-end mobile
+delivery remain out of scope. Android lifecycle/permission and overlay UX,
+notification quality, packaged-device testing, recovery, and release signing
+remain reserved human/release gates. Phase 13 BielOS/Cloudflare gateway
+integration is intentionally out of scope.

@@ -260,7 +260,7 @@ pub struct CompanionRevocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompanionPairingRequest {
     pub agent_id: String,
     pub owner_user_id: String,
@@ -275,7 +275,7 @@ pub struct CompanionPairingRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompanionPairingConfirmationRequest {
     pub agent_id: String,
     pub owner_user_id: String,
@@ -288,7 +288,7 @@ pub struct CompanionPairingConfirmationRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompanionSessionRequest {
     pub agent_id: String,
     pub owner_user_id: String,
@@ -317,7 +317,7 @@ pub struct CompanionSessionProof {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompanionReconnectRequest {
     pub agent_id: String,
     pub owner_user_id: String,
@@ -327,7 +327,7 @@ pub struct CompanionReconnectRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompanionQueuePreviewRequest {
     pub agent_id: String,
     pub owner_user_id: String,
@@ -338,7 +338,7 @@ pub struct CompanionQueuePreviewRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompanionQueueDecisionRequest {
     pub agent_id: String,
     pub owner_user_id: String,
@@ -350,7 +350,7 @@ pub struct CompanionQueueDecisionRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompanionQueueActionRequest {
     pub agent_id: String,
     pub owner_user_id: String,
