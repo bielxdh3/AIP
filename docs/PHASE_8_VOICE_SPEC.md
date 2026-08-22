@@ -1,5 +1,7 @@
 # Phase 8 voice specification
 
+Status: FUNCTIONAL — HUMAN VALIDATION PENDING.
+
 ## Status and scope
 
 Phase 8 includes a bounded on-demand local Windows runtime: native input/output device

@@ -1,8 +1,9 @@
 # Phase 12 local Android companion specification
 
-Status: real Android APK with an explicit authenticated local/private transport
-client and deterministic JVM loopback coverage. Physical-device, private-LAN,
-manual, and release-signing validation remain reserved.
+Status: FUNCTIONAL — HUMAN VALIDATION PENDING. The real Android APK has an
+explicit authenticated local/private transport client and deterministic JVM
+loopback coverage. Physical-device, private-LAN, manual, and release-signing
+validation remain reserved.
 
 ## Purpose and authority
 
