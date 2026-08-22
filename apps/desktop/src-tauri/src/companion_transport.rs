@@ -275,6 +275,13 @@ pub fn validate_bind(ip: IpAddr, private_confirmed: bool) -> Result<(), Transpor
     }
 }
 pub type Handler = Arc<dyn Fn(WireFrame) -> Option<WireFrame> + Send + Sync + 'static>;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandlerResponse {
+    pub kind: String,
+    pub payload: String,
+}
+pub type SecureHandler =
+    Arc<dyn Fn(WireFrame) -> Result<Option<HandlerResponse>, String> + Send + Sync + 'static>;
 pub struct TransportHandle {
     runtime: Arc<RuntimeState>,
     join: Option<thread::JoinHandle<()>>,
@@ -306,6 +313,39 @@ impl TransportHandle {
         }
     }
 }
+impl Session {
+    fn response(
+        &mut self,
+        request: &WireFrame,
+        response: HandlerResponse,
+    ) -> Result<WireFrame, TransportError> {
+        if response.kind.is_empty()
+            || response.kind.len() > MAX_FIELD
+            || response.payload.len() > MAX_PAYLOAD
+        {
+            return Err(TransportError::Frame);
+        }
+        let frame = WireFrame {
+            protocol: PROTOCOL.into(),
+            kind: response.kind,
+            client_id: request.client_id.clone(),
+            session_id: request.session_id.clone(),
+            nonce: uuid::Uuid::now_v7().to_string(),
+            counter: self.counter + 1,
+            payload: response.payload,
+            mac: String::new(),
+        };
+        self.counter = frame.counter;
+        let tag = hex(&hmac(&self.key, &canonical(&frame)));
+        Ok(frame.with_mac(tag))
+    }
+}
+impl WireFrame {
+    fn with_mac(mut self, mac: String) -> Self {
+        self.mac = mac;
+        self
+    }
+}
 pub fn start(
     addr: SocketAddr,
     private_confirmed: bool,
@@ -333,6 +373,50 @@ pub fn start(
                     let child_cancel = Arc::clone(&cancel);
                     let join = thread::spawn(move || {
                         let _ = serve(stream, k, h, child_cancel, sessions);
+                    });
+                    flag.connections.lock().unwrap().push((cancel, join));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10))
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    Ok(TransportHandle {
+        runtime,
+        join: Some(join),
+        addr: actual,
+    })
+}
+
+pub fn start_secure(
+    addr: SocketAddr,
+    private_confirmed: bool,
+    key: Vec<u8>,
+    handler: SecureHandler,
+) -> Result<TransportHandle, TransportError> {
+    validate_bind(addr.ip(), private_confirmed)?;
+    let listener = TcpListener::bind(addr)?;
+    listener.set_nonblocking(true)?;
+    let actual = listener.local_addr()?;
+    let runtime = Arc::new(RuntimeState {
+        stop: Mutex::new(false),
+        connections: Mutex::new(Vec::new()),
+        sessions: Mutex::new(HashMap::new()),
+    });
+    let flag = Arc::clone(&runtime);
+    let join = thread::spawn(move || {
+        while !*flag.stop.lock().unwrap() {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let h = Arc::clone(&handler);
+                    let k = key.clone();
+                    let sessions = Arc::clone(&flag);
+                    let cancel = Arc::new(Mutex::new(false));
+                    let child_cancel = Arc::clone(&cancel);
+                    let join = thread::spawn(move || {
+                        let _ = serve_secure(stream, k, h, child_cancel, sessions);
                     });
                     flag.connections.lock().unwrap().push((cancel, join));
                 }
@@ -402,6 +486,69 @@ fn serve(
         }
         stream.write_all(&encode(&response)?)?;
     }
+    Ok(())
+}
+
+fn serve_secure(
+    mut stream: TcpStream,
+    key: Vec<u8>,
+    handler: SecureHandler,
+    cancel: Arc<Mutex<bool>>,
+    runtime: Arc<RuntimeState>,
+) -> Result<(), TransportError> {
+    stream.set_read_timeout(Some(Duration::from_millis(100)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        if *cancel.lock().unwrap() {
+            return Ok(());
+        }
+        match stream.read(&mut byte) {
+            Ok(0) => return Ok(()),
+            Ok(1) => {
+                line.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+                if line.len() > MAX_FRAME {
+                    return Err(TransportError::Oversized);
+                }
+            }
+            Ok(_) => return Err(TransportError::Frame),
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let request = decode(&line)?;
+    let session_key = format!(
+        "{}\u{1f}{}",
+        request.client_id,
+        request.session_id.as_deref().unwrap_or("")
+    );
+    let mut sessions = runtime.sessions.lock().unwrap();
+    let session = sessions
+        .entry(session_key)
+        .or_insert_with(|| Session::new(&key));
+    session.authenticate(&request)?;
+    if *cancel.lock().unwrap() {
+        return Ok(());
+    }
+    let result =
+        handler(request.clone()).map_err(|error| error.chars().take(256).collect::<String>());
+    let response = match result {
+        Ok(Some(value)) => value,
+        Ok(None) => return Ok(()),
+        Err(error) => HandlerResponse {
+            kind: "error".into(),
+            payload: serde_json::json!({"code": error}).to_string(),
+        },
+    };
+    let frame = session.response(&request, response)?;
+    if *cancel.lock().unwrap() {
+        return Ok(());
+    }
+    stream.write_all(&encode(&frame)?)?;
     Ok(())
 }
 
@@ -554,6 +701,67 @@ mod tests {
             .filter(|won| *won)
             .count();
         assert_eq!(wins, 1);
+        t.stop();
+    }
+
+    #[test]
+    fn secure_handler_signs_response_and_errors() {
+        let key = b"secure-key".to_vec();
+        let handler: SecureHandler = Arc::new(|request| {
+            if request.kind == "fail" {
+                Err("bounded_failure".into())
+            } else {
+                Ok(Some(HandlerResponse {
+                    kind: "ok".into(),
+                    payload: "{}".into(),
+                }))
+            }
+        });
+        let mut t =
+            start_secure("127.0.0.1:0".parse().unwrap(), false, key.clone(), handler).unwrap();
+        let mut request = frame(String::new());
+        request.kind = "hello".into();
+        request.session_id = Some("s".into());
+        request.mac = hex(&hmac(&key, &canonical(&request)));
+        let mut stream = TcpStream::connect(t.addr).unwrap();
+        stream.write_all(&encode(&request).unwrap()).unwrap();
+        let mut line = Vec::new();
+        BufReader::new(stream).read_until(b'\n', &mut line).unwrap();
+        let response = decode(&line).unwrap();
+        assert_eq!(response.kind, "ok");
+        assert_eq!(response.counter, 2);
+        assert_ne!(response.nonce, request.nonce);
+        let mut verifier = Session::new(&key);
+        verifier.authenticate(&request).unwrap();
+        verifier.authenticate(&response).unwrap();
+        let mut failure = request.clone();
+        failure.counter = 3;
+        failure.nonce = "failure".into();
+        failure.kind = "fail".into();
+        failure.mac = hex(&hmac(&key, &canonical(&failure)));
+        let mut stream = TcpStream::connect(t.addr).unwrap();
+        stream.write_all(&encode(&failure).unwrap()).unwrap();
+        let mut line = Vec::new();
+        BufReader::new(stream).read_until(b'\n', &mut line).unwrap();
+        assert_eq!(decode(&line).unwrap().kind, "error");
+        t.stop();
+    }
+
+    #[test]
+    fn secure_handler_rejects_response_bounds() {
+        let handler: SecureHandler = Arc::new(|_| {
+            Ok(Some(HandlerResponse {
+                kind: "x".repeat(MAX_FIELD + 1),
+                payload: "{}".into(),
+            }))
+        });
+        let mut t = start_secure(
+            "127.0.0.1:0".parse().unwrap(),
+            false,
+            b"key".to_vec(),
+            handler,
+        )
+        .unwrap();
         t.stop();
     }
 }
