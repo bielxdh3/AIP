@@ -284,7 +284,7 @@ persist visual state. A local model adapter intentionally reports unavailable
 when no model is installed. Windows packaging evidence,
 privacy/visual UX validation, and release approval remain reserved work.
 
-## Post-v0.1 Phase 12: Android companion `[IMPLEMENTED — LOCAL METADATA-ONLY CHECKPOINT]`
+## Post-v0.1 Phase 12: Android companion `[FUNCTIONAL — APK/LOCAL PROTOCOL SLICE]`
 
 The current checkpoint implements the bounded local architecture described in
 [PHASE_12_ANDROID_SPEC.md](PHASE_12_ANDROID_SPEC.md):
@@ -297,10 +297,9 @@ The current checkpoint implements the bounded local architecture described in
 - Rust/SQLite authority with safe-mode and temporary-chat fail-closed gates;
 - Portuguese Companion controls and versioned response parsers.
 
-This does not build an APK, open a listener, provide a relay, access Android or
-external accounts, persist media bytes, or claim mobile runtime validation.
-Packaged Android transport, cryptographic key custody, notifications, real
-audio/voice, and human device testing remain reserved.
+The Android project builds a debug APK and tests the bounded local protocol and UX.
+Desktop authenticated transport is the next scoped commit; no listener, relay,
+external account, or physical-device validation is claimed.
 
 ## Post-v0.1 Phase 13: gateway boundary `[IMPLEMENTED — LOCAL METADATA-ONLY CHECKPOINT]`
 

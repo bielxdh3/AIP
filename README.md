@@ -106,7 +106,7 @@ The current stable baseline already includes:
 - Python 3.11 or newer;
 - Ollama for the current local-model workflow.
 
-Linux, macOS, Android, and iOS are not supported by the current stable release.
+Linux, macOS, and iOS are not supported by the current stable release. Phase 12 provides a functional local Android APK/protocol slice; desktop authenticated transport is next and Phase 13 remains metadata-only.
 
 ## Quick start
 
