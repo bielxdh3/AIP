@@ -106,7 +106,7 @@ The current stable baseline already includes:
 - Python 3.11 or newer;
 - Ollama for the current local-model workflow.
 
-Linux, macOS, and iOS are not supported by the current stable release. Phase 12 provides a functional Android APK with authenticated local/private explicit-connect transport and deterministic loopback coverage; physical-device/private-LAN and release-signing checks remain reserved, and Phase 13 remains metadata-only.
+Linux, macOS, and iOS are not supported by the current stable release. Phase 12 provides a functional Android APK with authenticated local/private explicit-connect transport and deterministic loopback coverage; Phase 13 provides a functional authenticated local/private `aip-gateway-v1` TCP checkpoint with Rust/SQLite authority and loopback validation. Physical-device/private-LAN, manual recovery/permission, remote CI, Cloudflare/BielOS and release-signing checks remain reserved; neither phase claims a stable release.
 
 ## Quick start
 

@@ -302,21 +302,24 @@ local/private protocol and explicit-connect client. Deterministic loopback is
 covered; physical-device UX, private-LAN smoke testing, and release signing
 remain reserved checks. No relay or external account is claimed.
 
-## Post-v0.1 Phase 13: gateway boundary `[IMPLEMENTED — LOCAL METADATA-ONLY CHECKPOINT]`
+## Post-v0.1 Phase 13: gateway boundary `[FUNCTIONAL — AUTHENTICATED LOCAL/PRIVATE GATEWAY CHECKPOINT]`
 
 The current checkpoint implements the bounded local architecture described in
 [PHASE_13_GATEWAY_SPEC.md](PHASE_13_GATEWAY_SPEC.md):
 
-- versioned gateway metadata and a synthetic local administrative fixture;
+- real bounded `aip-gateway-v1` framed HMAC TCP transport with signed errors,
+  replay protection, private bind policy, and explicit start/stop lifecycle;
 - Owner-scoped transfer preview/approval, session proof/replay checks,
   administrative recovery approval, revocation, and audit;
 - Rust/SQLite authority with safe-mode and temporary-chat fail-closed gates;
-- Portuguese desktop Gateway controls and preserved standalone fallback.
+- Portuguese desktop Gateway controls with explicit Owner-confirmed listener
+  lifecycle and transient pairing display; deterministic loopback TCP/SQLite
+  authority tests.
 
-This does not integrate BielOS accounts, transfer a real agent, open a network
-listener, provide a relay or tunnel, or use Cloudflare credentials. External
-ownership exchange, remote/mobile delivery, and any real gateway transport
-remain separately authorized future scope.
+This does not integrate BielOS accounts, transfer a real agent, provide a
+public relay or tunnel, or use Cloudflare credentials. Private-LAN/hardware
+manual validation, recovery UX, release signing, remote CI, external ownership
+exchange, and remote/mobile delivery remain separately authorized future scope.
 
 ## Deferred research
 
