@@ -2037,18 +2037,44 @@ mod tests {
             provider.capture(&fixture, &|| true),
             Err(ScreenVisionCaptureError::Cancelled)
         );
+        let fake_adapter = DeterministicScreenVisionVisualAdapter;
+        assert!(fake_adapter.analyze(&[], &|| false).is_ok());
+        assert_eq!(
+            fake_adapter.analyze(&[], &|| true),
+            Err(ScreenVisionAdapterError::Cancelled)
+        );
+        let local_adapter = LocalScreenVisionVisualAdapter;
+        assert_eq!(
+            local_adapter.analyze(&[0; 4], &|| false),
+            Err(ScreenVisionAdapterError::Unavailable)
+        );
+        assert_eq!(
+            local_adapter.analyze(&[0; 4], &|| true),
+            Err(ScreenVisionAdapterError::Cancelled)
+        );
         let real = ScreenVisionFixture {
             synthetic: false,
             metadata_only: false,
             ..fixture
         };
         #[cfg(windows)]
-        assert!(matches!(
-            WindowsScreenVisionCaptureProvider.capture(&real, &|| false),
-            Err(ScreenVisionCaptureError::Unavailable
+        match WindowsScreenVisionCaptureProvider.capture(&real, &|| false) {
+            Ok(bytes) => {
+                assert!(!bytes.is_empty());
+                assert!(bytes.len() <= MAX_SCREEN_VISION_CAPTURE_BYTES);
+            }
+            Err(
+                ScreenVisionCaptureError::Unavailable
                 | ScreenVisionCaptureError::Oversized
-                | ScreenVisionCaptureError::Failed)
-        ));
+                | ScreenVisionCaptureError::Failed,
+            ) => {}
+            Err(ScreenVisionCaptureError::Cancelled) => panic!("non-cancelled capture cancelled"),
+        }
+        #[cfg(windows)]
+        assert_eq!(
+            WindowsScreenVisionCaptureProvider.capture(&real, &|| true),
+            Err(ScreenVisionCaptureError::Cancelled)
+        );
         #[cfg(not(windows))]
         let _ = real;
     }
