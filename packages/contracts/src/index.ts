@@ -691,8 +691,8 @@ export type ScreenVisionFixture = {
   width: number;
   height: number;
   scale: number;
-  synthetic: true;
-  metadataOnly: true;
+  synthetic: boolean;
+  metadataOnly: boolean;
 };
 export type ScreenVisionPreview = {
   fixtureId: string;
@@ -700,8 +700,8 @@ export type ScreenVisionPreview = {
   displayName: string;
   width: number;
   height: number;
-  synthetic: true;
-  metadataOnly: true;
+  synthetic: boolean;
+  metadataOnly: boolean;
   confirmationRequired: true;
   redactionRuleCount: number;
 };
@@ -3321,6 +3321,7 @@ const SCREEN_VISION_MODEL_FIXTURE_ID = "fixture:visual-model/screen-neutral-v1";
 const SCREEN_VISION_RESOURCE_KEY = "reference-gpu";
 const MAX_SCREEN_VISION_TEXT = 512;
 const MAX_SCREEN_VISION_RESULT_TEXT = 1_024;
+export const MAX_SCREEN_VISION_FIXTURES = 18;
 
 function isScreenVisionBoundedText(
   value: unknown,
@@ -3451,8 +3452,8 @@ export function parseScreenVisionFixture(
     cognitiveNumber(candidate.scale) &&
     candidate.scale > 0 &&
     candidate.scale <= 4 &&
-    candidate.synthetic === true &&
-    candidate.metadataOnly === true
+    typeof candidate.synthetic === "boolean" &&
+    typeof candidate.metadataOnly === "boolean"
     ? (candidate as unknown as ScreenVisionFixture)
     : null;
 }
@@ -3468,8 +3469,8 @@ export function parseScreenVisionPreview(
     isScreenVisionBoundedText(candidate.displayName, 160) &&
     isScreenVisionBoundedInteger(candidate.width, 1, 16_384) &&
     isScreenVisionBoundedInteger(candidate.height, 1, 16_384) &&
-    candidate.synthetic === true &&
-    candidate.metadataOnly === true &&
+    typeof candidate.synthetic === "boolean" &&
+    typeof candidate.metadataOnly === "boolean" &&
     candidate.confirmationRequired === true &&
     isScreenVisionBoundedInteger(candidate.redactionRuleCount, 1, 8)
     ? (candidate as unknown as ScreenVisionPreview)
@@ -3626,7 +3627,7 @@ export function parseScreenVisionAuditRecord(
 export function parseScreenVisionFixtures(
   value: unknown,
 ): ScreenVisionFixture[] | null {
-  if (!Array.isArray(value) || value.length > 2) return null;
+  if (!Array.isArray(value) || value.length > MAX_SCREEN_VISION_FIXTURES) return null;
   const fixtures = value.map(parseScreenVisionFixture);
   return fixtures.every(
     (fixture): fixture is ScreenVisionFixture => fixture !== null,

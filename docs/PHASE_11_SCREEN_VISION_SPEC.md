@@ -1,13 +1,18 @@
 # Phase 11 on-demand screen vision specification
 
-Status: implemented local metadata-only checkpoint; automated validation is
-phase-scoped, human visual/privacy validation remains pending, and this is not
-release approval.
+Status: functional automated capture/provider checkpoint; local model
+installation, packaged Windows/manual UX, and visual quality remain human
+prerequisites. This is not release approval.
 
 Phase 11 adds a bounded Screen Vision control path to the standalone AIP
 desktop application. It models an Owner-requested visual analysis using
-synthetic monitor fixtures and a synthetic visual-model fixture. The checkpoint
-does not capture the Windows desktop and does not process real pixels.
+synthetic monitor fixtures and a replaceable visual adapter. All available
+Windows monitors are enumerated on demand with bounded stable identities and
+selected bounds; capture occurs only after explicit Owner confirmation; pixels remain
+transient in memory and are never uploaded or persisted. Missing local models
+return a bounded unavailable/degraded result, never synthetic success.
+The response is bounded to 18 records: two synthetic fixtures and at most 16
+real Windows displays.
 
 ## Scope and invariants
 
@@ -19,7 +24,8 @@ make a visual result durable.
 
 The supported path is:
 
-1. The Owner selects one of the bounded synthetic monitor fixtures.
+1. The Owner selects a bounded synthetic fixture or an enumerated Windows
+   display.
 2. Rust creates an explicit session for one agent with both fixture-capture and
    fixture-analysis permissions, a privacy policy, and per-session quotas.
 3. The Owner requests a preview. The preview contains monitor dimensions and
@@ -74,7 +80,9 @@ The resource schedule is deliberately conservative:
   30 days of records;
 - analysis text is bounded to 1,024 bytes by the Rust result guard.
 
-Cancellation can clean a preview, queued/running fixture job, or failed job.
+Cancellation signals the active per-job in-memory source before the database
+transition; capture, adapter, and cleanup checkpoints observe it. Cancellation
+can clean a preview, queued/running fixture job, or failed job.
 Session cancellation closes the session and cleans its remaining transient
 job metadata. Cleanup releases the model/resource lifecycle and clears
 `frame_metadata_json`; `result_durable` remains false.
@@ -105,8 +113,8 @@ allowed.
 
 This phase must not add or imply:
 
-- a Windows screenshot API, desktop/window capture, webcam input, or real
-  pixels;
+- continuous capture, background watching, webcam input, or any capture that is
+  not explicitly confirmed by the Owner;
 - screenshot bytes, image files, thumbnails, or visual embeddings in SQLite,
   logs, backups, exports, or chat history;
 - continuous analysis, polling capture, surveillance, or background capture;
@@ -128,6 +136,7 @@ state, and certain/diagnostic hypotheses. Desktop tests cover Portuguese
 controls, authoritative command wiring, and temporary-chat/safe-mode fail
 closed behavior.
 
-Real screen privacy behavior, Windows packaging, visual usability, and any
+Real screen privacy behavior, Windows packaging, local model installation,
+visual usability, and any
 future real adapter remain human/release validation work. Their absence is not
 represented as an implemented capture capability.
