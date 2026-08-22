@@ -263,7 +263,7 @@ does not access the network, shell, host filesystem, credentials, remote code,
 or a public marketplace. Human package review, real plugin usability, ratings,
 packaged-Windows evidence, and release approval remain reserved.
 
-## Post-v0.1 Phase 11: screen vision `[IMPLEMENTED — LOCAL SYNTHETIC METADATA-ONLY CHECKPOINT]`
+## Post-v0.1 Phase 11: screen vision `[FUNCTIONAL — AUTOMATED CAPTURE/PROVIDER CHECKPOINT]`
 
 The current checkpoint implements the bounded local architecture described in
 [PHASE_11_SCREEN_VISION_SPEC.md](PHASE_11_SCREEN_VISION_SPEC.md):

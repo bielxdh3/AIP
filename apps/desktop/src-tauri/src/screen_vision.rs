@@ -36,6 +36,61 @@ pub trait ScreenVisionCaptureProvider {
     ) -> Result<Vec<u8>, ScreenVisionCaptureError>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScreenVisionAdapterError {
+    Unavailable,
+    Cancelled,
+}
+
+pub trait ScreenVisionVisualAdapter {
+    fn analyze(
+        &self,
+        pixels: &[u8],
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<ScreenVisionHypothesis, ScreenVisionAdapterError>;
+}
+
+#[derive(Debug, Default)]
+pub struct DeterministicScreenVisionVisualAdapter;
+
+impl ScreenVisionVisualAdapter for DeterministicScreenVisionVisualAdapter {
+    fn analyze(
+        &self,
+        _pixels: &[u8],
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<ScreenVisionHypothesis, ScreenVisionAdapterError> {
+        if cancelled() {
+            return Err(ScreenVisionAdapterError::Cancelled);
+        }
+        Ok(ScreenVisionHypothesis {
+            text: "Hipótese incerta: fixture visual neutra; confirme visualmente.".into(),
+            confidence: 42,
+            uncertain: true,
+            diagnostic: false,
+            durable: false,
+            sensitive_attribute_inferred: false,
+            source: "synthetic_fixture_visual_model".into(),
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct LocalScreenVisionVisualAdapter;
+
+impl ScreenVisionVisualAdapter for LocalScreenVisionVisualAdapter {
+    fn analyze(
+        &self,
+        _pixels: &[u8],
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<ScreenVisionHypothesis, ScreenVisionAdapterError> {
+        if cancelled() {
+            Err(ScreenVisionAdapterError::Cancelled)
+        } else {
+            Err(ScreenVisionAdapterError::Unavailable)
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct DeterministicScreenVisionCaptureProvider;
 
@@ -783,28 +838,6 @@ impl Database {
         }
         require_permission(&session, ScreenVisionPermission::AnalyzeFixture)?;
         let fixture = fixture_for(&job.monitor_id, &job.fixture_id)?;
-        if !fixture.synthetic {
-            #[cfg(windows)]
-            let capture = WindowsScreenVisionCaptureProvider.capture(&fixture, &|| false);
-            #[cfg(not(windows))]
-            let capture = Err(ScreenVisionCaptureError::Unavailable);
-            capture.map_err(|error| match error {
-                ScreenVisionCaptureError::Cancelled => {
-                    DatabaseError::Cognitive("screen_vision_cancelled")
-                }
-                ScreenVisionCaptureError::Oversized => {
-                    DatabaseError::Cognitive("screen_vision_capture_oversized")
-                }
-                ScreenVisionCaptureError::Unavailable | ScreenVisionCaptureError::Failed => {
-                    DatabaseError::Cognitive("screen_vision_unavailable")
-                }
-            })?;
-            return Err(DatabaseError::Cognitive("screen_vision_model_unavailable"));
-        } else {
-            DeterministicScreenVisionCaptureProvider
-                .capture(&fixture, &|| false)
-                .map_err(|_| DatabaseError::Cognitive("screen_vision_capture_failed"))?;
-        }
         let resource_busy: bool = transaction.query_row(
             "SELECT EXISTS(
                SELECT 1 FROM screen_vision_jobs
@@ -816,6 +849,49 @@ impl Database {
         if resource_busy {
             return Err(DatabaseError::Cognitive("screen_vision_resource_busy"));
         }
+        if !fixture.synthetic {
+            #[cfg(windows)]
+            let capture = WindowsScreenVisionCaptureProvider.capture(&fixture, &|| false);
+            #[cfg(not(windows))]
+            let capture = Err(ScreenVisionCaptureError::Unavailable);
+            let pixels = capture.map_err(|error| match error {
+                ScreenVisionCaptureError::Cancelled => {
+                    DatabaseError::Cognitive("screen_vision_cancelled")
+                }
+                ScreenVisionCaptureError::Oversized => {
+                    DatabaseError::Cognitive("screen_vision_capture_oversized")
+                }
+                ScreenVisionCaptureError::Unavailable | ScreenVisionCaptureError::Failed => {
+                    DatabaseError::Cognitive("screen_vision_unavailable")
+                }
+            })?;
+            let adapter = LocalScreenVisionVisualAdapter;
+            let code = match adapter.analyze(&pixels, &|| false) {
+                Ok(_) => "screen_vision_model_unavailable",
+                Err(ScreenVisionAdapterError::Cancelled) => "screen_vision_cancelled",
+                Err(ScreenVisionAdapterError::Unavailable) => "screen_vision_model_unavailable",
+            };
+            let now = now_millis();
+            transaction.execute("UPDATE screen_vision_jobs SET status='cleaned', terminal_status='failed', model_lifecycle='unavailable', resource_status='released', cleanup_status='complete', frame_metadata_json=NULL, error_code=?1, model_cleanup_at=?2, cleaned_at=?2, updated_at=?2 WHERE id=?3 AND status='previewed'", params![code, now, job_id])?;
+            insert_audit_tx(
+                &transaction,
+                ScreenVisionAuditContext {
+                    session_id: Some(&job.session_id),
+                    job_id: Some(&job_id),
+                    agent_id: &agent_id,
+                    owner_user_id: &owner_user_id,
+                    event: "job_degraded",
+                    result: "unavailable",
+                    code: Some(code),
+                    summary: "Captura real limpa; adaptador visual local indisponível",
+                },
+            )?;
+            transaction.commit()?;
+            return Err(DatabaseError::Cognitive(code));
+        }
+        DeterministicScreenVisionCaptureProvider
+            .capture(&fixture, &|| false)
+            .map_err(|_| DatabaseError::Cognitive("screen_vision_capture_failed"))?;
         let now = now_millis();
         transaction.execute(
             "UPDATE screen_vision_jobs
@@ -1364,17 +1440,13 @@ fn analysis_result_for_job(
     if text.len() > MAX_SCREEN_VISION_RESULT_BYTES {
         return Err(DatabaseError::Cognitive("screen_vision_result_oversized"));
     }
+    let mut hypothesis = DeterministicScreenVisionVisualAdapter
+        .analyze(&[], &|| false)
+        .map_err(|_| DatabaseError::Cognitive("screen_vision_model_unavailable"))?;
+    hypothesis.text = text.into();
     Ok(ScreenVisionAnalysisResult {
         job,
-        hypothesis: ScreenVisionHypothesis {
-            text: text.into(),
-            confidence: 42,
-            uncertain: true,
-            diagnostic: false,
-            durable: false,
-            sensitive_attribute_inferred: false,
-            source: "synthetic_fixture_visual_model".into(),
-        },
+        hypothesis,
         output_bounded: true,
         screenshot_bytes_persisted: false,
     })

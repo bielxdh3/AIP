@@ -67,7 +67,9 @@ validation reservations are recorded in
 
 ## Phase 11 screen-vision checkpoint
 
-- Phase 11 currently provides only synthetic monitor fixtures, metadata-only
+- Phase 11 provides bounded on-demand Windows capture plus synthetic monitor
+  fixtures; raw frames remain transient and the local visual adapter reports
+  unavailable when no model is configured.
   preview/confirmation, per-session permissions, privacy/redaction hooks,
   reference-GPU scheduling, bounded quotas, cancellation, cleanup, audit, and
   Portuguese Owner controls. It does not call a Windows screenshot API, capture

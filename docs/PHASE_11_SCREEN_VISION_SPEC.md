@@ -1,13 +1,15 @@
 # Phase 11 on-demand screen vision specification
 
-Status: implemented local metadata-only checkpoint; automated validation is
-phase-scoped, human visual/privacy validation remains pending, and this is not
-release approval.
+Status: functional automated capture/provider checkpoint; local model
+installation, packaged Windows/manual UX, and visual quality remain human
+prerequisites. This is not release approval.
 
 Phase 11 adds a bounded Screen Vision control path to the standalone AIP
 desktop application. It models an Owner-requested visual analysis using
-synthetic monitor fixtures and a synthetic visual-model fixture. The checkpoint
-does not capture the Windows desktop and does not process real pixels.
+synthetic monitor fixtures and a replaceable visual adapter. Windows displays
+are captured only after explicit Owner confirmation; bounded pixels remain
+transient in memory and are never uploaded or persisted. Missing local models
+return a bounded unavailable/degraded result, never synthetic success.
 
 ## Scope and invariants
 
