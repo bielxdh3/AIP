@@ -6919,6 +6919,18 @@ function parseGatewayPayload<T>(
   return parsed;
 }
 
+type GatewayTransportStartResult = { enabled: boolean; endpoint: string; pairingCode: string };
+function parseGatewayTransportStatus(value: unknown) {
+  if (value !== null && typeof value === "object") {
+    const candidate = value as Record<string, unknown>;
+    if (typeof candidate.enabled === "boolean" && (candidate.endpoint === null || typeof candidate.endpoint === "string") && typeof candidate.pairingAvailable === "boolean") return { enabled: candidate.enabled, endpoint: candidate.endpoint, pairingAvailable: candidate.pairingAvailable };
+  }
+  return { enabled: false, endpoint: null as string | null, pairingAvailable: false };
+}
+function isGatewayTransportStartResult(value: unknown): value is GatewayTransportStartResult {
+  return value !== null && typeof value === "object" && (value as Record<string, unknown>).enabled === true && typeof (value as Record<string, unknown>).endpoint === "string" && typeof (value as Record<string, unknown>).pairingCode === "string";
+}
+
 export function GatewayControls({
   agentId,
   temporaryChat,
@@ -6935,6 +6947,8 @@ export function GatewayControls({
   const [recoveries, setRecoveries] = useState<GatewayRecovery[]>([]);
   const [audit, setAudit] = useState<GatewayAuditRecord[]>([]);
   const [revocations, setRevocations] = useState<GatewayRevocation[]>([]);
+  const [transport, setTransport] = useState(parseGatewayTransportStatus(null));
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [selectedTransferId, setSelectedTransferId] = useState("");
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [selectedRecoveryId, setSelectedRecoveryId] = useState("");
@@ -6951,6 +6965,7 @@ export function GatewayControls({
       rawRecoveries,
       rawAudit,
       rawRevocations,
+      rawTransport,
     ] = await Promise.all([
       invoke<unknown>("get_gateway_protocol", { agentId }),
       invoke<unknown>("list_gateway_accounts", { agentId }),
@@ -6959,6 +6974,7 @@ export function GatewayControls({
       invoke<unknown>("list_gateway_recoveries", { agentId }),
       invoke<unknown>("list_gateway_audit", { agentId }),
       invoke<unknown>("list_gateway_revocations", { agentId }),
+      invoke<unknown>("get_gateway_transport_status"),
     ]);
     const nextProtocol = parseGatewayPayload(
       rawProtocol,
@@ -6979,6 +6995,7 @@ export function GatewayControls({
       rawRevocations,
       parseGatewayRevocations,
     );
+    const nextTransport = parseGatewayTransportStatus(rawTransport);
     setProtocol(nextProtocol);
     setAccounts(nextAccounts);
     setTransfers(nextTransfers);
@@ -6986,6 +7003,7 @@ export function GatewayControls({
     setRecoveries(nextRecoveries);
     setAudit(nextAudit);
     setRevocations(nextRevocations);
+    setTransport(nextTransport);
     setSelectedTransferId((current) =>
       nextTransfers.some((transfer) => transfer.id === current)
         ? current
@@ -7173,6 +7191,26 @@ export function GatewayControls({
     });
   }
 
+  async function startTransport() {
+    if (blocked || busy) return;
+    setBusy(true); setError(null); setPairingCode(null);
+    try {
+      const raw = await invoke<unknown>("start_gateway_transport", { agentId, ownerConfirmed: true, privateNetworkConfirmed: false, bindAddress: "127.0.0.1", port: 0, temporaryChat });
+      if (!isGatewayTransportStartResult(raw)) throw new Error("gateway_response_invalid");
+      setTransport({ enabled: true, endpoint: raw.endpoint, pairingAvailable: true });
+      setPairingCode(raw.pairingCode);
+    } catch (operationError: unknown) { setError(gatewayErrorMessage(operationError)); }
+    finally { setBusy(false); }
+  }
+
+  async function stopTransport() {
+    if (busy) return;
+    setBusy(true); setError(null); setPairingCode(null);
+    try { await invoke("stop_gateway_transport"); setTransport(parseGatewayTransportStatus(null)); }
+    catch (operationError: unknown) { setError(gatewayErrorMessage(operationError)); }
+    finally { setBusy(false); }
+  }
+
   return (
     <section className="settings-card" aria-label="Gateway AIP local">
       <header>
@@ -7183,10 +7221,10 @@ export function GatewayControls({
         </p>
       </header>
       <ul>
-        <li>Somente local: sem listener de rede, relay, túnel ou BielOS.</li>
+          <li>TCP autenticado aip-gateway-v1, limitado ao local/privado e iniciado somente por ação explícita do Owner.</li>
         <li>
           Cloudflare é apenas configuração metadata; credenciais ausentes e
-          listener desativado.
+            sem credenciais, BielOS, relay ou túnel.
         </li>
         <li>
           Rust/SQLite mantém a autoridade sobre transferência, autenticação,
@@ -7206,6 +7244,16 @@ export function GatewayControls({
         </p>
       ) : null}
       {error ? <p role="alert">{error}</p> : null}
+
+      <section aria-label="Ciclo de vida do gateway local">
+        <h4>Listener local autenticado</h4>
+        <p>Estado: <strong>{transport.enabled ? "ativo" : "parado"}</strong>; endpoint: <code>{transport.endpoint ?? "nenhum"}</code>; pairing disponível: {transport.pairingAvailable ? "sim" : "não"}.</p>
+        <div className="message-actions">
+          <button type="button" disabled={busy || blocked || transport.enabled} onClick={() => void startTransport()}>Iniciar gateway local</button>
+          <button type="button" disabled={busy || !transport.enabled} onClick={() => void stopTransport()}>Parar gateway local</button>
+        </div>
+        {pairingCode ? <p role="alert"><strong>Código de pairing transitório:</strong> <code>{pairingCode}</code>. Não persista nem compartilhe este código.</p> : null}
+      </section>
 
       <div className="message-actions">
         <button
