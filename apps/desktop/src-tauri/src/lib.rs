@@ -18,10 +18,11 @@ mod voice;
 
 use std::{
     io,
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
 };
 
@@ -37,6 +38,9 @@ use companion::{
     CompanionQueueActionRequest, CompanionQueueDecisionRequest, CompanionQueueItem,
     CompanionQueuePreviewRequest, CompanionReconnectRequest, CompanionRevocation, CompanionSession,
     CompanionSessionRequest,
+};
+use companion_transport::{
+    start_secure, EphemeralPairingKey, HandlerResponse, SecureHandler, TransportHandle,
 };
 use conversation::{
     AgentConversationInspection, AgentConversationSummary, CognitiveCandidate,
@@ -71,6 +75,8 @@ use screen_vision::{
     ScreenVisionJobConfirmationRequest, ScreenVisionJobPreviewRequest, ScreenVisionSession,
     ScreenVisionSessionCancellationRequest, ScreenVisionSessionRequest,
 };
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tools::{
     ToolAction, ToolActionCancellationRequest, ToolActionConfirmationRequest,
@@ -95,6 +101,214 @@ struct AppState {
     chat: Option<ChatCoordinator>,
     safe_mode: Arc<AtomicBool>,
     overlay_input: OverlayInputState,
+    companion_transport: Arc<Mutex<CompanionTransportState>>,
+}
+
+#[derive(Default)]
+struct CompanionTransportState {
+    handle: Option<TransportHandle>,
+    endpoint: Option<String>,
+    pairing: Option<EphemeralPairingKey>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompanionTransportStartRequest {
+    agent_id: String,
+    owner_confirmed: bool,
+    private_network_confirmed: bool,
+    bind_address: Option<String>,
+    port: Option<u16>,
+    temporary_chat: bool,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CompanionTransportStartResult {
+    enabled: bool,
+    endpoint: String,
+    pairing_code: String,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CompanionTransportStatus {
+    enabled: bool,
+    endpoint: Option<String>,
+    pairing_available: bool,
+}
+
+fn companion_transport_handler(database: Database, safe_mode: Arc<AtomicBool>) -> SecureHandler {
+    Arc::new(move |frame| {
+        if safe_mode.load(Ordering::Acquire) {
+            return Err("companion_blocked_safe_mode".into());
+        }
+        let payload = |value: serde_json::Value| {
+            serde_json::to_string(&value).map_err(|_| "companion_payload_invalid".to_owned())
+        };
+        let result = match frame.kind.as_str() {
+            "pair" => {
+                let request: CompanionPairingRequest = serde_json::from_str(&frame.payload)
+                    .map_err(|_| "companion_payload_invalid")?;
+                database
+                    .start_companion_pairing(request)
+                    .map(|v| serde_json::to_value(v).unwrap_or(json!({})))
+            }
+            "session" => {
+                let request: CompanionSessionRequest = serde_json::from_str(&frame.payload)
+                    .map_err(|_| "companion_payload_invalid")?;
+                database
+                    .connect_companion_session(request)
+                    .map(|v| serde_json::to_value(v).unwrap_or(json!({})))
+            }
+            "reconnect" => {
+                let request: CompanionReconnectRequest = serde_json::from_str(&frame.payload)
+                    .map_err(|_| "companion_payload_invalid")?;
+                database
+                    .reconnect_companion_session(request)
+                    .map(|v| serde_json::to_value(v).unwrap_or(json!({})))
+            }
+            "history" => {
+                #[derive(Deserialize)]
+                struct Request {
+                    agent_id: String,
+                }
+                let request: Request = serde_json::from_str(&frame.payload)
+                    .map_err(|_| "companion_payload_invalid")?;
+                database
+                    .list_companion_history(&request.agent_id)
+                    .map(|v| serde_json::to_value(v).unwrap_or(json!([])))
+            }
+            "queue_preview" => {
+                let request: CompanionQueuePreviewRequest = serde_json::from_str(&frame.payload)
+                    .map_err(|_| "companion_payload_invalid")?;
+                database
+                    .preview_companion_queue(request)
+                    .map(|v| serde_json::to_value(v).unwrap_or(json!({})))
+            }
+            "queue_approve" => {
+                let request: CompanionQueueDecisionRequest =
+                    serde_json::from_str(&frame.payload)
+                        .map_err(|_| "companion_payload_invalid")?;
+                database
+                    .approve_companion_queue(request)
+                    .map(|v| serde_json::to_value(v).unwrap_or(json!({})))
+            }
+            "queue_cancel" => {
+                let request: CompanionQueueActionRequest = serde_json::from_str(&frame.payload)
+                    .map_err(|_| "companion_payload_invalid")?;
+                database
+                    .cancel_companion_queue(request)
+                    .map(|v| serde_json::to_value(v).unwrap_or(json!({})))
+            }
+            "queue_retry" => {
+                let request: CompanionQueueActionRequest = serde_json::from_str(&frame.payload)
+                    .map_err(|_| "companion_payload_invalid")?;
+                database
+                    .retry_companion_queue(request)
+                    .map(|v| serde_json::to_value(v).unwrap_or(json!({})))
+            }
+            _ => Err(database::DatabaseError::Cognitive(
+                "companion_payload_invalid",
+            )),
+        };
+        match result {
+            Ok(value) => Ok(Some(HandlerResponse {
+                kind: format!("{}_result", frame.kind),
+                payload: payload(value)?,
+            })),
+            Err(error) => Err(error.code().to_owned()),
+        }
+    })
+}
+
+#[tauri::command]
+fn start_companion_transport(
+    state: State<'_, AppState>,
+    request: CompanionTransportStartRequest,
+) -> Result<CompanionTransportStartResult, String> {
+    if !request.owner_confirmed {
+        return Err("companion_owner_confirmation_required".into());
+    }
+    if request.temporary_chat
+        || state
+            .chat
+            .as_ref()
+            .is_some_and(|chat| chat.temporary_chat_active(&request.agent_id))
+    {
+        return Err("companion_blocked_temporary".into());
+    }
+    if state.safe_mode.load(Ordering::Acquire) {
+        return Err("companion_blocked_safe_mode".into());
+    }
+    let database = state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .clone();
+    if ![database::ASTRA_ID, database::LUMA_ID].contains(&request.agent_id.as_str()) {
+        return Err("companion_owner_required".into());
+    }
+    let ip: IpAddr = request
+        .bind_address
+        .as_deref()
+        .unwrap_or("127.0.0.1")
+        .parse()
+        .map_err(|_| "companion_bind_invalid")?;
+    let port = request.port.unwrap_or(0);
+    let address = SocketAddr::new(ip, port);
+    let (pairing, code) =
+        EphemeralPairingKey::generate().map_err(|_| "companion_pairing_unavailable")?;
+    let key = pairing
+        .consume()
+        .map_err(|_| "companion_pairing_unavailable")?;
+    let handler = companion_transport_handler(database, Arc::clone(&state.safe_mode));
+    let handle = start_secure(address, request.private_network_confirmed, key, handler)
+        .map_err(|e| e.to_string())?;
+    let endpoint = handle.addr.to_string();
+    let mut transport = state
+        .companion_transport
+        .lock()
+        .map_err(|_| "companion_state_unavailable")?;
+    if let Some(mut old) = transport.handle.take() {
+        old.stop();
+    }
+    transport.endpoint = Some(endpoint.clone());
+    transport.pairing = Some(pairing);
+    transport.handle = Some(handle);
+    Ok(CompanionTransportStartResult {
+        enabled: true,
+        endpoint,
+        pairing_code: code,
+    })
+}
+
+#[tauri::command]
+fn stop_companion_transport(state: State<'_, AppState>) -> Result<(), String> {
+    let mut transport = state
+        .companion_transport
+        .lock()
+        .map_err(|_| "companion_state_unavailable")?;
+    if let Some(mut handle) = transport.handle.take() {
+        handle.stop();
+    }
+    transport.endpoint = None;
+    transport.pairing = None;
+    Ok(())
+}
+#[tauri::command]
+fn get_companion_transport_status(
+    state: State<'_, AppState>,
+) -> Result<CompanionTransportStatus, String> {
+    let transport = state
+        .companion_transport
+        .lock()
+        .map_err(|_| "companion_state_unavailable")?;
+    Ok(CompanionTransportStatus {
+        enabled: transport.handle.is_some(),
+        endpoint: transport.endpoint.clone(),
+        pairing_available: transport
+            .pairing
+            .as_ref()
+            .is_some_and(|p| p.status().available),
+    })
 }
 
 fn ensure_conversation_not_temporary(
@@ -2572,6 +2786,7 @@ pub fn run() {
                 chat,
                 safe_mode: Arc::clone(&safe_mode),
                 overlay_input: overlay_input.clone(),
+                companion_transport: Arc::new(Mutex::new(CompanionTransportState::default())),
             });
             if let Some(database) = database.as_ref() {
                 overlays::create_windows(app, database, stored_safe_mode, overlay_input.clone())?;
@@ -2657,6 +2872,9 @@ pub fn run() {
             execute_extension,
             cancel_extension_execution,
             build_extension_package,
+            start_companion_transport,
+            stop_companion_transport,
+            get_companion_transport_status,
             list_companion_devices,
             start_companion_pairing,
             confirm_companion_pairing,
@@ -2774,7 +2992,7 @@ mod conversation_command_tests {
     use std::{
         fs,
         path::{Path, PathBuf},
-        sync::{atomic::AtomicBool, Arc},
+        sync::{atomic::AtomicBool, Arc, Mutex},
     };
 
     use uuid::Uuid;
@@ -2783,7 +3001,7 @@ mod conversation_command_tests {
         append_public_conversation_turn_for_state, complete_resource_job_for_state,
         emit_cognitive_candidate_for_state, reserve_heavy_generation_for_state,
         set_custom_voice_consent_for_state, start_agent_conversation_for_state,
-        update_voice_settings_for_state, AppState,
+        update_voice_settings_for_state, AppState, CompanionTransportState,
     };
     use crate::{
         conversation::{
@@ -2812,6 +3030,7 @@ mod conversation_command_tests {
             chat: None,
             safe_mode: Arc::new(AtomicBool::new(false)),
             overlay_input: OverlayInputState::default(),
+            companion_transport: Arc::new(Mutex::new(CompanionTransportState::default())),
         }
     }
 
