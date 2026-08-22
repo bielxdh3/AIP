@@ -1,6 +1,6 @@
 # Phase 9 supervised tools specification
 
-Status: functional local checkpoint; human Windows UX validation pending; not release approval.
+Status: FUNCTIONAL — HUMAN VALIDATION PENDING.
 
 Phase 9 adds a bounded, Owner-supervised tool boundary to the standalone AIP
 desktop application. The checkpoint exercises

@@ -1,6 +1,9 @@
 # Phase 11 on-demand screen vision specification
 
-Status: functional automated capture/provider checkpoint; local model
+Status: FUNCTIONAL — HUMAN VALIDATION PENDING. A real local visual
+provider is available on demand when `AIP_LOCAL_VISUAL_PROVIDER_PATH` points to
+an explicitly selected local executable. Missing or invalid configuration
+degrades to unavailable and never produces synthetic success. Local model
 installation, packaged Windows/manual UX, and visual quality remain human
 prerequisites. This is not release approval.
 
@@ -36,7 +39,11 @@ The supported path is:
    transient model/frame metadata.
 5. Rust records the lifecycle in the bounded audit log. The hypothesis is
    diagnostic-free, never a sensitive-attribute inference, and never durable
-   visual state.
+   visual state. For a real display, Rust passes only bounded in-memory pixels
+   to the configured executable over stdin. The executable must return one
+   bounded JSON object on stdout with `text`, `confidence`, and
+   `uncertain: true`; malformed, certain, oversized, timed-out, or cancelled
+   output degrades safely.
 
 The operation uses bounded idempotency keys. A replay returns the original
 record; a conflicting request fails closed. Listing sessions, jobs, and audit
@@ -52,8 +59,8 @@ fixture reference, and display name are not images. The only model reference is
 Every session must enable `excludeSensitiveContent` and include an enabled
 `exclude_sensitive_regions` redaction hook. The policy is stored with the
 session and copied to each job preview. The redaction hook is a safety contract
-for a future real adapter; it does not authorize a real capture in this
-checkpoint.
+for the real capture path; capture remains explicit, bounded, transient, and
+Owner-confirmed.
 
 No sensitive attribute is inferred. Results are explicitly uncertain,
 non-diagnostic, non-durable, and bounded to a short text hypothesis. Rust
@@ -136,7 +143,7 @@ state, and certain/diagnostic hypotheses. Desktop tests cover Portuguese
 controls, authoritative command wiring, and temporary-chat/safe-mode fail
 closed behavior.
 
-Real screen privacy behavior, Windows packaging, local model installation,
-visual usability, and any
-future real adapter remain human/release validation work. Their absence is not
-represented as an implemented capture capability.
+Real screen privacy behavior, Windows packaging, local provider/model installation,
+visual usability, and quality remain human/release validation work. The replaceable
+provider boundary is implemented, but missing prerequisites truthfully degrade and do not
+produce synthetic success.

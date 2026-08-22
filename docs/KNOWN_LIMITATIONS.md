@@ -10,9 +10,9 @@ slice is functional locally, while physical-device and release validation
 remain reserved. BielOS integration, released voice feature,
 real supervised external tools, released screen vision analysis, or the post-release Phase 7E–7F
 cognitive-core conversation integration. The current development checkpoint implements
-bounded Phase 7B–7E local paths, the Phase 8 local voice architecture checkpoint, and the
-Phase 9 supervised-tools mock checkpoint plus the functional Phase 10 closed declarative
-extension runtime and the Phase 11 bounded Windows screen-capture/provider checkpoint; these are not
+bounded Phase 7B–7E local paths, the functional Phase 8 local voice runtime, the functional
+Phase 9 supervised local-workspace effects, the functional Phase 10 closed declarative
+extension runtime, and the functional Phase 11 bounded Windows screen-capture/provider path; these are not
 v0.1 release claims. Phase 7E and 7F
 validation reservations are recorded in
 [PHASE_7E_VALIDATION.md](PHASE_7E_VALIDATION.md) and [PHASE_7F_VALIDATION.md](PHASE_7F_VALIDATION.md).
@@ -29,20 +29,18 @@ validation reservations are recorded in
 
 ## Phase 8 voice checkpoint
 
-- Phase 8 currently exposes a local Rust/SQLite architecture, Tauri commands, versioned
-  contracts, Portuguese controls, and metadata-only fixtures. It does not capture from a
-  microphone, persist raw audio, upload data, clone a real person, or run a hidden listener;
-  text conversation remains the fallback.
-- Real audio-device/model integration, packaged Windows validation, restart/manual runtime
-  evidence, and subjective voice-quality validation remain reserved. The checkpoint is not
-  release approval. See [PHASE_8_VOICE_SPEC.md](PHASE_8_VOICE_SPEC.md).
+- Phase 8 provides native Windows device enumeration, explicit Owner selection, bounded
+  waveIn/waveOut capture/playback, and replaceable local STT/TTS/wake-word providers. Missing
+  devices/models degrade to text; raw audio is never persisted or uploaded and no hidden listener
+  exists. Packaged Windows behavior, restart/manual runtime evidence, supported hardware/model
+  availability, and subjective voice quality remain reserved. See [PHASE_8_VOICE_SPEC.md](PHASE_8_VOICE_SPEC.md).
 
 ## Phase 9 supervised-tools checkpoint
 
-- Phase 9 currently provides only SQLite-backed manifests, fixture-scoped sessions, typed
-  preview/approval/confirmation/cancellation/compensation paths, deterministic mock output,
-  audit retention, and Portuguese Owner controls. It does not access the host filesystem,
-  shell, credentials, calendars, messaging accounts, network, or external providers.
+- Phase 9 provides functional local runtime/effects through SQLite-backed manifests, opaque
+  Owner-configured roots, metadata inspection, and approved bounded file moves with preview,
+  second confirmation, audit, and compensation. Calendar/messaging remain provider-neutral
+  fixtures; shell, credentials, network, and external-provider mutation are not accessed.
 - Safe mode and temporary chat fail closed for tool mutations. Read-only catalog and audit
   inspection remain available for recovery visibility; no hidden execution or permission
   expansion is supported.
@@ -71,8 +69,8 @@ validation reservations are recorded in
 
 - Phase 11 provides bounded on-demand Windows display enumeration and explicit
   Owner-confirmed GDI capture alongside synthetic monitor fixtures. Captured
-  pixels are transient, non-persistent, and never uploaded; the local visual
-  model adapter reports unavailable/degraded when no model is configured.
+  pixels are transient, non-persistent, and never uploaded; the replaceable local
+  visual adapter reports unavailable/degraded when its configured provider/model is missing.
   Display metadata is capped at 18 records total (two fixtures plus 16 real
   monitors).
   preview/confirmation, per-session permissions, privacy/redaction hooks,

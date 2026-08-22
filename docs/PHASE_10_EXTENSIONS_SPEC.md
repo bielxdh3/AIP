@@ -1,6 +1,6 @@
 # Phase 10 bounded extension runtime specification
 
-Status: functional local runtime; extension usability and package review remain human validation items.
+Status: FUNCTIONAL — AUTOMATED VALIDATION COMPLETE.
 
 Phase 10 adds a bounded, local extension-management boundary to the standalone
 AIP desktop application. It stores and reviews metadata and executes only
@@ -51,7 +51,9 @@ The only source kinds are administrator_selected and agent_created.
 Agent-created entries are proposals only: they remain pending until the Owner
 reviews them and explicitly activates an approved revision.
 
-The checkpoint has no package loader, compiler, interpreter, plugin host,
+The checkpoint has no open-ended package loader, compiler, or plugin host;
+the closed declarative Rust VM is the strongly justified sandbox and has an
+actual execution test. It has no
 network fetch, shell, host-filesystem access, credential access, remote code
 execution, public marketplace, hidden execution, or automatic activation.
 
@@ -92,15 +94,17 @@ values; the UI never becomes an authority for persistence or capability grants.
 
 Compatibility is computed from the pinned `aip-extension-sdk/v1` contract on
 manifest persistence and readback. The `recovery_required` lifecycle value is
-retained as a metadata-only checkpoint state for inspection; this phase does
-not infer unsupported-package recovery or execute recovery code.
+retained as the bounded `MetadataOnly` closed declarative sandbox policy for
+compatibility; execution remains through the versioned host context with
+limits, cancellation, approval, rollback, and failure containment.
 
 ## Validation boundary
 
-Focused Rust tests cover migration-backed proposal/review/activation,
+Focused Rust tests cover migration-backed proposal/review/activation, deterministic
+package execution through the closed sandbox and bounded host contract,
 agent-proposal review-only behavior, update re-review, rollback, audit,
 temporary-chat rejection, safe-mode rejection, and invalid manifests.
 Contract tests reject trusted, code-like, out-of-bounds, incompatible-shape,
-and unknown extension payloads. Runtime package validation, real plugin
-behavior, package integrity/signature policy, external providers, and release
-approval remain reserved work.
+and unknown extension payloads. Arbitrary plugin/native-code behavior, external
+providers, package signing beyond the integrity hash, and release approval remain
+reserved work.

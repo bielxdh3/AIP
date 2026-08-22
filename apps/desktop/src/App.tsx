@@ -7,6 +7,7 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { parseVoiceDevice } from "@aip/contracts";
 import type {
   AppSnapshot,
   AgentMemory,
@@ -52,7 +53,7 @@ import type {
   ExtensionExecutionResult,
   ExtensionProposal,
   ExtensionSourceKind,
-  VoiceSettings,
+  VoiceSettings, VoiceDevice,
   VoiceSettingsRequest,
   VoiceCaptureRuntimeRequest,
   VoiceOperationCancellationRequest,
@@ -1575,7 +1576,7 @@ const voiceErrorCopy: Record<string, string> = {
   voice_reference_invalid:
     "Use uma referência local fixture: ou local: válida.",
   voice_consent_invalid:
-    "O consentimento exige uma referência sintética fixture:custom-.",
+    "O consentimento exige uma referência fixture:custom- ou local:custom- válida.",
   invalid_idempotency_key: "Não foi possível repetir a operação com segurança.",
 };
 
@@ -1609,6 +1610,7 @@ export function VoiceControls({
   const [synthesisModelRef, setSynthesisModelRef] = useState("");
   const [inputDeviceRef, setInputDeviceRef] = useState("");
   const [outputDeviceRef, setOutputDeviceRef] = useState("");
+  const [voiceDevices, setVoiceDevices] = useState<VoiceDevice[]>([]);
   const [customVoiceRef, setCustomVoiceRef] = useState(
     "fixture:custom-neutral-v1",
   );
@@ -1639,6 +1641,12 @@ export function VoiceControls({
 
   useEffect(() => {
     void load();
+    void invoke<unknown[]>("list_voice_devices")
+      .then((values) => {
+        const devices = values.map(parseVoiceDevice).filter((device): device is VoiceDevice => device !== null);
+        setVoiceDevices(devices.slice(0, 64));
+      })
+      .catch(() => setVoiceDevices([]));
   }, [load]);
 
   async function saveSettings() {
@@ -1867,6 +1875,10 @@ export function VoiceControls({
       </label>
       <label>
         Dispositivo local de entrada
+        <select value={inputDeviceRef} disabled={temporaryChat || busy} onChange={(event) => setInputDeviceRef(event.target.value)}>
+          <option value="">Selecionar dispositivo (ou use a referência abaixo)</option>
+          {voiceDevices.filter((device) => device.direction === "input").map((device) => <option key={device.reference} value={device.reference}>{device.displayName}</option>)}
+        </select>
         <input
           value={inputDeviceRef}
           placeholder="local:wavein:0"
@@ -1877,6 +1889,10 @@ export function VoiceControls({
       </label>
       <label>
         Dispositivo local de saída
+        <select value={outputDeviceRef} disabled={temporaryChat || busy} onChange={(event) => setOutputDeviceRef(event.target.value)}>
+          <option value="">Selecionar dispositivo (ou use a referência abaixo)</option>
+          {voiceDevices.filter((device) => device.direction === "output").map((device) => <option key={device.reference} value={device.reference}>{device.displayName}</option>)}
+        </select>
         <input
           value={outputDeviceRef}
           placeholder="local:waveout:0"
@@ -1896,7 +1912,7 @@ export function VoiceControls({
         Referência de voz customizada sintética
         <input
           value={customVoiceRef}
-          placeholder="fixture:custom-neutral-v1"
+          placeholder="local:custom-neutral-v1"
           maxLength={160}
           disabled={temporaryChat || busy}
           onChange={(event) => setCustomVoiceRef(event.target.value)}

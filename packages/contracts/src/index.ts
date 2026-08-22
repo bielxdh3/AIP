@@ -173,6 +173,12 @@ export type VoiceSettings = {
   suspended: boolean;
   updatedAt: number;
 };
+export type VoiceDevice = { schemaVersion: 1; reference: string; direction: "input" | "output"; displayName: string };
+export function parseVoiceDevice(value: unknown): VoiceDevice | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Partial<VoiceDevice>;
+  return candidate.schemaVersion === 1 && cognitiveString(candidate.reference) && /^(local:wavein|local:waveout):\d+$/.test(candidate.reference) && (candidate.direction === "input" || candidate.direction === "output") && cognitiveString(candidate.displayName) && candidate.displayName.length <= 120 ? candidate as VoiceDevice : null;
+}
 export type VoiceSettingsRequest = {
   agentId: string;
   recognitionModelRef: string | null;

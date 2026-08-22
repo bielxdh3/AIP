@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::database::{now_millis, Database, DatabaseError, OWNER_ID};
 
 pub const BASE_VOICE_ID: &str = "aip-base-v1";
+pub const MAX_VOICE_DEVICES: usize = 32;
 const VOICE_SCHEMA_VERSION: i64 = 1;
 const MAX_REFERENCE_LENGTH: usize = 160;
 const MAX_IDEMPOTENCY_LENGTH: usize = 128;
@@ -58,6 +59,87 @@ pub struct VoiceSettings {
     pub silent: bool,
     pub suspended: bool,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceDevice {
+    pub schema_version: i64,
+    pub reference: String,
+    pub direction: String,
+    pub display_name: String,
+}
+
+pub fn list_voice_devices() -> Vec<VoiceDevice> {
+    #[cfg(windows)]
+    {
+        list_windows_voice_devices()
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
+#[cfg(windows)]
+fn list_windows_voice_devices() -> Vec<VoiceDevice> {
+    use std::mem::MaybeUninit;
+    use windows_sys::Win32::Media::Audio::{
+        waveInGetDevCapsW, waveInGetNumDevs, waveOutGetDevCapsW, waveOutGetNumDevs, WAVEINCAPSW,
+        WAVEOUTCAPSW,
+    };
+    fn name(chars: &[u16]) -> String {
+        String::from_utf16_lossy(
+            &chars[..chars.iter().position(|c| *c == 0).unwrap_or(chars.len())],
+        )
+        .chars()
+        .take(120)
+        .collect()
+    }
+    let mut devices = Vec::new();
+    for index in 0..unsafe { waveInGetNumDevs() }.min(MAX_VOICE_DEVICES as u32) {
+        let mut caps = MaybeUninit::<WAVEINCAPSW>::zeroed();
+        if unsafe {
+            waveInGetDevCapsW(
+                index as usize,
+                caps.as_mut_ptr(),
+                std::mem::size_of::<WAVEINCAPSW>() as u32,
+            )
+        } == 0
+        {
+            let caps = unsafe { caps.assume_init() };
+            let display_name =
+                name(unsafe { std::ptr::addr_of!(caps.szPname).read_unaligned() }.as_slice());
+            devices.push(VoiceDevice {
+                schema_version: 1,
+                reference: format!("local:wavein:{index}"),
+                direction: "input".into(),
+                display_name,
+            });
+        }
+    }
+    for index in 0..unsafe { waveOutGetNumDevs() }.min(MAX_VOICE_DEVICES as u32) {
+        let mut caps = MaybeUninit::<WAVEOUTCAPSW>::zeroed();
+        if unsafe {
+            waveOutGetDevCapsW(
+                index as usize,
+                caps.as_mut_ptr(),
+                std::mem::size_of::<WAVEOUTCAPSW>() as u32,
+            )
+        } == 0
+        {
+            let caps = unsafe { caps.assume_init() };
+            let display_name =
+                name(unsafe { std::ptr::addr_of!(caps.szPname).read_unaligned() }.as_slice());
+            devices.push(VoiceDevice {
+                schema_version: 1,
+                reference: format!("local:waveout:{index}"),
+                direction: "output".into(),
+                display_name,
+            });
+        }
+    }
+    devices
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -2107,7 +2189,19 @@ fn optional_reference(
 fn custom_voice_reference(value: Option<&str>) -> Result<String, DatabaseError> {
     let reference = optional_reference(value, "voice_reference_invalid")?
         .ok_or(DatabaseError::Cognitive("voice_consent_invalid"))?;
-    if !reference.starts_with("fixture:custom-") {
+    if reference.starts_with("fixture:custom-") {
+        return Ok(reference);
+    }
+    let Some(identifier) = reference.strip_prefix("local:custom-") else {
+        return Err(DatabaseError::Cognitive("voice_consent_invalid"));
+    };
+    if identifier.is_empty()
+        || identifier
+            .chars()
+            .any(|character| !(character.is_ascii_alphanumeric() || character == '-'))
+        || identifier.contains("real-person")
+        || identifier.contains("clone")
+    {
         return Err(DatabaseError::Cognitive("voice_consent_invalid"));
     }
     Ok(reference)
@@ -2257,6 +2351,19 @@ mod tests {
             Some("fixture:custom-neutral-v1")
         );
         assert_eq!(granted.base_voice_id, BASE_VOICE_ID);
+        let local = database
+            .set_custom_voice_consent(CustomVoiceConsentRequest {
+                agent_id: ASTRA_ID.into(),
+                granted: true,
+                custom_voice_ref: Some("local:custom-neutral-v1".into()),
+                idempotency_key: "consent-local-grant".into(),
+                temporary_chat: false,
+            })
+            .unwrap();
+        assert_eq!(
+            local.custom_voice_ref.as_deref(),
+            Some("local:custom-neutral-v1")
+        );
         assert_eq!(
             database.set_custom_voice_consent(CustomVoiceConsentRequest {
                 agent_id: ASTRA_ID.into(),
@@ -2267,6 +2374,21 @@ mod tests {
             }),
             Err(DatabaseError::Cognitive("voice_consent_invalid"))
         );
+        for (idempotency_key, custom_voice_ref) in [
+            ("consent-empty", "local:custom-"),
+            ("consent-path", "local:custom-../voice"),
+            ("consent-space", "local:custom-neutral voice"),
+        ] {
+            assert!(database
+                .set_custom_voice_consent(CustomVoiceConsentRequest {
+                    agent_id: ASTRA_ID.into(),
+                    granted: true,
+                    custom_voice_ref: Some(custom_voice_ref.into()),
+                    idempotency_key: idempotency_key.into(),
+                    temporary_chat: false,
+                })
+                .is_err());
+        }
         let revoked = database
             .set_custom_voice_consent(CustomVoiceConsentRequest {
                 agent_id: ASTRA_ID.into(),
