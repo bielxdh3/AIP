@@ -85,7 +85,7 @@ describe("GatewayControls", () => {
       "Cloudflare é apenas configuração metadata",
     );
     expect(container?.textContent).toContain(
-      "sem listener de rede, relay, túnel",
+      "TCP autenticado aip-gateway-v1",
     );
     expect(invoke).toHaveBeenCalledWith("get_gateway_protocol", {
       agentId: "agt_luma_provisional",
@@ -159,5 +159,33 @@ describe("GatewayControls", () => {
     expect(blockedContainer.textContent).toContain(
       "Modo seguro: mutações do gateway bloqueadas",
     );
+  });
+
+  it("loads status and starts/stops the listener with transient pairing", async () => {
+    const status = { enabled: false, endpoint: null, pairingAvailable: false };
+    invoke.mockImplementation((command: string) => {
+      if (command === "get_gateway_protocol") return Promise.resolve(protocol);
+      if (command === "get_gateway_transport_status") return Promise.resolve(status);
+      if (command === "start_gateway_transport") return Promise.resolve({ enabled: true, endpoint: "127.0.0.1:43123", pairingCode: "transient-fixture-code" });
+      return Promise.resolve([]);
+    });
+    await renderGateway();
+    expect(invoke).toHaveBeenCalledWith("get_gateway_transport_status");
+    const start = [...(container?.querySelectorAll("button") ?? [])].find((button) => button.textContent === "Iniciar gateway local");
+    await act(async () => start?.click());
+    expect(invoke).toHaveBeenCalledWith("start_gateway_transport", { agentId: "agt_luma_provisional", ownerConfirmed: true, privateNetworkConfirmed: false, bindAddress: "127.0.0.1", port: 0, temporaryChat: false });
+    expect(container?.textContent).toContain("transient-fixture-code");
+    const stop = [...(container?.querySelectorAll("button") ?? [])].find((button) => button.textContent === "Parar gateway local");
+    await act(async () => stop?.click());
+    expect(invoke).toHaveBeenCalledWith("stop_gateway_transport");
+    expect(container?.textContent).not.toContain("transient-fixture-code");
+  });
+
+  it("blocks listener mutation in temporary and safe modes", async () => {
+    invoke.mockImplementation((command: string) => Promise.resolve(command === "get_gateway_protocol" ? protocol : []));
+    await renderGateway(true, true);
+    const start = [...(container?.querySelectorAll("button") ?? [])].find((button) => button.textContent === "Iniciar gateway local");
+    expect(start?.disabled).toBe(true);
+    expect(invoke).not.toHaveBeenCalledWith("start_gateway_transport", expect.anything());
   });
 });
