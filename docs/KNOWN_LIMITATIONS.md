@@ -5,7 +5,9 @@ approval covers the implemented v0.1 scope, so historical Phases 1–5 are DONE 
 level; earlier phase-specific notes remain historical preparation evidence and are not repeated as
 new observations here. AIP v0.1.0 was published from commit `b6f74b3793437a647186dd52eeb950ff4b3fb228`.
 A local Ollama integration test is skipped when its required model is not installed. v0.1.0 has
-no cloud synchronization, Android client, BielOS integration, released voice feature,
+no cloud synchronization or released Android client; the post-v0.1 Phase 12 Android APK/protocol
+slice is functional locally, while authenticated desktop transport and physical-device validation
+remain next/reserved. BielOS integration, released voice feature,
 real supervised external tools, released screen vision analysis, or the post-release Phase 7E–7F
 cognitive-core conversation integration. The current development checkpoint implements
 bounded Phase 7B–7E local paths, the Phase 8 local voice architecture checkpoint, and the
