@@ -18,6 +18,144 @@ const SCREEN_VISION_AUDIT_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
 const SCREEN_VISION_PREVIEW_TTL_MS: i64 = 10 * 60 * 1_000;
 const MAX_SCREEN_VISION_REQUEST_BYTES: usize = 16_384;
 const MAX_SCREEN_VISION_RESULT_BYTES: usize = 1_024;
+const MAX_SCREEN_VISION_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScreenVisionCaptureError {
+    Unavailable,
+    Cancelled,
+    Oversized,
+    Failed,
+}
+
+pub trait ScreenVisionCaptureProvider {
+    fn capture(
+        &self,
+        fixture: &ScreenVisionFixture,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, ScreenVisionCaptureError>;
+}
+
+#[derive(Debug, Default)]
+pub struct DeterministicScreenVisionCaptureProvider;
+
+impl ScreenVisionCaptureProvider for DeterministicScreenVisionCaptureProvider {
+    fn capture(
+        &self,
+        fixture: &ScreenVisionFixture,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, ScreenVisionCaptureError> {
+        if cancelled() {
+            return Err(ScreenVisionCaptureError::Cancelled);
+        }
+        if !fixture.synthetic || !fixture.metadata_only {
+            return Err(ScreenVisionCaptureError::Unavailable);
+        }
+        Ok(Vec::new())
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Default)]
+pub struct WindowsScreenVisionCaptureProvider;
+
+#[cfg(windows)]
+impl ScreenVisionCaptureProvider for WindowsScreenVisionCaptureProvider {
+    fn capture(
+        &self,
+        fixture: &ScreenVisionFixture,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Vec<u8>, ScreenVisionCaptureError> {
+        use windows_sys::Win32::Graphics::Gdi::{
+            BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
+            GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+            DIB_RGB_COLORS, HGDIOBJ, RGBQUAD, SRCCOPY,
+        };
+        if fixture.synthetic || fixture.metadata_only || cancelled() {
+            return Err(if cancelled() {
+                ScreenVisionCaptureError::Cancelled
+            } else {
+                ScreenVisionCaptureError::Unavailable
+            });
+        }
+        let width = i32::try_from(fixture.width).map_err(|_| ScreenVisionCaptureError::Failed)?;
+        let height = i32::try_from(fixture.height).map_err(|_| ScreenVisionCaptureError::Failed)?;
+        if width <= 0 || height <= 0 {
+            return Err(ScreenVisionCaptureError::Failed);
+        }
+        let bytes = usize::try_from(width)
+            .ok()
+            .and_then(|w| usize::try_from(height).ok().and_then(|h| w.checked_mul(h)))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or(ScreenVisionCaptureError::Oversized)?;
+        if bytes > MAX_SCREEN_VISION_CAPTURE_BYTES {
+            return Err(ScreenVisionCaptureError::Oversized);
+        }
+        unsafe {
+            let source = GetDC(std::ptr::null_mut());
+            if source.is_null() {
+                return Err(ScreenVisionCaptureError::Unavailable);
+            }
+            let memory = CreateCompatibleDC(source);
+            let bitmap = CreateCompatibleBitmap(source, width, height);
+            if memory.is_null() || bitmap.is_null() {
+                if !memory.is_null() {
+                    DeleteDC(memory);
+                }
+                ReleaseDC(std::ptr::null_mut(), source);
+                return Err(ScreenVisionCaptureError::Unavailable);
+            }
+            let previous = SelectObject(memory, bitmap as HGDIOBJ);
+            let copied = BitBlt(memory, 0, 0, width, height, source, 0, 0, SRCCOPY) != 0;
+            let mut output = vec![0u8; bytes];
+            let mut info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: width,
+                    biHeight: -height,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB,
+                    biSizeImage: 0,
+                    biXPelsPerMeter: 0,
+                    biYPelsPerMeter: 0,
+                    biClrUsed: 0,
+                    biClrImportant: 0,
+                },
+                bmiColors: [RGBQUAD {
+                    rgbBlue: 0,
+                    rgbGreen: 0,
+                    rgbRed: 0,
+                    rgbReserved: 0,
+                }],
+            };
+            let rows = if copied {
+                GetDIBits(
+                    memory,
+                    bitmap,
+                    0,
+                    height as u32,
+                    output.as_mut_ptr().cast(),
+                    &mut info,
+                    DIB_RGB_COLORS,
+                )
+            } else {
+                0
+            };
+            SelectObject(memory, previous);
+            DeleteObject(bitmap as HGDIOBJ);
+            DeleteDC(memory);
+            ReleaseDC(std::ptr::null_mut(), source);
+            if cancelled() {
+                return Err(ScreenVisionCaptureError::Cancelled);
+            }
+            if rows == 0 {
+                return Err(ScreenVisionCaptureError::Failed);
+            }
+            Ok(output)
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -295,7 +433,7 @@ struct ScreenVisionIdempotencyContext<'a> {
 }
 
 pub fn screen_vision_fixtures() -> Vec<ScreenVisionFixture> {
-    vec![
+    let mut fixtures = vec![
         ScreenVisionFixture {
             fixture_id: "fixture:screen/monitor-1/desktop-neutral-v1".into(),
             monitor_id: "monitor-1".into(),
@@ -316,7 +454,35 @@ pub fn screen_vision_fixtures() -> Vec<ScreenVisionFixture> {
             synthetic: true,
             metadata_only: true,
         },
-    ]
+    ];
+    #[cfg(windows)]
+    if let Some(display) = windows_primary_display() {
+        fixtures.push(display);
+    }
+    fixtures
+}
+
+#[cfg(windows)]
+fn windows_primary_display() -> Option<ScreenVisionFixture> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SM_CMONITORS, SM_CXSCREEN, SM_CYSCREEN,
+    };
+    let monitors = unsafe { GetSystemMetrics(SM_CMONITORS) };
+    let width = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+    let height = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+    if monitors <= 0 || width <= 0 || height <= 0 {
+        return None;
+    }
+    Some(ScreenVisionFixture {
+        fixture_id: "display:primary".into(),
+        monitor_id: "display-primary".into(),
+        display_name: "Tela principal do Windows".into(),
+        width: i64::from(width),
+        height: i64::from(height),
+        scale: 1.0,
+        synthetic: false,
+        metadata_only: false,
+    })
 }
 
 impl Database {
@@ -616,6 +782,29 @@ impl Database {
             return Err(DatabaseError::Cognitive("screen_vision_session_cancelled"));
         }
         require_permission(&session, ScreenVisionPermission::AnalyzeFixture)?;
+        let fixture = fixture_for(&job.monitor_id, &job.fixture_id)?;
+        if !fixture.synthetic {
+            #[cfg(windows)]
+            let capture = WindowsScreenVisionCaptureProvider.capture(&fixture, &|| false);
+            #[cfg(not(windows))]
+            let capture = Err(ScreenVisionCaptureError::Unavailable);
+            capture.map_err(|error| match error {
+                ScreenVisionCaptureError::Cancelled => {
+                    DatabaseError::Cognitive("screen_vision_cancelled")
+                }
+                ScreenVisionCaptureError::Oversized => {
+                    DatabaseError::Cognitive("screen_vision_capture_oversized")
+                }
+                ScreenVisionCaptureError::Unavailable | ScreenVisionCaptureError::Failed => {
+                    DatabaseError::Cognitive("screen_vision_unavailable")
+                }
+            })?;
+            return Err(DatabaseError::Cognitive("screen_vision_model_unavailable"));
+        } else {
+            DeterministicScreenVisionCaptureProvider
+                .capture(&fixture, &|| false)
+                .map_err(|_| DatabaseError::Cognitive("screen_vision_capture_failed"))?;
+        }
         let resource_busy: bool = transaction.query_row(
             "SELECT EXISTS(
                SELECT 1 FROM screen_vision_jobs
@@ -1765,5 +1954,30 @@ mod tests {
             .unwrap();
         assert_eq!(result.job.status, ScreenVisionJobStatus::Cleaned);
         cleanup(&path);
+    }
+
+    #[test]
+    fn capture_providers_are_bounded_and_fail_closed() {
+        let fixture = screen_vision_fixtures().remove(0);
+        let provider = DeterministicScreenVisionCaptureProvider;
+        assert_eq!(provider.capture(&fixture, &|| false), Ok(Vec::new()));
+        assert_eq!(
+            provider.capture(&fixture, &|| true),
+            Err(ScreenVisionCaptureError::Cancelled)
+        );
+        let real = ScreenVisionFixture {
+            synthetic: false,
+            metadata_only: false,
+            ..fixture
+        };
+        #[cfg(windows)]
+        assert!(matches!(
+            WindowsScreenVisionCaptureProvider.capture(&real, &|| false),
+            Err(ScreenVisionCaptureError::Unavailable
+                | ScreenVisionCaptureError::Oversized
+                | ScreenVisionCaptureError::Failed)
+        ));
+        #[cfg(not(windows))]
+        let _ = real;
     }
 }
