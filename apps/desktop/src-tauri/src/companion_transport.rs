@@ -166,6 +166,9 @@ fn hmac(key: &[u8], data: &[u8]) -> [u8; 32] {
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
+pub fn sign_frame(key: &[u8], frame: &WireFrame) -> String {
+    hex(&hmac(key, &canonical(frame)))
+}
 fn valid_hex(s: &str) -> bool {
     s.len() == 64
         && s.bytes()
