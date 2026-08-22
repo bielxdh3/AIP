@@ -1,6 +1,6 @@
 # Phase 11 on-demand screen vision specification
 
-Status: functional automated capture/provider checkpoint; a real local visual
+Status: FUNCTIONAL — HUMAN VALIDATION PENDING. A real local visual
 provider is available on demand when `AIP_LOCAL_VISUAL_PROVIDER_PATH` points to
 an explicitly selected local executable. Missing or invalid configuration
 degrades to unavailable and never produces synthetic success. Local model
