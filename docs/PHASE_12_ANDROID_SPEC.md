@@ -6,9 +6,10 @@ manual, and release-signing validation remain reserved.
 
 ## Purpose and authority
 
-Phase 12 defines the contract between the standalone AIP desktop and a future
-Android companion without importing BielOS or opening a transport. Rust/SQLite
-is authoritative for device ownership, pairing, sessions, replay counters,
+Phase 12 defines the contract between the standalone AIP desktop and the
+Android companion without importing BielOS. The debug APK uses an explicit,
+authenticated local/private socket client; deterministic JVM loopback tests
+cover the host-side transport boundary. Rust/SQLite is authoritative for device ownership, pairing, sessions, replay counters,
 queue approval, key rotation, revocation, audit, safe mode, and temporary-chat
 gates. React only renders Portuguese Owner controls and cannot grant authority.
 
@@ -68,9 +69,11 @@ and cancellation, revocation, key rotation, idempotency, and safety gates.
 
 ## Explicit non-goals and follow-up
 
-This checkpoint does not build or sign an APK, capture microphone/camera data,
-persist media, connect to an Android account, open a socket, run a relay, or
-claim end-to-end mobile delivery. A future implementation must separately
-specify transport cryptography, Android lifecycle/permission UX, packaged-device
-testing, recovery, and release review before any network or APK work is
-authorized. Phase 13 gateway/BielOS integration is intentionally out of scope.
+This checkpoint builds a real debug APK and exercises the authenticated local/
+private socket client through deterministic JVM loopback tests; it does not
+claim physical-device or private-LAN delivery. Microphone/camera capture, media
+persistence, Android accounts, relay/tunnel access, and end-to-end mobile
+delivery remain out of scope. Android lifecycle/permission and overlay UX,
+notification quality, packaged-device testing, recovery, and release signing
+remain reserved human/release gates. Phase 13 BielOS/Cloudflare gateway
+integration is intentionally out of scope.
