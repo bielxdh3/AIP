@@ -52,8 +52,8 @@ use domain::{
 use extensions::{
     ExtensionActivationRequest, ExtensionAgentProposalRequest, ExtensionAuditRecord,
     ExtensionCatalogEntry, ExtensionDisableRequest, ExtensionExecutionCancellationRequest,
-    ExtensionExecutionRequest, ExtensionExecutionResult, ExtensionProposal,
-    ExtensionProposalRequest, ExtensionReviewRequest, ExtensionRollbackRequest,
+    ExtensionExecutionRequest, ExtensionExecutionResult, ExtensionInstruction, ExtensionPackage,
+    ExtensionProposal, ExtensionProposalRequest, ExtensionReviewRequest, ExtensionRollbackRequest,
     ExtensionUpdateRequest,
 };
 use gateway::{
@@ -1082,6 +1082,13 @@ fn ensure_extension_execution_allowed<'a>(
     }
     ensure_extension_mutation_allowed(state, agent_id, temporary_chat)?;
     state.database.as_ref().ok_or("operation_unavailable")
+}
+
+#[tauri::command]
+fn build_extension_package(
+    instructions: Vec<ExtensionInstruction>,
+) -> Result<ExtensionPackage, &'static str> {
+    extensions::build_extension_package(instructions).map_err(|error| error.code())
 }
 
 #[tauri::command]
@@ -2648,6 +2655,7 @@ pub fn run() {
             list_extension_audit,
             execute_extension,
             cancel_extension_execution,
+            build_extension_package,
             list_companion_devices,
             start_companion_pairing,
             confirm_companion_pairing,
