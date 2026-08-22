@@ -1,12 +1,11 @@
 # Phase 9 supervised tools specification
 
-Status: implemented local checkpoint; not release approval.
+Status: functional local checkpoint; human Windows UX validation pending; not release approval.
 
 Phase 9 adds a bounded, Owner-supervised tool boundary to the standalone AIP
-desktop application. The checkpoint is intentionally mock-only: it exercises
+desktop application. The checkpoint exercises
 the contract, persistence, preview, approval, confirmation, cancellation,
-compensation, and audit paths without accessing a host file, shell, credential
-store, calendar, messaging account, network, or external provider.
+compensation, and audit paths with bounded local workspace effects. Calendar and messaging remain provider-neutral fixture mocks; no shell, credential, network, or external provider is accessed.
 
 ## Scope and invariants
 
@@ -29,6 +28,8 @@ provider mutation.
 | --- | --- | --- | --- | --- |
 | `workspace.inspect_scope` | read-only | workspace mock | `fixture:workspace/*` | preview and read-only execution |
 | `workspace.organize_files` | state-changing | workspace mock | `fixture:workspace/*` | preview, Owner approval, simulated execution, compensation record |
+| `workspace.inspect_local` | read-only | bounded local filesystem | `workspace_root:<opaque-id>` | metadata-only preview and read-only execution |
+| `workspace.organize_local` | state-changing | bounded local filesystem | `workspace_root:<opaque-id>` | preview, Owner approval, second confirmation, dry-run, move and safe rollback |
 | `calendar.list_events` | read-only | calendar mock | `fixture:calendar/*` | preview and read-only execution |
 | `calendar.create_event` | state-changing | calendar mock | `fixture:calendar/*` | preview, Owner approval, second confirmation, simulated execution, compensation record |
 | `messaging.preview_message` | read-only | messaging mock | `fixture:messaging/*` | preview and read-only execution |
@@ -73,21 +74,25 @@ absolute prohibition.
 
 ## Input and output boundary
 
-Inputs are tagged, versioned contract values. Paths are relative fixture
-references and reject traversal, absolute paths, backslashes, control
+Inputs are tagged, versioned contract values. Local paths are relative to an
+opaque configured workspace root; fixture paths remain relative fixture
+references. Both reject traversal, absolute paths, backslashes, control
 characters, and host-root syntax. Calendar dates/times, recipients, message
 bodies, scope references, and identifiers have bounded validators.
 
-Mock output is capped before SQLite persistence and is marked
-`untrusted: true`. All mock results report `changed: false`; a state-changing
-result is a simulation, not evidence that a real external action occurred.
+Output is capped before SQLite persistence and is marked `untrusted: true`.
+Fixture results report `changed: false`; local execution reports `changed: true`
+only when a bounded host move occurred. Roots reject broad/system roots,
+canonical containment escapes, links and reparse points. Local inspection is
+metadata-only; moves revalidate immediately before rename and never delete or
+overwrite.
 The UI renders output as text and never interprets it as markup, commands, or
 instructions.
 
 ## Persistence and audit
 
-Migration `0016_phase9_tools.sql` adds the catalog, sessions, session
-permissions, actions, and audit tables. Foreign keys preserve agent and Owner
+Migration `0016_phase9_tools.sql` is the original fixture-tool schema for the catalog, sessions, session
+permissions, actions, and audit tables. Migration `0023_phase9_workspace_roots.sql` rebuilds and preserves that schema, including existing fixture rows and foreign keys, while adding `workspace_roots` and the two local manifests. Foreign keys preserve agent and Owner
 isolation. Idempotency keys are unique within the Owner/session boundary.
 
 Audit records contain bounded event metadata and a Portuguese summary, never
@@ -96,17 +101,19 @@ output. Records older than 30 days are removed when a new tool event is
 written; the current list command returns at most 100 records per agent.
 
 Cancellation and compensation are both persisted as action state and audit
-events. Compensation is metadata for the deterministic mock and does not claim
-to undo an external effect.
+events. Local compensation is Owner/agent/action scoped and reverses only
+still-matching bounded paths; fixture compensation remains metadata-only.
 
 ## UI and validation
 
 The Owner-facing controls live in the agent tools area of `App.tsx` and expose
-the catalog, fixture scope, granular permissions, session selection, bounded
+the catalog, opaque workspace roots, fixture/local scopes, granular permissions, session selection, bounded
 input forms, preview, approval/recusal, second confirmation, explicit mock
 execution, cancellation, compensation, and recent audit records. Temporary
 chat and safe mode disable all tool mutation controls and display the blocking
-reason.
+reason. No delete, overwrite, shell, network, credential, telemetry, watcher,
+or provider mutation is included. Packaged-Windows behavior and human
+confirmation UX remain deferred; this is not stable release approval.
 
 Focused contract tests reject malformed manifests, sessions, action inputs,
 unsafe result flags, and unknown error codes. Rust tests cover migration-backed

@@ -89,6 +89,7 @@ import type {
   ToolManifest,
   ToolPermission,
   ToolSession,
+  WorkspaceRoot,
 } from "@aip/contracts";
 import {
   COMPANION_FIXTURE_APP_VERSION,
@@ -140,6 +141,8 @@ import {
   parseToolCatalog,
   parseToolSession,
   parseToolSessions,
+  parseWorkspaceRoots,
+  parseWorkspaceRoot,
 } from "@aip/contracts";
 import AgentSprite from "./components/AgentSprite";
 import {
@@ -4102,6 +4105,8 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
 const toolLabels: Record<string, string> = {
   "workspace.inspect_scope": "Inspecionar área de arquivos fixture",
   "workspace.organize_files": "Organizar arquivos fixture",
+  "workspace.inspect_local": "Inspecionar arquivos locais (raiz Owner)",
+  "workspace.organize_local": "Mover arquivos locais (raiz Owner)",
   "calendar.list_events": "Listar eventos do calendário fixture",
   "calendar.create_event": "Criar evento no calendário fixture",
   "messaging.preview_message": "Pré-visualizar mensagem fixture",
@@ -4124,6 +4129,16 @@ const toolErrorLabels: Record<string, string> = {
   tool_session_cancelled: "A sessão de ferramentas está cancelada.",
   tool_compensation_unavailable:
     "Não há compensação disponível para esta ação.",
+  workspace_root_unavailable: "A raiz local não está disponível.",
+  workspace_root_invalid: "O caminho não é uma raiz local segura.",
+  workspace_root_limit: "O limite de 64 raízes locais do Owner foi atingido.",
+  workspace_path_unavailable: "O caminho relativo local não está disponível.",
+  workspace_path_invalid: "O caminho relativo local não é seguro.",
+  workspace_destination_exists: "O destino local já existe; nada foi sobrescrito.",
+  workspace_move_failed: "A movimentação local falhou e foi registrada.",
+  workspace_move_partial: "A movimentação local ficou parcial e foi registrada.",
+  workspace_source_identity_unavailable: "A identidade da origem local não pôde ser verificada.",
+  workspace_source_identity_mismatch: "A origem local mudou desde a prévia; nada foi movido.",
   tool_payload_invalid:
     "A resposta da ferramenta não passou no contrato seguro.",
 };
@@ -4137,6 +4152,7 @@ const toolStatusLabels: Record<string, string> = {
   confirmed: "confirmada",
   dry_run: "dry-run",
   executed: "executada pelo mock",
+  failed: "falhou (estado registrado)",
   rejected: "recusada",
   compensated: "compensada",
 };
@@ -4158,6 +4174,7 @@ const toolAuditLabels: Record<string, string> = {
   action_executed: "ação simulada",
   action_cancelled: "ação cancelada",
   action_compensated: "compensação registrada",
+  action_failed: "ação local falhou",
 };
 
 function toolErrorMessage(error: unknown): string {
@@ -4193,6 +4210,9 @@ function ToolControls({
   safeMode: boolean;
 }) {
   const [catalog, setCatalog] = useState<ToolManifest[]>([]);
+  const [roots, setRoots] = useState<WorkspaceRoot[]>([]);
+  const [rootPath, setRootPath] = useState("");
+  const [selectedRootId, setSelectedRootId] = useState("");
   const [sessions, setSessions] = useState<ToolSession[]>([]);
   const [audit, setAudit] = useState<
     import("@aip/contracts").ToolAuditRecord[]
@@ -4217,19 +4237,23 @@ function ToolControls({
   const [dryRun, setDryRun] = useState(false);
 
   const loadData = useCallback(async () => {
-    const [rawCatalog, rawSessions, rawAudit] = await Promise.all([
+    const [rawCatalog, rawSessions, rawAudit, rawRoots] = await Promise.all([
       invoke<unknown>("list_tool_catalog"),
       invoke<unknown>("list_tool_sessions", { agentId }),
       invoke<unknown>("list_tool_audit", { agentId }),
+      invoke<unknown>("list_workspace_roots"),
     ]);
     const nextCatalog = parseToolPayload(rawCatalog, parseToolCatalog);
     const nextSessions = parseToolPayload(rawSessions, parseToolSessions);
     const nextAudit = parseToolPayload(rawAudit, parseToolAudit);
+    const nextRoots = parseToolPayload(rawRoots, parseWorkspaceRoots);
     setCatalog(nextCatalog);
     setSessions(nextSessions);
     setAudit(nextAudit);
+    setRoots(nextRoots);
+    setSelectedRootId((current) => current && nextRoots.some((root) => root.id === current && root.enabled) ? current : (nextRoots.find((root) => root.enabled)?.id ?? ""));
     setSelectedToolId((current) =>
-      current && nextCatalog.some((manifest) => manifest.toolId === current)
+      current && nextCatalog.some((manifest) => manifest.toolId === current && (manifest.scopeKind !== "workspace_root" || nextRoots.some((root) => root.enabled)))
         ? current
         : (nextCatalog[0]?.toolId ?? ""),
     );
@@ -4259,10 +4283,28 @@ function ToolControls({
 
   useEffect(() => {
     if (!selectedManifest) return;
-    setScopeRef(`fixture:${selectedManifest.scopeKind}/owner`);
+    setScopeRef(selectedManifest.scopeKind === "workspace_root" ? `workspace_root:${selectedRootId}` : `fixture:${selectedManifest.scopeKind}/owner`);
     setAllowPreview(true);
     setAllowExecute(true);
-  }, [selectedManifest]);
+  }, [selectedManifest, selectedRootId]);
+
+  async function addRoot() {
+    if (blocked || !rootPath.trim()) return;
+    setBusy(true); setError(null);
+    try {
+      parseToolPayload(await invoke<unknown>("add_workspace_root", { path: rootPath.trim(), idempotencyKey: `workspace-root-${crypto.randomUUID()}`, temporaryChat: false }), parseWorkspaceRoot);
+      setRootPath(""); await loadData();
+    } catch (rootError: unknown) { setError(toolErrorMessage(rootError)); } finally { setBusy(false); }
+  }
+
+  async function disableRoot(rootId: string) {
+    if (blocked) return;
+    setBusy(true); setError(null);
+    try {
+      parseToolPayload(await invoke<unknown>("remove_workspace_root", { rootId, idempotencyKey: `workspace-root-disable-${crypto.randomUUID()}`, temporaryChat: false }), parseWorkspaceRoot);
+      await loadData();
+    } catch (rootError: unknown) { setError(toolErrorMessage(rootError)); } finally { setBusy(false); }
+  }
 
   function buildInput(): ToolActionInput | null {
     switch (selectedToolId) {
@@ -4422,10 +4464,7 @@ function ToolControls({
   return (
     <section className="tool-controls" aria-label="Ferramentas supervisionadas">
       <h3>Ferramentas supervisionadas</h3>
-      <p>
-        Apenas mocks locais e determinísticos. Nenhum arquivo, serviço, conta,
-        rede ou provedor externo é acessado.
-      </p>
+      <p>Ferramentas fixture permanecem determinísticas. Inspeção local e movimentos limitados dentro de uma raiz Owner configurada têm efeito no host somente após prévia, aprovação e segunda confirmação; calendário e mensagens continuam mocks provider-neutral.</p>
       {temporaryChat ? (
         <p role="alert">Conversa temporária: ferramentas bloqueadas.</p>
       ) : null}
@@ -4433,6 +4472,13 @@ function ToolControls({
         <p role="alert">Modo seguro: ferramentas bloqueadas.</p>
       ) : null}
       {error ? <p role="alert">{error}</p> : null}
+      <section className="settings-card">
+        <h4>Raízes locais do Owner</h4>
+        <p>Somente caminhos escolhidos pelo Owner; a raiz é validada pelo Rust e não aparece na auditoria.</p>
+        <input value={rootPath} onChange={(event) => setRootPath(event.target.value)} placeholder="Caminho local escolhido pelo Owner" disabled={busy || blocked} />
+        <button type="button" onClick={() => void addRoot()} disabled={busy || blocked || !rootPath.trim()}>Adicionar raiz</button>
+        <ul>{roots.map((root) => <li key={root.id}><code>{root.id}</code> — {root.enabled ? "ativa" : "desativada"} <button type="button" onClick={() => void disableRoot(root.id)} disabled={busy || blocked || !root.enabled}>Desativar</button></li>)}</ul>
+      </section>
       <section className="settings-card">
         <h4>Catálogo local v1</h4>
         <ul>
@@ -4442,9 +4488,7 @@ function ToolControls({
                 {toolLabels[manifest.toolId] ?? "Ferramenta fixture"}
               </strong>{" "}
               <span>
-                {manifest.classification === "read_only"
-                  ? "somente leitura"
-                  : "altera estado no mock"}
+                {manifest.adapterKind === "workspace_local" ? "efeito local limitado no host" : manifest.classification === "read_only" ? "somente leitura" : "altera estado somente no mock"}
                 {manifest.requiresSecondConfirmation
                   ? "; exige segunda confirmação"
                   : ""}
@@ -4464,7 +4508,7 @@ function ToolControls({
               setAction(null);
             }}
           >
-            {catalog.map((manifest) => (
+            {catalog.filter((manifest) => manifest.scopeKind !== "workspace_root" || roots.some((root) => root.enabled)).map((manifest) => (
               <option key={manifest.toolId} value={manifest.toolId}>
                 {toolLabels[manifest.toolId] ?? manifest.toolId}
               </option>
@@ -4475,9 +4519,11 @@ function ToolControls({
           Escopo fixture
           <input
             value={scopeRef}
-            onChange={(event) => setScopeRef(event.target.value)}
+            onChange={(event) => selectedManifest?.scopeKind !== "workspace_root" && setScopeRef(event.target.value)}
+            readOnly={selectedManifest?.scopeKind === "workspace_root"}
           />
         </label>
+        {selectedManifest?.scopeKind === "workspace_root" ? <label>Raiz local<select value={selectedRootId} onChange={(event) => setSelectedRootId(event.target.value)}>{roots.filter((root) => root.enabled).map((root) => <option key={root.id} value={root.id}>{root.id}</option>)}</select></label> : null}
         <label>
           <input
             type="checkbox"
@@ -4544,7 +4590,7 @@ function ToolControls({
         disabled={busy || blocked || selectedSession?.status !== "active"}
       >
         <legend>Prévia da ação</legend>
-        {selectedToolId === "workspace.inspect_scope" ? (
+        {selectedToolId === "workspace.inspect_scope" || selectedToolId === "workspace.inspect_local" ? (
           <label>
             Entradas relativas, separadas por vírgula
             <input
@@ -4553,7 +4599,7 @@ function ToolControls({
             />
           </label>
         ) : null}
-        {selectedToolId === "workspace.organize_files" ? (
+        {selectedToolId === "workspace.organize_files" || selectedToolId === "workspace.organize_local" ? (
           <>
             <label>
               Origem relativa
@@ -4718,7 +4764,7 @@ function ToolControls({
                   })
                 }
               >
-                Executar mock explicitamente
+                {action?.toolId.endsWith("_local") ? "Executar efeito local explicitamente" : "Executar mock explicitamente"}
               </button>
             ) : null}
             {actionIsPending ? (
@@ -4756,10 +4802,10 @@ function ToolControls({
           </div>
           {action.result ? (
             <div>
-              <h5>Saída não confiável do mock</h5>
+              <h5>{action.toolId.endsWith("_local") ? "Saída não confiável da execução local" : "Saída não confiável do mock"}</h5>
               <pre>{action.result.output}</pre>
               <p>
-                Nenhuma alteração real: {action.result.changed ? "sim" : "não"}.
+                Alteração no host: {action.result.changed ? "sim" : "não"}.
               </p>
             </div>
           ) : null}

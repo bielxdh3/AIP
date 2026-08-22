@@ -38,7 +38,8 @@ const MIGRATION_0019: &str = include_str!("../migrations/0019_phase12_android_co
 const MIGRATION_0020: &str = include_str!("../migrations/0020_phase13_gateway.sql");
 const MIGRATION_0021: &str = include_str!("../migrations/0021_corrective_tools_capabilities.sql");
 const MIGRATION_0022: &str = include_str!("../migrations/0022_phase8_voice_runtime.sql");
-const MIGRATIONS: [(i64, &str); 22] = [
+const MIGRATION_0023: &str = include_str!("../migrations/0023_phase9_workspace_roots.sql");
+const MIGRATIONS: [(i64, &str); 23] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
@@ -61,6 +62,7 @@ const MIGRATIONS: [(i64, &str); 22] = [
     (20, MIGRATION_0020),
     (21, MIGRATION_0021),
     (22, MIGRATION_0022),
+    (23, MIGRATION_0023),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -2797,6 +2799,10 @@ mod tests {
     use uuid::Uuid;
 
     use crate::domain::{CognitiveSource, MessageAuthor, MessageStatus, TraitDeltaCandidate};
+    use crate::tools::{
+        ToolActionInput, ToolActionPreviewRequest, ToolFileMove, ToolPermission,
+        ToolSessionPermission, ToolSessionRequest,
+    };
 
     use super::{
         Database, DatabaseError, PhaseOneSettings, ASTRA_ID, LUMA_ID, MIGRATION_0001,
@@ -2878,13 +2884,10 @@ mod tests {
             )
             .unwrap();
         connection
-            .execute("DELETE FROM schema_migrations WHERE version = 21", [])
+            .execute("DELETE FROM schema_migrations WHERE version >= 21", [])
             .unwrap();
         connection
             .execute("DROP TABLE voice_operation_records", [])
-            .unwrap();
-        connection
-            .execute("DELETE FROM schema_migrations WHERE version = 22", [])
             .unwrap();
         drop(connection);
         drop(database);
@@ -2902,6 +2905,87 @@ mod tests {
         assert_eq!(capabilities, "[\"inspect_scope\"]");
         assert!(upgraded.snapshot().unwrap().migration_version >= 21);
         drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn populated_v22_tool_data_survives_phase9_migration_and_reopen() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let session = database
+            .create_tool_session(ToolSessionRequest {
+                agent_id: ASTRA_ID.into(),
+                scope_ref: "fixture:workspace/demo".into(),
+                permissions: vec![ToolSessionPermission {
+                    tool_id: "workspace.organize_files".into(),
+                    permission: ToolPermission::Preview,
+                }],
+                idempotency_key: "migration-session".into(),
+                temporary_chat: false,
+            })
+            .unwrap();
+        let action = database
+            .preview_tool_action(ToolActionPreviewRequest {
+                agent_id: ASTRA_ID.into(),
+                session_id: session.id,
+                tool_id: "workspace.organize_files".into(),
+                input: ToolActionInput::WorkspaceOrganize {
+                    moves: vec![ToolFileMove {
+                        from: "a.txt".into(),
+                        to: "b.txt".into(),
+                        source_identity: None,
+                    }],
+                },
+                dry_run: false,
+                idempotency_key: "migration-action".into(),
+                temporary_chat: false,
+            })
+            .unwrap();
+        let connection = database.open().unwrap();
+        let before: (i64, i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT count(*) FROM tool_sessions), (SELECT count(*) FROM tool_actions), (SELECT count(*) FROM tool_audit_log)",
+                [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        connection
+            .execute("DELETE FROM schema_migrations WHERE version = 23", [])
+            .unwrap();
+        drop(connection);
+        let upgraded = Database::initialize(&path).unwrap();
+        let connection = upgraded.open().unwrap();
+        let after: (i64, i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT count(*) FROM tool_sessions), (SELECT count(*) FROM tool_actions), (SELECT count(*) FROM tool_audit_log)",
+                [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(before, after);
+        assert!(connection
+            .query_row(
+                "SELECT 1 FROM tool_catalog WHERE tool_id = 'workspace.inspect_local'",
+                [],
+                |_| Ok(())
+            )
+            .is_ok());
+        assert!(connection
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspace_roots'",
+                [],
+                |_| Ok(())
+            )
+            .is_ok());
+        assert_eq!(
+            connection
+                .query_row("PRAGMA foreign_key_check", [], |_| Ok(()))
+                .optional()
+                .unwrap(),
+            None
+        );
+        assert!(connection.query_row("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'tool_actions_session_status'", [], |_| Ok(())).is_ok());
+        assert_eq!(action.status, crate::tools::ToolActionStatus::Previewed);
+        drop(connection);
+        Database::initialize(&path).unwrap();
         cleanup(&path);
     }
 

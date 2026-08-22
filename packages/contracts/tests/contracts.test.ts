@@ -20,6 +20,12 @@ import {
   parseToolCatalog,
   parseToolSession,
   parseToolSessions,
+  parseToolExecutionResult,
+  parseToolCompensation,
+  parseWorkspaceRoot,
+  parseWorkspaceRoots,
+  parseWorkspaceRootIdRequest,
+  parseWorkspaceRootRequest,
   parseExtensionAudit,
   parseExtensionCatalog,
   parseExtensionManifest,
@@ -527,6 +533,11 @@ describe("supervised tool contracts", () => {
         },
       ]),
     ).not.toBeNull();
+    expect(parseToolExecutionResult({ status: "executed", output: "moved", changed: true, untrusted: true })).not.toBeNull();
+    expect(parseToolCompensation({ kind: "workspace_move", available: true, description: "bounded", moves: [{ from: "a.txt", to: "b.txt", identity: "win:1:2" }] })).not.toBeNull();
+    expect(parseWorkspaceRoot({ id: "wrt_opaque", enabled: true, createdAt: 1, updatedAt: 2 })).not.toBeNull();
+    expect(parseWorkspaceRootRequest({ path: "C:/workspace", idempotencyKey: "root-1", temporaryChat: false })).not.toBeNull();
+    expect(parseWorkspaceRootIdRequest({ rootId: "wrt_opaque", idempotencyKey: "root-2", temporaryChat: false })).not.toBeNull();
   });
 
   it("rejects unsafe or malformed tool payloads", () => {
@@ -541,6 +552,35 @@ describe("supervised tool contracts", () => {
         },
       }),
     ).toBeNull();
+    expect(parseToolExecutionResult({ status: "executed", output: "moved", changed: "yes", untrusted: true })).toBeNull();
+    expect(parseToolExecutionResult({ status: "unknown", output: "moved", changed: true, untrusted: true })).toBeNull();
+    expect(parseToolCompensation({ kind: "workspace_move", available: true, description: "bounded", moves: [{ from: "a.txt\u0000", to: "b.txt", identity: "win:1:2" }] })).toBeNull();
+    expect(parseToolActionInput({ kind: "workspaceOrganize", moves: [{ from: "a.txt", to: "b.txt", sourceIdentity: "unix:1:2" }] })).not.toBeNull();
+    expect(parseToolActionInput({ kind: "workspaceOrganize", moves: [{ from: "a.txt", to: "b.txt", sourceIdentity: "x".repeat(129) }] })).toBeNull();
+    expect(parseToolActionInput({ kind: "workspaceOrganize", moves: [{ from: "a.txt", to: "b.txt", sourceIdentity: "unix:\u00001:2" }] })).toBeNull();
+    expect(parseToolAction({ ...action, summary: "x".repeat(513) })).toBeNull();
+    expect(parseToolAction({ ...action, affectedResources: Array.from({ length: 65 }, (_, index) => `r${index}`) })).toBeNull();
+    expect(parseToolActionInput({ kind: "workspaceOrganize", moves: Array.from({ length: 33 }, () => ({ from: "a.txt", to: "b.txt" })) })).toBeNull();
+    expect(parseToolSession({ ...session, permissions: Array.from({ length: 13 }, (_, index) => ({ toolId: `tool-${index}`, permission: "preview" as const })) })).toBeNull();
+    const audit = {
+      id: "audit-1",
+      actionId: action.id,
+      sessionId: session.id,
+      agentId: session.agentId,
+      toolId: manifest.toolId,
+      event: "action_previewed",
+      result: "previewed",
+      code: null,
+      summary: "Prévia registrada.",
+      createdAt: 1,
+    };
+    expect(parseToolAudit([audit])).not.toBeNull();
+    expect(parseToolAudit([{ ...audit, actionId: "a".repeat(129) }])).toBeNull();
+    expect(parseToolAudit([{ ...audit, sessionId: "session\u0000id" }])).toBeNull();
+    expect(parseWorkspaceRoots(Array.from({ length: 65 }, (_, index) => ({ id: `wrt-${index}`, enabled: true, createdAt: 1, updatedAt: 1 })))).toBeNull();
+    expect(parseToolCatalog(Array.from({ length: 17 }, () => manifest))).toBeNull();
+    expect(parseToolSessions(Array.from({ length: 33 }, () => session))).toBeNull();
+    expect(parseToolAudit(Array.from({ length: 101 }, () => audit))).toBeNull();
     expect(
       parseToolActionInput({ kind: "shell", command: "whoami" }),
     ).toBeNull();
