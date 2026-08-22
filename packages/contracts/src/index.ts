@@ -691,8 +691,8 @@ export type ScreenVisionFixture = {
   width: number;
   height: number;
   scale: number;
-  synthetic: true;
-  metadataOnly: true;
+  synthetic: boolean;
+  metadataOnly: boolean;
 };
 export type ScreenVisionPreview = {
   fixtureId: string;
@@ -700,8 +700,8 @@ export type ScreenVisionPreview = {
   displayName: string;
   width: number;
   height: number;
-  synthetic: true;
-  metadataOnly: true;
+  synthetic: boolean;
+  metadataOnly: boolean;
   confirmationRequired: true;
   redactionRuleCount: number;
 };
@@ -3451,8 +3451,8 @@ export function parseScreenVisionFixture(
     cognitiveNumber(candidate.scale) &&
     candidate.scale > 0 &&
     candidate.scale <= 4 &&
-    candidate.synthetic === true &&
-    candidate.metadataOnly === true
+    typeof candidate.synthetic === "boolean" &&
+    typeof candidate.metadataOnly === "boolean"
     ? (candidate as unknown as ScreenVisionFixture)
     : null;
 }
@@ -3468,8 +3468,8 @@ export function parseScreenVisionPreview(
     isScreenVisionBoundedText(candidate.displayName, 160) &&
     isScreenVisionBoundedInteger(candidate.width, 1, 16_384) &&
     isScreenVisionBoundedInteger(candidate.height, 1, 16_384) &&
-    candidate.synthetic === true &&
-    candidate.metadataOnly === true &&
+    typeof candidate.synthetic === "boolean" &&
+    typeof candidate.metadataOnly === "boolean" &&
     candidate.confirmationRequired === true &&
     isScreenVisionBoundedInteger(candidate.redactionRuleCount, 1, 8)
     ? (candidate as unknown as ScreenVisionPreview)
@@ -3626,7 +3626,7 @@ export function parseScreenVisionAuditRecord(
 export function parseScreenVisionFixtures(
   value: unknown,
 ): ScreenVisionFixture[] | null {
-  if (!Array.isArray(value) || value.length > 2) return null;
+  if (!Array.isArray(value) || value.length > 3) return null;
   const fixtures = value.map(parseScreenVisionFixture);
   return fixtures.every(
     (fixture): fixture is ScreenVisionFixture => fixture !== null,
