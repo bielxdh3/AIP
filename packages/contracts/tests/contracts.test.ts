@@ -29,6 +29,10 @@ import {
   parseExtensionAudit,
   parseExtensionCatalog,
   parseExtensionManifest,
+  parseExtensionPackage,
+  parseExtensionExecutionRequest,
+  parseExtensionExecutionResult,
+  parseExtensionExecutionCancellationRequest,
   parseExtensionProposals,
   parseScreenVisionAnalysisResult,
   parseScreenVisionAudit,
@@ -608,6 +612,7 @@ describe("metadata-only extension contracts", () => {
     capabilities: ["tool_catalog" as const, "owner_review" as const],
     localFixtureRef: "fixture:extension/notes",
     untrusted: true as const,
+    package: null,
   };
 
   const proposal = {
@@ -722,6 +727,56 @@ describe("metadata-only extension contracts", () => {
     expect(
       parseExtensionProposals([{ ...proposal, status: "active" }]),
     ).toBeNull();
+  });
+});
+
+describe("bounded extension execution contracts", () => {
+  const packageValue = {
+    format: "aip-extension-package/v1" as const,
+    entrypoint: "main" as const,
+    instructions: [
+      { op: "emit_text" as const, text: "ok", echoInput: null },
+      { op: "read_agent_context" as const },
+      { op: "list_tool_catalog" as const },
+      { op: "yield" as const },
+    ],
+    integritySha256: "0".repeat(64),
+  };
+
+  it("accepts bounded executable package and result payloads", () => {
+    expect(parseExtensionPackage(packageValue)).not.toBeNull();
+    expect(parseExtensionExecutionRequest({
+      agentId: "agt_astra_provisional",
+      ownerUserId: "usr_owner_local",
+      extensionId: "fixture.notes",
+      revision: 1,
+      packageHash: packageValue.integritySha256,
+      input: "bounded",
+      idempotencyKey: "execute-1",
+      temporaryChat: false,
+    })).not.toBeNull();
+    expect(parseExtensionExecutionResult({
+      executionId: "execution-1",
+      status: "succeeded",
+      output: "agent_id:agt_astra_provisional",
+      error: null,
+      steps: 4,
+    })).not.toBeNull();
+    expect(parseExtensionExecutionCancellationRequest({
+      agentId: "agt_astra_provisional",
+      ownerUserId: "usr_owner_local",
+      executionId: "execution-1",
+    })).not.toBeNull();
+  });
+
+  it("rejects malformed, unknown, duplicate, and oversized execution payloads", () => {
+    expect(parseExtensionPackage({ ...packageValue, integritySha256: "z".repeat(64) })).toBeNull();
+    expect(parseExtensionPackage({ ...packageValue, instructions: [{ op: "unknown" }] })).toBeNull();
+    expect(parseExtensionPackage({ ...packageValue, instructions: [{ op: "yield" }, { op: "yield" }] })).toBeNull();
+    expect(parseExtensionPackage({ ...packageValue, instructions: Array.from({ length: 33 }, () => ({ op: "yield" as const })) })).toBeNull();
+    expect(parseExtensionExecutionResult({ executionId: "execution-1", status: "unknown", output: null, error: null, steps: 0 })).toBeNull();
+    expect(parseExtensionExecutionResult({ executionId: "execution-1", status: "failed", output: "x".repeat(8193), error: null, steps: 1 })).toBeNull();
+    expect(parseExtensionExecutionRequest({ agentId: "agent", ownerUserId: "owner", extensionId: "fixture.notes", revision: 1, packageHash: "0".repeat(64), input: "x".repeat(4097), idempotencyKey: "key", temporaryChat: false, extra: true })).toBeNull();
   });
 });
 

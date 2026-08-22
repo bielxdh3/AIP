@@ -1,10 +1,26 @@
-# Phase 10 metadata-only extensions specification
+# Phase 10 bounded extension runtime specification
 
-Status: implemented local checkpoint; not release approval.
+Status: functional local runtime; extension usability and package review remain human validation items.
 
 Phase 10 adds a bounded, local extension-management boundary to the standalone
-AIP desktop application. The checkpoint stores and reviews extension metadata
-only. It does not install or execute extension code.
+AIP desktop application. It stores and reviews metadata and executes only
+closed declarative JSON instruction packages interpreted by Rust.
+
+## Closed package format and execution
+
+An optional package uses format `aip-extension-package/v1`, entrypoint `main`,
+at most 32 instructions, and a lowercase SHA-256 `integritySha256` over the
+canonical package payload with that field excluded. The only instructions are
+`emit_text`, `read_agent_context`, `list_tool_catalog`, and `yield`. Unknown,
+duplicate, oversized, malformed, or tampered instructions are rejected. No
+filesystem, network, shell, subprocess, dynamic library, credential, or
+expression host exists.
+
+Execution binds to the exact Owner-approved active revision and package hash.
+Input/output are bounded to 4096/8192 bytes, execution to 32 steps and 5
+seconds, and cancellation is checked between instructions and persisted as
+termination. Host context contains only validated agent identity and bounded
+deterministic tool IDs.
 
 ## Scope and invariants
 

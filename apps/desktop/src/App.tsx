@@ -48,6 +48,8 @@ import type {
   ExtensionCapability,
   ExtensionCatalogEntry,
   ExtensionManifest,
+  ExtensionInstruction,
+  ExtensionExecutionResult,
   ExtensionProposal,
   ExtensionSourceKind,
   VoiceSettings,
@@ -131,6 +133,8 @@ import {
   parseExtensionAudit,
   parseExtensionCatalog,
   parseExtensionProposals,
+  parseExtensionPackage,
+  parseExtensionExecutionResult,
   parseScreenVisionAudit,
   parseScreenVisionAnalysisResult,
   parseScreenVisionFixtures,
@@ -4901,6 +4905,12 @@ const extensionErrorLabels: Record<string, string> = {
   idempotency_conflict: "A operação conflita com uma solicitação anterior.",
   extension_payload_invalid:
     "A resposta da extensão não passou no contrato seguro.",
+  extension_execution_denied:
+    "A execução exige revisão, ativação e capacidades aprovadas.",
+  extension_execution_busy: "Já existe uma execução de extensão em andamento.",
+  extension_execution_cancelled: "A execução foi cancelada.",
+  extension_execution_limit: "A execução atingiu o orçamento seguro.",
+  extension_package_required: "Esta fixture metadata-only não é executável.",
 };
 
 function extensionErrorMessage(error: unknown): string {
@@ -4956,6 +4966,12 @@ function ExtensionControls({
   const [reviewReason, setReviewReason] = useState("");
   const [rollbackRevision, setRollbackRevision] = useState("1");
   const [disableReason, setDisableReason] = useState("Revisão manual do Owner");
+  const [packageEnabled, setPackageEnabled] = useState(false);
+  const [packageAgentContext, setPackageAgentContext] = useState(false);
+  const [packageToolCatalog, setPackageToolCatalog] = useState(false);
+  const [packageEchoInput, setPackageEchoInput] = useState(false);
+  const [executionInput, setExecutionInput] = useState("");
+  const [execution, setExecution] = useState<ExtensionExecutionResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const blocked = temporaryChat || safeMode;
@@ -5017,12 +5033,28 @@ function ExtensionControls({
     setFixtureRef(selectedCatalog.manifest.localFixtureRef ?? "");
     setSourceKind(selectedCatalog.sourceKind);
     setCapabilities(selectedCatalog.manifest.capabilities);
+    setPackageEnabled(selectedCatalog.manifest.package != null);
     setRollbackRevision(
       String(Math.max(1, selectedCatalog.currentRevision - 1)),
     );
   }, [selectedCatalog]);
 
-  function buildManifest(id = extensionId): ExtensionManifest {
+  async function buildPackage(): Promise<ExtensionManifest["package"]> {
+    if (!packageEnabled) return null;
+    const instructions: ExtensionInstruction[] = [];
+    if (packageEchoInput) {
+      instructions.push({ op: "emit_text", text: null, echoInput: true });
+    } else {
+      instructions.push({ op: "emit_text", text: "Extensão A.I.P. executada.", echoInput: null });
+    }
+    if (packageAgentContext) instructions.push({ op: "read_agent_context" });
+    if (packageToolCatalog) instructions.push({ op: "list_tool_catalog" });
+    instructions.push({ op: "yield" });
+    const raw = await invoke<unknown>("build_extension_package", { instructions });
+    return parseExtensionPayload(raw, parseExtensionPackage);
+  }
+
+  async function buildManifest(id = extensionId): Promise<ExtensionManifest> {
     return {
       extensionId: id.trim(),
       manifestVersion: 1,
@@ -5034,6 +5066,7 @@ function ExtensionControls({
       capabilities,
       localFixtureRef: fixtureRef.trim() || null,
       untrusted: true,
+      package: await buildPackage(),
     };
   }
 
@@ -5042,7 +5075,7 @@ function ExtensionControls({
     setBusy(true);
     setError(null);
     try {
-      const manifest = buildManifest();
+      const manifest = await buildManifest();
       const raw =
         kind === "agent_created"
           ? await invoke<unknown>("create_agent_extension_proposal", {
@@ -5138,7 +5171,7 @@ function ExtensionControls({
         sourceKind: selectedCatalog.sourceKind,
         proposerAgentId:
           selectedCatalog.sourceKind === "agent_created" ? agentId : null,
-        manifest: buildManifest(selectedCatalog.extensionId),
+        manifest: await buildManifest(selectedCatalog.extensionId),
         idempotencyKey: ["extension-update-", crypto.randomUUID()].join(""),
         temporaryChat,
       });
@@ -5206,6 +5239,46 @@ function ExtensionControls({
     }
   }
 
+  async function executeSelectedExtension() {
+    if (!selectedCatalog || blocked || selectedCatalog.lifecycle !== "active" || !selectedCatalog.manifest.package) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const raw = await invoke<unknown>("execute_extension", {
+        request: {
+          agentId,
+          ownerUserId: OWNER_USER_ID,
+          extensionId: selectedCatalog.extensionId,
+          revision: selectedCatalog.activeRevision,
+          packageHash: selectedCatalog.manifest.package.integritySha256,
+          input: executionInput.slice(0, 4096),
+          idempotencyKey: ["extension-execute-", crypto.randomUUID()].join(""),
+          temporaryChat,
+        },
+      });
+      setExecution(parseExtensionPayload(raw, parseExtensionExecutionResult));
+    } catch (executeError: unknown) {
+      setError(extensionErrorMessage(executeError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelSelectedExecution() {
+    if (!execution || blocked) return;
+    setBusy(true);
+    try {
+      await invoke("cancel_extension_execution", {
+        request: { agentId, ownerUserId: OWNER_USER_ID, executionId: execution.executionId },
+      });
+      setExecution({ ...execution, status: "cancelled", error: "extension_execution_cancelled" });
+    } catch (cancelError: unknown) {
+      setError(extensionErrorMessage(cancelError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function toggleCapability(capability: ExtensionCapability) {
     setCapabilities((current) =>
       current.includes(capability)
@@ -5226,9 +5299,9 @@ function ExtensionControls({
     <section className="tool-controls" aria-label="Gerenciamento de extensões">
       <h3>Extensões locais</h3>
       <p>
-        Catálogo privado de metadados não confiáveis. O A.I.P. não carrega,
-        compila, interpreta ou executa extensões, nem acessa rede, shell,
-        arquivos do sistema ou credenciais.
+        Catálogo privado de extensões não confiáveis. Pacotes executáveis são
+        apenas programas declarativos fechados interpretados pelo Rust; não há
+        acesso a rede, shell, arquivos do sistema, processos ou credenciais.
       </p>
       {temporaryChat ? (
         <p role="alert">
@@ -5286,6 +5359,31 @@ function ExtensionControls({
             ))}
           </select>
         </label>
+      </section>
+
+      <section className="settings-card">
+        <h4>Capacidade da extensão</h4>
+        {selectedCatalog ? (
+          <p>
+            {selectedCatalog.manifest.package
+              ? `Executável: ${selectedCatalog.manifest.package.format}; hash ${selectedCatalog.manifest.package.integritySha256}; revisão ${selectedCatalog.activeRevision ?? "não ativa"}.`
+              : "Fixture metadata-only legada: não executável."}
+          </p>
+        ) : null}
+        <fieldset disabled={busy || blocked}>
+          <label>
+            <input type="checkbox" checked={packageEnabled} onChange={(event) => setPackageEnabled(event.target.checked)} />{" "}
+            Criar pacote declarativo executável
+          </label>
+          {packageEnabled ? (
+            <>
+              <label><input type="checkbox" checked={packageAgentContext} onChange={(event) => setPackageAgentContext(event.target.checked)} /> Ler identidade limitada do agente</label>
+              <label><input type="checkbox" checked={packageToolCatalog} onChange={(event) => setPackageToolCatalog(event.target.checked)} /> Listar catálogo limitado de ferramentas</label>
+              <label><input type="checkbox" checked={packageEchoInput} onChange={(event) => setPackageEchoInput(event.target.checked)} /> Repetir entrada limitada</label>
+              <p>O Rust constrói e calcula o hash; a interface nunca calcula nem autoriza integridade.</p>
+            </>
+          ) : null}
+        </fieldset>
       </section>
 
       <section className="settings-card">
@@ -5452,6 +5550,20 @@ function ExtensionControls({
           Atualizações desativam a revisão ativa e sempre voltam para revisão;
           ampliar capacidades não ativa permissões automaticamente.
         </p>
+      </section>
+
+      <section className="settings-card">
+        <h4>Execução da revisão ativa</h4>
+        <p>Somente uma extensão executável, revisada pelo Owner e explicitamente ativa pode executar.</p>
+        <label>
+          Entrada limitada
+          <textarea value={executionInput} maxLength={4096} onChange={(event) => setExecutionInput(event.target.value)} />
+        </label>
+        <div className="message-actions">
+          <button type="button" disabled={busy || blocked || !selectedCatalog?.manifest.package || selectedCatalog.lifecycle !== "active"} onClick={() => void executeSelectedExtension()}>Executar revisão ativa</button>
+          <button type="button" disabled={busy || blocked || !execution || execution.status !== "succeeded"} onClick={() => void cancelSelectedExecution()}>Cancelar execução registrada</button>
+        </div>
+        {execution ? <p role="status">Execução {execution.executionId}: {execution.status}; passos {execution.steps}; saída: {execution.output ?? "(vazia)"}; erro: {execution.error ?? "nenhum"}</p> : <p>Nenhuma execução solicitada.</p>}
       </section>
 
       <section className="settings-card">
