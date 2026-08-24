@@ -56,8 +56,7 @@ import type {
   ExtensionExecutionResult,
   ExtensionProposal,
   ExtensionSourceKind,
-  VoiceSettings,
-  VoiceDevice,
+  VoiceSettings, VoiceDevice,
   VoiceSettingsRequest,
   VoiceCaptureRuntimeRequest,
   VoiceOperationCancellationRequest,
@@ -1647,9 +1646,7 @@ export function VoiceControls({
     void load();
     void invoke<unknown[]>("list_voice_devices")
       .then((values) => {
-        const devices = values
-          .map(parseVoiceDevice)
-          .filter((device): device is VoiceDevice => device !== null);
+        const devices = values.map(parseVoiceDevice).filter((device): device is VoiceDevice => device !== null);
         setVoiceDevices(devices.slice(0, 64));
       })
       .catch(() => setVoiceDevices([]));
@@ -1778,14 +1775,10 @@ export function VoiceControls({
     };
     setBusy(true);
     setActiveOperation(operationId);
-    setStatus(
-      "Operação local iniciada; aguardando dispositivo/provedor configurado.",
-    );
+    setStatus("Operação local iniciada; aguardando dispositivo/provedor configurado.");
     setError(null);
     try {
-      const result = await invoke<
-        VoiceRuntimeTranscriptionResult | VoiceRuntimeWakeWordResult
-      >(
+      const result = await invoke<VoiceRuntimeTranscriptionResult | VoiceRuntimeWakeWordResult>(
         kind === "transcription"
           ? "transcribe_voice_local"
           : "detect_voice_wake_word_local",
@@ -1797,10 +1790,7 @@ export function VoiceControls({
         }; conversa de texto continua disponível.`,
       );
     } catch (cause) {
-      setError(
-        voiceErrorCopy[String(cause)] ||
-          "A operação local está indisponível; a conversa de texto continua disponível.",
-      );
+      setError(voiceErrorCopy[String(cause)] || "A operação local está indisponível; a conversa de texto continua disponível.");
     } finally {
       setActiveOperation(null);
       setBusy(false);
@@ -1819,23 +1809,13 @@ export function VoiceControls({
     };
     setBusy(true);
     setActiveOperation(operationId);
-    setStatus(
-      "Síntese local iniciada; aguardando dispositivo/provedor configurado.",
-    );
+    setStatus("Síntese local iniciada; aguardando dispositivo/provedor configurado.");
     setError(null);
     try {
-      const result = await invoke<VoiceRuntimeSynthesisResult>(
-        "synthesize_voice_local",
-        request,
-      );
-      setStatus(
-        `Síntese ${result.status}${result.code ? ` (${result.code})` : ""}; conversa de texto continua disponível.`,
-      );
+      const result = await invoke<VoiceRuntimeSynthesisResult>("synthesize_voice_local", request);
+      setStatus(`Síntese ${result.status}${result.code ? ` (${result.code})` : ""}; conversa de texto continua disponível.`);
     } catch (cause) {
-      setError(
-        voiceErrorCopy[String(cause)] ||
-          "A operação local está indisponível; a conversa de texto continua disponível.",
-      );
+      setError(voiceErrorCopy[String(cause)] || "A operação local está indisponível; a conversa de texto continua disponível.");
     } finally {
       setActiveOperation(null);
       setBusy(false);
@@ -1844,18 +1824,12 @@ export function VoiceControls({
 
   async function cancelLocalOperation() {
     if (!activeOperation) return;
-    const request: VoiceOperationCancellationRequest = {
-      agentId,
-      operationId: activeOperation,
-    };
+    const request: VoiceOperationCancellationRequest = { agentId, operationId: activeOperation };
     try {
       await invoke<boolean>("cancel_voice_operation", request);
       setStatus("Cancelamento solicitado para a operação local.");
     } catch (cause) {
-      setError(
-        voiceErrorCopy[String(cause)] ||
-          "Não foi possível cancelar a operação local.",
-      );
+      setError(voiceErrorCopy[String(cause)] || "Não foi possível cancelar a operação local.");
     }
   }
 
@@ -1904,21 +1878,9 @@ export function VoiceControls({
       </label>
       <label>
         Dispositivo local de entrada
-        <select
-          value={inputDeviceRef}
-          disabled={temporaryChat || busy}
-          onChange={(event) => setInputDeviceRef(event.target.value)}
-        >
-          <option value="">
-            Selecionar dispositivo (ou use a referência abaixo)
-          </option>
-          {voiceDevices
-            .filter((device) => device.direction === "input")
-            .map((device) => (
-              <option key={device.reference} value={device.reference}>
-                {device.displayName}
-              </option>
-            ))}
+        <select value={inputDeviceRef} disabled={temporaryChat || busy} onChange={(event) => setInputDeviceRef(event.target.value)}>
+          <option value="">Selecionar dispositivo (ou use a referência abaixo)</option>
+          {voiceDevices.filter((device) => device.direction === "input").map((device) => <option key={device.reference} value={device.reference}>{device.displayName}</option>)}
         </select>
         <input
           value={inputDeviceRef}
@@ -1930,21 +1892,9 @@ export function VoiceControls({
       </label>
       <label>
         Dispositivo local de saída
-        <select
-          value={outputDeviceRef}
-          disabled={temporaryChat || busy}
-          onChange={(event) => setOutputDeviceRef(event.target.value)}
-        >
-          <option value="">
-            Selecionar dispositivo (ou use a referência abaixo)
-          </option>
-          {voiceDevices
-            .filter((device) => device.direction === "output")
-            .map((device) => (
-              <option key={device.reference} value={device.reference}>
-                {device.displayName}
-              </option>
-            ))}
+        <select value={outputDeviceRef} disabled={temporaryChat || busy} onChange={(event) => setOutputDeviceRef(event.target.value)}>
+          <option value="">Selecionar dispositivo (ou use a referência abaixo)</option>
+          {voiceDevices.filter((device) => device.direction === "output").map((device) => <option key={device.reference} value={device.reference}>{device.displayName}</option>)}
         </select>
         <input
           value={outputDeviceRef}
@@ -2366,18 +2316,9 @@ type CognitiveCommandMap = {
     args: { agentId: string };
     response: CognitiveGoal[];
   };
-  list_fictional_activities: {
-    args: { agentId: string };
-    response: FictionalActivity[];
-  };
-  start_fictional_activity: {
-    args: FictionalActivityRequest;
-    response: FictionalActivity;
-  };
-  update_fictional_activity_status: {
-    args: FictionalActivityStatusRequest;
-    response: FictionalActivity;
-  };
+  list_fictional_activities: { args: { agentId: string }; response: FictionalActivity[] };
+  start_fictional_activity: { args: FictionalActivityRequest; response: FictionalActivity };
+  update_fictional_activity_status: { args: FictionalActivityStatusRequest; response: FictionalActivity };
   propose_cognitive_opinion: {
     args: OpinionCandidateRequest;
     response: CognitiveOpinion;
@@ -2899,36 +2840,16 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
   }
 
   async function startActivity(goal: CognitiveGoal) {
-    await runCognitive(
-      "start_fictional_activity",
-      {
-        agentId,
-        goalId: goal.id,
-        activityType: activityType.trim(),
-        budgetUnits: 1,
-        durationMs: 60_000,
-        idempotencyKey: crypto.randomUUID(),
-        temporaryChat: false,
-      },
-      "Atividade fictícia iniciada.",
-    );
+    await runCognitive("start_fictional_activity", {
+      agentId, goalId: goal.id, activityType: activityType.trim(), budgetUnits: 1,
+      durationMs: 60_000, idempotencyKey: crypto.randomUUID(), temporaryChat: false,
+    }, "Atividade fictícia iniciada.");
   }
 
-  async function setActivityStatus(
-    activity: FictionalActivity,
-    status: FictionalActivity["status"],
-  ) {
-    await runCognitive(
-      "update_fictional_activity_status",
-      {
-        agentId,
-        activityId: activity.id,
-        status,
-        idempotencyKey: crypto.randomUUID(),
-        temporaryChat: false,
-      },
-      "Status da atividade atualizado.",
-    );
+  async function setActivityStatus(activity: FictionalActivity, status: FictionalActivity["status"]) {
+    await runCognitive("update_fictional_activity_status", {
+      agentId, activityId: activity.id, status, idempotencyKey: crypto.randomUUID(), temporaryChat: false,
+    }, "Status da atividade atualizado.");
   }
 
   async function saveConversationPolicy() {
@@ -3153,12 +3074,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
             {opinion.subjectRef}: posição {opinion.stance.toFixed(2)}, confiança{" "}
             {opinion.confidence.toFixed(2)} ({opinion.status}) —{" "}
             {opinion.evidence.find((item) => item.status === "active")
-              ? (() => {
-                  const evidence = opinion.evidence.find(
-                    (item) => item.status === "active",
-                  )!;
-                  return `${evidence.claimValue} — fonte: ${evidence.sourceKind}/${evidence.sourceReference ?? "Owner"}, classificação: ${evidence.classification}, confiança: ${evidence.confidence.toFixed(2)}, atribuição: ${evidence.attribution ?? "não informada"}`;
-                })()
+              ? `${opinion.evidence.find((item) => item.status === "active")!.claimValue} — fonte: ${opinion.evidence.find((item) => item.status === "active")!.sourceKind}/${opinion.evidence.find((item) => item.status === "active")!.sourceReference ?? "Owner"}, classificação: ${opinion.evidence.find((item) => item.status === "active")!.classification}, confiança: ${opinion.evidence.find((item) => item.status === "active")!.confidence.toFixed(2)}`
               : "sem evidência ativa"}
             <div>
               {opinion.evidence.some((item) => item.status === "active") ? (
@@ -3264,13 +3180,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
       <ul>
         {relationships.map((relationship) => (
           <li key={relationship.id}>
-            {relationship.subjectRef}: familiaridade{" "}
-            {relationship.values.familiarity.toFixed(2)}, confiança{" "}
-            {relationship.values.trust.toFixed(2)}, afinidade{" "}
-            {relationship.values.affinity.toFixed(2)}, admiração{" "}
-            {relationship.values.admiration.toFixed(2)}, irritação{" "}
-            {relationship.values.irritation.toFixed(2)}, confiabilidade{" "}
-            {relationship.values.reliabilityExpectation.toFixed(2)} —{" "}
+            {relationship.subjectRef}: familiaridade {relationship.values.familiarity.toFixed(2)}, confiança {relationship.values.trust.toFixed(2)}, afinidade {relationship.values.affinity.toFixed(2)}, admiração {relationship.values.admiration.toFixed(2)}, irritação {relationship.values.irritation.toFixed(2)}, confiabilidade {relationship.values.reliabilityExpectation.toFixed(2)} —{" "}
             {relationship.events.length} evento(s)
             <div>
               <button
@@ -3344,11 +3254,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
             orçamento {goal.budgetUnits}
             <p>{goal.description}</p>
             {goal.completionEvidence ? <p>{goal.completionEvidence}</p> : null}
-            <p>
-              Origem: {goal.origin === "owner" ? "Owner" : "proposta do agente"}
-              ; prazo: {goal.dueAt ?? "sem prazo"}; expira:{" "}
-              {goal.expiresAt ?? "sem expiração"}; fictício: sim.
-            </p>
+            <p>Origem: {goal.origin}; prazo: {goal.dueAt ?? "sem prazo"}; expiração: {goal.expiresAt ?? "sem expiração"}; fictício: sim.</p>
             {goal.status === "proposed" ? (
               <>
                 <button
@@ -3367,6 +3273,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
                 </button>
               </>
             ) : null}
+            {goal.status === "active" ? <button type="button" disabled={busy} onClick={() => void startActivity(goal)}>Iniciar atividade fictícia</button> : null}
             {goal.status === "active" ? (
               <>
                 <button
@@ -3383,13 +3290,6 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
                 >
                   Suspender objetivo
                 </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void startActivity(goal)}
-                >
-                  Iniciar atividade fictícia
-                </button>
               </>
             ) : null}
             {goal.status === "suspended" ? (
@@ -3404,66 +3304,9 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
           </li>
         ))}
       </ul>
-      <label>
-        Tipo de atividade fictícia
-        <input
-          value={activityType}
-          maxLength={64}
-          onChange={(event) => setActivityType(event.target.value)}
-        />
-      </label>
+      <label>Tipo de atividade fictícia<input value={activityType} maxLength={64} onChange={(event) => setActivityType(event.target.value)} /></label>
       <h4>Atividades fictícias</h4>
-      <ul>
-        {activities.map((activity) => (
-          <li key={activity.id}>
-            {activity.activityType} — {activity.status} — orçamento{" "}
-            {activity.budgetUnits}; somente simulação.
-            {activity.status === "active" ? (
-              <>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void setActivityStatus(activity, "paused")}
-                >
-                  Pausar
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void setActivityStatus(activity, "completed")}
-                >
-                  Concluir
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void setActivityStatus(activity, "expired")}
-                >
-                  Expirar
-                </button>
-              </>
-            ) : null}
-            {activity.status === "paused" ? (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void setActivityStatus(activity, "active")}
-              >
-                Retomar
-              </button>
-            ) : null}
-            {!["archived"].includes(activity.status) ? (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void setActivityStatus(activity, "archived")}
-              >
-                Arquivar
-              </button>
-            ) : null}
-          </li>
-        ))}
-      </ul>
+      <ul>{activities.map((activity) => <li key={activity.id}>{activity.activityType} — {activity.status} — orçamento {activity.budgetUnits}; somente simulação. {activity.status === "active" ? <><button type="button" disabled={busy} onClick={() => void setActivityStatus(activity, "paused")}>Pausar</button><button type="button" disabled={busy} onClick={() => void setActivityStatus(activity, "completed")}>Concluir</button><button type="button" disabled={busy} onClick={() => void setActivityStatus(activity, "expired")}>Expirar</button></> : null}{activity.status === "paused" ? <button type="button" disabled={busy} onClick={() => void setActivityStatus(activity, "active")}>Retomar</button> : null}{activity.status !== "archived" ? <button type="button" disabled={busy} onClick={() => void setActivityStatus(activity, "archived")}>Arquivar</button> : null}</li>)}</ul>
       <label>
         Título do objetivo
         <input
@@ -4341,15 +4184,11 @@ const toolErrorLabels: Record<string, string> = {
   workspace_root_limit: "O limite de 64 raízes locais do Owner foi atingido.",
   workspace_path_unavailable: "O caminho relativo local não está disponível.",
   workspace_path_invalid: "O caminho relativo local não é seguro.",
-  workspace_destination_exists:
-    "O destino local já existe; nada foi sobrescrito.",
+  workspace_destination_exists: "O destino local já existe; nada foi sobrescrito.",
   workspace_move_failed: "A movimentação local falhou e foi registrada.",
-  workspace_move_partial:
-    "A movimentação local ficou parcial e foi registrada.",
-  workspace_source_identity_unavailable:
-    "A identidade da origem local não pôde ser verificada.",
-  workspace_source_identity_mismatch:
-    "A origem local mudou desde a prévia; nada foi movido.",
+  workspace_move_partial: "A movimentação local ficou parcial e foi registrada.",
+  workspace_source_identity_unavailable: "A identidade da origem local não pôde ser verificada.",
+  workspace_source_identity_mismatch: "A origem local mudou desde a prévia; nada foi movido.",
   tool_payload_invalid:
     "A resposta da ferramenta não passou no contrato seguro.",
 };
@@ -4462,19 +4301,9 @@ function ToolControls({
     setSessions(nextSessions);
     setAudit(nextAudit);
     setRoots(nextRoots);
-    setSelectedRootId((current) =>
-      current && nextRoots.some((root) => root.id === current && root.enabled)
-        ? current
-        : (nextRoots.find((root) => root.enabled)?.id ?? ""),
-    );
+    setSelectedRootId((current) => current && nextRoots.some((root) => root.id === current && root.enabled) ? current : (nextRoots.find((root) => root.enabled)?.id ?? ""));
     setSelectedToolId((current) =>
-      current &&
-      nextCatalog.some(
-        (manifest) =>
-          manifest.toolId === current &&
-          (manifest.scopeKind !== "workspace_root" ||
-            nextRoots.some((root) => root.enabled)),
-      )
+      current && nextCatalog.some((manifest) => manifest.toolId === current && (manifest.scopeKind !== "workspace_root" || nextRoots.some((root) => root.enabled)))
         ? current
         : (nextCatalog[0]?.toolId ?? ""),
     );
@@ -4504,56 +4333,27 @@ function ToolControls({
 
   useEffect(() => {
     if (!selectedManifest) return;
-    setScopeRef(
-      selectedManifest.scopeKind === "workspace_root"
-        ? `workspace_root:${selectedRootId}`
-        : `fixture:${selectedManifest.scopeKind}/owner`,
-    );
+    setScopeRef(selectedManifest.scopeKind === "workspace_root" ? `workspace_root:${selectedRootId}` : `fixture:${selectedManifest.scopeKind}/owner`);
     setAllowPreview(true);
     setAllowExecute(true);
   }, [selectedManifest, selectedRootId]);
 
   async function addRoot() {
     if (blocked || !rootPath.trim()) return;
-    setBusy(true);
-    setError(null);
+    setBusy(true); setError(null);
     try {
-      parseToolPayload(
-        await invoke<unknown>("add_workspace_root", {
-          path: rootPath.trim(),
-          idempotencyKey: `workspace-root-${crypto.randomUUID()}`,
-          temporaryChat: false,
-        }),
-        parseWorkspaceRoot,
-      );
-      setRootPath("");
-      await loadData();
-    } catch (rootError: unknown) {
-      setError(toolErrorMessage(rootError));
-    } finally {
-      setBusy(false);
-    }
+      parseToolPayload(await invoke<unknown>("add_workspace_root", { path: rootPath.trim(), idempotencyKey: `workspace-root-${crypto.randomUUID()}`, temporaryChat: false }), parseWorkspaceRoot);
+      setRootPath(""); await loadData();
+    } catch (rootError: unknown) { setError(toolErrorMessage(rootError)); } finally { setBusy(false); }
   }
 
   async function disableRoot(rootId: string) {
     if (blocked) return;
-    setBusy(true);
-    setError(null);
+    setBusy(true); setError(null);
     try {
-      parseToolPayload(
-        await invoke<unknown>("remove_workspace_root", {
-          rootId,
-          idempotencyKey: `workspace-root-disable-${crypto.randomUUID()}`,
-          temporaryChat: false,
-        }),
-        parseWorkspaceRoot,
-      );
+      parseToolPayload(await invoke<unknown>("remove_workspace_root", { rootId, idempotencyKey: `workspace-root-disable-${crypto.randomUUID()}`, temporaryChat: false }), parseWorkspaceRoot);
       await loadData();
-    } catch (rootError: unknown) {
-      setError(toolErrorMessage(rootError));
-    } finally {
-      setBusy(false);
-    }
+    } catch (rootError: unknown) { setError(toolErrorMessage(rootError)); } finally { setBusy(false); }
   }
 
   function buildInput(): ToolActionInput | null {
@@ -4714,12 +4514,7 @@ function ToolControls({
   return (
     <section className="tool-controls" aria-label="Ferramentas supervisionadas">
       <h3>Ferramentas supervisionadas</h3>
-      <p>
-        Ferramentas fixture permanecem determinísticas. Inspeção local e
-        movimentos limitados dentro de uma raiz Owner configurada têm efeito no
-        host somente após prévia, aprovação e segunda confirmação; calendário e
-        mensagens continuam mocks provider-neutral.
-      </p>
+      <p>Ferramentas fixture permanecem determinísticas. Inspeção local e movimentos limitados dentro de uma raiz Owner configurada têm efeito no host somente após prévia, aprovação e segunda confirmação; calendário e mensagens continuam mocks provider-neutral.</p>
       {temporaryChat ? (
         <p role="alert">Conversa temporária: ferramentas bloqueadas.</p>
       ) : null}
@@ -4729,37 +4524,10 @@ function ToolControls({
       {error ? <p role="alert">{error}</p> : null}
       <section className="settings-card">
         <h4>Raízes locais do Owner</h4>
-        <p>
-          Somente caminhos escolhidos pelo Owner; a raiz é validada pelo Rust e
-          não aparece na auditoria.
-        </p>
-        <input
-          value={rootPath}
-          onChange={(event) => setRootPath(event.target.value)}
-          placeholder="Caminho local escolhido pelo Owner"
-          disabled={busy || blocked}
-        />
-        <button
-          type="button"
-          onClick={() => void addRoot()}
-          disabled={busy || blocked || !rootPath.trim()}
-        >
-          Adicionar raiz
-        </button>
-        <ul>
-          {roots.map((root) => (
-            <li key={root.id}>
-              <code>{root.id}</code> — {root.enabled ? "ativa" : "desativada"}{" "}
-              <button
-                type="button"
-                onClick={() => void disableRoot(root.id)}
-                disabled={busy || blocked || !root.enabled}
-              >
-                Desativar
-              </button>
-            </li>
-          ))}
-        </ul>
+        <p>Somente caminhos escolhidos pelo Owner; a raiz é validada pelo Rust e não aparece na auditoria.</p>
+        <input value={rootPath} onChange={(event) => setRootPath(event.target.value)} placeholder="Caminho local escolhido pelo Owner" disabled={busy || blocked} />
+        <button type="button" onClick={() => void addRoot()} disabled={busy || blocked || !rootPath.trim()}>Adicionar raiz</button>
+        <ul>{roots.map((root) => <li key={root.id}><code>{root.id}</code> — {root.enabled ? "ativa" : "desativada"} <button type="button" onClick={() => void disableRoot(root.id)} disabled={busy || blocked || !root.enabled}>Desativar</button></li>)}</ul>
       </section>
       <section className="settings-card">
         <h4>Catálogo local v1</h4>
@@ -4770,11 +4538,7 @@ function ToolControls({
                 {toolLabels[manifest.toolId] ?? "Ferramenta fixture"}
               </strong>{" "}
               <span>
-                {manifest.adapterKind === "workspace_local"
-                  ? "efeito local limitado no host"
-                  : manifest.classification === "read_only"
-                    ? "somente leitura"
-                    : "altera estado somente no mock"}
+                {manifest.adapterKind === "workspace_local" ? "efeito local limitado no host" : manifest.classification === "read_only" ? "somente leitura" : "altera estado somente no mock"}
                 {manifest.requiresSecondConfirmation
                   ? "; exige segunda confirmação"
                   : ""}
@@ -4794,47 +4558,22 @@ function ToolControls({
               setAction(null);
             }}
           >
-            {catalog
-              .filter(
-                (manifest) =>
-                  manifest.scopeKind !== "workspace_root" ||
-                  roots.some((root) => root.enabled),
-              )
-              .map((manifest) => (
-                <option key={manifest.toolId} value={manifest.toolId}>
-                  {toolLabels[manifest.toolId] ?? manifest.toolId}
-                </option>
-              ))}
+            {catalog.filter((manifest) => manifest.scopeKind !== "workspace_root" || roots.some((root) => root.enabled)).map((manifest) => (
+              <option key={manifest.toolId} value={manifest.toolId}>
+                {toolLabels[manifest.toolId] ?? manifest.toolId}
+              </option>
+            ))}
           </select>
         </label>
         <label>
           Escopo fixture
           <input
             value={scopeRef}
-            onChange={(event) =>
-              selectedManifest?.scopeKind !== "workspace_root" &&
-              setScopeRef(event.target.value)
-            }
+            onChange={(event) => selectedManifest?.scopeKind !== "workspace_root" && setScopeRef(event.target.value)}
             readOnly={selectedManifest?.scopeKind === "workspace_root"}
           />
         </label>
-        {selectedManifest?.scopeKind === "workspace_root" ? (
-          <label>
-            Raiz local
-            <select
-              value={selectedRootId}
-              onChange={(event) => setSelectedRootId(event.target.value)}
-            >
-              {roots
-                .filter((root) => root.enabled)
-                .map((root) => (
-                  <option key={root.id} value={root.id}>
-                    {root.id}
-                  </option>
-                ))}
-            </select>
-          </label>
-        ) : null}
+        {selectedManifest?.scopeKind === "workspace_root" ? <label>Raiz local<select value={selectedRootId} onChange={(event) => setSelectedRootId(event.target.value)}>{roots.filter((root) => root.enabled).map((root) => <option key={root.id} value={root.id}>{root.id}</option>)}</select></label> : null}
         <label>
           <input
             type="checkbox"
@@ -4901,8 +4640,7 @@ function ToolControls({
         disabled={busy || blocked || selectedSession?.status !== "active"}
       >
         <legend>Prévia da ação</legend>
-        {selectedToolId === "workspace.inspect_scope" ||
-        selectedToolId === "workspace.inspect_local" ? (
+        {selectedToolId === "workspace.inspect_scope" || selectedToolId === "workspace.inspect_local" ? (
           <label>
             Entradas relativas, separadas por vírgula
             <input
@@ -4911,8 +4649,7 @@ function ToolControls({
             />
           </label>
         ) : null}
-        {selectedToolId === "workspace.organize_files" ||
-        selectedToolId === "workspace.organize_local" ? (
+        {selectedToolId === "workspace.organize_files" || selectedToolId === "workspace.organize_local" ? (
           <>
             <label>
               Origem relativa
@@ -5077,9 +4814,7 @@ function ToolControls({
                   })
                 }
               >
-                {action?.toolId.endsWith("_local")
-                  ? "Executar efeito local explicitamente"
-                  : "Executar mock explicitamente"}
+                {action?.toolId.endsWith("_local") ? "Executar efeito local explicitamente" : "Executar mock explicitamente"}
               </button>
             ) : null}
             {actionIsPending ? (
@@ -5117,13 +4852,11 @@ function ToolControls({
           </div>
           {action.result ? (
             <div>
-              <h5>
-                {action.toolId.endsWith("_local")
-                  ? "Saída não confiável da execução local"
-                  : "Saída não confiável do mock"}
-              </h5>
+              <h5>{action.toolId.endsWith("_local") ? "Saída não confiável da execução local" : "Saída não confiável do mock"}</h5>
               <pre>{action.result.output}</pre>
-              <p>Alteração no host: {action.result.changed ? "sim" : "não"}.</p>
+              <p>
+                Alteração no host: {action.result.changed ? "sim" : "não"}.
+              </p>
             </div>
           ) : null}
         </section>
@@ -5284,9 +5017,7 @@ function ExtensionControls({
   const [packageToolCatalog, setPackageToolCatalog] = useState(false);
   const [packageEchoInput, setPackageEchoInput] = useState(false);
   const [executionInput, setExecutionInput] = useState("");
-  const [execution, setExecution] = useState<ExtensionExecutionResult | null>(
-    null,
-  );
+  const [execution, setExecution] = useState<ExtensionExecutionResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const blocked = temporaryChat || safeMode;
@@ -5360,18 +5091,12 @@ function ExtensionControls({
     if (packageEchoInput) {
       instructions.push({ op: "emit_text", text: null, echoInput: true });
     } else {
-      instructions.push({
-        op: "emit_text",
-        text: "Extensão A.I.P. executada.",
-        echoInput: null,
-      });
+      instructions.push({ op: "emit_text", text: "Extensão A.I.P. executada.", echoInput: null });
     }
     if (packageAgentContext) instructions.push({ op: "read_agent_context" });
     if (packageToolCatalog) instructions.push({ op: "list_tool_catalog" });
     instructions.push({ op: "yield" });
-    const raw = await invoke<unknown>("build_extension_package", {
-      instructions,
-    });
+    const raw = await invoke<unknown>("build_extension_package", { instructions });
     return parseExtensionPayload(raw, parseExtensionPackage);
   }
 
@@ -5561,13 +5286,7 @@ function ExtensionControls({
   }
 
   async function executeSelectedExtension() {
-    if (
-      !selectedCatalog ||
-      blocked ||
-      selectedCatalog.lifecycle !== "active" ||
-      !selectedCatalog.manifest.package
-    )
-      return;
+    if (!selectedCatalog || blocked || selectedCatalog.lifecycle !== "active" || !selectedCatalog.manifest.package) return;
     setBusy(true);
     setError(null);
     try {
@@ -5596,17 +5315,9 @@ function ExtensionControls({
     setBusy(true);
     try {
       await invoke("cancel_extension_execution", {
-        request: {
-          agentId,
-          ownerUserId: OWNER_USER_ID,
-          executionId: execution.executionId,
-        },
+        request: { agentId, ownerUserId: OWNER_USER_ID, executionId: execution.executionId },
       });
-      setExecution({
-        ...execution,
-        status: "cancelled",
-        error: "extension_execution_cancelled",
-      });
+      setExecution({ ...execution, status: "cancelled", error: "extension_execution_cancelled" });
     } catch (cancelError: unknown) {
       setError(extensionErrorMessage(cancelError));
     } finally {
@@ -5707,49 +5418,15 @@ function ExtensionControls({
         ) : null}
         <fieldset disabled={busy || blocked}>
           <label>
-            <input
-              type="checkbox"
-              checked={packageEnabled}
-              onChange={(event) => setPackageEnabled(event.target.checked)}
-            />{" "}
+            <input type="checkbox" checked={packageEnabled} onChange={(event) => setPackageEnabled(event.target.checked)} />{" "}
             Criar pacote declarativo executável
           </label>
           {packageEnabled ? (
             <>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={packageAgentContext}
-                  onChange={(event) =>
-                    setPackageAgentContext(event.target.checked)
-                  }
-                />{" "}
-                Ler identidade limitada do agente
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={packageToolCatalog}
-                  onChange={(event) =>
-                    setPackageToolCatalog(event.target.checked)
-                  }
-                />{" "}
-                Listar catálogo limitado de ferramentas
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={packageEchoInput}
-                  onChange={(event) =>
-                    setPackageEchoInput(event.target.checked)
-                  }
-                />{" "}
-                Repetir entrada limitada
-              </label>
-              <p>
-                O Rust constrói e calcula o hash; a interface nunca calcula nem
-                autoriza integridade.
-              </p>
+              <label><input type="checkbox" checked={packageAgentContext} onChange={(event) => setPackageAgentContext(event.target.checked)} /> Ler identidade limitada do agente</label>
+              <label><input type="checkbox" checked={packageToolCatalog} onChange={(event) => setPackageToolCatalog(event.target.checked)} /> Listar catálogo limitado de ferramentas</label>
+              <label><input type="checkbox" checked={packageEchoInput} onChange={(event) => setPackageEchoInput(event.target.checked)} /> Repetir entrada limitada</label>
+              <p>O Rust constrói e calcula o hash; a interface nunca calcula nem autoriza integridade.</p>
             </>
           ) : null}
         </fieldset>
@@ -5923,50 +5600,16 @@ function ExtensionControls({
 
       <section className="settings-card">
         <h4>Execução da revisão ativa</h4>
-        <p>
-          Somente uma extensão executável, revisada pelo Owner e explicitamente
-          ativa pode executar.
-        </p>
+        <p>Somente uma extensão executável, revisada pelo Owner e explicitamente ativa pode executar.</p>
         <label>
           Entrada limitada
-          <textarea
-            value={executionInput}
-            maxLength={4096}
-            onChange={(event) => setExecutionInput(event.target.value)}
-          />
+          <textarea value={executionInput} maxLength={4096} onChange={(event) => setExecutionInput(event.target.value)} />
         </label>
         <div className="message-actions">
-          <button
-            type="button"
-            disabled={
-              busy ||
-              blocked ||
-              !selectedCatalog?.manifest.package ||
-              selectedCatalog.lifecycle !== "active"
-            }
-            onClick={() => void executeSelectedExtension()}
-          >
-            Executar revisão ativa
-          </button>
-          <button
-            type="button"
-            disabled={
-              busy || blocked || !execution || execution.status !== "succeeded"
-            }
-            onClick={() => void cancelSelectedExecution()}
-          >
-            Cancelar execução registrada
-          </button>
+          <button type="button" disabled={busy || blocked || !selectedCatalog?.manifest.package || selectedCatalog.lifecycle !== "active"} onClick={() => void executeSelectedExtension()}>Executar revisão ativa</button>
+          <button type="button" disabled={busy || blocked || !execution || execution.status !== "succeeded"} onClick={() => void cancelSelectedExecution()}>Cancelar execução registrada</button>
         </div>
-        {execution ? (
-          <p role="status">
-            Execução {execution.executionId}: {execution.status}; passos{" "}
-            {execution.steps}; saída: {execution.output ?? "(vazia)"}; erro:{" "}
-            {execution.error ?? "nenhum"}
-          </p>
-        ) : (
-          <p>Nenhuma execução solicitada.</p>
-        )}
+        {execution ? <p role="status">Execução {execution.executionId}: {execution.status}; passos {execution.steps}; saída: {execution.output ?? "(vazia)"}; erro: {execution.error ?? "nenhum"}</p> : <p>Nenhuma execução solicitada.</p>}
       </section>
 
       <section className="settings-card">
@@ -7322,41 +6965,16 @@ function parseGatewayPayload<T>(
   return parsed;
 }
 
-type GatewayTransportStartResult = {
-  enabled: boolean;
-  endpoint: string;
-  pairingCode: string;
-};
+type GatewayTransportStartResult = { enabled: boolean; endpoint: string; pairingCode: string };
 function parseGatewayTransportStatus(value: unknown) {
   if (value !== null && typeof value === "object") {
     const candidate = value as Record<string, unknown>;
-    if (
-      typeof candidate.enabled === "boolean" &&
-      (candidate.endpoint === null || typeof candidate.endpoint === "string") &&
-      typeof candidate.pairingAvailable === "boolean"
-    )
-      return {
-        enabled: candidate.enabled,
-        endpoint: candidate.endpoint,
-        pairingAvailable: candidate.pairingAvailable,
-      };
+    if (typeof candidate.enabled === "boolean" && (candidate.endpoint === null || typeof candidate.endpoint === "string") && typeof candidate.pairingAvailable === "boolean") return { enabled: candidate.enabled, endpoint: candidate.endpoint, pairingAvailable: candidate.pairingAvailable };
   }
-  return {
-    enabled: false,
-    endpoint: null as string | null,
-    pairingAvailable: false,
-  };
+  return { enabled: false, endpoint: null as string | null, pairingAvailable: false };
 }
-function isGatewayTransportStartResult(
-  value: unknown,
-): value is GatewayTransportStartResult {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    (value as Record<string, unknown>).enabled === true &&
-    typeof (value as Record<string, unknown>).endpoint === "string" &&
-    typeof (value as Record<string, unknown>).pairingCode === "string"
-  );
+function isGatewayTransportStartResult(value: unknown): value is GatewayTransportStartResult {
+  return value !== null && typeof value === "object" && (value as Record<string, unknown>).enabled === true && typeof (value as Record<string, unknown>).endpoint === "string" && typeof (value as Record<string, unknown>).pairingCode === "string";
 }
 
 export function GatewayControls({
@@ -7621,46 +7239,22 @@ export function GatewayControls({
 
   async function startTransport() {
     if (blocked || busy) return;
-    setBusy(true);
-    setError(null);
-    setPairingCode(null);
+    setBusy(true); setError(null); setPairingCode(null);
     try {
-      const raw = await invoke<unknown>("start_gateway_transport", {
-        agentId,
-        ownerConfirmed: true,
-        privateNetworkConfirmed: false,
-        bindAddress: "127.0.0.1",
-        port: 0,
-        temporaryChat,
-      });
-      if (!isGatewayTransportStartResult(raw))
-        throw new Error("gateway_response_invalid");
-      setTransport({
-        enabled: true,
-        endpoint: raw.endpoint,
-        pairingAvailable: true,
-      });
+      const raw = await invoke<unknown>("start_gateway_transport", { agentId, ownerConfirmed: true, privateNetworkConfirmed: false, bindAddress: "127.0.0.1", port: 0, temporaryChat });
+      if (!isGatewayTransportStartResult(raw)) throw new Error("gateway_response_invalid");
+      setTransport({ enabled: true, endpoint: raw.endpoint, pairingAvailable: true });
       setPairingCode(raw.pairingCode);
-    } catch (operationError: unknown) {
-      setError(gatewayErrorMessage(operationError));
-    } finally {
-      setBusy(false);
-    }
+    } catch (operationError: unknown) { setError(gatewayErrorMessage(operationError)); }
+    finally { setBusy(false); }
   }
 
   async function stopTransport() {
     if (busy) return;
-    setBusy(true);
-    setError(null);
-    setPairingCode(null);
-    try {
-      await invoke("stop_gateway_transport");
-      setTransport(parseGatewayTransportStatus(null));
-    } catch (operationError: unknown) {
-      setError(gatewayErrorMessage(operationError));
-    } finally {
-      setBusy(false);
-    }
+    setBusy(true); setError(null); setPairingCode(null);
+    try { await invoke("stop_gateway_transport"); setTransport(parseGatewayTransportStatus(null)); }
+    catch (operationError: unknown) { setError(gatewayErrorMessage(operationError)); }
+    finally { setBusy(false); }
   }
 
   return (
@@ -7673,13 +7267,10 @@ export function GatewayControls({
         </p>
       </header>
       <ul>
+          <li>TCP autenticado aip-gateway-v1, limitado ao local/privado e iniciado somente por ação explícita do Owner.</li>
         <li>
-          TCP autenticado aip-gateway-v1, limitado ao local/privado e iniciado
-          somente por ação explícita do Owner.
-        </li>
-        <li>
-          Cloudflare é apenas configuração metadata; credenciais ausentes e sem
-          credenciais, BielOS, relay ou túnel.
+          Cloudflare é apenas configuração metadata; credenciais ausentes e
+            sem credenciais, BielOS, relay ou túnel.
         </li>
         <li>
           Rust/SQLite mantém a autoridade sobre transferência, autenticação,
@@ -7702,34 +7293,12 @@ export function GatewayControls({
 
       <section aria-label="Ciclo de vida do gateway local">
         <h4>Listener local autenticado</h4>
-        <p>
-          Estado: <strong>{transport.enabled ? "ativo" : "parado"}</strong>;
-          endpoint: <code>{transport.endpoint ?? "nenhum"}</code>; pairing
-          disponível: {transport.pairingAvailable ? "sim" : "não"}.
-        </p>
+        <p>Estado: <strong>{transport.enabled ? "ativo" : "parado"}</strong>; endpoint: <code>{transport.endpoint ?? "nenhum"}</code>; pairing disponível: {transport.pairingAvailable ? "sim" : "não"}.</p>
         <div className="message-actions">
-          <button
-            type="button"
-            disabled={busy || blocked || transport.enabled}
-            onClick={() => void startTransport()}
-          >
-            Iniciar gateway local
-          </button>
-          <button
-            type="button"
-            disabled={busy || !transport.enabled}
-            onClick={() => void stopTransport()}
-          >
-            Parar gateway local
-          </button>
+          <button type="button" disabled={busy || blocked || transport.enabled} onClick={() => void startTransport()}>Iniciar gateway local</button>
+          <button type="button" disabled={busy || !transport.enabled} onClick={() => void stopTransport()}>Parar gateway local</button>
         </div>
-        {pairingCode ? (
-          <p role="alert">
-            <strong>Código de pairing transitório:</strong>{" "}
-            <code>{pairingCode}</code>. Não persista nem compartilhe este
-            código.
-          </p>
-        ) : null}
+        {pairingCode ? <p role="alert"><strong>Código de pairing transitório:</strong> <code>{pairingCode}</code>. Não persista nem compartilhe este código.</p> : null}
       </section>
 
       <div className="message-actions">

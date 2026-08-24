@@ -1,5 +1,13 @@
 # AIP Data Model
 
+## Phase 7B–7D source references
+
+Opinion evidence and relationship events use explicit `memory:<id>` or
+`message:<id>` references. Rust checks agent ownership, Owner lineage, memory
+confirmation/status, completed conversation state, and complete message state in
+the same SQLite transaction. Invalidated memory sources supersede dependent
+records without deleting history and trigger deterministic projection recalculation.
+
 ## Phase 2 identity
 
 One implicit local Owner owns the two fixed initial agents. Migration `0004` adds a

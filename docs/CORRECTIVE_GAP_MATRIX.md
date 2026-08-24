@@ -1,5 +1,13 @@
 # Corrective roadmap gap matrix
 
+## Current correction evidence
+
+7B/7C source references are fail-closed to owned confirmed memories or completed
+conversation messages, with transactional memory invalidation reconciliation.
+7D activity controls are typed, fictional-only, bounded, and locally persisted.
+Focused Rust validation passed; installed-Windows interaction and subjective
+Portuguese review remain HUMAN VALIDATION PENDING.
+
 Architect evidence for the corrective completion mission. This matrix separates the
 previous metadata/checkpoint implementation from the real functional behavior still
 safe to add before the final human gate.

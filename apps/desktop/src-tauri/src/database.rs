@@ -911,8 +911,21 @@ impl Database {
         ) {
             return Err(DatabaseError::InvalidValue);
         }
-        let connection = self.open()?;
-        if connection.execute("UPDATE agent_memories SET status = ?1, confirmation_status = CASE WHEN ?1 = 'active' THEN 'confirmed' WHEN ?1 = 'candidate_rejected' THEN 'rejected' ELSE confirmation_status END, archived_at = CASE WHEN ?1 = 'archived' THEN ?2 ELSE NULL END, trashed_at = CASE WHEN ?1 = 'trashed' THEN ?2 ELSE NULL END, updated_at = ?2 WHERE id = ?3 AND agent_id = ?4", params![status, now_millis(), memory_id, agent_id])? == 1 { Ok(()) } else { Err(DatabaseError::OwnershipMismatch) }
+        let mut connection = self.open()?;
+        let tx = connection.transaction()?;
+        let changed = tx.execute("UPDATE agent_memories SET status = ?1, confirmation_status = CASE WHEN ?1 = 'active' THEN 'confirmed' WHEN ?1 = 'candidate_rejected' THEN 'rejected' ELSE confirmation_status END, archived_at = CASE WHEN ?1 = 'archived' THEN ?2 ELSE NULL END, trashed_at = CASE WHEN ?1 = 'trashed' THEN ?2 ELSE NULL END, updated_at = ?2 WHERE id = ?3 AND agent_id = ?4", params![status, now_millis(), memory_id, agent_id])?;
+        if changed != 1 {
+            return Err(DatabaseError::OwnershipMismatch);
+        }
+        if status != "active" {
+            crate::cognitive::reconcile_invalid_source_tx(
+                &tx,
+                agent_id,
+                &format!("memory:{memory_id}"),
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn update_memory(
