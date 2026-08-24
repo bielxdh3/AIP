@@ -18,6 +18,9 @@ import type {
   CognitiveEventSummary,
   CognitiveGoalApprovalRequest,
   CognitiveGoal,
+  FictionalActivity,
+  FictionalActivityRequest,
+  FictionalActivityStatusRequest,
   CognitiveGoalStatusRequest,
   CognitiveCandidate,
   CognitiveCandidateRequest,
@@ -2313,6 +2316,9 @@ type CognitiveCommandMap = {
     args: { agentId: string };
     response: CognitiveGoal[];
   };
+  list_fictional_activities: { args: { agentId: string }; response: FictionalActivity[] };
+  start_fictional_activity: { args: FictionalActivityRequest; response: FictionalActivity };
+  update_fictional_activity_status: { args: FictionalActivityStatusRequest; response: FictionalActivity };
   propose_cognitive_opinion: {
     args: OpinionCandidateRequest;
     response: CognitiveOpinion;
@@ -2424,6 +2430,8 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
   const [opinions, setOpinions] = useState<CognitiveOpinion[]>([]);
   const [relationships, setRelationships] = useState<RelationshipState[]>([]);
   const [goals, setGoals] = useState<CognitiveGoal[]>([]);
+  const [activities, setActivities] = useState<FictionalActivity[]>([]);
+  const [activityType, setActivityType] = useState("fictional-reading");
   const [conversationPolicies, setConversationPolicies] = useState<
     ConversationPolicy[]
   >([]);
@@ -2478,6 +2486,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
       nextOpinions,
       nextRelationships,
       nextGoals,
+      nextActivities,
       nextPolicies,
       nextConversations,
       nextCandidates,
@@ -2485,6 +2494,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
       invokeCognitive("list_cognitive_opinions", { agentId }),
       invokeCognitive("list_cognitive_relationships", { agentId }),
       invokeCognitive("list_cognitive_goals", { agentId }),
+      invokeCognitive("list_fictional_activities", { agentId }),
       invokeCognitive("list_agent_conversation_policies", { agentId }),
       invokeCognitive("list_cognitive_conversations", { agentId }),
       invokeCognitive("list_cognitive_candidates", { agentId }),
@@ -2493,6 +2503,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
     setOpinions(nextOpinions);
     setRelationships(nextRelationships);
     setGoals(nextGoals);
+    setActivities(Array.isArray(nextActivities) ? nextActivities : []);
     setConversationPolicies(Array.isArray(nextPolicies) ? nextPolicies : []);
     setConversations(Array.isArray(nextConversations) ? nextConversations : []);
     setCandidates(Array.isArray(nextCandidates) ? nextCandidates : []);
@@ -2504,6 +2515,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
     setOpinions([]);
     setRelationships([]);
     setGoals([]);
+    setActivities([]);
     setConversationPolicies([]);
     setConversations([]);
     setCandidates([]);
@@ -2827,6 +2839,19 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
     );
   }
 
+  async function startActivity(goal: CognitiveGoal) {
+    await runCognitive("start_fictional_activity", {
+      agentId, goalId: goal.id, activityType: activityType.trim(), budgetUnits: 1,
+      durationMs: 60_000, idempotencyKey: crypto.randomUUID(), temporaryChat: false,
+    }, "Atividade fictícia iniciada.");
+  }
+
+  async function setActivityStatus(activity: FictionalActivity, status: FictionalActivity["status"]) {
+    await runCognitive("update_fictional_activity_status", {
+      agentId, activityId: activity.id, status, idempotencyKey: crypto.randomUUID(), temporaryChat: false,
+    }, "Status da atividade atualizado.");
+  }
+
   async function saveConversationPolicy() {
     const purpose = conversationPurpose.trim();
     if (!purpose) {
@@ -3049,7 +3074,8 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
             {opinion.subjectRef}: posição {opinion.stance.toFixed(2)}, confiança{" "}
             {opinion.confidence.toFixed(2)} ({opinion.status}) —{" "}
             {opinion.evidence.find((item) => item.status === "active")
-              ?.claimValue ?? "sem evidência ativa"}
+              ? `${opinion.evidence.find((item) => item.status === "active")!.claimValue} — fonte: ${opinion.evidence.find((item) => item.status === "active")!.sourceKind}/${opinion.evidence.find((item) => item.status === "active")!.sourceReference ?? "Owner"}, classificação: ${opinion.evidence.find((item) => item.status === "active")!.classification}, confiança: ${opinion.evidence.find((item) => item.status === "active")!.confidence.toFixed(2)}`
+              : "sem evidência ativa"}
             <div>
               {opinion.evidence.some((item) => item.status === "active") ? (
                 <button
@@ -3154,8 +3180,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
       <ul>
         {relationships.map((relationship) => (
           <li key={relationship.id}>
-            {relationship.subjectRef}: confiança{" "}
-            {relationship.values.trust.toFixed(2)} —{" "}
+            {relationship.subjectRef}: familiaridade {relationship.values.familiarity.toFixed(2)}, confiança {relationship.values.trust.toFixed(2)}, afinidade {relationship.values.affinity.toFixed(2)}, admiração {relationship.values.admiration.toFixed(2)}, irritação {relationship.values.irritation.toFixed(2)}, confiabilidade {relationship.values.reliabilityExpectation.toFixed(2)} —{" "}
             {relationship.events.length} evento(s)
             <div>
               <button
@@ -3229,6 +3254,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
             orçamento {goal.budgetUnits}
             <p>{goal.description}</p>
             {goal.completionEvidence ? <p>{goal.completionEvidence}</p> : null}
+            <p>Origem: {goal.origin}; prazo: {goal.dueAt ?? "sem prazo"}; expiração: {goal.expiresAt ?? "sem expiração"}; fictício: sim.</p>
             {goal.status === "proposed" ? (
               <>
                 <button
@@ -3247,6 +3273,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
                 </button>
               </>
             ) : null}
+            {goal.status === "active" ? <button type="button" disabled={busy} onClick={() => void startActivity(goal)}>Iniciar atividade fictícia</button> : null}
             {goal.status === "active" ? (
               <>
                 <button
@@ -3277,6 +3304,9 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
           </li>
         ))}
       </ul>
+      <label>Tipo de atividade fictícia<input value={activityType} maxLength={64} onChange={(event) => setActivityType(event.target.value)} /></label>
+      <h4>Atividades fictícias</h4>
+      <ul>{activities.map((activity) => <li key={activity.id}>{activity.activityType} — {activity.status} — orçamento {activity.budgetUnits}; somente simulação. {activity.status === "active" ? <><button type="button" disabled={busy} onClick={() => void setActivityStatus(activity, "paused")}>Pausar</button><button type="button" disabled={busy} onClick={() => void setActivityStatus(activity, "completed")}>Concluir</button><button type="button" disabled={busy} onClick={() => void setActivityStatus(activity, "expired")}>Expirar</button></> : null}{activity.status === "paused" ? <button type="button" disabled={busy} onClick={() => void setActivityStatus(activity, "active")}>Retomar</button> : null}{activity.status !== "archived" ? <button type="button" disabled={busy} onClick={() => void setActivityStatus(activity, "archived")}>Arquivar</button> : null}</li>)}</ul>
       <label>
         Título do objetivo
         <input

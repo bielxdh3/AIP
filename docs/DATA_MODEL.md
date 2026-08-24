@@ -1,5 +1,19 @@
 # AIP Data Model
 
+## Phase 7B–7D source references
+
+Opinion evidence and relationship events use explicit `memory:<id>`,
+`conversation:<id>`, or `message:<id>` references. Memory references require an
+owned active confirmed memory. Conversation/message references require the same
+Owner lineage and a completed public agent conversation (with a completed public
+turn for `message:<id>`). Rust validates these conditions in the write transaction;
+malformed, temporary, candidate, incomplete, failed, cancelled, archived,
+trashed, cross-agent, and cross-owner references fail closed. Invalidated memory
+sources supersede dependent records without deleting history and trigger
+deterministic opinion and relationship projection recalculation. A goal whose
+`expires_at` has elapsed becomes `cancelled` with explicit expiry evidence, while
+an activity whose bounded duration elapses becomes `expired`.
+
 ## Phase 2 identity
 
 One implicit local Owner owns the two fixed initial agents. Migration `0004` adds a

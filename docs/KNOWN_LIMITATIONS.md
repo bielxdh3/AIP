@@ -1,5 +1,12 @@
 # Known limitations
 
+Phase 7B–7D source lifecycle, projection reconciliation, goal expiry, and fictional
+activity controls are validated by the focused Rust suite (10 tests). The desktop UI
+suite currently passes (14 files, 51 tests); the earlier Windows `spawn EPERM` result
+from the executor is retained only as historical evidence. Installed-Windows
+interaction, packaged restart, and subjective Portuguese review remain HUMAN
+VALIDATION PENDING.
+
 Installed-Windows manual validation passed for the v0.1 package on 2026-07-30. The release-level
 approval covers the implemented v0.1 scope, so historical Phases 1–5 are DONE at that evidence
 level; earlier phase-specific notes remain historical preparation evidence and are not repeated as
@@ -8,9 +15,9 @@ A local Ollama integration test is skipped when its required model is not instal
 no cloud synchronization or released Android client; the post-v0.1 Phase 12 Android APK/protocol
 slice is functional locally, while physical-device and release validation
 remain reserved. BielOS integration, released voice feature,
-real supervised external tools, released screen vision analysis, or the post-release Phase 7E–7F
-cognitive-core conversation integration. The current development checkpoint implements
-bounded Phase 7B–7E local paths, the functional Phase 8 local voice runtime, the functional
+real supervised external tools, or released screen vision analysis. The current
+development checkpoint implements bounded Phase 7B–7F local paths, the functional
+Phase 8 local voice runtime, the functional
 Phase 9 supervised local-workspace effects, the functional Phase 10 closed declarative
 extension runtime, and the functional Phase 11 bounded Windows screen-capture/provider path; these are not
 v0.1 release claims. Phase 7E and 7F
