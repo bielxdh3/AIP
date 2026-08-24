@@ -215,6 +215,12 @@ runtime, manual, and remote reservations remain explicit there. This is not a v0
   and honest documentation. No new capability is introduced; see [the Phase 7F validation
   record](PHASE_7F_VALIDATION.md).
 
+Current corrective evidence: Rust source lifecycle validation and memory-invalidation
+reconciliation are implemented and covered by the focused cognitive suite; the
+Portuguese panel exposes activity lifecycle, evidence provenance, and all six
+relationship dimensions. Desktop Vitest remains an environment reservation when
+the host cannot spawn its worker.
+
 ## Post-v0.1 Phase 8: voice [FUNCTIONAL — HUMAN VALIDATION PENDING]
 
 The functional local runtime/effects checkpoint is implemented in Rust/SQLite, Tauri commands,

@@ -1,5 +1,13 @@
 # Phase 7E validation
 
+## Fresh correction evidence
+
+`cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml cognitive --quiet`
+passed with 13 tests. `cargo check --locked --manifest-path apps/desktop/src-tauri/Cargo.toml`
+and `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check` passed.
+Desktop Vitest was attempted on the current host and remained blocked by Windows
+`spawn EPERM`; no frontend runtime pass is claimed.
+
 ## Status and exact scope
 
 Phase 7E is implemented as a local Rust/SQLite path on the development branch. This

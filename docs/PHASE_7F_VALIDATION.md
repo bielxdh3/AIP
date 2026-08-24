@@ -1,5 +1,16 @@
 # Phase 7F validation
 
+## Fresh correction evidence
+
+Current exact validation: `cargo test --locked --manifest-path
+apps/desktop/src-tauri/Cargo.toml cognitive --quiet` — FUNCTIONAL — AUTOMATED
+VALIDATION COMPLETE (13 passed); `cargo check --locked --manifest-path
+apps/desktop/src-tauri/Cargo.toml` — passed; `cargo fmt --manifest-path
+apps/desktop/src-tauri/Cargo.toml --check` — passed; `git diff --check` — passed.
+The current desktop Vitest attempt remains unavailable because Windows returned
+`spawn EPERM`; this is preserved as unavailable evidence, not a pass. Installed
+Windows interaction and subjective Portuguese review are HUMAN VALIDATION PENDING.
+
 ## Current automated result
 
 Status: FUNCTIONAL — AUTOMATED VALIDATION COMPLETE. Opinion provenance, all six

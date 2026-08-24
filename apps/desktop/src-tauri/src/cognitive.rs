@@ -982,6 +982,69 @@ fn validate_source_reference(
     Ok(reference)
 }
 
+fn validate_source_reference_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    source_kind: &str,
+    source_reference: Option<&str>,
+) -> Result<Option<String>, DatabaseError> {
+    let reference = validate_source_reference(source_kind, source_reference)?;
+    let Some(reference) = reference.as_deref() else {
+        return Ok(None);
+    };
+    if let Some(memory_id) = reference.strip_prefix("memory:") {
+        let valid: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_memories WHERE id = ?1 AND agent_id = ?2 AND status = 'active' AND confirmation_status = 'confirmed')",
+            params![memory_id, agent_id], |row| row.get(0))?;
+        if !valid {
+            return Err(DatabaseError::Cognitive("source_ineligible"));
+        }
+        return Ok(Some(reference.to_owned()));
+    }
+    if let Some(message_id) = reference.strip_prefix("message:") {
+        let valid: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE id = ?1 AND agent_id = ?2 AND status = 'complete' AND completed_at IS NOT NULL AND conversation_id IN (SELECT id FROM conversations WHERE agent_id = ?2 AND status = 'completed'))",
+            params![message_id, agent_id], |row| row.get(0))?;
+        if !valid {
+            return Err(DatabaseError::Cognitive("source_ineligible"));
+        }
+        return Ok(Some(reference.to_owned()));
+    }
+    Err(DatabaseError::Cognitive("source_ineligible"))
+}
+
+pub(crate) fn reconcile_invalid_source_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    source_reference: &str,
+) -> Result<(), DatabaseError> {
+    let now = now_millis();
+    tx.execute(
+        "UPDATE opinion_evidence SET status = 'superseded' WHERE agent_id = ?1 AND source_reference = ?2 AND status = 'active'",
+        params![agent_id, source_reference],
+    )?;
+    tx.execute(
+        "UPDATE relationship_events SET status = 'superseded' WHERE agent_id = ?1 AND source_reference = ?2 AND status = 'applied'",
+        params![agent_id, source_reference],
+    )?;
+    tx.execute(
+        "UPDATE cognitive_core_events SET status = 'superseded', terminal_at = ?1 WHERE agent_id = ?2 AND source_reference = ?3 AND status = 'applied'",
+        params![now, agent_id, source_reference],
+    )?;
+    let opinion_ids = tx
+        .prepare("SELECT DISTINCT opinion_id FROM opinion_evidence WHERE agent_id = ?1 AND source_reference = ?2")?
+        .query_map(params![agent_id, source_reference], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for opinion_id in opinion_ids {
+        let (stance, confidence, disputed) = recalculate_opinion_values(tx, &opinion_id)?;
+        tx.execute(
+            "UPDATE opinions SET stance = ?1, confidence = ?2, status = CASE WHEN ?3 THEN 'disputed' WHEN confidence = 0 THEN 'rejected' ELSE 'active' END, updated_at = ?4 WHERE id = ?5 AND agent_id = ?6",
+            params![stance, confidence, disputed, now, opinion_id, agent_id],
+        )?;
+    }
+    Ok(())
+}
+
 fn ensure_owned(connection: &Connection, agent_id: &str) -> Result<(), DatabaseError> {
     ensure_agent(connection, agent_id)
 }
@@ -1454,6 +1517,12 @@ impl Database {
         let mut connection = self.open()?;
         let tx = connection.transaction()?;
         let owner_id = ensure_owned_tx(&tx, &request.agent_id)?;
+        let source_reference = validate_source_reference_tx(
+            &tx,
+            &request.agent_id,
+            source_kind,
+            source_reference.as_deref(),
+        )?;
         if let Some(existing) = idempotent_or_conflict(
             existing_core_event(&tx, &request.agent_id, &idempotency_key)?,
             "opinion_evidence",
@@ -1983,6 +2052,12 @@ impl Database {
         let mut connection = self.open()?;
         let tx = connection.transaction()?;
         let owner_id = ensure_owned_tx(&tx, &request.agent_id)?;
+        let source_reference = validate_source_reference_tx(
+            &tx,
+            &request.agent_id,
+            source_kind,
+            source_reference.as_deref(),
+        )?;
         if let Some(existing) = idempotent_or_conflict(
             existing_core_event(&tx, &request.agent_id, &idempotency_key)?,
             "relationship_event",

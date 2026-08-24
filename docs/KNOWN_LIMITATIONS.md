@@ -1,5 +1,10 @@
 # Known limitations
 
+Phase 7B–7D source lifecycle and fictional activity controls are locally validated
+by Rust tests. Desktop UI test execution remains reserved when the current host
+returns Windows `spawn EPERM`; this is not treated as a passing result. Installed
+Windows interaction and subjective Portuguese review remain HUMAN VALIDATION PENDING.
+
 Installed-Windows manual validation passed for the v0.1 package on 2026-07-30. The release-level
 approval covers the implemented v0.1 scope, so historical Phases 1–5 are DONE at that evidence
 level; earlier phase-specific notes remain historical preparation evidence and are not repeated as
