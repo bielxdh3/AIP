@@ -72,8 +72,8 @@ command-path test in `lib.rs` covers the registered Tauri wrappers. The focused
 cognitive-panel test covers the owner-visible UI path, pending-only rejection,
 temporary suppression, safe Portuguese error rendering, and the authoritative seeded
 participant IDs. The fictional-activity Rust/contracts path is bounded and guarded;
-the Portuguese panel intentionally retains the limitation that activity controls are
-not implemented in this checkpoint.
+the Portuguese panel exposes Owner-visible start, pause, resume, complete, expire,
+and archive controls for fictional activities.
 
 ## Automated evidence
 
