@@ -353,6 +353,21 @@ describe("CognitivePanel", () => {
       if (command === "list_cognitive_relationships")
         return Promise.resolve([relationship]);
       if (command === "list_cognitive_goals") return Promise.resolve([goal]);
+      if (command === "list_fictional_activities")
+        return Promise.resolve([
+          {
+            id: "activity-1",
+            goalId: "goal-1",
+            agentId: "agt_astra_provisional",
+            activityType: "fictional-reading",
+            status: "active" as const,
+            fictionalOnly: true as const,
+            budgetUnits: 1,
+            startedAt: 1,
+            endedAt: null,
+            createdAt: 1,
+          },
+        ]);
       if (command === "set_cognitive_opinion_status") {
         return rejectOpinionStatus
           ? Promise.reject("ownership_mismatch")
@@ -395,6 +410,9 @@ describe("CognitivePanel", () => {
     expect(container.textContent).toContain("tema: posição 0.40");
     expect(container.textContent).toContain("Evidência segura");
     expect(container.textContent).toContain("Objetivo de teste");
+    expect(container.textContent).toContain("fictional-reading — active");
+    expect(container.textContent).toContain("familiaridade");
+    expect(container.textContent).toContain("fonte:");
 
     const inputs = container.querySelectorAll("input");
     const textareas = container.querySelectorAll("textarea");

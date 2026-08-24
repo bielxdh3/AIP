@@ -1,5 +1,31 @@
 # Phase 7E validation
 
+## Current closure evidence (2026-08-24)
+
+Status: FUNCTIONAL — AUTOMATED VALIDATION COMPLETE. On the current host,
+`cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check`,
+`cargo check --locked --manifest-path apps/desktop/src-tauri/Cargo.toml`, and
+`cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml --lib cognitive::tests -- --test-threads=1`
+pass (10 focused cognitive tests). `pnpm --filter @aip/desktop typecheck` and
+`pnpm --filter @aip/desktop test -- --run` pass (14 files, 51 tests), and the
+Owner-visible panel covers evidence provenance, all six relationship dimensions,
+goal schedule/expiry, and fictional activity lifecycle. Conversation termination
+reason, per-purpose opt-in/revocation, bounded budgets, and candidate-pending
+behavior remain covered by the Rust conversation path.
+
+Installed-Windows interaction, packaged restart, and subjective Portuguese review
+are HUMAN VALIDATION PENDING. The earlier executor `spawn EPERM` and entrypoint
+reservations below are retained as historical evidence and are superseded by the
+current-host Vitest/Rust results.
+
+## Historical executor evidence (retained)
+
+`cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml cognitive --quiet`
+passed with 13 tests. `cargo check --locked --manifest-path apps/desktop/src-tauri/Cargo.toml`
+and `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check` passed.
+Desktop Vitest was attempted on the current host and remained blocked by Windows
+`spawn EPERM`; no frontend runtime pass is claimed.
+
 ## Status and exact scope
 
 Phase 7E is implemented as a local Rust/SQLite path on the development branch. This
@@ -72,8 +98,13 @@ command-path test in `lib.rs` covers the registered Tauri wrappers. The focused
 cognitive-panel test covers the owner-visible UI path, pending-only rejection,
 temporary suppression, safe Portuguese error rendering, and the authoritative seeded
 participant IDs. The fictional-activity Rust/contracts path is bounded and guarded;
-the Portuguese panel intentionally retains the limitation that activity controls are
-not implemented in this checkpoint.
+the Portuguese panel exposes Owner-visible start, pause, resume, complete, expire,
+and archive controls for fictional activities.
+
+## Historical pre-host evidence (retained)
+
+The table below records the earlier environment reservations without changing their
+historical meaning; it is not the current-host validation result.
 
 ## Automated evidence
 

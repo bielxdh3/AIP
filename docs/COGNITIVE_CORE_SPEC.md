@@ -1,5 +1,20 @@
 # Phase 7 cognitive-core specification
 
+## Phase 7B–7D closure contract
+
+Opinion and relationship evidence may reference only `memory:<id>` for an owned,
+active, confirmed memory, `conversation:<id>` for an owned completed public
+agent-conversation, or `message:<id>` for an owned turn in one of those completed
+conversations. Rust validates the reference inside the write transaction;
+malformed, temporary, candidate, failed, cancelled, archived, trashed,
+incomplete, cross-agent, and cross-owner references fail closed. Memory
+invalidation preserves history, supersedes dependent evidence/events, and
+recomputes opinion and relationship projections deterministically. Goal
+`expires_at` deterministically transitions an active fictional goal to `cancelled`
+with evidence; activity duration deterministically transitions active/paused
+fictional activity to `expired`. All goal/activity effects remain bounded and
+local-only.
+
 ## 1. Purpose and boundaries
 
 The cognitive core is the deterministic, model-independent layer that owns durable personality evolution, opinions, relationships, goals, and fictional activities. The LLM may propose language and structured candidates; it is never the authority for identity or durable state. Rust and SQLite remain authoritative, and every durable change is a validated typed event.

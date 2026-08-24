@@ -1,5 +1,27 @@
 # Phase 7F validation
 
+## Current closure evidence (2026-08-24)
+
+Status: FUNCTIONAL — HUMAN VALIDATION PENDING. Automated validation is complete on
+the current host: Rust format/check, 10 focused cognitive tests, desktop typecheck,
+contracts typecheck, and desktop Vitest (14 files, 51 tests) pass; `git diff --check`
+passes. The closure includes fail-closed memory/conversation source validation,
+transactional memory invalidation with opinion/relationship projection recomputation,
+deterministic goal/activity expiry, six-dimension relationship visibility, public
+conversation budgets/termination/consent checks, and Owner-visible fictional activity
+lifecycle controls. Installed-Windows interaction, packaged restart, and subjective
+Portuguese review remain the genuine human-only gate. Earlier executor spawn/entrypoint
+reservations below are retained as historical evidence.
+
+## Historical correction evidence (retained)
+
+## Current automated result
+
+Status: FUNCTIONAL — AUTOMATED VALIDATION COMPLETE. Opinion provenance, all six
+relationship dimensions, goal origin/schedule/evidence, and Owner-visible fictional
+activity lifecycle controls are exposed. Installed-Windows interaction and
+subjective Portuguese review remain HUMAN VALIDATION PENDING.
+
 ## Status
 
 Phase 7F is the integrated validation and documentation checkpoint for the existing
@@ -25,12 +47,17 @@ record is [Phase 7E validation](PHASE_7E_VALIDATION.md).
 
 | Area                            | Local implementation evidence                                                                                                                                                                                | Validation status                                                                                  |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
-| 7B opinions                     | Rust/SQLite opinion, evidence, correction, dispute, and supersession paths from the existing 7B–7D baseline                                                                                                  | Static/typecheck evidence only in this checkpoint; runtime/manual evidence not observed            |
-| 7C relationships                | Rust/SQLite bounded relationship state, isolation, reset, and rollback paths from the existing baseline                                                                                                      | Static/typecheck evidence only in this checkpoint; runtime/manual evidence not observed            |
-| 7D goals and fictional activity | Owner approval, budgets, fictional-only state, bounded guarded activity Rust/contracts paths, and no external-action path; the Portuguese panel retains its explicit “activities not implemented” limitation | Static/typecheck evidence only in this checkpoint; runtime/manual evidence not observed            |
-| 7E public conversations         | Typed policy/start/turn/resource/candidate/list/inspect/interrupt/reject paths in Rust, contracts, and the Portuguese panel                                                                                  | Local code review and static checks; focused runtime tests are blocked by environment reservations |
-| Persistence and recovery        | Migration 0014, SQLite transactions, reopen persistence, and recovery tests are present                                                                                                                      | Test binary launch is blocked; no green restart result is claimed                                  |
+| 7B opinions                     | Rust/SQLite opinion, evidence, correction, dispute, supersession, fail-closed source lifecycle, and deterministic invalidation/recalculation paths                                                                 | FUNCTIONAL — AUTOMATED VALIDATION COMPLETE; installed-Windows and subjective Portuguese review pending |
+| 7C relationships                | Rust/SQLite bounded six-dimension relationship state, isolation, reset, rollback, and deterministic source-invalidation replay                                                                                       | FUNCTIONAL — AUTOMATED VALIDATION COMPLETE; installed-Windows and subjective Portuguese review pending |
+| 7D goals and fictional activity | Owner approval, origin/schedule/evidence, budgets, fictional-only state, and visible activity start/pause/resume/complete/expire/archive controls | FUNCTIONAL — AUTOMATED VALIDATION COMPLETE |
+| 7E public conversations         | Typed policy/start/turn/resource/candidate/list/inspect/interrupt/reject paths in Rust, contracts, and the Portuguese panel, with termination reason and consent/revocation boundaries | FUNCTIONAL — AUTOMATED VALIDATION COMPLETE; packaged/manual restart and Owner smoke pending |
+| Persistence and recovery        | Migration 0014, SQLite transactions, reopen persistence, and recovery tests are present                                                                                                                      | FUNCTIONAL — AUTOMATED VALIDATION COMPLETE locally; packaged restart remains HUMAN VALIDATION PENDING |
 | Security boundary               | Owner/participant/opt-in/revocation/mode/temporary/budget guards; public-only content screening; pending candidate attribution; explicit temporary-chat fields on durable 7A–7D commands                     | Reviewed in source; no hidden/private channel or direct model durable mutation is exposed          |
+
+## Historical validation evidence (retained)
+
+The following older evidence is retained to document the prior executor environment;
+the current-host results are recorded above and supersede its blocked-test claims.
 
 ## Required validation evidence
 
@@ -58,7 +85,7 @@ The correction also makes policy revocation live for existing conversations, map
 Portuguese panel to the seeded IDs `agt_astra_provisional` and
 `agt_luma_provisional`, and closes the Tauri temporary-chat boundary for all durable
 7A–7D writes. The fictional-activity backend path is corrected and remains
-fictional-only; the panel still states that activity controls are not implemented.
+fictional-only; the panel exposes its typed lifecycle controls.
 These results distinguish compilation/static checks from test execution. Existing
 source tests cover restart persistence, owner and participant isolation, temporary and
 mode guards, public-only content, candidate non-application, heavy-job uniqueness,
