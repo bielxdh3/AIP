@@ -2503,7 +2503,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
     setOpinions(nextOpinions);
     setRelationships(nextRelationships);
     setGoals(nextGoals);
-    setActivities(nextActivities);
+    setActivities(Array.isArray(nextActivities) ? nextActivities : []);
     setConversationPolicies(Array.isArray(nextPolicies) ? nextPolicies : []);
     setConversations(Array.isArray(nextConversations) ? nextConversations : []);
     setCandidates(Array.isArray(nextCandidates) ? nextCandidates : []);
