@@ -42,10 +42,16 @@ mod tests {
         path::{Path, PathBuf},
     };
 
+    use rusqlite::params;
     use uuid::Uuid;
 
     use super::*;
-    use crate::database::{Database, DatabaseError, ASTRA_ID, LUMA_ID};
+    use crate::{
+        conversation::{
+            ConversationPolicyRequest, ConversationStartRequest, PublicConversationTurnRequest,
+        },
+        database::{Database, DatabaseError, ASTRA_ID, LUMA_ID},
+    };
 
     fn test_path() -> PathBuf {
         std::env::temp_dir()
@@ -413,7 +419,203 @@ mod tests {
             )
             .unwrap();
         assert_eq!(event_count, 0);
+        let mut temporary_owner = opinion_request(ASTRA_ID, "temporary-owner");
+        temporary_owner.temporary_chat = true;
+        assert_eq!(
+            database
+                .propose_cognitive_opinion(temporary_owner)
+                .unwrap_err(),
+            DatabaseError::Cognitive("conversation_temporary_blocked")
+        );
+        let mut temporary_goal = goal_request(ASTRA_ID, "temporary-goal");
+        temporary_goal.temporary_chat = true;
+        assert_eq!(
+            database.create_owner_goal(temporary_goal).unwrap_err(),
+            DatabaseError::Cognitive("conversation_temporary_blocked")
+        );
         drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn cognitive_sources_are_owned_confirmed_and_reconciled() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let memory = database
+            .create_memory(ASTRA_ID, "fact", "A confirmed source", true)
+            .unwrap();
+        let memory_reference = format!("memory:{}", memory.id);
+
+        let mut memory_opinion_request = opinion_request(ASTRA_ID, "memory-backed-opinion");
+        memory_opinion_request.source_kind = "model_inference".into();
+        memory_opinion_request.classification = "impression".into();
+        memory_opinion_request.source_reference = Some(memory_reference.clone());
+        let opinion = database
+            .propose_cognitive_opinion(memory_opinion_request)
+            .unwrap();
+
+        let mut memory_relationship_request =
+            relationship_request(ASTRA_ID, "memory-backed-relationship");
+        memory_relationship_request.source_kind = "model_inference".into();
+        memory_relationship_request.source_reference = Some(memory_reference.clone());
+        let relationship = database
+            .propose_relationship_event(memory_relationship_request)
+            .unwrap();
+        assert!(relationship.values.trust > 0.5);
+
+        let purpose = "cognitive-source-conversation";
+        for agent_id in [ASTRA_ID, LUMA_ID] {
+            database
+                .set_conversation_policy(ConversationPolicyRequest {
+                    agent_id: agent_id.into(),
+                    purpose: purpose.into(),
+                    opted_in: true,
+                    max_turns: 1,
+                    max_tokens: 64,
+                    max_duration_ms: 300_000,
+                    max_repetitions: 2,
+                    resource_budget: 20,
+                    temporary_chat: false,
+                })
+                .unwrap();
+        }
+        let conversation = database
+            .start_agent_conversation(ConversationStartRequest {
+                initiator_agent_id: ASTRA_ID.into(),
+                participant_agent_id: LUMA_ID.into(),
+                purpose: purpose.into(),
+                idempotency_key: "cognitive-source-conversation-start".into(),
+                temporary_chat: false,
+            })
+            .unwrap();
+        let inspection = database
+            .append_public_conversation_turn(PublicConversationTurnRequest {
+                agent_id: ASTRA_ID.into(),
+                conversation_id: conversation.id.clone(),
+                speaker_agent_id: ASTRA_ID.into(),
+                content: "A completed public turn".into(),
+                source_kind: "owner".into(),
+                idempotency_key: "cognitive-source-conversation-turn".into(),
+                temporary_chat: false,
+            })
+            .unwrap();
+        assert_eq!(inspection.conversation.status, "completed");
+        let mut message_request = opinion_request(ASTRA_ID, "completed-message-source");
+        message_request.subject_ref = "completed-message-topic".into();
+        message_request.source_kind = "model_inference".into();
+        message_request.classification = "impression".into();
+        message_request.source_reference = Some(format!("message:{}", inspection.turns[0].id));
+        assert!(database.propose_cognitive_opinion(message_request).is_ok());
+
+        let pending = database
+            .create_memory(ASTRA_ID, "fact", "Pending source", false)
+            .unwrap();
+        let mut pending_request = opinion_request(ASTRA_ID, "pending-memory-source");
+        pending_request.source_kind = "model_inference".into();
+        pending_request.classification = "impression".into();
+        pending_request.source_reference = Some(format!("memory:{}", pending.id));
+        assert_eq!(
+            database
+                .propose_cognitive_opinion(pending_request)
+                .unwrap_err(),
+            DatabaseError::Cognitive("source_ineligible")
+        );
+
+        let foreign = database
+            .create_memory(LUMA_ID, "fact", "Foreign source", true)
+            .unwrap();
+        let mut foreign_request = opinion_request(ASTRA_ID, "foreign-memory-source");
+        foreign_request.source_kind = "model_inference".into();
+        foreign_request.classification = "impression".into();
+        foreign_request.source_reference = Some(format!("memory:{}", foreign.id));
+        assert_eq!(
+            database
+                .propose_cognitive_opinion(foreign_request)
+                .unwrap_err(),
+            DatabaseError::Cognitive("source_ineligible")
+        );
+
+        let mut malformed_request = opinion_request(ASTRA_ID, "malformed-message-source");
+        malformed_request.source_kind = "model_inference".into();
+        malformed_request.classification = "impression".into();
+        malformed_request.source_reference = Some("message:not-complete".into());
+        assert_eq!(
+            database
+                .propose_cognitive_opinion(malformed_request)
+                .unwrap_err(),
+            DatabaseError::Cognitive("source_ineligible")
+        );
+
+        database
+            .set_memory_status(ASTRA_ID, &memory.id, "archived")
+            .unwrap();
+        let opinion_after = database
+            .list_cognitive_opinions(ASTRA_ID)
+            .unwrap()
+            .into_iter()
+            .find(|item| item.id == opinion.id)
+            .unwrap();
+        assert_eq!(opinion_after.status, "rejected");
+        assert_eq!(opinion_after.confidence, 0.0);
+        assert_eq!(opinion_after.evidence[0].status, "superseded");
+        let relationship_after = database
+            .list_relationships(ASTRA_ID)
+            .unwrap()
+            .into_iter()
+            .find(|item| item.id == relationship.id)
+            .unwrap();
+        assert_eq!(relationship_after.values, RelationshipValues::default());
+        assert_eq!(relationship_after.events[0].status, "superseded");
+        cleanup(&path);
+    }
+
+    #[test]
+    fn goal_and_activity_expiry_are_deterministic_and_local() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let mut expiring_goal = goal_request(ASTRA_ID, "expiring-goal");
+        expiring_goal.due_at = Some(0);
+        expiring_goal.expires_at = Some(1);
+        let goal = database.create_owner_goal(expiring_goal).unwrap();
+        let listed = database.list_cognitive_goals(ASTRA_ID).unwrap();
+        let expired_goal = listed.into_iter().find(|item| item.id == goal.id).unwrap();
+        assert_eq!(expired_goal.status, "cancelled");
+        assert_eq!(
+            expired_goal.completion_evidence.as_deref(),
+            Some("Expirado automaticamente por expires_at")
+        );
+        assert_eq!(
+            database
+                .start_fictional_activity(activity_request(ASTRA_ID, &goal.id, "expired-start"))
+                .unwrap_err(),
+            DatabaseError::Cognitive("invalid_transition")
+        );
+
+        let active_goal = database
+            .create_owner_goal(goal_request(ASTRA_ID, "activity-expiry-goal"))
+            .unwrap();
+        let activity = database
+            .start_fictional_activity(activity_request(
+                ASTRA_ID,
+                &active_goal.id,
+                "activity-expiry-start",
+            ))
+            .unwrap();
+        database
+            .open()
+            .unwrap()
+            .execute(
+                "UPDATE fictional_activities SET ended_at = 1 WHERE id = ?1",
+                params![activity.id],
+            )
+            .unwrap();
+        let listed_activities = database.list_fictional_activities(ASTRA_ID).unwrap();
+        let expired_activity = listed_activities
+            .into_iter()
+            .find(|item| item.id == activity.id)
+            .unwrap();
+        assert_eq!(expired_activity.status, "expired");
+        assert!(expired_activity.ended_at.unwrap() > 0);
         cleanup(&path);
     }
 
@@ -1001,10 +1203,36 @@ fn validate_source_reference_tx(
         }
         return Ok(Some(reference.to_owned()));
     }
+    if let Some(conversation_id) = reference.strip_prefix("conversation:") {
+        let valid: bool = tx.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM agent_conversations c
+               JOIN agents a ON a.id = ?2
+               WHERE c.id = ?1 AND c.owner_user_id = a.owner_user_id
+                 AND c.status = 'completed'
+                 AND (c.initiator_agent_id = ?2 OR c.participant_agent_id = ?2)
+             )",
+            params![conversation_id, agent_id],
+            |row| row.get(0),
+        )?;
+        if !valid {
+            return Err(DatabaseError::Cognitive("source_ineligible"));
+        }
+        return Ok(Some(reference.to_owned()));
+    }
     if let Some(message_id) = reference.strip_prefix("message:") {
         let valid: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM conversation_messages WHERE id = ?1 AND agent_id = ?2 AND status = 'complete' AND completed_at IS NOT NULL AND conversation_id IN (SELECT id FROM conversations WHERE agent_id = ?2 AND status = 'completed'))",
-            params![message_id, agent_id], |row| row.get(0))?;
+            "SELECT EXISTS(
+               SELECT 1 FROM agent_conversation_turns t
+               JOIN agent_conversations c ON c.id = t.conversation_id
+               JOIN agents a ON a.id = ?2
+               WHERE t.id = ?1 AND c.owner_user_id = a.owner_user_id
+                 AND c.status = 'completed'
+                 AND (c.initiator_agent_id = ?2 OR c.participant_agent_id = ?2)
+             )",
+            params![message_id, agent_id],
+            |row| row.get(0),
+        )?;
         if !valid {
             return Err(DatabaseError::Cognitive("source_ineligible"));
         }
@@ -1019,6 +1247,15 @@ pub(crate) fn reconcile_invalid_source_tx(
     source_reference: &str,
 ) -> Result<(), DatabaseError> {
     let now = now_millis();
+    let relationship_ids = tx
+        .prepare(
+            "SELECT DISTINCT relationship_id FROM relationship_events
+             WHERE agent_id = ?1 AND source_reference = ?2",
+        )?
+        .query_map(params![agent_id, source_reference], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
     tx.execute(
         "UPDATE opinion_evidence SET status = 'superseded' WHERE agent_id = ?1 AND source_reference = ?2 AND status = 'active'",
         params![agent_id, source_reference],
@@ -1036,11 +1273,28 @@ pub(crate) fn reconcile_invalid_source_tx(
         .query_map(params![agent_id, source_reference], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
     for opinion_id in opinion_ids {
-        let (stance, confidence, disputed) = recalculate_opinion_values(tx, &opinion_id)?;
-        tx.execute(
-            "UPDATE opinions SET stance = ?1, confidence = ?2, status = CASE WHEN ?3 THEN 'disputed' WHEN confidence = 0 THEN 'rejected' ELSE 'active' END, updated_at = ?4 WHERE id = ?5 AND agent_id = ?6",
-            params![stance, confidence, disputed, now, opinion_id, agent_id],
-        )?;
+        match recalculate_opinion_values(tx, &opinion_id) {
+            Ok((stance, confidence, disputed)) => {
+                tx.execute(
+                    "UPDATE opinions SET stance = ?1, confidence = ?2,
+                     status = CASE WHEN ?3 THEN 'disputed' ELSE 'active' END,
+                     updated_at = ?4 WHERE id = ?5 AND agent_id = ?6",
+                    params![stance, confidence, disputed, now, opinion_id, agent_id],
+                )?;
+            }
+            Err(DatabaseError::Cognitive("opinion_evidence_required")) => {
+                tx.execute(
+                    "UPDATE opinions SET stance = 0.0, confidence = 0.0,
+                     status = 'rejected', updated_at = ?1
+                     WHERE id = ?2 AND agent_id = ?3",
+                    params![now, opinion_id, agent_id],
+                )?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    for relationship_id in relationship_ids {
+        recompute_relationship_projection_tx(tx, agent_id, &relationship_id, now)?;
     }
     Ok(())
 }
@@ -1326,6 +1580,55 @@ fn relationship_window_total(
     Ok(total)
 }
 
+fn recompute_relationship_projection_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    relationship_id: &str,
+    now: i64,
+) -> Result<(), DatabaseError> {
+    let mut values = RelationshipValues::default();
+    let mut current_event_id = None;
+    let mut statement = tx.prepare(
+        "SELECT event_id, delta_json FROM relationship_events
+         WHERE agent_id = ?1 AND relationship_id = ?2 AND status = 'applied'
+         ORDER BY created_at ASC, id ASC",
+    )?;
+    for row in statement.query_map(params![agent_id, relationship_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })? {
+        let (event_id, delta_json) = row?;
+        let delta: RelationshipDeltas = serde_json::from_str(&delta_json)
+            .map_err(|_| DatabaseError::Cognitive("persistence_failed"))?;
+        values.familiarity = (values.familiarity + delta.familiarity).clamp(0.0, 1.0);
+        values.trust = (values.trust + delta.trust).clamp(0.0, 1.0);
+        values.affinity = (values.affinity + delta.affinity).clamp(0.0, 1.0);
+        values.admiration = (values.admiration + delta.admiration).clamp(0.0, 1.0);
+        values.irritation = (values.irritation + delta.irritation).clamp(0.0, 1.0);
+        values.reliability_expectation =
+            (values.reliability_expectation + delta.reliability_expectation).clamp(0.0, 1.0);
+        current_event_id = Some(event_id);
+    }
+    drop(statement);
+    tx.execute(
+        "UPDATE relationships SET familiarity = ?1, trust = ?2, affinity = ?3,
+         admiration = ?4, irritation = ?5, reliability_expectation = ?6,
+         current_event_id = ?7, updated_at = ?8 WHERE id = ?9 AND agent_id = ?10",
+        params![
+            values.familiarity,
+            values.trust,
+            values.affinity,
+            values.admiration,
+            values.irritation,
+            values.reliability_expectation,
+            current_event_id,
+            now,
+            relationship_id,
+            agent_id
+        ],
+    )?;
+    Ok(())
+}
+
 fn load_goal_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -1357,6 +1660,133 @@ fn load_activity_tx(
     )
     .optional()?
     .ok_or(DatabaseError::Cognitive("activity_not_found"))
+}
+
+fn reconcile_expired_goals_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    owner_id: &str,
+    now: i64,
+) -> Result<(), DatabaseError> {
+    let expired = tx
+        .prepare(
+            "SELECT id, expires_at FROM goals
+             WHERE agent_id = ?1 AND status = 'active' AND expires_at IS NOT NULL AND expires_at <= ?2",
+        )?
+        .query_map(params![agent_id, now], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (goal_id, expires_at) in expired {
+        let payload = json!({
+            "goalId": goal_id,
+            "status": "cancelled",
+            "reason": "expires_at_elapsed",
+            "expiresAt": expires_at,
+        });
+        let key = format!("goal-expire:{goal_id}:{expires_at}");
+        if idempotent_or_conflict(
+            existing_core_event(tx, agent_id, &key)?,
+            "goal_status",
+            &payload,
+        )?
+        .is_none()
+        {
+            let event = core_event(
+                tx,
+                CoreEventInput {
+                    agent_id,
+                    owner_id,
+                    idempotency_key: &key,
+                    kind: "goal_status",
+                    subject_type: "goal",
+                    subject_ref: &goal_id,
+                    source_kind: "owner_testimony",
+                    source_reference: Some("owner"),
+                    reason: "Prazo de expiração atingido",
+                    confidence: 1.0,
+                    payload: &payload,
+                    result_ref: Some(&goal_id),
+                    related_event_id: None,
+                    now,
+                },
+            )?;
+            tx.execute(
+                "UPDATE goals SET status = 'cancelled', completion_evidence = ?1,
+                 current_event_id = ?2, updated_at = ?3
+                 WHERE id = ?4 AND agent_id = ?5 AND status = 'active'",
+                params![
+                    "Expirado automaticamente por expires_at",
+                    event.id,
+                    now,
+                    goal_id,
+                    agent_id
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn reconcile_expired_activities_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    owner_id: &str,
+    now: i64,
+) -> Result<(), DatabaseError> {
+    let expired = tx
+        .prepare(
+            "SELECT id, ended_at FROM fictional_activities
+             WHERE agent_id = ?1 AND status IN ('active', 'paused')
+               AND ended_at IS NOT NULL AND ended_at <= ?2",
+        )?
+        .query_map(params![agent_id, now], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (activity_id, scheduled_end) in expired {
+        let payload = json!({
+            "activityId": activity_id,
+            "status": "expired",
+            "reason": "duration_elapsed",
+            "scheduledEnd": scheduled_end,
+        });
+        let key = format!("activity-expire:{activity_id}:{scheduled_end}");
+        if idempotent_or_conflict(
+            existing_core_event(tx, agent_id, &key)?,
+            "fictional_activity",
+            &payload,
+        )?
+        .is_none()
+        {
+            let event = core_event(
+                tx,
+                CoreEventInput {
+                    agent_id,
+                    owner_id,
+                    idempotency_key: &key,
+                    kind: "fictional_activity",
+                    subject_type: "activity",
+                    subject_ref: &activity_id,
+                    source_kind: "owner_testimony",
+                    source_reference: Some("owner"),
+                    reason: "Duração fictícia atingida",
+                    confidence: 1.0,
+                    payload: &payload,
+                    result_ref: Some(&activity_id),
+                    related_event_id: None,
+                    now,
+                },
+            )?;
+            tx.execute(
+                "UPDATE fictional_activities SET status = 'expired', ended_at = ?1
+                 WHERE id = ?2 AND agent_id = ?3 AND status IN ('active', 'paused')",
+                params![now, activity_id, agent_id],
+            )?;
+            let _ = event;
+        }
+    }
+    Ok(())
 }
 
 fn load_opinion_tx(
@@ -1465,6 +1895,9 @@ impl Database {
         &self,
         request: OpinionCandidateRequest,
     ) -> Result<CognitiveOpinion, DatabaseError> {
+        if request.temporary_chat {
+            return Err(DatabaseError::Cognitive("conversation_temporary_blocked"));
+        }
         let (subject_type, subject_ref) =
             validate_subject(&request.subject_type, &request.subject_ref)?;
         let stance = finite_range(request.stance, -1.0, 1.0, "invalid_value")?;
@@ -2026,6 +2459,9 @@ impl Database {
         &self,
         request: RelationshipCandidateRequest,
     ) -> Result<RelationshipState, DatabaseError> {
+        if request.temporary_chat {
+            return Err(DatabaseError::Cognitive("conversation_temporary_blocked"));
+        }
         let (subject_type, subject_ref) =
             validate_subject(&request.subject_type, &request.subject_ref)?;
         request.deltas.validate()?;
@@ -2473,9 +2909,11 @@ impl Database {
         &self,
         agent_id: &str,
     ) -> Result<Vec<FictionalActivity>, DatabaseError> {
-        let connection = self.open()?;
-        ensure_owned(&connection, agent_id)?;
-        let mut statement = connection.prepare(
+        let mut connection = self.open()?;
+        let tx = connection.transaction()?;
+        let owner_id = ensure_owned_tx(&tx, agent_id)?;
+        reconcile_expired_activities_tx(&tx, agent_id, &owner_id, now_millis())?;
+        let mut statement = tx.prepare(
             "SELECT id, goal_id, agent_id, activity_type, status, fictional_only,
                     budget_units, started_at, ended_at, created_at
              FROM fictional_activities
@@ -2485,8 +2923,10 @@ impl Database {
         let activities = statement
             .query_map(params![agent_id], map_activity)?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(DatabaseError::from);
-        activities
+            .map_err(DatabaseError::from)?;
+        drop(statement);
+        tx.commit()?;
+        Ok(activities)
     }
 
     pub fn start_fictional_activity(
@@ -2514,6 +2954,7 @@ impl Database {
         let mut connection = self.open()?;
         let tx = connection.transaction()?;
         let owner_id = ensure_owned_tx(&tx, &request.agent_id)?;
+        reconcile_expired_goals_tx(&tx, &request.agent_id, &owner_id, now_millis())?;
         let goal = load_goal_tx(&tx, &request.agent_id, &goal_id)?;
         if !goal.fictional_only {
             return Err(DatabaseError::Cognitive("external_action_blocked"));
@@ -2604,6 +3045,7 @@ impl Database {
         let mut connection = self.open()?;
         let tx = connection.transaction()?;
         let owner_id = ensure_owned_tx(&tx, &request.agent_id)?;
+        reconcile_expired_activities_tx(&tx, &request.agent_id, &owner_id, now_millis())?;
         let prior = load_activity_tx(&tx, &request.agent_id, &activity_id)?;
         let payload = json!({
             "activityId": activity_id,
@@ -2668,9 +3110,11 @@ impl Database {
         &self,
         agent_id: &str,
     ) -> Result<Vec<CognitiveGoal>, DatabaseError> {
-        let connection = self.open()?;
-        ensure_owned(&connection, agent_id)?;
-        let mut statement = connection.prepare(
+        let mut connection = self.open()?;
+        let tx = connection.transaction()?;
+        let owner_id = ensure_owned_tx(&tx, agent_id)?;
+        reconcile_expired_goals_tx(&tx, agent_id, &owner_id, now_millis())?;
+        let mut statement = tx.prepare(
             "SELECT id, agent_id, title, description, origin, fictional_only, priority, status,
                     budget_units, due_at, expires_at, completion_evidence, parent_goal_id,
                     created_at, updated_at
@@ -2679,8 +3123,10 @@ impl Database {
         let goals = statement
             .query_map(params![agent_id], map_goal)?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(Into::into);
-        goals
+            .map_err(DatabaseError::from)?;
+        drop(statement);
+        tx.commit()?;
+        Ok(goals)
     }
 
     pub fn create_owner_goal(&self, request: GoalRequest) -> Result<CognitiveGoal, DatabaseError> {
@@ -2697,6 +3143,9 @@ impl Database {
         origin: &str,
         initial_status: &str,
     ) -> Result<CognitiveGoal, DatabaseError> {
+        if request.temporary_chat {
+            return Err(DatabaseError::Cognitive("conversation_temporary_blocked"));
+        }
         let title = text(&request.title, 160, "invalid_goal")?;
         let description = text(&request.description, 1000, "invalid_goal")?;
         if unsafe_external_goal_language(&title) || unsafe_external_goal_language(&description) {
@@ -2851,6 +3300,7 @@ impl Database {
         let mut connection = self.open()?;
         let tx = connection.transaction()?;
         let owner_id = ensure_owned_tx(&tx, agent_id)?;
+        reconcile_expired_goals_tx(&tx, agent_id, &owner_id, now_millis())?;
         let prior = load_goal_tx(&tx, agent_id, goal_id)?;
         let payload = json!({
             "goalId": goal_id,

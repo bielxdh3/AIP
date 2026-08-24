@@ -2,11 +2,17 @@
 
 ## Phase 7B–7D source references
 
-Opinion evidence and relationship events use explicit `memory:<id>` or
-`message:<id>` references. Rust checks agent ownership, Owner lineage, memory
-confirmation/status, completed conversation state, and complete message state in
-the same SQLite transaction. Invalidated memory sources supersede dependent
-records without deleting history and trigger deterministic projection recalculation.
+Opinion evidence and relationship events use explicit `memory:<id>`,
+`conversation:<id>`, or `message:<id>` references. Memory references require an
+owned active confirmed memory. Conversation/message references require the same
+Owner lineage and a completed public agent conversation (with a completed public
+turn for `message:<id>`). Rust validates these conditions in the write transaction;
+malformed, temporary, candidate, incomplete, failed, cancelled, archived,
+trashed, cross-agent, and cross-owner references fail closed. Invalidated memory
+sources supersede dependent records without deleting history and trigger
+deterministic opinion and relationship projection recalculation. A goal whose
+`expires_at` has elapsed becomes `cancelled` with explicit expiry evidence, while
+an activity whose bounded duration elapses becomes `expired`.
 
 ## Phase 2 identity
 

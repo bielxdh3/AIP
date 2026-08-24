@@ -201,25 +201,31 @@ runtime, manual, and remote reservations remain explicit there. This is not a v0
 
 - **Phase 7A — cognitive event foundation and protected/evolvable boundaries [APPROVED — DONE]:** typed, bounded ordinary candidates, owner correction, safe explanation, and latest-event compensating rollback. The exact commit, CI, and Owner attestation are recorded in the validation record. Live extraction and later Phase 7E–7F capabilities remain excluded.
   Owner-scoped event processing, typed source eligibility, trait limits, auditability, and temporary-chat exclusion. Conversation-source validation is a future-adapter boundary only; live extraction remains excluded.
-- **Phase 7B — opinions and evidence [IMPLEMENTED — LOCAL PATH]:** sourced, inspectable
-  opinions with correction, dispute, and supersession workflows.
-- **Phase 7C — relationships [IMPLEMENTED — LOCAL PATH]:** bounded per-subject relationship
-  dimensions, event history, limits, reset, and rollback.
-- **Phase 7D — goals and fictional activities [IMPLEMENTED — LOCAL PATH]:** approval-bound
-  durable goals and explicitly fictional, budgeted activity state with no external action.
-- **Phase 7E — bounded agent-to-agent conversation [IMPLEMENTED — LOCAL PATH; VALIDATION
-  RESERVED]:** visible, purpose-bound public interactions with hard resource budgets and
-  deferred candidate processing. See [the Phase 7E validation record](PHASE_7E_VALIDATION.md).
-- **Phase 7F — integrated validation and UX hardening [DOCUMENTED CHECKPOINT; RUNTIME
-  RESERVED]:** validation evidence, Portuguese UI boundaries, restart checks, safety controls,
-  and honest documentation. No new capability is introduced; see [the Phase 7F validation
-  record](PHASE_7F_VALIDATION.md).
+- **Phase 7B — opinions and evidence [FUNCTIONAL — HUMAN VALIDATION PENDING]:** sourced,
+  inspectable opinions with correction, dispute, supersession, fail-closed source lifecycle,
+  and Owner-visible provenance. Automated Rust/TS validation is complete; installed-Windows
+  and subjective Portuguese review remain pending.
+- **Phase 7C — relationships [FUNCTIONAL — HUMAN VALIDATION PENDING]:** bounded six-
+  dimension relationship state, event history, limits, reset, rollback, and deterministic
+  projection recomputation after source invalidation.
+- **Phase 7D — goals and fictional activities [FUNCTIONAL — HUMAN VALIDATION PENDING]:**
+  approval-bound fictional goals with due/expiry semantics and explicitly fictional,
+  budgeted activity lifecycle controls with no external action.
+- **Phase 7E — bounded agent-to-agent conversation [FUNCTIONAL — HUMAN VALIDATION PENDING]:**
+  visible, purpose-bound public interactions with hard resource budgets, termination reason,
+  consent/revocation checks, and deferred candidate processing. See [the Phase 7E validation
+  record](PHASE_7E_VALIDATION.md).
+- **Phase 7F — integrated validation and UX hardening [FUNCTIONAL — HUMAN VALIDATION PENDING]:**
+  current automated validation, Portuguese UI boundaries, persistence/recovery tests, safety
+  controls, and honest documentation. Installed-Windows interaction and subjective Portuguese
+  review remain the sole human gate; see [the Phase 7F validation record](PHASE_7F_VALIDATION.md).
 
-Current corrective evidence: Rust source lifecycle validation and memory-invalidation
-reconciliation are implemented and covered by the focused cognitive suite; the
-Portuguese panel exposes activity lifecycle, evidence provenance, and all six
-relationship dimensions. Desktop Vitest remains an environment reservation when
-the host cannot spawn its worker.
+Current corrective evidence (2026-08-24): Rust source lifecycle validation,
+transactional memory invalidation/recalculation, deterministic goal/activity expiry,
+and focused cognitive tests are green. Desktop Vitest is green in the current host
+(14 files, 51 tests). Installed-Windows interaction and subjective Portuguese review
+remain HUMAN VALIDATION PENDING; the earlier executor `spawn EPERM` report is
+historical environment evidence, not the current host result.
 
 ## Post-v0.1 Phase 8: voice [FUNCTIONAL — HUMAN VALIDATION PENDING]
 
