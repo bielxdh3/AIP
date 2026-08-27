@@ -18,10 +18,7 @@ export type PixelLayer = {
 export type PixelDocument = {
   layers: PixelLayer[];
   attachmentPoints: Record<string, { x: number; y: number }>;
-  semanticParts: Record<
-    string,
-    { layerId: string; joints: Record<string, { x: number; y: number }> }
-  >;
+  semanticParts: Record<string, { layerId: string; joints: Record<string, { x: number; y: number }> }>;
 };
 
 export function rgbaToHex(
@@ -47,18 +44,12 @@ export function rgbaToHex(
     : `#${rgb}${alpha.toString(16).padStart(2, "0")}`;
 }
 
-const defaultSemanticParts = (layers: PixelLayer[]) =>
-  Object.fromEntries(
-    ["head", "torso", "leftArm", "rightArm", "leftLeg", "rightLeg"].map(
-      (name, index) => [
-        name,
-        {
-          layerId: layers[index]?.id ?? layers[0]?.id ?? "",
-          joints: {},
-        },
-      ],
-    ),
-  );
+const defaultSemanticParts = (layers: PixelLayer[]) => Object.fromEntries(
+  ["head", "torso", "leftArm", "rightArm", "leftLeg", "rightLeg"].map((name, index) => [name, {
+    layerId: layers[index]?.id ?? layers[0]?.id ?? "",
+    joints: {},
+  }]),
+);
 
 export function parsePixelDocument(source: string): PixelDocument | null {
   try {
@@ -67,25 +58,20 @@ export function parsePixelDocument(source: string): PixelDocument | null {
     return {
       layers: value.layers.flatMap((layer, index) =>
         typeof layer?.id === "string" && Array.isArray(layer.pixels)
-          ? [
-              {
-                id: layer.id,
-                name:
-                  typeof layer.name === "string"
-                    ? layer.name
-                    : `Layer ${index + 1}`,
-                visible: layer.visible !== false,
-                locked: layer.locked === true,
-                pixels: layer.pixels.filter(
-                  (pixel): pixel is Pixel =>
-                    Array.isArray(pixel) &&
-                    pixel.length === 3 &&
-                    Number.isInteger(pixel[0]) &&
-                    Number.isInteger(pixel[1]) &&
-                    typeof pixel[2] === "string",
-                ),
-              },
-            ]
+          ? [{
+              id: layer.id,
+              name: typeof layer.name === "string" ? layer.name : `Layer ${index + 1}`,
+              visible: layer.visible !== false,
+              locked: layer.locked === true,
+              pixels: layer.pixels.filter(
+                (pixel): pixel is Pixel =>
+                  Array.isArray(pixel) &&
+                  pixel.length === 3 &&
+                  Number.isInteger(pixel[0]) &&
+                  Number.isInteger(pixel[1]) &&
+                  typeof pixel[2] === "string",
+              ),
+            }]
           : [],
       ),
       attachmentPoints:
@@ -104,8 +90,7 @@ export function parsePixelDocument(source: string): PixelDocument | null {
 
 export function nextLayerId(document: PixelDocument): string {
   let index = document.layers.length + 1;
-  while (document.layers.some((layer) => layer.id === `layer-${index}`))
-    index += 1;
+  while (document.layers.some((layer) => layer.id === `layer-${index}`)) index += 1;
   return `layer-${index}`;
 }
 
@@ -116,9 +101,7 @@ export function updatePixelLayer(
 ): PixelDocument {
   return {
     ...document,
-    layers: document.layers.map((layer) =>
-      layer.id === layerId ? update(layer) : layer,
-    ),
+    layers: document.layers.map((layer) => (layer.id === layerId ? update(layer) : layer)),
   };
 }
 
@@ -128,11 +111,8 @@ export function floodFillLayer(
   startY: number,
   replacement: string,
 ): PixelLayer {
-  if (layer.locked || startX < 0 || startX >= 64 || startY < 0 || startY >= 64)
-    return layer;
-  const colors = new Map(
-    layer.pixels.map(([x, y, color]) => [`${x},${y}`, color]),
-  );
+  if (layer.locked || startX < 0 || startX >= 64 || startY < 0 || startY >= 64) return layer;
+  const colors = new Map(layer.pixels.map(([x, y, color]) => [`${x},${y}`, color]));
   const target = colors.get(`${startX},${startY}`) ?? null;
   if (target === replacement) return layer;
   const pending: Pixel[] = [[startX, startY, replacement]];
@@ -143,15 +123,9 @@ export function floodFillLayer(
     if (visited.has(key) || (colors.get(key) ?? null) !== target) continue;
     visited.add(key);
     colors.set(key, replacement);
-    const neighbors: Array<[number, number]> = [
-      [x - 1, y],
-      [x + 1, y],
-      [x, y - 1],
-      [x, y + 1],
-    ];
+    const neighbors: Array<[number, number]> = [[x - 1, y], [x + 1, y], [x, y - 1], [x, y + 1]];
     for (const [nextX, nextY] of neighbors) {
-      if (nextX >= 0 && nextX < 64 && nextY >= 0 && nextY < 64)
-        pending.push([nextX, nextY, replacement]);
+      if (nextX >= 0 && nextX < 64 && nextY >= 0 && nextY < 64) pending.push([nextX, nextY, replacement]);
     }
   }
   return {
@@ -181,14 +155,8 @@ export function rasterLine(
     if (x >= 0 && x < 64 && y >= 0 && y < 64) cells.push([x, y]);
     if (x === toX && y === toY) break;
     const twice = 2 * error;
-    if (twice >= dy) {
-      error += dy;
-      x += sx;
-    }
-    if (twice <= dx) {
-      error += dx;
-      y += sy;
-    }
+    if (twice >= dy) { error += dy; x += sx; }
+    if (twice <= dx) { error += dx; y += sy; }
   }
   return cells;
 }
