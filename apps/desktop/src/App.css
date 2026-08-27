@@ -938,6 +938,129 @@ a:focus-visible {
   background: #0e1116;
 }
 
+.conversation-list {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin: 0 -4px;
+}
+
+.conversation-list-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px;
+  align-items: center;
+  min-width: 0;
+}
+
+.conversation-list-select,
+.conversation-list-action,
+.conversation-list-create {
+  min-width: 0;
+  min-height: 30px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #aeb6c2;
+  background: transparent;
+  cursor: pointer;
+}
+
+.conversation-list-select {
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-list-action {
+  color: #7f8997;
+  font-size: 10px;
+}
+
+.conversation-list-select:hover:not(:disabled),
+.conversation-list-action:hover:not(:disabled),
+.conversation-list-create:hover:not(:disabled),
+.conversation-list-select:focus-visible,
+.conversation-list-action:focus-visible,
+.conversation-list-create:focus-visible {
+  border-color: #33433f;
+  color: #edf0f5;
+  background: #171d24;
+}
+
+.conversation-list button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.conversation-list-archived {
+  padding: 2px 4px 0;
+  color: #7f8997;
+}
+
+.conversation-list-archived summary {
+  padding: 4px 0;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.conversation-list-archived summary:hover,
+.conversation-list-archived summary:focus-visible {
+  color: #edf0f5;
+}
+
+.conversation-list-archived summary:focus-visible {
+  outline: 2px solid #57d8bd;
+  outline-offset: 2px;
+}
+
+.conversation-list-archived .conversation-list-item {
+  margin-top: 3px;
+}
+
+.conversation-list-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-list-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 1px solid #333c47;
+  border-radius: 6px;
+  color: #e1e5eb;
+  background: #0b0f14;
+}
+
+.conversation-list-input::placeholder {
+  color: #68717e;
+}
+
+.conversation-list-input:hover:not(:disabled),
+.conversation-list-input:focus-visible {
+  border-color: #57d8bd;
+}
+
+.conversation-list-input:focus-visible {
+  outline: 2px solid #57d8bd;
+  outline-offset: 2px;
+}
+
+.conversation-list-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.conversation-list-create {
+  width: 100%;
+  text-align: center;
+}
+
 .brand-mark {
   display: flex;
   align-items: center;

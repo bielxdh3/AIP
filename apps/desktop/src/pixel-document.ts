@@ -1,5 +1,12 @@
 export type Pixel = [number, number, string];
 
+export type PixelSelection = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 export type PixelLayer = {
   id: string;
   name: string;
@@ -13,6 +20,29 @@ export type PixelDocument = {
   attachmentPoints: Record<string, { x: number; y: number }>;
   semanticParts: Record<string, { layerId: string; joints: Record<string, { x: number; y: number }> }>;
 };
+
+export function rgbaToHex(
+  red: number,
+  green: number,
+  blue: number,
+  alpha: number,
+): string | null {
+  const channels = [red, green, blue, alpha];
+  if (
+    channels.some(
+      (channel) => !Number.isInteger(channel) || channel < 0 || channel > 255,
+    )
+  )
+    return null;
+  if (alpha === 0) return null;
+  const rgb = channels
+    .slice(0, 3)
+    .map((channel) => channel.toString(16).padStart(2, "0"))
+    .join("");
+  return alpha === 255
+    ? `#${rgb}`
+    : `#${rgb}${alpha.toString(16).padStart(2, "0")}`;
+}
 
 const defaultSemanticParts = (layers: PixelLayer[]) => Object.fromEntries(
   ["head", "torso", "leftArm", "rightArm", "leftLeg", "rightLeg"].map((name, index) => [name, {
@@ -129,4 +159,59 @@ export function rasterLine(
     if (twice <= dx) { error += dx; y += sy; }
   }
   return cells;
+}
+
+export function paintPixelLayer(
+  layer: PixelLayer,
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+  tool: "pencil" | "eraser",
+  color: string,
+  mirror: boolean,
+): PixelLayer {
+  if (layer.locked) return layer;
+  const changed = new Map<string, string>(
+    layer.pixels.map(([x, y, pixelColor]) => [`${x},${y}`, pixelColor]),
+  );
+  for (const [cellX, cellY] of rasterLine(fromX, fromY, toX, toY)) {
+    const targets = mirror
+      ? [
+          [cellX, cellY],
+          [63 - cellX, cellY],
+        ]
+      : [[cellX, cellY]];
+    for (const [targetX, targetY] of targets) {
+      const key = `${targetX},${targetY}`;
+      if (tool === "pencil") changed.set(key, color);
+      else changed.delete(key);
+    }
+  }
+  return {
+    ...layer,
+    pixels: [...changed.entries()].map(([key, pixelColor]) => {
+      const [x, y] = key.split(",").map(Number);
+      return [x, y, pixelColor] as Pixel;
+    }),
+  };
+}
+
+export function selectionRectangle(
+  anchorX: number,
+  anchorY: number,
+  currentX: number,
+  currentY: number,
+): PixelSelection {
+  const clamp = (value: number) => Math.max(0, Math.min(63, Math.trunc(value)));
+  const startX = clamp(anchorX);
+  const startY = clamp(anchorY);
+  const endX = clamp(currentX);
+  const endY = clamp(currentY);
+  return {
+    x: Math.min(startX, endX),
+    y: Math.min(startY, endY),
+    width: Math.abs(startX - endX) + 1,
+    height: Math.abs(startY - endY) + 1,
+  };
 }

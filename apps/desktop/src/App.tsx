@@ -171,10 +171,13 @@ import { createListenerRegistration } from "./listener-lifecycle";
 import {
   nextLayerId,
   floodFillLayer,
-  rasterLine,
+  paintPixelLayer,
   parsePixelDocument,
+  rgbaToHex,
+  selectionRectangle,
   updatePixelLayer,
   type PixelDocument,
+  type PixelSelection,
 } from "./pixel-document";
 import "./App.css";
 
@@ -1108,7 +1111,7 @@ function OnboardingForm({
   );
 }
 
-function ConversationList({
+export function ConversationList({
   agentId,
   changed,
 }: {
@@ -1145,16 +1148,25 @@ function ConversationList({
     changed();
   }
   return (
-    <div className="conversation-list" aria-label="Conversas do agente">
+    <div
+      className="conversation-list"
+      role="region"
+      aria-label="Conversas do agente"
+    >
       {items.map((item) => (
-        <div key={item.id}>
-          <button type="button" onClick={() => void select(item.id)}>
+        <div key={item.id} className="conversation-list-item">
+          <button
+            type="button"
+            className="conversation-list-select"
+            onClick={() => void select(item.id)}
+          >
             {item.title}
             {item.id === items[0]?.id ? " · Principal" : ""}
           </button>
           {item.id !== items[0]?.id ? (
             <button
               type="button"
+              className="conversation-list-action"
               onClick={() =>
                 void invoke("archive_agent_conversation", {
                   agentId,
@@ -1168,13 +1180,14 @@ function ConversationList({
         </div>
       ))}
       {archived.length > 0 ? (
-        <details>
+        <details className="conversation-list-archived">
           <summary>Arquivadas ({archived.length})</summary>
           {archived.map((item) => (
-            <div key={item.id}>
-              <span>{item.title}</span>
+            <div key={item.id} className="conversation-list-item">
+              <span className="conversation-list-title">{item.title}</span>
               <button
                 type="button"
+                className="conversation-list-action"
                 onClick={() =>
                   void invoke("restore_agent_conversation", {
                     agentId,
@@ -1189,11 +1202,18 @@ function ConversationList({
         </details>
       ) : null}
       <input
+        className="conversation-list-input"
+        type="text"
         value={title}
         placeholder="Nova conversa"
+        aria-label="Título da nova conversa"
         onChange={(event) => setTitle(event.target.value)}
       />
-      <button type="button" onClick={() => void create()}>
+      <button
+        type="button"
+        className="conversation-list-create"
+        onClick={() => void create()}
+      >
         Criar conversa
       </button>
     </div>
@@ -3563,7 +3583,7 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
   );
 }
 
-function PixelDocumentEditor({ agentId }: { agentId: string }) {
+export function PixelDocumentEditor({ agentId }: { agentId: string }) {
   const [source, setSource] = useState("");
   const [activeLayerId, setActiveLayerId] = useState("body");
   const [error, setError] = useState<string | null>(null);
@@ -3572,18 +3592,14 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
     "pencil" | "eraser" | "fill" | "eyedropper" | "select"
   >("pencil");
   const [mirror, setMirror] = useState(false);
-  const [selection, setSelection] = useState<{
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  } | null>(null);
+  const [selection, setSelection] = useState<PixelSelection | null>(null);
   const [zoom, setZoom] = useState(4);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const undoRef = useRef<string[]>([]);
   const redoRef = useRef<string[]>([]);
   const strokeRef = useRef<{ x: number; y: number } | null>(null);
+  const selectionAnchorRef = useRef<{ x: number; y: number } | null>(null);
   const document = parsePixelDocument(source);
   const activeLayer =
     document?.layers.find((layer) => layer.id === activeLayerId) ??
@@ -3657,16 +3673,9 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
       ),
     );
     if (tool === "select") {
-      setSelection((current) =>
-        current === null
-          ? { x, y, width: 1, height: 1 }
-          : {
-              x: Math.min(current.x, x),
-              y: Math.min(current.y, y),
-              width: Math.abs(current.x - x) + 1,
-              height: Math.abs(current.y - y) + 1,
-            },
-      );
+      const anchor = selectionAnchorRef.current ?? { x, y };
+      selectionAnchorRef.current = anchor;
+      setSelection(selectionRectangle(anchor.x, anchor.y, x, y));
       return;
     }
     try {
@@ -3697,30 +3706,19 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         return;
       }
       const previous = strokeRef.current ?? { x, y };
-      const cells = rasterLine(previous.x, previous.y, x, y);
-      const changed = new Map(
-        (layer.pixels ?? []).map(([pixelX, pixelY, pixelColor]) => [
-          `${pixelX},${pixelY}`,
-          pixelColor,
-        ]),
+      const nextLayer = paintPixelLayer(
+        layer,
+        previous.x,
+        previous.y,
+        x,
+        y,
+        tool === "pencil" ? "pencil" : "eraser",
+        color,
+        mirror,
       );
-      for (const [cellX, cellY] of cells) {
-        for (const targetX of mirror && cellX !== 63 - cellX
-          ? [cellX, 63 - cellX]
-          : [cellX]) {
-          const key = `${targetX},${cellY}`;
-          if (tool === "pencil") changed.set(key, color);
-          else changed.delete(key);
-        }
-      }
-      const pixels = [...changed.entries()].map(([key, pixelColor]) => {
-        const [pixelX, pixelY] = key.split(",").map(Number);
-        return [pixelX, pixelY, pixelColor] as [number, number, string];
-      });
       strokeRef.current = { x, y };
-      layer.pixels = pixels;
       replaceSource(
-        JSON.stringify(updatePixelLayer(document, layer.id, () => layer)),
+        JSON.stringify(updatePixelLayer(document, layer.id, () => nextLayer)),
       );
       setError(null);
     } catch {
@@ -3805,11 +3803,16 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         [number, number, string][]
       >((result, _, index, data) => {
         const alpha = data[index + 3] ?? 0;
-        if (index % 4 !== 0 || alpha < 128) return result;
+        if (index % 4 !== 0 || alpha === 0) return result;
         const x = (index / 4) % 64;
         const y = Math.floor(index / 256);
-        const color = `#${[data[index], data[index + 1], data[index + 2]].map((value) => (value ?? 0).toString(16).padStart(2, "0")).join("")}`;
-        result.push([x, y, color]);
+        const color = rgbaToHex(
+          data[index] ?? 0,
+          data[index + 1] ?? 0,
+          data[index + 2] ?? 0,
+          alpha,
+        );
+        if (color !== null) result.push([x, y, color]);
         return result;
       }, []);
       const id = nextLayerId(document);
@@ -4122,6 +4125,7 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         onPointerDown={(event) => {
           event.currentTarget.setPointerCapture(event.pointerId);
           strokeRef.current = null;
+          selectionAnchorRef.current = null;
           paint(event);
         }}
         onPointerMove={(event) => {
@@ -4129,10 +4133,12 @@ function PixelDocumentEditor({ agentId }: { agentId: string }) {
         }}
         onPointerUp={(event) => {
           strokeRef.current = null;
+          selectionAnchorRef.current = null;
           event.currentTarget.releasePointerCapture(event.pointerId);
         }}
         onPointerCancel={() => {
           strokeRef.current = null;
+          selectionAnchorRef.current = null;
         }}
         aria-label="Grade de pixel art"
       />
