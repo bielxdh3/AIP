@@ -1085,42 +1085,11 @@ a:focus-visible {
   padding-bottom: 72px;
 }
 
-.settings-layout {
-  display: grid;
-  grid-template-columns: 210px minmax(0, 1fr);
-  gap: 18px;
-  min-height: 0;
-}
-.settings-nav {
-  display: grid;
-  align-content: start;
-  gap: 4px;
-}
-.settings-nav button {
-  padding: 10px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  color: #aeb6c2;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-.settings-nav button:hover,
-.settings-nav button.active {
-  border-color: #303a45;
-  color: #edf0f5;
-  background: #171d24;
-}
-@media (max-width: 720px) {
-  .settings-layout {
-    grid-template-columns: 1fr;
-  }
-  .settings-nav {
-    grid-auto-flow: column;
-    grid-auto-columns: max-content;
-    overflow-x: auto;
-  }
-}
+.settings-layout { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 18px; min-height: 0; }
+.settings-nav { display: grid; align-content: start; gap: 4px; }
+.settings-nav button { padding: 10px; border: 1px solid transparent; border-radius: 8px; color: #aeb6c2; background: transparent; text-align: left; cursor: pointer; }
+.settings-nav button:hover, .settings-nav button.active { border-color: #303a45; color: #edf0f5; background: #171d24; }
+@media (max-width: 720px) { .settings-layout { grid-template-columns: 1fr; } .settings-nav { grid-auto-flow: column; grid-auto-columns: max-content; overflow-x: auto; } }
 
 .settings-card {
   border: 1px solid var(--line, #2c3442);
@@ -1129,46 +1098,15 @@ a:focus-visible {
   background: var(--panel, #161b24);
 }
 
-.settings-card h2 {
-  margin-top: 0;
-}
-.settings-card dl {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 8px 18px;
-  margin: 0;
-}
-.settings-card dt {
-  color: var(--muted, #a7afbe);
-}
-.settings-card dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-.message-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 10px;
-}
-.message-editor textarea {
-  width: 100%;
-  min-height: 100px;
-}
-.branch-picker {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 8px 0;
-}
-.pixel-tools input[type="file"] {
-  max-width: 190px;
-  font-size: 12px;
-}
-.pixel-canvas {
-  touch-action: none;
-  user-select: none;
-}
+.settings-card h2 { margin-top: 0; }
+.settings-card dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; margin: 0; }
+.settings-card dt { color: var(--muted, #a7afbe); }
+.settings-card dd { margin: 0; overflow-wrap: anywhere; }
+.message-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.message-editor textarea { width: 100%; min-height: 100px; }
+.branch-picker { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 0; }
+.pixel-tools input[type="file"] { max-width: 190px; font-size: 12px; }
+.pixel-canvas { touch-action: none; user-select: none; }
 
 .brand-glyph {
   display: grid;
