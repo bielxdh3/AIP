@@ -33,7 +33,9 @@ export function pixelOverlays(source: string): PixelOverlay[] {
             x < 64 &&
             y >= 0 &&
             y < 64 &&
-            /^#[0-9a-f]{3,8}$/i.test(color)
+            /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(
+              color,
+            )
               ? [{ x, y, color }]
               : [],
           ),
@@ -76,9 +78,20 @@ const AgentSprite = forwardRef<HTMLImageElement, AgentSpriteProps>(
           onLoad={(event) => onLoad?.(event.currentTarget)}
         />
         {pixels.length > 0 ? (
-          <svg className="agent-sprite-custom" viewBox="0 0 64 64" aria-hidden="true">
+          <svg
+            className="agent-sprite-custom"
+            viewBox="0 0 64 64"
+            aria-hidden="true"
+          >
             {pixels.map((pixel) => (
-              <rect key={`${pixel.x}:${pixel.y}:${pixel.color}`} {...pixel} width="1" height="1" />
+              <rect
+                key={`${pixel.x}:${pixel.y}:${pixel.color}`}
+                x={pixel.x}
+                y={pixel.y}
+                width="1"
+                height="1"
+                fill={pixel.color}
+              />
             ))}
           </svg>
         ) : null}
