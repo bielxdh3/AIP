@@ -1780,14 +1780,10 @@ export function VoiceControls({
     };
     setBusy(true);
     setActiveOperation(operationId);
-    setStatus(
-      "Operação local iniciada; aguardando dispositivo/provedor configurado.",
-    );
+    setStatus("Operação local iniciada; aguardando dispositivo/provedor configurado.");
     setError(null);
     try {
-      const result = await invoke<
-        VoiceRuntimeTranscriptionResult | VoiceRuntimeWakeWordResult
-      >(
+      const result = await invoke<VoiceRuntimeTranscriptionResult | VoiceRuntimeWakeWordResult>(
         kind === "transcription"
           ? "transcribe_voice_local"
           : "detect_voice_wake_word_local",
@@ -1799,10 +1795,7 @@ export function VoiceControls({
         }; conversa de texto continua disponível.`,
       );
     } catch (cause) {
-      setError(
-        voiceErrorCopy[String(cause)] ||
-          "A operação local está indisponível; a conversa de texto continua disponível.",
-      );
+      setError(voiceErrorCopy[String(cause)] || "A operação local está indisponível; a conversa de texto continua disponível.");
     } finally {
       setActiveOperation(null);
       setBusy(false);
@@ -1821,23 +1814,13 @@ export function VoiceControls({
     };
     setBusy(true);
     setActiveOperation(operationId);
-    setStatus(
-      "Síntese local iniciada; aguardando dispositivo/provedor configurado.",
-    );
+    setStatus("Síntese local iniciada; aguardando dispositivo/provedor configurado.");
     setError(null);
     try {
-      const result = await invoke<VoiceRuntimeSynthesisResult>(
-        "synthesize_voice_local",
-        request,
-      );
-      setStatus(
-        `Síntese ${result.status}${result.code ? ` (${result.code})` : ""}; conversa de texto continua disponível.`,
-      );
+      const result = await invoke<VoiceRuntimeSynthesisResult>("synthesize_voice_local", request);
+      setStatus(`Síntese ${result.status}${result.code ? ` (${result.code})` : ""}; conversa de texto continua disponível.`);
     } catch (cause) {
-      setError(
-        voiceErrorCopy[String(cause)] ||
-          "A operação local está indisponível; a conversa de texto continua disponível.",
-      );
+      setError(voiceErrorCopy[String(cause)] || "A operação local está indisponível; a conversa de texto continua disponível.");
     } finally {
       setActiveOperation(null);
       setBusy(false);
@@ -1846,18 +1829,12 @@ export function VoiceControls({
 
   async function cancelLocalOperation() {
     if (!activeOperation) return;
-    const request: VoiceOperationCancellationRequest = {
-      agentId,
-      operationId: activeOperation,
-    };
+    const request: VoiceOperationCancellationRequest = { agentId, operationId: activeOperation };
     try {
       await invoke<boolean>("cancel_voice_operation", request);
       setStatus("Cancelamento solicitado para a operação local.");
     } catch (cause) {
-      setError(
-        voiceErrorCopy[String(cause)] ||
-          "Não foi possível cancelar a operação local.",
-      );
+      setError(voiceErrorCopy[String(cause)] || "Não foi possível cancelar a operação local.");
     }
   }
 
@@ -4163,15 +4140,11 @@ const toolErrorLabels: Record<string, string> = {
   workspace_root_limit: "O limite de 64 raízes locais do Owner foi atingido.",
   workspace_path_unavailable: "O caminho relativo local não está disponível.",
   workspace_path_invalid: "O caminho relativo local não é seguro.",
-  workspace_destination_exists:
-    "O destino local já existe; nada foi sobrescrito.",
+  workspace_destination_exists: "O destino local já existe; nada foi sobrescrito.",
   workspace_move_failed: "A movimentação local falhou e foi registrada.",
-  workspace_move_partial:
-    "A movimentação local ficou parcial e foi registrada.",
-  workspace_source_identity_unavailable:
-    "A identidade da origem local não pôde ser verificada.",
-  workspace_source_identity_mismatch:
-    "A origem local mudou desde a prévia; nada foi movido.",
+  workspace_move_partial: "A movimentação local ficou parcial e foi registrada.",
+  workspace_source_identity_unavailable: "A identidade da origem local não pôde ser verificada.",
+  workspace_source_identity_mismatch: "A origem local mudou desde a prévia; nada foi movido.",
   tool_payload_invalid:
     "A resposta da ferramenta não passou no contrato seguro.",
 };
@@ -4284,19 +4257,9 @@ function ToolControls({
     setSessions(nextSessions);
     setAudit(nextAudit);
     setRoots(nextRoots);
-    setSelectedRootId((current) =>
-      current && nextRoots.some((root) => root.id === current && root.enabled)
-        ? current
-        : (nextRoots.find((root) => root.enabled)?.id ?? ""),
-    );
+    setSelectedRootId((current) => current && nextRoots.some((root) => root.id === current && root.enabled) ? current : (nextRoots.find((root) => root.enabled)?.id ?? ""));
     setSelectedToolId((current) =>
-      current &&
-      nextCatalog.some(
-        (manifest) =>
-          manifest.toolId === current &&
-          (manifest.scopeKind !== "workspace_root" ||
-            nextRoots.some((root) => root.enabled)),
-      )
+      current && nextCatalog.some((manifest) => manifest.toolId === current && (manifest.scopeKind !== "workspace_root" || nextRoots.some((root) => root.enabled)))
         ? current
         : (nextCatalog[0]?.toolId ?? ""),
     );
@@ -4326,56 +4289,27 @@ function ToolControls({
 
   useEffect(() => {
     if (!selectedManifest) return;
-    setScopeRef(
-      selectedManifest.scopeKind === "workspace_root"
-        ? `workspace_root:${selectedRootId}`
-        : `fixture:${selectedManifest.scopeKind}/owner`,
-    );
+    setScopeRef(selectedManifest.scopeKind === "workspace_root" ? `workspace_root:${selectedRootId}` : `fixture:${selectedManifest.scopeKind}/owner`);
     setAllowPreview(true);
     setAllowExecute(true);
   }, [selectedManifest, selectedRootId]);
 
   async function addRoot() {
     if (blocked || !rootPath.trim()) return;
-    setBusy(true);
-    setError(null);
+    setBusy(true); setError(null);
     try {
-      parseToolPayload(
-        await invoke<unknown>("add_workspace_root", {
-          path: rootPath.trim(),
-          idempotencyKey: `workspace-root-${crypto.randomUUID()}`,
-          temporaryChat: false,
-        }),
-        parseWorkspaceRoot,
-      );
-      setRootPath("");
-      await loadData();
-    } catch (rootError: unknown) {
-      setError(toolErrorMessage(rootError));
-    } finally {
-      setBusy(false);
-    }
+      parseToolPayload(await invoke<unknown>("add_workspace_root", { path: rootPath.trim(), idempotencyKey: `workspace-root-${crypto.randomUUID()}`, temporaryChat: false }), parseWorkspaceRoot);
+      setRootPath(""); await loadData();
+    } catch (rootError: unknown) { setError(toolErrorMessage(rootError)); } finally { setBusy(false); }
   }
 
   async function disableRoot(rootId: string) {
     if (blocked) return;
-    setBusy(true);
-    setError(null);
+    setBusy(true); setError(null);
     try {
-      parseToolPayload(
-        await invoke<unknown>("remove_workspace_root", {
-          rootId,
-          idempotencyKey: `workspace-root-disable-${crypto.randomUUID()}`,
-          temporaryChat: false,
-        }),
-        parseWorkspaceRoot,
-      );
+      parseToolPayload(await invoke<unknown>("remove_workspace_root", { rootId, idempotencyKey: `workspace-root-disable-${crypto.randomUUID()}`, temporaryChat: false }), parseWorkspaceRoot);
       await loadData();
-    } catch (rootError: unknown) {
-      setError(toolErrorMessage(rootError));
-    } finally {
-      setBusy(false);
-    }
+    } catch (rootError: unknown) { setError(toolErrorMessage(rootError)); } finally { setBusy(false); }
   }
 
   function buildInput(): ToolActionInput | null {
@@ -4536,12 +4470,7 @@ function ToolControls({
   return (
     <section className="tool-controls" aria-label="Ferramentas supervisionadas">
       <h3>Ferramentas supervisionadas</h3>
-      <p>
-        Ferramentas fixture permanecem determinísticas. Inspeção local e
-        movimentos limitados dentro de uma raiz Owner configurada têm efeito no
-        host somente após prévia, aprovação e segunda confirmação; calendário e
-        mensagens continuam mocks provider-neutral.
-      </p>
+      <p>Ferramentas fixture permanecem determinísticas. Inspeção local e movimentos limitados dentro de uma raiz Owner configurada têm efeito no host somente após prévia, aprovação e segunda confirmação; calendário e mensagens continuam mocks provider-neutral.</p>
       {temporaryChat ? (
         <p role="alert">Conversa temporária: ferramentas bloqueadas.</p>
       ) : null}
@@ -4551,37 +4480,10 @@ function ToolControls({
       {error ? <p role="alert">{error}</p> : null}
       <section className="settings-card">
         <h4>Raízes locais do Owner</h4>
-        <p>
-          Somente caminhos escolhidos pelo Owner; a raiz é validada pelo Rust e
-          não aparece na auditoria.
-        </p>
-        <input
-          value={rootPath}
-          onChange={(event) => setRootPath(event.target.value)}
-          placeholder="Caminho local escolhido pelo Owner"
-          disabled={busy || blocked}
-        />
-        <button
-          type="button"
-          onClick={() => void addRoot()}
-          disabled={busy || blocked || !rootPath.trim()}
-        >
-          Adicionar raiz
-        </button>
-        <ul>
-          {roots.map((root) => (
-            <li key={root.id}>
-              <code>{root.id}</code> — {root.enabled ? "ativa" : "desativada"}{" "}
-              <button
-                type="button"
-                onClick={() => void disableRoot(root.id)}
-                disabled={busy || blocked || !root.enabled}
-              >
-                Desativar
-              </button>
-            </li>
-          ))}
-        </ul>
+        <p>Somente caminhos escolhidos pelo Owner; a raiz é validada pelo Rust e não aparece na auditoria.</p>
+        <input value={rootPath} onChange={(event) => setRootPath(event.target.value)} placeholder="Caminho local escolhido pelo Owner" disabled={busy || blocked} />
+        <button type="button" onClick={() => void addRoot()} disabled={busy || blocked || !rootPath.trim()}>Adicionar raiz</button>
+        <ul>{roots.map((root) => <li key={root.id}><code>{root.id}</code> — {root.enabled ? "ativa" : "desativada"} <button type="button" onClick={() => void disableRoot(root.id)} disabled={busy || blocked || !root.enabled}>Desativar</button></li>)}</ul>
       </section>
       <section className="settings-card">
         <h4>Catálogo local v1</h4>
@@ -4592,11 +4494,7 @@ function ToolControls({
                 {toolLabels[manifest.toolId] ?? "Ferramenta fixture"}
               </strong>{" "}
               <span>
-                {manifest.adapterKind === "workspace_local"
-                  ? "efeito local limitado no host"
-                  : manifest.classification === "read_only"
-                    ? "somente leitura"
-                    : "altera estado somente no mock"}
+                {manifest.adapterKind === "workspace_local" ? "efeito local limitado no host" : manifest.classification === "read_only" ? "somente leitura" : "altera estado somente no mock"}
                 {manifest.requiresSecondConfirmation
                   ? "; exige segunda confirmação"
                   : ""}
@@ -4616,47 +4514,22 @@ function ToolControls({
               setAction(null);
             }}
           >
-            {catalog
-              .filter(
-                (manifest) =>
-                  manifest.scopeKind !== "workspace_root" ||
-                  roots.some((root) => root.enabled),
-              )
-              .map((manifest) => (
-                <option key={manifest.toolId} value={manifest.toolId}>
-                  {toolLabels[manifest.toolId] ?? manifest.toolId}
-                </option>
-              ))}
+            {catalog.filter((manifest) => manifest.scopeKind !== "workspace_root" || roots.some((root) => root.enabled)).map((manifest) => (
+              <option key={manifest.toolId} value={manifest.toolId}>
+                {toolLabels[manifest.toolId] ?? manifest.toolId}
+              </option>
+            ))}
           </select>
         </label>
         <label>
           Escopo fixture
           <input
             value={scopeRef}
-            onChange={(event) =>
-              selectedManifest?.scopeKind !== "workspace_root" &&
-              setScopeRef(event.target.value)
-            }
+            onChange={(event) => selectedManifest?.scopeKind !== "workspace_root" && setScopeRef(event.target.value)}
             readOnly={selectedManifest?.scopeKind === "workspace_root"}
           />
         </label>
-        {selectedManifest?.scopeKind === "workspace_root" ? (
-          <label>
-            Raiz local
-            <select
-              value={selectedRootId}
-              onChange={(event) => setSelectedRootId(event.target.value)}
-            >
-              {roots
-                .filter((root) => root.enabled)
-                .map((root) => (
-                  <option key={root.id} value={root.id}>
-                    {root.id}
-                  </option>
-                ))}
-            </select>
-          </label>
-        ) : null}
+        {selectedManifest?.scopeKind === "workspace_root" ? <label>Raiz local<select value={selectedRootId} onChange={(event) => setSelectedRootId(event.target.value)}>{roots.filter((root) => root.enabled).map((root) => <option key={root.id} value={root.id}>{root.id}</option>)}</select></label> : null}
         <label>
           <input
             type="checkbox"
@@ -4723,8 +4596,7 @@ function ToolControls({
         disabled={busy || blocked || selectedSession?.status !== "active"}
       >
         <legend>Prévia da ação</legend>
-        {selectedToolId === "workspace.inspect_scope" ||
-        selectedToolId === "workspace.inspect_local" ? (
+        {selectedToolId === "workspace.inspect_scope" || selectedToolId === "workspace.inspect_local" ? (
           <label>
             Entradas relativas, separadas por vírgula
             <input
@@ -4733,8 +4605,7 @@ function ToolControls({
             />
           </label>
         ) : null}
-        {selectedToolId === "workspace.organize_files" ||
-        selectedToolId === "workspace.organize_local" ? (
+        {selectedToolId === "workspace.organize_files" || selectedToolId === "workspace.organize_local" ? (
           <>
             <label>
               Origem relativa
@@ -4899,9 +4770,7 @@ function ToolControls({
                   })
                 }
               >
-                {action?.toolId.endsWith("_local")
-                  ? "Executar efeito local explicitamente"
-                  : "Executar mock explicitamente"}
+                {action?.toolId.endsWith("_local") ? "Executar efeito local explicitamente" : "Executar mock explicitamente"}
               </button>
             ) : null}
             {actionIsPending ? (
@@ -4939,13 +4808,11 @@ function ToolControls({
           </div>
           {action.result ? (
             <div>
-              <h5>
-                {action.toolId.endsWith("_local")
-                  ? "Saída não confiável da execução local"
-                  : "Saída não confiável do mock"}
-              </h5>
+              <h5>{action.toolId.endsWith("_local") ? "Saída não confiável da execução local" : "Saída não confiável do mock"}</h5>
               <pre>{action.result.output}</pre>
-              <p>Alteração no host: {action.result.changed ? "sim" : "não"}.</p>
+              <p>
+                Alteração no host: {action.result.changed ? "sim" : "não"}.
+              </p>
             </div>
           ) : null}
         </section>
