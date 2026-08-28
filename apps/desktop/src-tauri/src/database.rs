@@ -461,7 +461,7 @@ impl Database {
             .query_row(
                 "SELECT id, agent_id, title, model_override_ref, is_pinned FROM conversations
                  WHERE agent_id = ?1 AND archived_at IS NULL
-                 ORDER BY updated_at DESC, id ASC LIMIT 1",
+                 ORDER BY is_pinned DESC, updated_at DESC, id ASC LIMIT 1",
                 params![agent_id],
                 |row| {
                     Ok(PhaseOneConversation {
@@ -3088,6 +3088,46 @@ mod tests {
             .unwrap();
         assert_eq!(remaining, 0);
         drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn pinned_conversation_wins_after_active_archive_or_delete() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let pinned = database
+            .create_conversation(ASTRA_ID, "Conversa fixada")
+            .unwrap();
+        database
+            .set_conversation_pinned(ASTRA_ID, &pinned.id, true)
+            .unwrap();
+
+        let archived = database
+            .create_conversation(ASTRA_ID, "Conversa arquivada")
+            .unwrap();
+        database
+            .set_active_conversation(ASTRA_ID, &archived.id)
+            .unwrap();
+        database
+            .archive_conversation(ASTRA_ID, &archived.id)
+            .unwrap();
+        assert_eq!(
+            database.active_conversation(ASTRA_ID).unwrap().id,
+            pinned.id
+        );
+
+        let deleted = database
+            .create_conversation(ASTRA_ID, "Conversa excluída")
+            .unwrap();
+        database
+            .set_active_conversation(ASTRA_ID, &deleted.id)
+            .unwrap();
+        database.delete_conversation(ASTRA_ID, &deleted.id).unwrap();
+        assert_eq!(
+            database.active_conversation(ASTRA_ID).unwrap().id,
+            pinned.id
+        );
+
         cleanup(&path);
     }
 
