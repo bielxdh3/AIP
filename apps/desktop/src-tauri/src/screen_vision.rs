@@ -487,6 +487,7 @@ struct ScreenVisionRedactionResult {
     redaction_applied: bool,
 }
 
+#[allow(unknown_lints, clippy::chunks_exact_to_as_chunks)]
 fn redact_real_pixels(
     pixels: &mut [u8],
     privacy: &ScreenVisionPrivacyPolicy,
