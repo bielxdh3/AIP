@@ -8,8 +8,12 @@ import {
   parseCognitiveTrait,
   parseHealthResponse,
   parseOwnerCorrectionResult,
+  parseProviderSnapshot,
   parseRollbackResult,
   parseVoiceEmotionHypothesis,
+  parseVoiceProviderStatus,
+  parseLocalProvider,
+  parseLocalProviders,
   parseVoiceSettings,
   parseVoiceSynthesisResult,
   parseVoiceTranscriptionResult,
@@ -42,6 +46,7 @@ import {
   parseScreenVisionHypothesis,
   parseScreenVisionJob,
   parseScreenVisionPrivacy,
+  parseScreenVisionProviderStatus,
   parseScreenVisionSession,
   parseScreenVisionSessions,
   COMPANION_FIXTURE_APP_VERSION,
@@ -388,6 +393,80 @@ describe("voice contracts", () => {
     expect(parseVoiceDevice({ schemaVersion: 1, reference: "local:wavein:0", direction: "other", displayName: "x" })).toBeNull();
   });
 
+  it("accepts provider status without exposing executable paths", () => {
+    expect(
+      parseVoiceProviderStatus({
+        recognition: {
+          state: "ready",
+          reference: "fixture:stt-v1",
+          synthetic: true,
+        },
+        synthesis: {
+          state: "not_configured",
+          reference: null,
+          synthetic: false,
+        },
+      }),
+    ).not.toBeNull();
+    expect(
+      parseVoiceProviderStatus({
+        recognition: {
+          state: "ready",
+          reference: "C:/private/provider.exe",
+          synthetic: false,
+        },
+        synthesis: {
+          state: "not_configured",
+          reference: null,
+          synthetic: false,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("accepts registered local providers without exposing executable paths", () => {
+    const provider = {
+      id: "whisper-local",
+      kind: "stt",
+      displayName: "Whisper local",
+      protocolVersion: "aip-voice-v1",
+      enabled: true,
+      validationStatus: "ready",
+      validationResult: "arquivo local validado",
+      updatedAt: 1,
+    };
+    expect(parseLocalProvider(provider)).not.toBeNull();
+    expect(parseLocalProviders([provider])).not.toBeNull();
+    expect(parseLocalProvider({ ...provider, executablePath: "C:/private/provider.exe" })).toBeNull();
+    expect(parseLocalProvider({ ...provider, kind: "visual", protocolVersion: "aip-voice-v1" })).toBeNull();
+  });
+
+  it("accepts bounded Ollama snapshots and rejects malformed models", () => {
+    const snapshot = {
+      state: "available" as const,
+      detailCode: "provider_available",
+      models: [{
+        ref: "ollama:fixture-model",
+        providerModelId: "fixture-model",
+        displayName: "Fixture model",
+        size: 1_024,
+        family: null,
+        parameterSize: null,
+        quantization: null,
+        capabilities: [],
+      }],
+      refreshedAt: 1,
+    };
+    const model = snapshot.models[0]!;
+    expect(parseProviderSnapshot(snapshot)).not.toBeNull();
+    expect(
+      parseProviderSnapshot({
+        ...snapshot,
+        models: [{ ...model, ref: "ollama:../private" }],
+      }),
+    ).toBeNull();
+  });
+
   const settings = {
     agentId: "agt_astra_provisional",
     schemaVersion: 1 as const,
@@ -549,8 +628,8 @@ describe("supervised tool contracts", () => {
     expect(parseToolExecutionResult({ status: "executed", output: "moved", changed: true, untrusted: true })).not.toBeNull();
     expect(parseToolCompensation({ kind: "workspace_move", available: true, description: "bounded", moves: [{ from: "a.txt", to: "b.txt", identity: "win:1:2" }] })).not.toBeNull();
     expect(parseWorkspaceRoot({ id: "wrt_opaque", enabled: true, createdAt: 1, updatedAt: 2 })).not.toBeNull();
-    expect(parseWorkspaceRootRequest({ path: "C:/workspace", idempotencyKey: "root-1", temporaryChat: false })).not.toBeNull();
-    expect(parseWorkspaceRootIdRequest({ rootId: "wrt_opaque", idempotencyKey: "root-2", temporaryChat: false })).not.toBeNull();
+    expect(parseWorkspaceRootRequest({ agentId: "agt_astra_provisional", path: "C:/workspace", idempotencyKey: "root-1", temporaryChat: false })).not.toBeNull();
+    expect(parseWorkspaceRootIdRequest({ agentId: "agt_astra_provisional", rootId: "wrt_opaque", idempotencyKey: "root-2", temporaryChat: false })).not.toBeNull();
   });
 
   it("rejects unsafe or malformed tool payloads", () => {
@@ -878,6 +957,8 @@ describe("metadata-only screen vision contracts", () => {
   };
 
   it("accepts bounded synthetic fixtures, lifecycle records, results and audit", () => {
+    expect(parseScreenVisionProviderStatus({ state: "not_configured" })).not.toBeNull();
+    expect(parseScreenVisionProviderStatus({ state: "not_configured", path: "hidden" })).toBeNull();
     expect(parseScreenVisionFixture(fixture)).not.toBeNull();
     expect(parseScreenVisionFixtures([fixture])).not.toBeNull();
     expect(parseScreenVisionPrivacy(privacy)).not.toBeNull();

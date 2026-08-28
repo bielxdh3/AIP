@@ -13,13 +13,13 @@ level; earlier phase-specific notes remain historical preparation evidence and a
 new observations here. AIP v0.1.0 was published from commit `b6f74b3793437a647186dd52eeb950ff4b3fb228`.
 A local Ollama integration test is skipped when its required model is not installed. v0.1.0 has
 no cloud synchronization or released Android client; the post-v0.1 Phase 12 Android APK/protocol
-slice is functional locally, while physical-device and release validation
+slice is productized for debug-companion validation, while physical-device and release validation
 remain reserved. BielOS integration, released voice feature,
-real supervised external tools, or released screen vision analysis. The current
-development checkpoint implements bounded Phase 7B–7F local paths, the functional
-Phase 8 local voice runtime, the functional
-Phase 9 supervised local-workspace effects, the functional Phase 10 closed declarative
-extension runtime, and the functional Phase 11 bounded Windows screen-capture/provider path; these are not
+real supervised external tools, or released screen vision analysis are not claimed. The current
+development checkpoint implements bounded Phase 7B–7F local paths, an external-prerequisite
+Phase 8 local voice runtime, an external-prerequisite
+Phase 9 supervised local-workspace path, the productized Phase 10 closed declarative
+extension runtime, and an external-prerequisite Phase 11 bounded Windows screen-capture/provider path; these are not
 v0.1 release claims. Phase 7E and 7F
 validation reservations are recorded in
 [PHASE_7E_VALIDATION.md](PHASE_7E_VALIDATION.md) and [PHASE_7F_VALIDATION.md](PHASE_7F_VALIDATION.md).
@@ -44,7 +44,7 @@ validation reservations are recorded in
 
 ## Phase 9 supervised-tools checkpoint
 
-- Phase 9 provides functional local runtime/effects through SQLite-backed manifests, opaque
+- Phase 9 provides productized local runtime/effects through SQLite-backed manifests, opaque
   Owner-configured roots, metadata inspection, and approved bounded file moves with preview,
   second confirmation, audit, and compensation. Calendar/messaging remain provider-neutral
   fixtures; shell, credentials, network, and external-provider mutation are not accessed.
@@ -117,7 +117,7 @@ validation reservations are recorded in
 
 ## Phase 13 gateway checkpoint
 
-- Phase 13 is a functional authenticated local/private gateway checkpoint. It
+- Phase 13 is a backend-only authenticated local/private gateway checkpoint. It
   includes a bounded `aip-gateway-v1` framed HMAC TCP transport, synthetic
   protocol/account fixture, Owner-scoped transfer and approval,
   session proof/replay checks, administrative recovery approval, revocation,

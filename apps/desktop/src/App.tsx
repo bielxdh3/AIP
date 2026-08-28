@@ -7,7 +7,13 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { parseVoiceDevice } from "@aip/contracts";
+import {
+  parseProviderSnapshot,
+  parseLocalProviders,
+  parseScreenVisionProviderStatus,
+  parseVoiceDevice,
+  parseVoiceProviderStatus,
+} from "@aip/contracts";
 import type {
   AppSnapshot,
   AgentMemory,
@@ -51,6 +57,7 @@ import type {
   ExtensionAuditRecord,
   ExtensionCapability,
   ExtensionCatalogEntry,
+  ExtensionImportRequest,
   ExtensionManifest,
   ExtensionInstruction,
   ExtensionExecutionResult,
@@ -63,6 +70,11 @@ import type {
   VoiceRuntimeSynthesisResult,
   VoiceRuntimeTranscriptionResult,
   VoiceRuntimeWakeWordResult,
+  VoiceProviderStatus,
+  LocalProvider,
+  LocalProviderKind,
+  LocalProviderRequest,
+  LocalProviderIdRequest,
   VoiceSynthesisRequest,
   VoiceSynthesisResult,
   VoiceTranscriptionRequest,
@@ -73,6 +85,7 @@ import type {
   ScreenVisionJob,
   ScreenVisionPermission,
   ScreenVisionPrivacyPolicy,
+  ScreenVisionProviderStatus,
   ScreenVisionSession,
   CompanionAuditRecord,
   CompanionDevice,
@@ -95,6 +108,7 @@ import type {
   ToolManifest,
   ToolPermission,
   ToolSession,
+  ProviderSnapshot,
   WorkspaceRoot,
 } from "@aip/contracts";
 import {
@@ -1220,125 +1234,6 @@ export function ConversationList({
   );
 }
 
-function MemoryList({ agentId }: { agentId: string }) {
-  const [items, setItems] = useState<AgentMemory[]>([]);
-  const [content, setContent] = useState("");
-  const [category, setCategory] = useState("preference");
-  const [query, setQuery] = useState("");
-  const [status, setStatus] = useState("active");
-  const load = useCallback(
-    () =>
-      void invoke<AgentMemory[]>("search_agent_memories", {
-        agentId,
-        query: query || null,
-        status: status === "all" ? null : status,
-        category: null,
-        sourceType: null,
-      }).then(setItems),
-    [agentId, query, status],
-  );
-  useEffect(() => {
-    load();
-  }, [load]);
-  async function save(confirmed = true) {
-    if (!content.trim()) return;
-    await invoke("create_agent_memory", {
-      agentId,
-      category,
-      content,
-      confirmed,
-    });
-    setContent("");
-    load();
-  }
-  async function updateStatus(memoryId: string, status: string) {
-    await invoke("set_agent_memory_status", { agentId, memoryId, status });
-    load();
-  }
-  return (
-    <div className="memory-list" aria-label="Memórias do agente">
-      <strong>Memórias</strong>
-      <input
-        value={query}
-        onChange={(event) => setQuery(event.target.value)}
-        placeholder="Buscar memórias"
-        aria-label="Buscar memórias"
-      />
-      <select
-        value={status}
-        onChange={(event) => setStatus(event.target.value)}
-        aria-label="Estado das memórias"
-      >
-        <option value="active">Ativas</option>
-        <option value="archived">Arquivadas</option>
-        <option value="trashed">Lixeira</option>
-        <option value="candidate_rejected">Rejeitadas</option>
-        <option value="all">Todas</option>
-      </select>
-      {items.map((item) => (
-        <div className="memory-item" key={item.id}>
-          <p>
-            <small>
-              {item.category} ·{" "}
-              {item.confirmationStatus === "pending"
-                ? "pendente"
-                : "confirmada"}
-            </small>{" "}
-            {item.content}
-          </p>
-          {item.confirmationStatus === "pending" ? (
-            <>
-              <button
-                type="button"
-                onClick={() => void updateStatus(item.id, "active")}
-              >
-                Confirmar
-              </button>
-              <button
-                type="button"
-                onClick={() => void updateStatus(item.id, "candidate_rejected")}
-              >
-                Rejeitar
-              </button>
-            </>
-          ) : null}
-          {item.status === "active" ? (
-            <button
-              type="button"
-              onClick={() => void updateStatus(item.id, "archived")}
-            >
-              Arquivar
-            </button>
-          ) : item.status === "archived" || item.status === "trashed" ? (
-            <button
-              type="button"
-              onClick={() => void updateStatus(item.id, "active")}
-            >
-              Restaurar
-            </button>
-          ) : null}
-        </div>
-      ))}
-      <input
-        value={category}
-        onChange={(event) => setCategory(event.target.value)}
-        aria-label="Categoria da memória"
-      />
-      <input
-        value={content}
-        onChange={(event) => setContent(event.target.value)}
-        placeholder="Nova memória"
-      />
-      <button type="button" onClick={() => void save()}>
-        Salvar memória
-      </button>
-      <button type="button" onClick={() => void save(false)}>
-        Propor memória
-      </button>
-    </div>
-  );
-}
-
 function MemoryWorkspace({ agentId }: { agentId: string }) {
   const [items, setItems] = useState<AgentMemory[]>([]);
   const [content, setContent] = useState("");
@@ -1624,9 +1519,11 @@ function voiceAvailabilityCopy(settings: VoiceSettings): string {
 export function VoiceControls({
   agentId,
   temporaryChat,
+  safeMode = false,
 }: {
   agentId: string;
   temporaryChat: boolean;
+  safeMode?: boolean;
 }) {
   const [settings, setSettings] = useState<VoiceSettings | null>(null);
   const [recognitionModelRef, setRecognitionModelRef] = useState("");
@@ -1634,6 +1531,12 @@ export function VoiceControls({
   const [inputDeviceRef, setInputDeviceRef] = useState("");
   const [outputDeviceRef, setOutputDeviceRef] = useState("");
   const [voiceDevices, setVoiceDevices] = useState<VoiceDevice[]>([]);
+  const [localProviders, setLocalProviders] = useState<LocalProvider[]>([]);
+  const [providerKind, setProviderKind] = useState<LocalProviderKind>("stt");
+  const [providerId, setProviderId] = useState("");
+  const [providerName, setProviderName] = useState("");
+  const [providerPath, setProviderPath] = useState("");
+  const [providerProtocol, setProviderProtocol] = useState("aip-voice-v1");
   const [customVoiceRef, setCustomVoiceRef] = useState(
     "fixture:custom-neutral-v1",
   );
@@ -1641,6 +1544,7 @@ export function VoiceControls({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [activeOperation, setActiveOperation] = useState<string | null>(null);
+  const blocked = temporaryChat || safeMode;
   const load = useCallback(async () => {
     try {
       const next = await invoke<VoiceSettings>("get_voice_settings", {
@@ -1667,13 +1571,69 @@ export function VoiceControls({
     void invoke<unknown[]>("list_voice_devices")
       .then((values) => {
         const devices = values.map(parseVoiceDevice).filter((device): device is VoiceDevice => device !== null);
-        setVoiceDevices(devices.slice(0, 64));
+      setVoiceDevices(devices.slice(0, 64));
       })
       .catch(() => setVoiceDevices([]));
+    void invoke<unknown>("list_local_providers")
+      .then((value) => setLocalProviders(parseLocalProviders(value) ?? []))
+      .catch(() => setLocalProviders([]));
   }, [load]);
 
+  async function registerProvider() {
+    if (blocked || busy) return;
+    if (!providerId.trim() || !providerName.trim() || !providerPath.trim()) {
+      setError("Informe identificador, nome e caminho absoluto do provedor.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const request: LocalProviderRequest = {
+        agentId,
+        id: providerId.trim(),
+        kind: providerKind,
+        displayName: providerName.trim(),
+        executablePath: providerPath.trim(),
+        protocolVersion: providerKind === "visual" ? "aip-screen-vision-v1" : providerProtocol,
+        idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
+      };
+      const provider = await invoke<LocalProvider>("register_local_provider", request);
+      setLocalProviders((current) => [...current.filter((entry) => entry.id !== provider.id), provider].sort((a, b) => a.displayName.localeCompare(b.displayName)));
+      setStatus(`Provedor local ${provider.displayName} validado e disponível.`);
+      setProviderId("");
+      setProviderName("");
+      setProviderPath("");
+    } catch (cause) {
+      setError(String(cause) || "O provedor local foi recusado.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disableProvider(provider: LocalProvider) {
+    if (blocked || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const request: LocalProviderIdRequest = {
+        agentId,
+        id: provider.id,
+        idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
+      };
+      const disabled = await invoke<LocalProvider>("disable_local_provider", request);
+      setLocalProviders((current) => current.map((entry) => entry.id === disabled.id ? disabled : entry));
+      setStatus(`Provedor ${provider.displayName} desativado.`);
+    } catch (cause) {
+      setError(String(cause) || "Não foi possível desativar o provedor.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveSettings() {
-    if (temporaryChat || settings === null) return;
+    if (blocked || settings === null) return;
     setBusy(true);
     setError(null);
     try {
@@ -1699,7 +1659,7 @@ export function VoiceControls({
   }
 
   async function changeConsent(granted: boolean) {
-    if (temporaryChat || settings === null) return;
+    if (blocked || settings === null) return;
     setBusy(true);
     setError(null);
     try {
@@ -1784,7 +1744,7 @@ export function VoiceControls({
   }
 
   async function runLocalCapture(kind: "transcription" | "wake_word") {
-    if (temporaryChat || busy) return;
+    if (blocked || busy) return;
     const operationId = crypto.randomUUID();
     const request: VoiceCaptureRuntimeRequest = {
       agentId,
@@ -1818,7 +1778,7 @@ export function VoiceControls({
   }
 
   async function runLocalSynthesis() {
-    if (temporaryChat || busy) return;
+    if (blocked || busy) return;
     const operationId = crypto.randomUUID();
     const request = {
       agentId,
@@ -1875,14 +1835,68 @@ export function VoiceControls({
           salvos.
         </p>
       ) : null}
+      {safeMode ? (
+        <p role="status">
+          Modo seguro: operações de voz bloqueadas; a conversa de texto continua
+          disponível.
+        </p>
+      ) : null}
       <p>Voz-base protegida: {settings.baseVoiceId}.</p>
+      <details open>
+        <summary>Registro de provedores locais (voz e visão)</summary>
+        <p>
+          Cadastre um executável local com protocolo explícito. O caminho é validado no dispositivo;
+          nenhuma variável de ambiente é necessária para a configuração normal.
+        </p>
+        <div className="inline-form">
+          <label>
+            Tipo
+            <select
+              value={providerKind}
+              disabled={blocked || busy}
+              onChange={(event) => {
+                const kind = event.target.value as LocalProviderKind;
+                setProviderKind(kind);
+                setProviderProtocol(kind === "visual" ? "aip-screen-vision-v1" : "aip-voice-v1");
+              }}
+            >
+              <option value="stt">Voz — transcrição</option>
+              <option value="tts">Voz — síntese</option>
+              <option value="visual">Visão de tela</option>
+            </select>
+          </label>
+          <label>Identificador<input value={providerId} maxLength={96} disabled={blocked || busy} onChange={(event) => setProviderId(event.target.value)} placeholder="meu-provedor" /></label>
+          <label>Nome exibido<input value={providerName} maxLength={120} disabled={blocked || busy} onChange={(event) => setProviderName(event.target.value)} placeholder="Meu provedor local" /></label>
+          <label>Caminho absoluto do executável<input value={providerPath} maxLength={1024} disabled={blocked || busy} onChange={(event) => setProviderPath(event.target.value)} placeholder="C:\\Ferramentas\\provedor.exe" /></label>
+          <button type="button" disabled={blocked || busy} onClick={() => void registerProvider()}>Validar e registrar</button>
+        </div>
+        {localProviders.length === 0 ? <p>Nenhum provedor registrado. Voz e visão permanecem degradadas até a configuração local.</p> : (
+          <ul aria-label="Provedores locais registrados">
+            {localProviders.map((provider) => (
+              <li key={provider.id}>
+                <strong>{provider.displayName}</strong> ({provider.kind}) — {provider.validationStatus}: {provider.validationResult}{" "}
+                {provider.enabled ? (
+                  <>
+                    <button type="button" disabled={blocked || busy} onClick={() => {
+                      if (provider.kind === "stt") setRecognitionModelRef(`local:stt:${provider.id}`);
+                      if (provider.kind === "tts") setSynthesisModelRef(`local:tts:${provider.id}`);
+                      setStatus(`Referência ${provider.displayName} selecionada; salve as configurações.`);
+                    }}>Usar</button>{" "}
+                    <button type="button" disabled={blocked || busy} onClick={() => void disableProvider(provider)}>Desativar</button>
+                  </>
+                ) : <span>desativado</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </details>
       <label>
         Modelo local de transcrição
         <input
           value={recognitionModelRef}
           placeholder="local:stt:provider"
           maxLength={160}
-          disabled={temporaryChat || busy}
+          disabled={blocked || busy}
           onChange={(event) => setRecognitionModelRef(event.target.value)}
         />
       </label>
@@ -1892,13 +1906,13 @@ export function VoiceControls({
           value={synthesisModelRef}
           placeholder="local:tts:provider"
           maxLength={160}
-          disabled={temporaryChat || busy}
+          disabled={blocked || busy}
           onChange={(event) => setSynthesisModelRef(event.target.value)}
         />
       </label>
       <label>
         Dispositivo local de entrada
-        <select value={inputDeviceRef} disabled={temporaryChat || busy} onChange={(event) => setInputDeviceRef(event.target.value)}>
+        <select value={inputDeviceRef} disabled={blocked || busy} onChange={(event) => setInputDeviceRef(event.target.value)}>
           <option value="">Selecionar dispositivo (ou use a referência abaixo)</option>
           {voiceDevices.filter((device) => device.direction === "input").map((device) => <option key={device.reference} value={device.reference}>{device.displayName}</option>)}
         </select>
@@ -1906,13 +1920,13 @@ export function VoiceControls({
           value={inputDeviceRef}
           placeholder="local:wavein:0"
           maxLength={160}
-          disabled={temporaryChat || busy}
+          disabled={blocked || busy}
           onChange={(event) => setInputDeviceRef(event.target.value)}
         />
       </label>
       <label>
         Dispositivo local de saída
-        <select value={outputDeviceRef} disabled={temporaryChat || busy} onChange={(event) => setOutputDeviceRef(event.target.value)}>
+        <select value={outputDeviceRef} disabled={blocked || busy} onChange={(event) => setOutputDeviceRef(event.target.value)}>
           <option value="">Selecionar dispositivo (ou use a referência abaixo)</option>
           {voiceDevices.filter((device) => device.direction === "output").map((device) => <option key={device.reference} value={device.reference}>{device.displayName}</option>)}
         </select>
@@ -1920,13 +1934,13 @@ export function VoiceControls({
           value={outputDeviceRef}
           placeholder="local:waveout:0"
           maxLength={160}
-          disabled={temporaryChat || busy}
+          disabled={blocked || busy}
           onChange={(event) => setOutputDeviceRef(event.target.value)}
         />
       </label>
       <button
         type="button"
-        disabled={temporaryChat || busy}
+        disabled={blocked || busy}
         onClick={() => void saveSettings()}
       >
         Salvar referências locais
@@ -1937,13 +1951,13 @@ export function VoiceControls({
           value={customVoiceRef}
           placeholder="local:custom-neutral-v1"
           maxLength={160}
-          disabled={temporaryChat || busy}
+          disabled={blocked || busy}
           onChange={(event) => setCustomVoiceRef(event.target.value)}
         />
       </label>
       <button
         type="button"
-        disabled={temporaryChat || busy}
+        disabled={blocked || busy}
         onClick={() =>
           void changeConsent(settings.customVoiceConsent !== "granted")
         }
@@ -1954,14 +1968,14 @@ export function VoiceControls({
       </button>
       <button
         type="button"
-        disabled={busy}
+        disabled={blocked || busy}
         onClick={() => void testTranscription()}
       >
         Testar transcrição de fixture
       </button>
       <button
         type="button"
-        disabled={busy}
+        disabled={blocked || busy}
         onClick={() => void testSynthesis()}
       >
         Testar síntese de fixture
@@ -1969,21 +1983,21 @@ export function VoiceControls({
       <p>Operações reais sob demanda (Windows, somente referências locais):</p>
       <button
         type="button"
-        disabled={temporaryChat || busy}
+        disabled={blocked || busy}
         onClick={() => void runLocalCapture("transcription")}
       >
         Capturar e transcrever localmente
       </button>
       <button
         type="button"
-        disabled={temporaryChat || busy}
+        disabled={blocked || busy}
         onClick={() => void runLocalSynthesis()}
       >
         Sintetizar localmente
       </button>
       <button
         type="button"
-        disabled={temporaryChat || busy}
+        disabled={blocked || busy}
         onClick={() => void runLocalCapture("wake_word")}
       >
         Verificar wake-word localmente
@@ -2236,15 +2250,18 @@ export function CognitivePanel({ agentId }: { agentId: string }) {
 export function CognitivePanelGate({
   agentId,
   temporaryChat,
+  safeMode = false,
 }: {
   agentId: string;
   temporaryChat: boolean;
+  safeMode?: boolean;
 }) {
-  if (temporaryChat) {
+  if (temporaryChat || safeMode) {
     return (
       <p role="status" aria-label="Valores cognitivos somente para leitura">
-        Conversa temporária ativa: opiniões, relacionamentos e objetivos ficam
-        somente para leitura; nenhuma alteração será salva.
+        {temporaryChat
+          ? "Conversa temporária ativa: opiniões, relacionamentos e objetivos ficam somente para leitura; nenhuma alteração será salva."
+          : "Modo seguro ativo: opiniões, relacionamentos e objetivos ficam somente para leitura; nenhuma alteração será salva."}
       </p>
     );
   }
@@ -4256,7 +4273,7 @@ function parseToolPayload<T>(
   return parsed;
 }
 
-function ToolControls({
+export function ToolControls({
   agentId,
   temporaryChat,
   safeMode,
@@ -4339,7 +4356,9 @@ function ToolControls({
 
   useEffect(() => {
     if (!selectedManifest) return;
-    setScopeRef(selectedManifest.scopeKind === "workspace_root" ? `workspace_root:${selectedRootId}` : `fixture:${selectedManifest.scopeKind}/owner`);
+    setScopeRef(selectedManifest.scopeKind === "workspace_root"
+      ? selectedRootId ? `workspace_root:${selectedRootId}` : ""
+      : `fixture:${selectedManifest.scopeKind}/owner`);
     setAllowPreview(true);
     setAllowExecute(true);
   }, [selectedManifest, selectedRootId]);
@@ -4348,7 +4367,7 @@ function ToolControls({
     if (blocked || !rootPath.trim()) return;
     setBusy(true); setError(null);
     try {
-      parseToolPayload(await invoke<unknown>("add_workspace_root", { path: rootPath.trim(), idempotencyKey: `workspace-root-${crypto.randomUUID()}`, temporaryChat: false }), parseWorkspaceRoot);
+      parseToolPayload(await invoke<unknown>("add_workspace_root", { agentId, path: rootPath.trim(), idempotencyKey: `workspace-root-${crypto.randomUUID()}`, temporaryChat }), parseWorkspaceRoot);
       setRootPath(""); await loadData();
     } catch (rootError: unknown) { setError(toolErrorMessage(rootError)); } finally { setBusy(false); }
   }
@@ -4357,7 +4376,7 @@ function ToolControls({
     if (blocked) return;
     setBusy(true); setError(null);
     try {
-      parseToolPayload(await invoke<unknown>("remove_workspace_root", { rootId, idempotencyKey: `workspace-root-disable-${crypto.randomUUID()}`, temporaryChat: false }), parseWorkspaceRoot);
+      parseToolPayload(await invoke<unknown>("remove_workspace_root", { agentId, rootId, idempotencyKey: `workspace-root-disable-${crypto.randomUUID()}`, temporaryChat }), parseWorkspaceRoot);
       await loadData();
     } catch (rootError: unknown) { setError(toolErrorMessage(rootError)); } finally { setBusy(false); }
   }
@@ -4365,6 +4384,7 @@ function ToolControls({
   function buildInput(): ToolActionInput | null {
     switch (selectedToolId) {
       case "workspace.inspect_scope":
+      case "workspace.inspect_local":
         return {
           kind: "workspaceInspect",
           relativePaths: relativePaths
@@ -4373,6 +4393,7 @@ function ToolControls({
             .filter(Boolean),
         };
       case "workspace.organize_files":
+      case "workspace.organize_local":
         return {
           kind: "workspaceOrganize",
           moves: [{ from: moveFrom, to: moveTo }],
@@ -4398,6 +4419,10 @@ function ToolControls({
 
   async function createSession() {
     if (!selectedManifest || temporaryChat || safeMode) return;
+    if (selectedManifest.scopeKind === "workspace_root" && !selectedRootId) {
+      setError("Configure uma raiz local ativa antes de criar a sessão.");
+      return;
+    }
     const permissions: { toolId: string; permission: ToolPermission }[] = [];
     if (allowPreview) {
       permissions.push({
@@ -4441,6 +4466,10 @@ function ToolControls({
     const input = buildInput();
     if (!selectedManifest || !selectedSession || input === null) {
       setError("Escolha uma ferramenta e uma sessão ativa antes da prévia.");
+      return;
+    }
+    if (selectedManifest.scopeKind === "workspace_root" && !selectedRootId) {
+      setError("Configure uma raiz local ativa antes da prévia.");
       return;
     }
     if (temporaryChat || safeMode) return;
@@ -4534,6 +4563,7 @@ function ToolControls({
         <input value={rootPath} onChange={(event) => setRootPath(event.target.value)} placeholder="Caminho local escolhido pelo Owner" disabled={busy || blocked} />
         <button type="button" onClick={() => void addRoot()} disabled={busy || blocked || !rootPath.trim()}>Adicionar raiz</button>
         <ul>{roots.map((root) => <li key={root.id}><code>{root.id}</code> — {root.enabled ? "ativa" : "desativada"} <button type="button" onClick={() => void disableRoot(root.id)} disabled={busy || blocked || !root.enabled}>Desativar</button></li>)}</ul>
+        {roots.every((root) => !root.enabled) ? <p role="status">Nenhuma raiz local ativa: as ferramentas fixture continuam disponíveis, mas as ferramentas locais aguardam uma raiz do Owner.</p> : null}
       </section>
       <section className="settings-card">
         <h4>Catálogo local v1</h4>
@@ -4564,9 +4594,12 @@ function ToolControls({
               setAction(null);
             }}
           >
-            {catalog.filter((manifest) => manifest.scopeKind !== "workspace_root" || roots.some((root) => root.enabled)).map((manifest) => (
+            {catalog.map((manifest) => (
               <option key={manifest.toolId} value={manifest.toolId}>
                 {toolLabels[manifest.toolId] ?? manifest.toolId}
+                {manifest.scopeKind === "workspace_root" && !roots.some((root) => root.enabled)
+                  ? " — raiz necessária"
+                  : ""}
               </option>
             ))}
           </select>
@@ -4579,7 +4612,18 @@ function ToolControls({
             readOnly={selectedManifest?.scopeKind === "workspace_root"}
           />
         </label>
-        {selectedManifest?.scopeKind === "workspace_root" ? <label>Raiz local<select value={selectedRootId} onChange={(event) => setSelectedRootId(event.target.value)}>{roots.filter((root) => root.enabled).map((root) => <option key={root.id} value={root.id}>{root.id}</option>)}</select></label> : null}
+        {selectedManifest?.scopeKind === "workspace_root" ? (
+          <>
+            <label>
+              Raiz local
+              <select value={selectedRootId} onChange={(event) => setSelectedRootId(event.target.value)}>
+                <option value="">Selecionar raiz ativa</option>
+                {roots.filter((root) => root.enabled).map((root) => <option key={root.id} value={root.id}>{root.id}</option>)}
+              </select>
+            </label>
+            {!selectedRootId ? <p role="status">Esta ferramenta local exige uma raiz local ativa do Owner para criar a sessão, gerar a prévia e solicitar aprovação.</p> : null}
+          </>
+        ) : null}
         <label>
           <input
             type="checkbox"
@@ -4908,6 +4952,15 @@ const extensionCapabilityLabels: Record<ExtensionCapability, string> = {
 };
 
 const OWNER_USER_ID = "usr_owner_local";
+const REPOSITORY_EXTENSION_EXAMPLE_ID = "fixture.notes";
+const REPOSITORY_EXTENSION_EXAMPLE_INSTRUCTIONS: ExtensionInstruction[] = [
+  {
+    op: "emit_text",
+    text: "Exemplo seguro do repositório.",
+    echoInput: null,
+  },
+  { op: "yield" },
+];
 
 const extensionLifecycleLabels: Record<string, string> = {
   review_required: "aguarda revisão",
@@ -4988,7 +5041,7 @@ function parseExtensionPayload<T>(
   return parsed;
 }
 
-function ExtensionControls({
+export function ExtensionControls({
   agentId,
   temporaryChat,
   safeMode,
@@ -5104,6 +5157,51 @@ function ExtensionControls({
     instructions.push({ op: "yield" });
     const raw = await invoke<unknown>("build_extension_package", { instructions });
     return parseExtensionPayload(raw, parseExtensionPackage);
+  }
+
+  async function importRepositoryExample() {
+    if (blocked || catalog.some((entry) => entry.extensionId === REPOSITORY_EXTENSION_EXAMPLE_ID)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const packageValue = parseExtensionPayload(
+        await invoke<unknown>("build_extension_package", {
+          instructions: REPOSITORY_EXTENSION_EXAMPLE_INSTRUCTIONS,
+        }),
+        parseExtensionPackage,
+      );
+      const manifest: ExtensionManifest = {
+        extensionId: REPOSITORY_EXTENSION_EXAMPLE_ID,
+        manifestVersion: 1,
+        extensionVersion: "1.0.0",
+        sdkVersion: "aip-extension-sdk/v1",
+        name: "Notas locais do repositório",
+        sandboxPolicy: "metadata_only",
+        admissionPolicy: "local_fixture_only",
+        capabilities: [],
+        localFixtureRef: "fixture:extension/notes",
+        untrusted: true,
+        package: packageValue,
+      };
+      const request: ExtensionImportRequest = {
+        agentId: agentId,
+        ownerUserId: OWNER_USER_ID,
+        manifestJson: JSON.stringify(manifest),
+        idempotencyKey: `extension-example-${crypto.randomUUID()}`,
+        temporaryChat,
+      };
+      const raw = await invoke<unknown>("import_extension_manifest", request);
+      const next = parseExtensionPayload(raw, (value) => {
+        const parsed = parseExtensionProposals([value]);
+        return parsed?.[0] ?? null;
+      });
+      setSelectedProposalId(next.id);
+      await loadData();
+    } catch (importError: unknown) {
+      setError(extensionErrorMessage(importError));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function buildManifest(id = extensionId): Promise<ExtensionManifest> {
@@ -5364,6 +5462,33 @@ function ExtensionControls({
         <p role="alert">Modo seguro: alterações de extensões bloqueadas.</p>
       ) : null}
       {error ? <p role="alert">{error}</p> : null}
+
+      <section className="settings-card">
+        <h4>Exemplo seguro do repositório</h4>
+        <p>
+          {REPOSITORY_EXTENSION_EXAMPLE_ID} — fixture local, pacote declarativo
+          fechado, não confiável e sem acesso a código nativo, shell, rede,
+          arquivos ou credenciais. A importação cria uma proposta para revisão;
+          não ativa nada automaticamente.
+        </p>
+        <button
+          type="button"
+          disabled={
+            busy ||
+            blocked ||
+            catalog.some(
+              (entry) => entry.extensionId === REPOSITORY_EXTENSION_EXAMPLE_ID,
+            )
+          }
+          onClick={() => void importRepositoryExample()}
+        >
+          {catalog.some(
+            (entry) => entry.extensionId === REPOSITORY_EXTENSION_EXAMPLE_ID,
+          )
+            ? "Exemplo já registrado"
+            : "Adicionar exemplo seguro"}
+        </button>
+      </section>
 
       <section className="settings-card">
         <div className="message-actions">
@@ -6401,6 +6526,8 @@ export function CompanionControls({
   const [audit, setAudit] = useState<CompanionAuditRecord[]>([]);
   const [rotations, setRotations] = useState<CompanionKeyRotation[]>([]);
   const [revocations, setRevocations] = useState<CompanionRevocation[]>([]);
+  const [transport, setTransport] = useState<GatewayTransportStatus>(EMPTY_GATEWAY_TRANSPORT_STATUS);
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [selectedDeviceId, setSelectedDeviceId] = useState("");
   const [selectedQueueId, setSelectedQueueId] = useState("");
   const [busy, setBusy] = useState(false);
@@ -6416,6 +6543,7 @@ export function CompanionControls({
       rawAudit,
       rawRotations,
       rawRevocations,
+      rawTransport,
     ] = await Promise.all([
       invoke<unknown>("list_companion_devices", { agentId }),
       invoke<unknown>("list_companion_sessions", { agentId }),
@@ -6424,6 +6552,7 @@ export function CompanionControls({
       invoke<unknown>("list_companion_audit", { agentId }),
       invoke<unknown>("list_companion_key_rotations", { agentId }),
       invoke<unknown>("list_companion_revocations", { agentId }),
+      invoke<unknown>("get_companion_transport_status"),
     ]);
     const nextDevices = parseCompanionPayload(
       rawDevices,
@@ -6447,6 +6576,7 @@ export function CompanionControls({
       rawRevocations,
       parseCompanionRevocations,
     );
+    const nextTransport = parseGatewayTransportStatus(rawTransport) ?? EMPTY_GATEWAY_TRANSPORT_STATUS;
     setDevices(nextDevices);
     setSessions(nextSessions);
     setQueue(nextQueue);
@@ -6454,6 +6584,7 @@ export function CompanionControls({
     setAudit(nextAudit);
     setRotations(nextRotations);
     setRevocations(nextRevocations);
+    setTransport(nextTransport);
     setSelectedDeviceId((current) =>
       nextDevices.some((device) => device.id === current)
         ? current
@@ -6496,6 +6627,34 @@ export function CompanionControls({
     } finally {
       setBusy(false);
     }
+  }
+
+  async function startTransport() {
+    if (blocked || busy) return;
+    setBusy(true); setError(null); setPairingCode(null);
+    try {
+      const raw = await invoke<unknown>("start_companion_transport", {
+        agentId,
+        ownerConfirmed: true,
+        privateNetworkConfirmed: false,
+        bindAddress: "127.0.0.1",
+        port: 0,
+        temporaryChat,
+      });
+      if (!isGatewayTransportStartResult(raw)) throw new Error("companion_response_invalid");
+      setTransport({ enabled: true, endpoint: raw.endpoint, pairingAvailable: true });
+      setPairingCode(raw.pairingCode);
+    } catch (operationError: unknown) {
+      setError(companionErrorMessage(operationError));
+    } finally { setBusy(false); }
+  }
+
+  async function stopTransport() {
+    if (busy) return;
+    setBusy(true); setError(null); setPairingCode(null);
+    try { await invoke("stop_companion_transport"); setTransport(EMPTY_GATEWAY_TRANSPORT_STATUS); }
+    catch (operationError: unknown) { setError(companionErrorMessage(operationError)); }
+    finally { setBusy(false); }
   }
 
   async function connectSelectedDevice() {
@@ -6675,6 +6834,16 @@ export function CompanionControls({
         <li>Somente metadados: bytes de mídia nunca são persistidos.</li>
         <li>Aprovação, prova de sessão, rotação e revogação são do Rust.</li>
       </ul>
+      <section aria-label="Transporte de depuração do companion">
+        <h4>Transporte local de depuração</h4>
+        <p>Listener TCP autenticado em loopback, somente para validação do companion Android; não é relay de produção.</p>
+        <p>Estado: <strong>{transport.enabled ? "ativo" : "parado"}</strong>; endpoint: <code>{transport.endpoint ?? "nenhum"}</code>; pairing: {transport.pairingAvailable ? "disponível" : "indisponível"}.</p>
+        <div className="message-actions">
+          <button type="button" disabled={busy || blocked || transport.enabled} onClick={() => void startTransport()}>Iniciar transporte local</button>
+          <button type="button" disabled={busy || !transport.enabled} onClick={() => void stopTransport()}>Parar transporte local</button>
+        </div>
+        {pairingCode ? <p role="alert"><strong>Código transitório:</strong> <code>{pairingCode}</code>. Não persista nem compartilhe.</p> : null}
+      </section>
       {temporaryChat ? (
         <p role="alert">
           Conversa temporária: alterações do companion bloqueadas; histórico e
@@ -6972,12 +7141,31 @@ function parseGatewayPayload<T>(
 }
 
 type GatewayTransportStartResult = { enabled: boolean; endpoint: string; pairingCode: string };
-function parseGatewayTransportStatus(value: unknown) {
-  if (value !== null && typeof value === "object") {
-    const candidate = value as Record<string, unknown>;
-    if (typeof candidate.enabled === "boolean" && (candidate.endpoint === null || typeof candidate.endpoint === "string") && typeof candidate.pairingAvailable === "boolean") return { enabled: candidate.enabled, endpoint: candidate.endpoint, pairingAvailable: candidate.pairingAvailable };
+type GatewayTransportStatus = {
+  enabled: boolean;
+  endpoint: string | null;
+  pairingAvailable: boolean;
+};
+const EMPTY_GATEWAY_TRANSPORT_STATUS: GatewayTransportStatus = {
+  enabled: false,
+  endpoint: null,
+  pairingAvailable: false,
+};
+function parseGatewayTransportStatus(value: unknown): GatewayTransportStatus | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
   }
-  return { enabled: false, endpoint: null as string | null, pairingAvailable: false };
+  const candidate = value as Record<string, unknown>;
+  return Object.keys(candidate).every((key) => ["enabled", "endpoint", "pairingAvailable"].includes(key)) &&
+    typeof candidate.enabled === "boolean" &&
+    (candidate.endpoint === null || (typeof candidate.endpoint === "string" && candidate.endpoint.length <= 128)) &&
+    typeof candidate.pairingAvailable === "boolean"
+    ? {
+        enabled: candidate.enabled,
+        endpoint: candidate.endpoint,
+        pairingAvailable: candidate.pairingAvailable,
+      }
+    : null;
 }
 function isGatewayTransportStartResult(value: unknown): value is GatewayTransportStartResult {
   return value !== null && typeof value === "object" && (value as Record<string, unknown>).enabled === true && typeof (value as Record<string, unknown>).endpoint === "string" && typeof (value as Record<string, unknown>).pairingCode === "string";
@@ -6999,7 +7187,9 @@ export function GatewayControls({
   const [recoveries, setRecoveries] = useState<GatewayRecovery[]>([]);
   const [audit, setAudit] = useState<GatewayAuditRecord[]>([]);
   const [revocations, setRevocations] = useState<GatewayRevocation[]>([]);
-  const [transport, setTransport] = useState(parseGatewayTransportStatus(null));
+  const [transport, setTransport] = useState<GatewayTransportStatus>(
+    EMPTY_GATEWAY_TRANSPORT_STATUS,
+  );
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [selectedTransferId, setSelectedTransferId] = useState("");
   const [selectedSessionId, setSelectedSessionId] = useState("");
@@ -7047,7 +7237,8 @@ export function GatewayControls({
       rawRevocations,
       parseGatewayRevocations,
     );
-    const nextTransport = parseGatewayTransportStatus(rawTransport);
+    const nextTransport =
+      parseGatewayTransportStatus(rawTransport) ?? EMPTY_GATEWAY_TRANSPORT_STATUS;
     setProtocol(nextProtocol);
     setAccounts(nextAccounts);
     setTransfers(nextTransfers);
@@ -7258,7 +7449,7 @@ export function GatewayControls({
   async function stopTransport() {
     if (busy) return;
     setBusy(true); setError(null); setPairingCode(null);
-    try { await invoke("stop_gateway_transport"); setTransport(parseGatewayTransportStatus(null)); }
+    try { await invoke("stop_gateway_transport"); setTransport(EMPTY_GATEWAY_TRANSPORT_STATUS); }
     catch (operationError: unknown) { setError(gatewayErrorMessage(operationError)); }
     finally { setBusy(false); }
   }
@@ -7699,6 +7890,639 @@ function SettingsSurface({
   );
 }
 
+type LocalCapabilityState =
+  | "Pronto"
+  | "Não configurado"
+  | "Indisponível"
+  | "Bloqueado pelo modo"
+  | "Erro";
+
+type LocalCapabilityStatus = {
+  state: LocalCapabilityState;
+  detail: string;
+};
+
+type LocalCapabilityRead<T> = {
+  value: T | null;
+  outcome: "ready" | "unavailable" | "invalid";
+};
+
+type LocalCapabilityData = {
+  ollama: LocalCapabilityRead<ProviderSnapshot>;
+  voice: LocalCapabilityRead<VoiceProviderStatus>;
+  devices: LocalCapabilityRead<VoiceDevice[]>;
+  visualProvider: LocalCapabilityRead<ScreenVisionProviderStatus>;
+  screenFixtures: LocalCapabilityRead<ScreenVisionFixture[]>;
+  workspaceRoots: LocalCapabilityRead<WorkspaceRoot[]>;
+  extensions: LocalCapabilityRead<ExtensionCatalogEntry[]>;
+  companionDevices: LocalCapabilityRead<CompanionDevice[]>;
+  companionTransport: LocalCapabilityRead<GatewayTransportStatus>;
+  gatewayProtocol: LocalCapabilityRead<GatewayProtocolInfo>;
+  gatewayTransport: LocalCapabilityRead<GatewayTransportStatus>;
+};
+
+function parseLocalVoiceDevices(value: unknown): VoiceDevice[] | null {
+  if (!Array.isArray(value) || value.length > 64) return null;
+  const devices = value.map(parseVoiceDevice);
+  return devices.every((device): device is VoiceDevice => device !== null)
+    ? devices
+    : null;
+}
+
+async function readLocalCapability<T>(
+  command: string,
+  args: Record<string, unknown> | undefined,
+  parser: (value: unknown) => T | null,
+): Promise<LocalCapabilityRead<T>> {
+  try {
+    const raw =
+      args === undefined
+        ? await invoke<unknown>(command)
+        : await invoke<unknown>(command, args);
+    const value = parser(raw);
+    return value === null
+      ? { value: null, outcome: "invalid" }
+      : { value, outcome: "ready" };
+  } catch {
+    return { value: null, outcome: "unavailable" };
+  }
+}
+
+function statusFromRead<T>(
+  read: LocalCapabilityRead<T> | null,
+  build: (value: T) => LocalCapabilityStatus,
+): LocalCapabilityStatus {
+  if (read === null) {
+    return { state: "Indisponível", detail: "Verificando recurso local." };
+  }
+  if (read.outcome === "unavailable") {
+    return { state: "Indisponível", detail: "O recurso local não respondeu." };
+  }
+  if (read.outcome === "invalid" || read.value === null) {
+    return { state: "Erro", detail: "A resposta local não passou na validação." };
+  }
+  return build(read.value);
+}
+
+function blockedLocalStatus(detail: string): LocalCapabilityStatus {
+  return { state: "Bloqueado pelo modo", detail };
+}
+
+function runtimeLocalStatus(
+  snapshot: AppSnapshot | null,
+  safeMode: boolean,
+): LocalCapabilityStatus {
+  if (safeMode || snapshot?.runtime.state === "safe_mode") {
+    return blockedLocalStatus("O modo seguro desativa o runtime de IA.");
+  }
+  if (snapshot === null) {
+    return { state: "Indisponível", detail: "Aguardando o estado local." };
+  }
+  return snapshot.runtime.state === "ready"
+    ? { state: "Pronto", detail: "Runtime local em execução." }
+    : {
+        state: "Indisponível",
+        detail: "O histórico continua acessível sem o runtime.",
+      };
+}
+
+function ollamaLocalStatus(
+  read: LocalCapabilityRead<ProviderSnapshot> | null,
+  safeMode: boolean,
+): LocalCapabilityStatus {
+  if (safeMode) {
+    return blockedLocalStatus("O modo seguro bloqueia modelos e gerações.");
+  }
+  return statusFromRead(read, (provider) => {
+    if (provider.state === "malformed") {
+      return { state: "Erro", detail: "O provedor devolveu dados inválidos." };
+    }
+    if (provider.state === "available" && provider.models.length > 0) {
+      return {
+        state: "Pronto",
+        detail: `${provider.models.length} modelo(s) local(is) encontrado(s).`,
+      };
+    }
+    if (provider.state === "empty") {
+      return { state: "Não configurado", detail: "Nenhum modelo local registrado." };
+    }
+    return {
+      state: "Indisponível",
+      detail: "O runtime local ainda não disponibilizou modelos.",
+    };
+  });
+}
+
+function voiceLocalStatus(
+  read: LocalCapabilityRead<VoiceProviderStatus> | null,
+  kind: "recognition" | "synthesis",
+  safeMode: boolean,
+): LocalCapabilityStatus {
+  if (safeMode) {
+    return blockedLocalStatus("O modo seguro bloqueia operações de voz.");
+  }
+  return statusFromRead(read, (voice) => {
+    const provider = voice[kind];
+    if (provider.state === "ready") {
+      return provider.synthetic
+        ? {
+            state: "Pronto",
+            detail: "Fixture sintética pronta; não usa o dispositivo real.",
+          }
+        : { state: "Pronto", detail: "Provedor local pronto sob demanda." };
+    }
+    if (provider.state === "not_configured") {
+      return {
+        state: "Não configurado",
+        detail: "Escolha um provedor local e suas referências.",
+      };
+    }
+    return provider.state === "invalid"
+      ? { state: "Erro", detail: "A referência do provedor não é válida." }
+      : { state: "Indisponível", detail: "O provedor local não está disponível." };
+  });
+}
+
+function voiceDeviceLocalStatus(
+  read: LocalCapabilityRead<VoiceDevice[]> | null,
+  direction: VoiceDevice["direction"],
+): LocalCapabilityStatus {
+  return statusFromRead(read, (devices) => {
+    const count = devices.filter((device) => device.direction === direction).length;
+    return count > 0
+      ? {
+          state: "Pronto",
+          detail: `${count} dispositivo(s) local(is) detectado(s).`,
+        }
+      : {
+          state: "Indisponível",
+          detail: "Nenhum dispositivo compatível foi detectado.",
+        };
+  });
+}
+
+function visualProviderLocalStatus(
+  read: LocalCapabilityRead<ScreenVisionProviderStatus> | null,
+  safeMode: boolean,
+): LocalCapabilityStatus {
+  if (safeMode) {
+    return blockedLocalStatus("O modo seguro bloqueia o uso visual.");
+  }
+  return statusFromRead(read, (provider) => {
+    if (provider.state === "ready") {
+      return {
+        state: "Pronto",
+        detail: "Provedor visual local configurado; captura exige confirmação.",
+      };
+    }
+    if (provider.state === "not_configured") {
+      return {
+        state: "Não configurado",
+        detail: "Configure um provedor visual local no ambiente.",
+      };
+    }
+    return provider.state === "invalid"
+      ? { state: "Erro", detail: "A configuração visual não é válida." }
+      : { state: "Indisponível", detail: "O provedor visual não está disponível." };
+  });
+}
+
+function screenCaptureLocalStatus(
+  read: LocalCapabilityRead<ScreenVisionFixture[]> | null,
+  safeMode: boolean,
+): LocalCapabilityStatus {
+  if (safeMode) {
+    return blockedLocalStatus("O modo seguro bloqueia captura e análise.");
+  }
+  return statusFromRead(read, (fixtures) => {
+    const realFixtures = fixtures.filter((fixture) => !fixture.synthetic).length;
+    if (realFixtures > 0) {
+      return {
+        state: "Pronto",
+        detail: `${realFixtures} monitor(es) local(is); privacidade e confirmação são obrigatórias.`,
+      };
+    }
+    return fixtures.length > 0
+      ? {
+          state: "Não configurado",
+          detail: "Somente fixture sintética disponível; falta captura real.",
+        }
+      : { state: "Indisponível", detail: "Nenhum monitor local foi detectado." };
+  });
+}
+
+function workspaceRootLocalStatus(
+  read: LocalCapabilityRead<WorkspaceRoot[]> | null,
+): LocalCapabilityStatus {
+  return statusFromRead(read, (roots) => {
+    const enabled = roots.filter((root) => root.enabled).length;
+    return enabled > 0
+      ? {
+          state: "Pronto",
+          detail: `${enabled} raiz(es) escolhida(s) pelo Owner está(ão) ativa(s).`,
+        }
+      : {
+          state: "Não configurado",
+          detail: "Adicione uma raiz local escolhida pelo Owner.",
+        };
+  });
+}
+
+function extensionLocalStatus(
+  read: LocalCapabilityRead<ExtensionCatalogEntry[]> | null,
+): LocalCapabilityStatus {
+  return statusFromRead(read, (extensions) =>
+    extensions.length > 0
+      ? {
+          state: "Pronto",
+          detail: `${extensions.length} extensão(ões) no catálogo local; revisão e ativação são obrigatórias.`,
+        }
+      : {
+          state: "Não configurado",
+          detail: "Nenhuma extensão local foi registrada.",
+        },
+  );
+}
+
+function companionLocalStatus(
+  devices: LocalCapabilityRead<CompanionDevice[]> | null,
+  transport: LocalCapabilityRead<GatewayTransportStatus> | null,
+  safeMode: boolean,
+): LocalCapabilityStatus {
+  if (safeMode) {
+    return blockedLocalStatus("O modo seguro bloqueia alterações do companion.");
+  }
+  if (devices === null || transport === null) {
+    return { state: "Indisponível", detail: "Verificando o companion local." };
+  }
+  if (devices.outcome === "invalid" || transport.outcome === "invalid") {
+    return { state: "Erro", detail: "A resposta do companion não é válida." };
+  }
+  if (devices.outcome === "unavailable" || transport.outcome === "unavailable") {
+    return { state: "Indisponível", detail: "O companion local não respondeu." };
+  }
+  const paired = devices.value?.some((device) => device.status === "paired");
+  if (paired || transport.value?.enabled || transport.value?.pairingAvailable) {
+    return {
+      state: "Pronto",
+      detail: "Fixture Android local disponível; pareamento e aprovação são obrigatórios.",
+    };
+  }
+  return {
+    state: "Não configurado",
+    detail: "Nenhum dispositivo Android local está pareado.",
+  };
+}
+
+function gatewayLocalStatus(
+  protocol: LocalCapabilityRead<GatewayProtocolInfo> | null,
+  transport: LocalCapabilityRead<GatewayTransportStatus> | null,
+  safeMode: boolean,
+): LocalCapabilityStatus {
+  if (safeMode) {
+    return blockedLocalStatus("O modo seguro bloqueia alterações do gateway.");
+  }
+  if (protocol === null || transport === null) {
+    return { state: "Indisponível", detail: "Verificando o gateway local." };
+  }
+  if (protocol.outcome === "invalid" || transport.outcome === "invalid") {
+    return { state: "Erro", detail: "A resposta do gateway não é válida." };
+  }
+  if (protocol.outcome === "unavailable" || transport.outcome === "unavailable") {
+    return { state: "Indisponível", detail: "O gateway local não respondeu." };
+  }
+  return transport.value?.enabled
+    ? {
+        state: "Pronto",
+        detail: "Gateway local em loopback; efeitos externos permanecem desativados.",
+      }
+    : {
+        state: "Não configurado",
+        detail: "O protocolo local está disponível; iniciar exige aprovação do Owner.",
+      };
+}
+
+export function LocalCapabilityStatusCenter({
+  agentId,
+  snapshot,
+  safeMode,
+  temporaryChat,
+}: {
+  agentId: string;
+  snapshot: AppSnapshot | null;
+  safeMode: boolean;
+  temporaryChat: boolean;
+}) {
+  const [data, setData] = useState<LocalCapabilityData | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    async function load() {
+      const [ollama, voice, devices, visualProvider, screenFixtures, workspaceRoots, extensions, companionDevices, companionTransport, gatewayProtocol, gatewayTransport] = await Promise.all([
+        readLocalCapability("get_ollama_status", undefined, parseProviderSnapshot),
+        readLocalCapability("get_voice_provider_status", { agentId }, parseVoiceProviderStatus),
+        readLocalCapability("list_voice_devices", undefined, parseLocalVoiceDevices),
+        readLocalCapability("get_screen_vision_provider_status", undefined, parseScreenVisionProviderStatus),
+        readLocalCapability("list_screen_vision_fixtures", undefined, parseScreenVisionFixtures),
+        readLocalCapability("list_workspace_roots", undefined, parseWorkspaceRoots),
+        readLocalCapability("list_extension_catalog", { agentId }, parseExtensionCatalog),
+        readLocalCapability("list_companion_devices", { agentId }, parseCompanionDevices),
+        readLocalCapability("get_companion_transport_status", undefined, parseGatewayTransportStatus),
+        readLocalCapability("get_gateway_protocol", { agentId }, parseGatewayProtocolInfo),
+        readLocalCapability("get_gateway_transport_status", undefined, parseGatewayTransportStatus),
+      ]);
+      if (mounted) {
+        setData({
+          ollama,
+          voice,
+          devices,
+          visualProvider,
+          screenFixtures,
+          workspaceRoots,
+          extensions,
+          companionDevices,
+          companionTransport,
+          gatewayProtocol,
+          gatewayTransport,
+        });
+      }
+    }
+    void load();
+    return () => {
+      mounted = false;
+    };
+  }, [agentId]);
+
+  const runtimeStatus = runtimeLocalStatus(snapshot, safeMode);
+  const ollamaStatus = ollamaLocalStatus(data?.ollama ?? null, safeMode);
+  const cards = [
+    {
+      key: "runtime",
+      label: "Runtime",
+      href: "#local-capability-runtime",
+      status: runtimeStatus,
+    },
+    {
+      key: "ollama",
+      label: "Ollama",
+      href: "#local-capability-runtime",
+      status: ollamaStatus,
+    },
+    {
+      key: "stt",
+      label: "STT",
+      href: "#local-capability-voice",
+      status: voiceLocalStatus(data?.voice ?? null, "recognition", safeMode),
+    },
+    {
+      key: "tts",
+      label: "TTS",
+      href: "#local-capability-voice",
+      status: voiceLocalStatus(data?.voice ?? null, "synthesis", safeMode),
+    },
+    {
+      key: "microphone",
+      label: "Microfone",
+      href: "#local-capability-voice",
+      status: voiceDeviceLocalStatus(data?.devices ?? null, "input"),
+    },
+    {
+      key: "audio-output",
+      label: "Saída de áudio",
+      href: "#local-capability-voice",
+      status: voiceDeviceLocalStatus(data?.devices ?? null, "output"),
+    },
+    {
+      key: "visual-provider",
+      label: "Provedor visual",
+      href: "#local-capability-screen-vision",
+      status: visualProviderLocalStatus(
+        data?.visualProvider ?? null,
+        safeMode,
+      ),
+    },
+    {
+      key: "screen-capture",
+      label: "Captura de tela",
+      href: "#local-capability-screen-vision",
+      status: screenCaptureLocalStatus(
+        data?.screenFixtures ?? null,
+        safeMode,
+      ),
+    },
+    {
+      key: "workspace-root",
+      label: "Raiz de workspace",
+      href: "#local-capability-tools",
+      status: workspaceRootLocalStatus(data?.workspaceRoots ?? null),
+    },
+    {
+      key: "extensions",
+      label: "Extensões",
+      href: "#local-capability-extensions",
+      status: extensionLocalStatus(data?.extensions ?? null),
+    },
+    {
+      key: "companion",
+      label: "Companion Android",
+      href: "#local-capability-companion",
+      status: companionLocalStatus(
+        data?.companionDevices ?? null,
+        data?.companionTransport ?? null,
+        safeMode,
+      ),
+    },
+    {
+      key: "gateway",
+      label: "Gateway",
+      href: "#local-capability-gateway",
+      status: gatewayLocalStatus(
+        data?.gatewayProtocol ?? null,
+        data?.gatewayTransport ?? null,
+        safeMode,
+      ),
+    },
+  ];
+
+  return (
+    <section
+      className="local-status-center"
+      id="local-status-center"
+      aria-labelledby="local-status-heading"
+    >
+      <header>
+        <p className="eyebrow">Diagnóstico local</p>
+        <h2 id="local-status-heading">Centro de status local</h2>
+        <span>
+          Leitura segura de hardware, providers e integrações; nenhuma referência
+          de executável é exibida.
+        </span>
+      </header>
+      {temporaryChat ? (
+        <p className="local-mode-note" role="status">
+          Conversa temporária: leituras continuam visíveis, mas mutações e
+          gravações ficam bloqueadas.
+        </p>
+      ) : null}
+      {safeMode ? (
+        <p className="local-mode-note" role="status">
+          Modo seguro: runtime e alterações de capabilities ficam bloqueados.
+        </p>
+      ) : null}
+      <p className="local-status-legend">
+        Estados possíveis: Pronto, Não configurado, Indisponível, Bloqueado pelo
+        modo e Erro.
+      </p>
+      <div className="local-status-grid">
+        {cards.map((card) => (
+          <a
+            className="local-status-card"
+            data-state={card.status.state}
+            href={card.href}
+            aria-controls={card.href.slice(1)}
+            key={card.key}
+            onClick={(event) => {
+              const panel = document.getElementById(card.href.slice(1));
+              if (!(panel instanceof HTMLDetailsElement)) return;
+              event.preventDefault();
+              panel.open = true;
+              panel.scrollIntoView?.({ behavior: "smooth", block: "start" });
+              panel.querySelector("summary")?.focus();
+            }}
+          >
+            <span>{card.label}</span>
+            <strong>{card.status.state}</strong>
+            <small>{card.status.detail}</small>
+          </a>
+        ))}
+      </div>
+      <details className="local-capability-panel" id="local-capability-runtime">
+        <summary>Runtime e Ollama</summary>
+        <div>
+          <p>
+            <strong>Runtime:</strong> {runtimeStatus.state} — {runtimeStatus.detail}
+          </p>
+          <p>
+            <strong>Ollama:</strong> {ollamaStatus.state} — {ollamaStatus.detail}
+          </p>
+          <p>
+            Configuração: mantenha o Ollama local ativo e use “Atualizar” na
+            conversa para reler os modelos. Sem runtime, o histórico e as
+            leituras continuam acessíveis.
+          </p>
+        </div>
+      </details>
+    </section>
+  );
+}
+
+export function LocalCapabilitiesSurface({
+  agentId,
+  snapshot,
+  safeMode,
+  temporaryChat,
+}: {
+  agentId: string;
+  snapshot: AppSnapshot | null;
+  safeMode: boolean;
+  temporaryChat: boolean;
+}) {
+  return (
+    <section className="local-capabilities-surface">
+      <header className="workspace-heading">
+        <div>
+          <p className="eyebrow">Capacidades do Owner local</p>
+          <h1>Recursos locais</h1>
+          <span>
+            Fixtures sintéticas servem para demonstração; hardware e providers
+            reais dependem do Windows e da configuração local.
+          </span>
+        </div>
+      </header>
+      <LocalCapabilityStatusCenter
+        agentId={agentId}
+        snapshot={snapshot}
+        safeMode={safeMode}
+        temporaryChat={temporaryChat}
+      />
+      <p className="local-capability-note">
+        Pré-requisitos: runtime para geração, referências locais para STT/TTS,
+        dispositivos Windows para áudio, provedor visual para análise, raiz do
+        Owner para ferramentas locais e aprovação explícita para extensões,
+        companion e gateway. O histórico e as leituras permanecem acessíveis se
+        o runtime estiver indisponível.
+      </p>
+      <div className="local-capability-panels">
+        <details className="local-capability-panel" id="local-capability-voice">
+          <summary>Voz local</summary>
+          <VoiceControls
+            agentId={agentId}
+            temporaryChat={temporaryChat}
+            safeMode={safeMode}
+          />
+        </details>
+        <details className="local-capability-panel" id="local-capability-tools">
+          <summary>Ferramentas supervisionadas e workspace</summary>
+          <ToolControls
+            agentId={agentId}
+            temporaryChat={temporaryChat}
+            safeMode={safeMode}
+          />
+        </details>
+        <details
+          className="local-capability-panel"
+          id="local-capability-extensions"
+        >
+          <summary>Extensões locais</summary>
+          <ExtensionControls
+            agentId={agentId}
+            temporaryChat={temporaryChat}
+            safeMode={safeMode}
+          />
+        </details>
+        <details
+          className="local-capability-panel"
+          id="local-capability-screen-vision"
+        >
+          <summary>Visão de tela sintética</summary>
+          <ScreenVisionControls
+            agentId={agentId}
+            temporaryChat={temporaryChat}
+            safeMode={safeMode}
+          />
+        </details>
+        <details
+          className="local-capability-panel"
+          id="local-capability-companion"
+        >
+          <summary>Companion Android local</summary>
+          <CompanionControls
+            agentId={agentId}
+            temporaryChat={temporaryChat}
+            safeMode={safeMode}
+          />
+        </details>
+        <details className="local-capability-panel" id="local-capability-gateway">
+          <summary>Gateway AIP local</summary>
+          <GatewayControls
+            agentId={agentId}
+            temporaryChat={temporaryChat}
+            safeMode={safeMode}
+          />
+        </details>
+        <details className="local-capability-panel" id="local-capability-cognitive">
+          <summary>Valores cognitivos</summary>
+          <CognitivePanelGate
+            agentId={agentId}
+            temporaryChat={temporaryChat}
+            safeMode={safeMode}
+          />
+        </details>
+      </div>
+    </section>
+  );
+}
+
 function App() {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
@@ -7707,7 +8531,7 @@ function App() {
   const [conversationRevision, setConversationRevision] = useState(0);
   const [temporaryChat, setTemporaryChat] = useState(false);
   const [workspace, setWorkspace] = useState<
-    "chat" | "memories" | "state" | "appearance" | "settings"
+    "chat" | "memories" | "state" | "appearance" | "resources" | "settings"
   >("chat");
 
   const loadSnapshot = useCallback(async () => {
@@ -7747,7 +8571,13 @@ function App() {
   }
 
   async function openWorkspace(
-    next: "chat" | "memories" | "state" | "appearance" | "settings",
+    next:
+      | "chat"
+      | "memories"
+      | "state"
+      | "appearance"
+      | "resources"
+      | "settings",
   ) {
     await leaveTemporaryChat();
     setEditingAgentId(null);
@@ -7826,78 +8656,12 @@ function App() {
         ) : null}
         {activeAgentId ? (
           <details className="agent-tools">
-            <summary>Ferramentas do agente</summary>
+            <summary>Avançado</summary>
             <button type="button" onClick={() => void toggleTemporaryChat()}>
               {temporaryChat
                 ? "Voltar à conversa salva"
                 : "Abrir conversa temporária"}
             </button>
-            <details>
-              <summary>Memórias</summary>
-              <MemoryList agentId={activeAgentId} />
-            </details>
-            <details>
-              <summary>Estado</summary>
-              <AgentStateControls agentId={activeAgentId} />
-            </details>
-            <details>
-              <summary>Voz</summary>
-              <VoiceControls
-                agentId={activeAgentId}
-                temporaryChat={temporaryChat}
-              />
-            </details>
-            <details>
-              <summary>Ferramentas supervisionadas</summary>
-              <ToolControls
-                agentId={activeAgentId}
-                temporaryChat={temporaryChat}
-                safeMode={snapshot?.safeMode ?? true}
-              />
-            </details>
-            <details>
-              <summary>Extensões locais</summary>
-              <ExtensionControls
-                agentId={activeAgentId}
-                temporaryChat={temporaryChat}
-                safeMode={snapshot?.safeMode ?? true}
-              />
-            </details>
-            <details>
-              <summary>Visão de tela sintética</summary>
-              <ScreenVisionControls
-                agentId={activeAgentId}
-                temporaryChat={temporaryChat}
-                safeMode={snapshot?.safeMode ?? true}
-              />
-            </details>
-            <details>
-              <summary>Companion Android local</summary>
-              <CompanionControls
-                agentId={activeAgentId}
-                temporaryChat={temporaryChat}
-                safeMode={snapshot?.safeMode ?? true}
-              />
-            </details>
-            <details>
-              <summary>Gateway AIP local</summary>
-              <GatewayControls
-                agentId={activeAgentId}
-                temporaryChat={temporaryChat}
-                safeMode={snapshot?.safeMode ?? true}
-              />
-            </details>
-            <details>
-              <summary>Valores cognitivos</summary>
-              <CognitivePanelGate
-                agentId={activeAgentId}
-                temporaryChat={temporaryChat}
-              />
-            </details>
-            <details>
-              <summary>Aparência</summary>
-              <PixelDocumentEditor agentId={activeAgentId} />
-            </details>
             {snapshot?.agents.map((agent) => (
               <button
                 key={`profile-${agent.id}`}
@@ -7946,6 +8710,14 @@ function App() {
               onClick={() => void openWorkspace("appearance")}
             >
               Aparência
+            </button>
+            <button
+              aria-current={workspace === "resources" ? "page" : undefined}
+              className={workspace === "resources" ? "active" : undefined}
+              type="button"
+              onClick={() => void openWorkspace("resources")}
+            >
+              Recursos locais
             </button>
             <span className="workspace-spacer" />
             <button
@@ -8017,6 +8789,15 @@ function App() {
               snapshot={snapshot}
               changingMode={changingMode}
               onToggleSafeMode={() => void toggleSafeMode()}
+            />
+          </section>
+        ) : workspace === "resources" ? (
+          <section className="workspace-panel">
+            <LocalCapabilitiesSurface
+              agentId={activeAgentId}
+              snapshot={snapshot}
+              safeMode={snapshot?.safeMode ?? true}
+              temporaryChat={temporaryChat}
             />
           </section>
         ) : workspace === "memories" ? (

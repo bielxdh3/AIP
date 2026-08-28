@@ -70,6 +70,56 @@ pub struct VoiceDevice {
     pub display_name: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceProviderCheck {
+    pub state: String,
+    pub reference: Option<String>,
+    pub synthetic: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceProviderStatus {
+    pub recognition: VoiceProviderCheck,
+    pub synthesis: VoiceProviderCheck,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalProvider {
+    pub id: String,
+    pub kind: String,
+    pub display_name: String,
+    pub protocol_version: String,
+    pub enabled: bool,
+    pub validation_status: String,
+    pub validation_result: String,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalProviderRequest {
+    pub agent_id: String,
+    pub id: String,
+    pub kind: String,
+    pub display_name: String,
+    pub executable_path: String,
+    pub protocol_version: String,
+    pub idempotency_key: String,
+    pub temporary_chat: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalProviderIdRequest {
+    pub agent_id: String,
+    pub id: String,
+    pub idempotency_key: String,
+    pub temporary_chat: bool,
+}
+
 pub fn list_voice_devices() -> Vec<VoiceDevice> {
     #[cfg(windows)]
     {
@@ -460,7 +510,7 @@ impl VoiceRuntime {
             let provider_ref = provider_ref
                 .as_deref()
                 .ok_or(DatabaseError::Cognitive("voice_model_unavailable"))?;
-            let provider = provider_executable(provider_ref, ProviderKind::Transcription)
+            let provider = provider_executable(database, provider_ref, ProviderKind::Transcription)
                 .map_err(DatabaseError::Cognitive)?;
             let pcm = capture_pcm(
                 request_input_device(database, &request.agent_id)?,
@@ -652,7 +702,7 @@ impl VoiceRuntime {
             let provider_ref = provider_ref
                 .as_deref()
                 .ok_or(DatabaseError::Cognitive("voice_model_unavailable"))?;
-            let provider = provider_executable(provider_ref, ProviderKind::Synthesis)
+            let provider = provider_executable(database, provider_ref, ProviderKind::Synthesis)
                 .map_err(DatabaseError::Cognitive)?;
             let output = run_local_provider(
                 &provider,
@@ -823,7 +873,7 @@ impl VoiceRuntime {
             let provider_ref = provider_ref
                 .as_deref()
                 .ok_or(DatabaseError::Cognitive("voice_model_unavailable"))?;
-            let provider = provider_executable(provider_ref, ProviderKind::Transcription)
+            let provider = provider_executable(database, provider_ref, ProviderKind::Transcription)
                 .map_err(DatabaseError::Cognitive)?;
             let pcm = capture_pcm(
                 request_input_device(database, &request.agent_id)?,
@@ -923,6 +973,115 @@ impl Database {
             .query_row(voice_settings_sql(), params![agent_id], map_voice_settings)
             .optional()?
             .ok_or(DatabaseError::Cognitive("voice_settings_not_found"))
+    }
+
+    pub fn voice_provider_status(
+        &self,
+        agent_id: &str,
+    ) -> Result<VoiceProviderStatus, DatabaseError> {
+        let settings = self.voice_settings(agent_id)?;
+        Ok(VoiceProviderStatus {
+            recognition: provider_check(
+                self,
+                settings.recognition_model_ref.as_deref(),
+                ProviderKind::Transcription,
+            ),
+            synthesis: provider_check(
+                self,
+                settings.synthesis_model_ref.as_deref(),
+                ProviderKind::Synthesis,
+            ),
+        })
+    }
+
+    pub fn list_local_providers(&self) -> Result<Vec<LocalProvider>, DatabaseError> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare(
+            "SELECT id, kind, display_name, protocol_version, enabled,
+                    validation_status, validation_result, updated_at
+             FROM local_providers ORDER BY kind, display_name, id LIMIT 64",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(LocalProvider {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                display_name: row.get(2)?,
+                protocol_version: row.get(3)?,
+                enabled: row.get::<_, i64>(4)? != 0,
+                validation_status: row.get(5)?,
+                validation_result: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(DatabaseError::from)
+    }
+
+    pub fn register_local_provider(
+        &self,
+        request: LocalProviderRequest,
+    ) -> Result<LocalProvider, DatabaseError> {
+        if request.temporary_chat {
+            return Err(DatabaseError::Cognitive("conversation_temporary_blocked"));
+        }
+        let connection = self.open()?;
+        ensure_owner(&connection, &request.agent_id)?;
+        let id = bounded_provider_id(&request.id)?;
+        let kind = bounded_provider_kind(&request.kind)?;
+        let display_name = bounded_provider_text(&request.display_name, 120)?;
+        let protocol = bounded_provider_protocol(&request.protocol_version, &kind)?;
+        let key = bounded_provider_text(&request.idempotency_key, 128)?;
+        let path = canonical_provider_path(&request.executable_path)?;
+        let now = now_millis();
+        connection.execute(
+            "INSERT INTO local_providers
+             (id, kind, display_name, executable_path, protocol_version, enabled,
+              validation_status, validation_result, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1, 'ready', 'arquivo local validado', ?6, ?6)
+             ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,
+               display_name=excluded.display_name, executable_path=excluded.executable_path,
+               protocol_version=excluded.protocol_version, enabled=1,
+               validation_status='ready', validation_result=excluded.validation_result,
+               updated_at=excluded.updated_at",
+            rusqlite::params![
+                id,
+                kind,
+                display_name,
+                path.to_string_lossy(),
+                protocol,
+                now
+            ],
+        )?;
+        let _ = key;
+        self.list_local_providers()?
+            .into_iter()
+            .find(|provider| provider.id == request.id)
+            .ok_or(DatabaseError::Unavailable)
+    }
+
+    pub fn disable_local_provider(
+        &self,
+        request: LocalProviderIdRequest,
+    ) -> Result<LocalProvider, DatabaseError> {
+        if request.temporary_chat {
+            return Err(DatabaseError::Cognitive("conversation_temporary_blocked"));
+        }
+        let connection = self.open()?;
+        ensure_owner(&connection, &request.agent_id)?;
+        let id = bounded_provider_id(&request.id)?;
+        let _ = bounded_provider_text(&request.idempotency_key, 128)?;
+        let changed = connection.execute(
+            "UPDATE local_providers SET enabled=0, validation_status='unavailable',
+             validation_result='desativado pelo Owner', updated_at=?1 WHERE id=?2",
+            rusqlite::params![now_millis(), id],
+        )?;
+        if changed == 0 {
+            return Err(DatabaseError::NotFound);
+        }
+        self.list_local_providers()?
+            .into_iter()
+            .find(|provider| provider.id == request.id)
+            .ok_or(DatabaseError::Unavailable)
     }
 
     pub fn start_voice_operation(
@@ -1519,7 +1678,42 @@ enum ProviderKind {
     Synthesis,
 }
 
-fn provider_executable(reference: &str, kind: ProviderKind) -> Result<PathBuf, &'static str> {
+fn provider_check(
+    database: &Database,
+    reference: Option<&str>,
+    kind: ProviderKind,
+) -> VoiceProviderCheck {
+    let Some(reference) = reference else {
+        return VoiceProviderCheck {
+            state: "not_configured".into(),
+            reference: None,
+            synthetic: false,
+        };
+    };
+    if reference.starts_with("fixture:") {
+        return VoiceProviderCheck {
+            state: "ready".into(),
+            reference: Some(reference.into()),
+            synthetic: true,
+        };
+    }
+    let state = match provider_executable(database, reference, kind) {
+        Ok(_) => "ready",
+        Err("voice_model_unavailable") => "unavailable",
+        Err(_) => "invalid",
+    };
+    VoiceProviderCheck {
+        state: state.into(),
+        reference: Some(reference.into()),
+        synthetic: false,
+    }
+}
+
+fn provider_executable(
+    database: &Database,
+    reference: &str,
+    kind: ProviderKind,
+) -> Result<PathBuf, &'static str> {
     let prefix = match kind {
         ProviderKind::Transcription => "local:stt:",
         ProviderKind::Synthesis => "local:tts:",
@@ -1539,6 +1733,26 @@ fn provider_executable(reference: &str, kind: ProviderKind) -> Result<PathBuf, &
         ProviderKind::Transcription => "AIP_VOICE_STT_PROVIDER_PATH",
         ProviderKind::Synthesis => "AIP_VOICE_TTS_PROVIDER_PATH",
     };
+    let provider_id = provider_id.to_owned();
+    if let Ok(connection) = database.open() {
+        if let Ok(path) = connection.query_row(
+            "SELECT executable_path FROM local_providers
+             WHERE id = ?1 AND kind = ?2 AND enabled = 1 AND validation_status = 'ready'",
+            rusqlite::params![
+                provider_id,
+                match kind {
+                    ProviderKind::Transcription => "stt",
+                    ProviderKind::Synthesis => "tts",
+                }
+            ],
+            |row| row.get::<_, String>(0),
+        ) {
+            let path = PathBuf::from(path);
+            if path.is_absolute() && path.is_file() {
+                return Ok(path);
+            }
+        }
+    }
     let configured = std::env::var_os(env_name).ok_or("voice_model_unavailable")?;
     let configured = configured
         .to_str()
@@ -1557,6 +1771,65 @@ fn provider_executable(reference: &str, kind: ProviderKind) -> Result<PathBuf, &
         return Err("voice_provider_invalid");
     }
     Ok(path)
+}
+
+fn bounded_provider_id(value: &str) -> Result<String, DatabaseError> {
+    if value.is_empty()
+        || value.len() > 96
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
+    {
+        return Err(DatabaseError::Cognitive("provider_id_invalid"));
+    }
+    Ok(value.to_owned())
+}
+
+fn bounded_provider_text(value: &str, maximum: usize) -> Result<String, DatabaseError> {
+    if value.is_empty() || value.len() > maximum || value.chars().any(|c| c.is_control()) {
+        return Err(DatabaseError::Cognitive("provider_value_invalid"));
+    }
+    Ok(value.to_owned())
+}
+
+fn bounded_provider_kind(value: &str) -> Result<String, DatabaseError> {
+    if matches!(value, "stt" | "tts" | "visual") {
+        Ok(value.to_owned())
+    } else {
+        Err(DatabaseError::Cognitive("provider_kind_invalid"))
+    }
+}
+
+fn bounded_provider_protocol(value: &str, kind: &str) -> Result<String, DatabaseError> {
+    let expected = match kind {
+        "stt" | "tts" => "aip-voice-v1",
+        "visual" => "aip-screen-vision-v1",
+        _ => return Err(DatabaseError::Cognitive("provider_kind_invalid")),
+    };
+    if value == expected {
+        Ok(value.to_owned())
+    } else {
+        Err(DatabaseError::Cognitive("provider_protocol_invalid"))
+    }
+}
+
+fn canonical_provider_path(value: &str) -> Result<PathBuf, DatabaseError> {
+    let path = PathBuf::from(value);
+    if !path.is_absolute() || value.len() > 1_024 || value.chars().any(|c| c == '\0') {
+        return Err(DatabaseError::Cognitive("provider_path_invalid"));
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|_| DatabaseError::Cognitive("provider_unavailable"))?;
+    #[cfg(windows)]
+    if canonical
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_none_or(|extension| !extension.eq_ignore_ascii_case("exe"))
+    {
+        return Err(DatabaseError::Cognitive("provider_path_invalid"));
+    }
+    Ok(canonical)
 }
 
 fn run_local_provider(
@@ -2313,10 +2586,44 @@ mod tests {
 
     #[test]
     fn unavailable_provider_and_device_fail_closed() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
         assert_eq!(
-            provider_executable("fixture:stt-v1", ProviderKind::Transcription),
+            provider_executable(&database, "fixture:stt-v1", ProviderKind::Transcription),
             Err("voice_model_unavailable")
         );
+    }
+
+    #[test]
+    fn local_provider_registry_validates_and_disables_owner_provider() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let provider = database
+            .register_local_provider(LocalProviderRequest {
+                agent_id: ASTRA_ID.into(),
+                id: "test-stt".into(),
+                kind: "stt".into(),
+                display_name: "Teste STT".into(),
+                executable_path: executable.to_string_lossy().into_owned(),
+                protocol_version: "aip-voice-v1".into(),
+                idempotency_key: "provider-register".into(),
+                temporary_chat: false,
+            })
+            .unwrap();
+        assert!(provider.enabled);
+        assert_eq!(provider.validation_status, "ready");
+        assert_eq!(database.list_local_providers().unwrap().len(), 1);
+        let disabled = database
+            .disable_local_provider(LocalProviderIdRequest {
+                agent_id: ASTRA_ID.into(),
+                id: "test-stt".into(),
+                idempotency_key: "provider-disable".into(),
+                temporary_chat: false,
+            })
+            .unwrap();
+        assert!(!disabled.enabled);
+        assert_eq!(disabled.validation_status, "unavailable");
     }
 
     #[cfg(not(windows))]
@@ -2404,6 +2711,35 @@ mod tests {
             database.voice_settings(LUMA_ID).unwrap().base_voice_id,
             BASE_VOICE_ID
         );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn provider_status_uses_only_bounded_saved_references() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let initial = database.voice_provider_status(ASTRA_ID).unwrap();
+        assert_eq!(initial.recognition.state, "not_configured");
+        assert_eq!(initial.synthesis.state, "not_configured");
+        assert!(!initial.recognition.synthetic);
+        assert!(!initial.synthesis.synthetic);
+
+        database
+            .update_voice_settings(settings_request("provider-status"))
+            .unwrap();
+        let configured = database.voice_provider_status(ASTRA_ID).unwrap();
+        assert_eq!(configured.recognition.state, "ready");
+        assert_eq!(configured.synthesis.state, "ready");
+        assert_eq!(
+            configured.recognition.reference.as_deref(),
+            Some("fixture:stt-v1")
+        );
+        assert_eq!(
+            configured.synthesis.reference.as_deref(),
+            Some("fixture:tts-v1")
+        );
+        assert!(configured.recognition.synthetic);
+        assert!(configured.synthesis.synthetic);
         cleanup(&path);
     }
 

@@ -1,6 +1,6 @@
 # Phase 9 supervised tools specification
 
-Status: FUNCTIONAL — HUMAN VALIDATION PENDING.
+Status: EXTERNAL-PREREQUISITE PRODUCTIZED — HUMAN VALIDATION PENDING.
 
 Phase 9 adds a bounded, Owner-supervised tool boundary to the standalone AIP
 desktop application. The checkpoint exercises

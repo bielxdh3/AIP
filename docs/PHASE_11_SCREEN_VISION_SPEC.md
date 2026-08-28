@@ -1,8 +1,9 @@
 # Phase 11 on-demand screen vision specification
 
-Status: FUNCTIONAL — HUMAN VALIDATION PENDING. A real local visual
-provider is available on demand when `AIP_LOCAL_VISUAL_PROVIDER_PATH` points to
-an explicitly selected local executable. Missing or invalid configuration
+Status: EXTERNAL-PREREQUISITE PRODUCTIZED — HUMAN VALIDATION PENDING. A real local visual
+provider is available on demand when a `visual` provider is registered through
+the visible local-provider registry (the legacy `AIP_LOCAL_VISUAL_PROVIDER_PATH`
+environment variable remains compatibility-only). Missing or invalid configuration
 degrades to unavailable and never produces synthetic success. Local model
 installation, packaged Windows/manual UX, and visual quality remain human
 prerequisites. This is not release approval.

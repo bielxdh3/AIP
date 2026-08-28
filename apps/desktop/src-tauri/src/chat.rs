@@ -516,6 +516,10 @@ impl ChatCoordinator {
         Ok(())
     }
 
+    pub fn provider_snapshot(&self) -> ProviderSnapshot {
+        lock(&self.inner.provider).clone()
+    }
+
     pub fn temporary_state(&self, agent_id: &str) -> Result<PhaseOneState, &'static str> {
         let mut state = self.state(agent_id)?;
         let conversation = {

@@ -1,8 +1,14 @@
 # Phase 8 voice specification
 
-Status: FUNCTIONAL — HUMAN VALIDATION PENDING.
+Status: EXTERNAL-PREREQUISITE PRODUCTIZED — HUMAN VALIDATION PENDING.
 
 ## Status and scope
+
+The ordinary setup path is the visible local-provider registry in the desktop
+Capabilities surface. It records a bounded absolute executable path, provider
+kind, display name, protocol version, enablement, and validation result in the
+local database. Environment variables remain compatibility-only and are not the
+product setup contract.
 
 Phase 8 includes a bounded on-demand local Windows runtime: native input/output device
 enumeration and Owner selection, waveIn/waveOut capture/playback, replaceable local
