@@ -1,6 +1,6 @@
 # Phase 13 local gateway specification
 
-Status: FUNCTIONAL — HUMAN VALIDATION PENDING. The
+Status: BACKEND-ONLY — LOOPBACK CHECKPOINT; HUMAN PRIVATE-LAN CLIENT WORKFLOW PENDING. The
 standalone AIP desktop implements and tests a bounded `aip-gateway-v1` framed
 HMAC TCP transport and Rust/SQLite authority. Loopback is the validated path;
 this is not BielOS integration, a stable release, or a remote recovery claim.

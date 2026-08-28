@@ -94,9 +94,10 @@ use tools::{
     WorkspaceRoot, WorkspaceRootIdRequest, WorkspaceRootRequest,
 };
 use voice::{
-    CustomVoiceConsentRequest, VoiceCaptureRequest, VoiceDevice, VoiceEmotionHypothesisRequest,
-    VoiceEmotionHypothesisResult, VoiceOperationCancellationRequest, VoiceOperationStatus,
-    VoiceOperationStatusRequest, VoiceProviderStatus, VoiceRuntime, VoiceRuntimeSynthesisResult,
+    CustomVoiceConsentRequest, LocalProvider, LocalProviderIdRequest, LocalProviderRequest,
+    VoiceCaptureRequest, VoiceDevice, VoiceEmotionHypothesisRequest, VoiceEmotionHypothesisResult,
+    VoiceOperationCancellationRequest, VoiceOperationStatus, VoiceOperationStatusRequest,
+    VoiceProviderStatus, VoiceRuntime, VoiceRuntimeSynthesisResult,
     VoiceRuntimeTranscriptionResult, VoiceRuntimeWakeWordResult, VoiceSettings,
     VoiceSettingsRequest, VoiceSynthesisRequest, VoiceSynthesisResult,
     VoiceSynthesisRuntimeRequest, VoiceTranscriptionRequest, VoiceTranscriptionResult,
@@ -945,6 +946,44 @@ fn get_voice_provider_status(
         .as_ref()
         .ok_or("operation_unavailable")?
         .voice_provider_status(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_local_providers(state: State<'_, AppState>) -> Result<Vec<LocalProvider>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_local_providers()
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn register_local_provider(
+    state: State<'_, AppState>,
+    request: LocalProviderRequest,
+) -> Result<LocalProvider, &'static str> {
+    ensure_voice_mutation_allowed(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .register_local_provider(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn disable_local_provider(
+    state: State<'_, AppState>,
+    request: LocalProviderIdRequest,
+) -> Result<LocalProvider, &'static str> {
+    ensure_voice_mutation_allowed(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .disable_local_provider(request)
         .map_err(|error| error.code())
 }
 
@@ -2245,8 +2284,13 @@ fn list_screen_vision_fixtures(
 }
 
 #[tauri::command]
-fn get_screen_vision_provider_status() -> ScreenVisionProviderStatus {
-    screen_vision::screen_vision_provider_status()
+fn get_screen_vision_provider_status(state: State<'_, AppState>) -> ScreenVisionProviderStatus {
+    let Some(database) = state.database.as_ref() else {
+        return ScreenVisionProviderStatus {
+            state: "unavailable".into(),
+        };
+    };
+    screen_vision::screen_vision_provider_status(database)
 }
 
 #[tauri::command]
@@ -3149,6 +3193,9 @@ pub fn run() {
             reject_cognitive_candidate,
             get_voice_settings,
             get_voice_provider_status,
+            list_local_providers,
+            register_local_provider,
+            disable_local_provider,
             list_voice_devices,
             update_voice_settings,
             set_custom_voice_consent,

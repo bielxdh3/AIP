@@ -12,6 +12,8 @@ import {
   parseRollbackResult,
   parseVoiceEmotionHypothesis,
   parseVoiceProviderStatus,
+  parseLocalProvider,
+  parseLocalProviders,
   parseVoiceSettings,
   parseVoiceSynthesisResult,
   parseVoiceTranscriptionResult,
@@ -420,6 +422,23 @@ describe("voice contracts", () => {
         },
       }),
     ).toBeNull();
+  });
+
+  it("accepts registered local providers without exposing executable paths", () => {
+    const provider = {
+      id: "whisper-local",
+      kind: "stt",
+      displayName: "Whisper local",
+      protocolVersion: "aip-voice-v1",
+      enabled: true,
+      validationStatus: "ready",
+      validationResult: "arquivo local validado",
+      updatedAt: 1,
+    };
+    expect(parseLocalProvider(provider)).not.toBeNull();
+    expect(parseLocalProviders([provider])).not.toBeNull();
+    expect(parseLocalProvider({ ...provider, executablePath: "C:/private/provider.exe" })).toBeNull();
+    expect(parseLocalProvider({ ...provider, kind: "visual", protocolVersion: "aip-voice-v1" })).toBeNull();
   });
 
   it("accepts bounded Ollama snapshots and rejects malformed models", () => {

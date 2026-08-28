@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -116,6 +116,7 @@ impl ScreenVisionVisualAdapter for DeterministicScreenVisionVisualAdapter {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct LocalScreenVisionVisualAdapter;
 
@@ -249,6 +250,7 @@ fn execute_local_visual_provider(
     }
 }
 
+#[allow(dead_code)]
 impl ScreenVisionVisualAdapter for LocalScreenVisionVisualAdapter {
     fn analyze(
         &self,
@@ -496,7 +498,7 @@ fn redact_real_pixels(
     if validate_privacy(privacy).is_err()
         || pixels.is_empty()
         || pixels.len() > MAX_VISUAL_PROVIDER_INPUT_BYTES
-        || pixels.len() % 4 != 0
+        || !pixels.len().is_multiple_of(4)
     {
         return Err(ScreenVisionAdapterError::Unavailable);
     }
@@ -762,7 +764,17 @@ pub fn screen_vision_fixtures() -> Vec<ScreenVisionFixture> {
     fixtures
 }
 
-pub fn screen_vision_provider_status() -> ScreenVisionProviderStatus {
+pub fn screen_vision_provider_status(database: &Database) -> ScreenVisionProviderStatus {
+    if let Some(path) = local_visual_provider_path(database) {
+        return ScreenVisionProviderStatus {
+            state: if validate_local_visual_provider_path(&path) {
+                "ready"
+            } else {
+                "invalid"
+            }
+            .into(),
+        };
+    }
     let Some(configured) = std::env::var_os(LOCAL_VISUAL_PROVIDER_ENV) else {
         return ScreenVisionProviderStatus {
             state: "not_configured".into(),
@@ -781,6 +793,22 @@ pub fn screen_vision_provider_status() -> ScreenVisionProviderStatus {
         }
         .into(),
     }
+}
+
+pub fn local_visual_provider_path(database: &Database) -> Option<PathBuf> {
+    let connection = database.open().ok()?;
+    let configured = connection
+        .query_row(
+            "SELECT executable_path FROM local_providers
+             WHERE kind = 'visual' AND enabled = 1 AND validation_status = 'ready'
+             ORDER BY updated_at DESC LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .ok()??;
+    let path = PathBuf::from(configured);
+    validate_local_visual_provider_path(&path).then_some(path)
 }
 
 #[cfg(windows)]
@@ -1198,8 +1226,12 @@ impl Database {
                     unregister_cancellation(&job_id);
                     DatabaseError::from(error)
                 })?;
-            let adapter = LocalScreenVisionVisualAdapter;
-            let code = match adapter.analyze(&pixels, &cancelled) {
+            let code = match local_visual_provider_path(self)
+                .ok_or(ScreenVisionAdapterError::Unavailable)
+                .and_then(|executable| {
+                    execute_local_visual_provider(&executable, &pixels, &cancelled)
+                        .and_then(|output| parse_local_visual_provider_output(&output))
+                }) {
                 Ok(_) => "screen_vision_model_unavailable",
                 Err(ScreenVisionAdapterError::Cancelled) => "screen_vision_cancelled",
                 Err(ScreenVisionAdapterError::Unavailable) => "screen_vision_model_unavailable",
@@ -2465,15 +2497,15 @@ mod tests {
         let mut unsafe_privacy = privacy();
         unsafe_privacy.exclude_sensitive_content = false;
         assert_eq!(
-            redact_real_pixels(&mut vec![1, 2, 3, 255], &unsafe_privacy, &|| false),
+            redact_real_pixels(&mut [1, 2, 3, 255], &unsafe_privacy, &|| false),
             Err(ScreenVisionAdapterError::Unavailable)
         );
         assert_eq!(
-            redact_real_pixels(&mut vec![1, 2, 3], &privacy(), &|| false),
+            redact_real_pixels(&mut [1, 2, 3], &privacy(), &|| false),
             Err(ScreenVisionAdapterError::Unavailable)
         );
         assert_eq!(
-            redact_real_pixels(&mut vec![1, 2, 3, 255], &privacy(), &|| true),
+            redact_real_pixels(&mut [1, 2, 3, 255], &privacy(), &|| true),
             Err(ScreenVisionAdapterError::Cancelled)
         );
     }

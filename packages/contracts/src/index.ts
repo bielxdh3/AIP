@@ -253,6 +253,60 @@ export type VoiceProviderStatus = {
   synthesis: VoiceProviderCheck;
 };
 
+export type LocalProviderKind = "stt" | "tts" | "visual";
+export type LocalProviderValidationStatus = "pending" | "ready" | "unavailable" | "invalid";
+export type LocalProvider = {
+  id: string;
+  kind: LocalProviderKind;
+  displayName: string;
+  protocolVersion: string;
+  enabled: boolean;
+  validationStatus: LocalProviderValidationStatus;
+  validationResult: string;
+  updatedAt: number;
+};
+
+export function parseLocalProvider(value: unknown): LocalProvider | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const candidate = value as Partial<LocalProvider>;
+  const validKind = candidate.kind === "stt" || candidate.kind === "tts" || candidate.kind === "visual";
+  const validStatus = candidate.validationStatus === "pending" || candidate.validationStatus === "ready" || candidate.validationStatus === "unavailable" || candidate.validationStatus === "invalid";
+  const validProtocol = (candidate.kind === "visual" && candidate.protocolVersion === "aip-screen-vision-v1") ||
+    ((candidate.kind === "stt" || candidate.kind === "tts") && candidate.protocolVersion === "aip-voice-v1");
+  return Object.keys(candidate).every((key) => ["id", "kind", "displayName", "protocolVersion", "enabled", "validationStatus", "validationResult", "updatedAt"].includes(key)) &&
+    providerBoundedText(candidate.id, 96) && validKind && providerBoundedText(candidate.displayName, 120) && validProtocol &&
+    typeof candidate.enabled === "boolean" && validStatus && providerBoundedText(candidate.validationResult, 256) &&
+    typeof candidate.updatedAt === "number" && Number.isSafeInteger(candidate.updatedAt) && candidate.updatedAt >= 0
+    ? candidate as LocalProvider
+    : null;
+}
+
+export function parseLocalProviders(value: unknown): LocalProvider[] | null {
+  return Array.isArray(value) && value.length <= 64
+    ? value.map(parseLocalProvider).every((entry): entry is LocalProvider => entry !== null)
+      ? value as LocalProvider[]
+      : null
+    : null;
+}
+
+export type LocalProviderRequest = {
+  agentId: string;
+  id: string;
+  kind: LocalProviderKind;
+  displayName: string;
+  executablePath: string;
+  protocolVersion: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+
+export type LocalProviderIdRequest = {
+  agentId: string;
+  id: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+
 function isVoiceProviderReference(value: unknown): value is string {
   return typeof value === "string" &&
     value.length > 0 &&
