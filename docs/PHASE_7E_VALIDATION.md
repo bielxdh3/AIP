@@ -2,7 +2,7 @@
 
 ## Current closure evidence (2026-08-24)
 
-Status: FUNCTIONAL — AUTOMATED VALIDATION COMPLETE. On the current host,
+Status: PRODUCTIZED — AUTOMATED VALIDATION COMPLETE; INSTALLED-WINDOWS HUMAN VALIDATION PENDING. On the current host,
 `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check`,
 `cargo check --locked --manifest-path apps/desktop/src-tauri/Cargo.toml`, and
 `cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml --lib cognitive::tests -- --test-threads=1`

@@ -55,14 +55,15 @@ use conversation::{
 use database::Database;
 use domain::{
     AgentMemory, AgentSimulatedState, AppSnapshot, CognitiveEvent, CognitiveEventExplanation,
-    CognitiveTrait, ConversationMessage, PhaseOneConversation, PhaseOneState, SendMessageResult,
+    CognitiveTrait, ConversationMessage, PhaseOneConversation, PhaseOneState, ProviderSnapshot,
+    SendMessageResult,
 };
 use extensions::{
     ExtensionActivationRequest, ExtensionAgentProposalRequest, ExtensionAuditRecord,
     ExtensionCatalogEntry, ExtensionDisableRequest, ExtensionExecutionCancellationRequest,
-    ExtensionExecutionRequest, ExtensionExecutionResult, ExtensionInstruction, ExtensionPackage,
-    ExtensionProposal, ExtensionProposalRequest, ExtensionReviewRequest, ExtensionRollbackRequest,
-    ExtensionUpdateRequest,
+    ExtensionExecutionRequest, ExtensionExecutionResult, ExtensionImportRequest,
+    ExtensionInstruction, ExtensionPackage, ExtensionProposal, ExtensionProposalRequest,
+    ExtensionReviewRequest, ExtensionRollbackRequest, ExtensionUpdateRequest,
 };
 use gateway::{
     GatewayAccount, GatewayAuditRecord, GatewayProtocolInfo, GatewayReconnectRequest,
@@ -80,8 +81,8 @@ use runtime::RuntimeController;
 use screen_vision::{
     ScreenVisionAnalysisResult, ScreenVisionAuditRecord, ScreenVisionFixture, ScreenVisionJob,
     ScreenVisionJobCancellationRequest, ScreenVisionJobCleanupRequest,
-    ScreenVisionJobConfirmationRequest, ScreenVisionJobPreviewRequest, ScreenVisionSession,
-    ScreenVisionSessionCancellationRequest, ScreenVisionSessionRequest,
+    ScreenVisionJobConfirmationRequest, ScreenVisionJobPreviewRequest, ScreenVisionProviderStatus,
+    ScreenVisionSession, ScreenVisionSessionCancellationRequest, ScreenVisionSessionRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -93,9 +94,10 @@ use tools::{
     WorkspaceRoot, WorkspaceRootIdRequest, WorkspaceRootRequest,
 };
 use voice::{
-    CustomVoiceConsentRequest, VoiceCaptureRequest, VoiceDevice, VoiceEmotionHypothesisRequest,
-    VoiceEmotionHypothesisResult, VoiceOperationCancellationRequest, VoiceOperationStatus,
-    VoiceOperationStatusRequest, VoiceRuntime, VoiceRuntimeSynthesisResult,
+    CustomVoiceConsentRequest, LocalProvider, LocalProviderIdRequest, LocalProviderRequest,
+    VoiceCaptureRequest, VoiceDevice, VoiceEmotionHypothesisRequest, VoiceEmotionHypothesisResult,
+    VoiceOperationCancellationRequest, VoiceOperationStatus, VoiceOperationStatusRequest,
+    VoiceProviderStatus, VoiceRuntime, VoiceRuntimeSynthesisResult,
     VoiceRuntimeTranscriptionResult, VoiceRuntimeWakeWordResult, VoiceSettings,
     VoiceSettingsRequest, VoiceSynthesisRequest, VoiceSynthesisResult,
     VoiceSynthesisRuntimeRequest, VoiceTranscriptionRequest, VoiceTranscriptionResult,
@@ -935,6 +937,57 @@ fn get_voice_settings(
 }
 
 #[tauri::command]
+fn get_voice_provider_status(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<VoiceProviderStatus, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .voice_provider_status(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn list_local_providers(state: State<'_, AppState>) -> Result<Vec<LocalProvider>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .list_local_providers()
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn register_local_provider(
+    state: State<'_, AppState>,
+    request: LocalProviderRequest,
+) -> Result<LocalProvider, &'static str> {
+    ensure_voice_mutation_allowed(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .register_local_provider(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn disable_local_provider(
+    state: State<'_, AppState>,
+    request: LocalProviderIdRequest,
+) -> Result<LocalProvider, &'static str> {
+    ensure_voice_mutation_allowed(&state, &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .disable_local_provider(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
 fn update_voice_settings(
     state: State<'_, AppState>,
     request: VoiceSettingsRequest,
@@ -1121,11 +1174,7 @@ fn add_workspace_root(
     state: State<'_, AppState>,
     request: WorkspaceRootRequest,
 ) -> Result<WorkspaceRoot, &'static str> {
-    ensure_tool_mutation_allowed(
-        state.inner(),
-        "agt_astra_provisional",
-        request.temporary_chat,
-    )?;
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
     state
         .database
         .as_ref()
@@ -1149,11 +1198,7 @@ fn remove_workspace_root(
     state: State<'_, AppState>,
     request: WorkspaceRootIdRequest,
 ) -> Result<WorkspaceRoot, &'static str> {
-    ensure_tool_mutation_allowed(
-        state.inner(),
-        "agt_astra_provisional",
-        request.temporary_chat,
-    )?;
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
     state
         .database
         .as_ref()
@@ -1396,6 +1441,20 @@ fn create_extension_proposal(
         .as_ref()
         .ok_or("operation_unavailable")?
         .create_extension_proposal(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn import_extension_manifest(
+    state: State<'_, AppState>,
+    request: ExtensionImportRequest,
+) -> Result<ExtensionProposal, &'static str> {
+    ensure_extension_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .import_extension_manifest(request)
         .map_err(|error| error.code())
 }
 
@@ -2225,6 +2284,16 @@ fn list_screen_vision_fixtures(
 }
 
 #[tauri::command]
+fn get_screen_vision_provider_status(state: State<'_, AppState>) -> ScreenVisionProviderStatus {
+    let Some(database) = state.database.as_ref() else {
+        return ScreenVisionProviderStatus {
+            state: "unavailable".into(),
+        };
+    };
+    screen_vision::screen_vision_provider_status(database)
+}
+
+#[tauri::command]
 fn list_screen_vision_sessions(
     state: State<'_, AppState>,
     agent_id: String,
@@ -2750,6 +2819,15 @@ fn refresh_ollama_models(state: State<'_, AppState>) -> Result<(), &'static str>
 }
 
 #[tauri::command]
+fn get_ollama_status(state: State<'_, AppState>) -> Result<ProviderSnapshot, &'static str> {
+    state
+        .chat
+        .as_ref()
+        .map(ChatCoordinator::provider_snapshot)
+        .ok_or("operation_unavailable")
+}
+
+#[tauri::command]
 fn select_phase_one_model(
     state: State<'_, AppState>,
     agent_id: String,
@@ -3114,6 +3192,10 @@ pub fn run() {
             list_cognitive_candidates,
             reject_cognitive_candidate,
             get_voice_settings,
+            get_voice_provider_status,
+            list_local_providers,
+            register_local_provider,
+            disable_local_provider,
             list_voice_devices,
             update_voice_settings,
             set_custom_voice_consent,
@@ -3143,6 +3225,7 @@ pub fn run() {
             list_extension_catalog,
             list_extension_proposals,
             create_extension_proposal,
+            import_extension_manifest,
             create_agent_extension_proposal,
             review_extension_proposal,
             activate_extension,
@@ -3191,6 +3274,7 @@ pub fn run() {
             list_gateway_revocations,
             revoke_gateway_session,
             revoke_gateway_transfer,
+            get_screen_vision_provider_status,
             list_screen_vision_fixtures,
             list_screen_vision_sessions,
             list_screen_vision_jobs,
@@ -3227,6 +3311,7 @@ pub fn run() {
             set_agent_memory_status,
             update_agent_memory,
             refresh_ollama_models,
+            get_ollama_status,
             select_phase_one_model,
             update_keep_alive,
             update_agent_profile,

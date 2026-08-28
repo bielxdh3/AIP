@@ -141,7 +141,7 @@ a:focus-visible {
 }
 
 .agent-tools {
-  display: none;
+  display: grid;
   gap: 8px;
   margin-top: 14px;
   color: #aeb6c2;
@@ -198,6 +198,145 @@ a:focus-visible {
 .workspace-panel > .pixel-editor {
   width: min(900px, 100%);
   margin: 0 auto;
+}
+
+.local-capabilities-surface {
+  width: min(1120px, 100%);
+  margin: 0 auto;
+  display: grid;
+  gap: 16px;
+  padding-bottom: 72px;
+}
+
+.local-status-center {
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+  border: 1px solid #2c3442;
+  border-radius: 14px;
+  background: #161b24;
+}
+
+.local-status-center header h2 {
+  margin: 0 0 5px;
+}
+
+.local-status-center header span,
+.local-status-legend,
+.local-mode-note,
+.local-capability-note {
+  color: #a7afbe;
+  font-size: 12px;
+}
+
+.local-status-legend,
+.local-mode-note,
+.local-capability-note {
+  margin: 0;
+}
+
+.local-mode-note {
+  padding: 9px 11px;
+  border: 1px solid #55452c;
+  border-radius: 7px;
+  color: #d7c18f;
+  background: #211b12;
+}
+
+.local-status-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid #2c3442;
+  border-radius: 9px;
+  background: #2c3442;
+}
+
+.local-status-card {
+  display: block;
+  min-height: 88px;
+  padding: 13px;
+  color: inherit;
+  background: #101319;
+  text-decoration: none;
+}
+
+.local-status-card:hover,
+.local-status-card:focus-visible {
+  background: #171d24;
+  outline: 0;
+}
+
+.local-status-card > span,
+.local-status-card strong,
+.local-status-card small {
+  display: block;
+}
+
+.local-status-card > span {
+  margin-bottom: 9px;
+  color: #7f8998;
+  font-size: 11px;
+}
+
+.local-status-card strong {
+  color: #dfe3e9;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.local-status-card small {
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+  color: #87909e;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.local-status-card[data-state="Pronto"] strong {
+  color: #57d8bd;
+}
+
+.local-status-card[data-state="Não configurado"] strong {
+  color: #d7c18f;
+}
+
+.local-status-card[data-state="Bloqueado pelo modo"] strong,
+.local-status-card[data-state="Indisponível"] strong {
+  color: #c0a6a0;
+}
+
+.local-status-card[data-state="Erro"] strong {
+  color: #ef8e7e;
+}
+
+.local-capability-panels {
+  display: grid;
+  gap: 10px;
+}
+
+.local-capability-panel {
+  overflow: hidden;
+  border: 1px solid #2c3442;
+  border-radius: 10px;
+  background: #11161c;
+}
+
+.local-capability-panel > summary {
+  padding: 13px 15px;
+  cursor: pointer;
+  color: #dfe3e9;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.local-capability-panel[open] > summary {
+  border-bottom: 1px solid #2c3442;
+}
+
+.local-capability-panel > :not(summary) {
+  padding: 14px;
 }
 
 .memory-workspace,
@@ -1639,6 +1778,10 @@ h3 {
     border-top: 1px solid #242932;
   }
 
+  .local-status-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .agent-grid {
     grid-template-columns: 1fr;
   }
@@ -1797,6 +1940,10 @@ h3 {
 
   .workspace-heading {
     align-items: stretch;
+  }
+
+  .local-status-grid {
+    grid-template-columns: 1fr;
   }
 
   .memory-filters,

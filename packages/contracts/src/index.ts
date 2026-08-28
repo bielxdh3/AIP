@@ -83,6 +83,69 @@ export type ProviderSnapshot = {
   refreshedAt: number | null;
 };
 
+function providerBoundedText(value: unknown, maximum: number): value is string {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= maximum &&
+    !Array.from(value).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    });
+}
+
+function parseOllamaModel(value: unknown): OllamaModel | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const candidate = value as Partial<OllamaModel>;
+  const capabilities = candidate.capabilities;
+  const validCapabilities = Array.isArray(capabilities) &&
+    capabilities.length <= 16 &&
+    capabilities.every((capability) => providerBoundedText(capability, 64));
+  const validMetadata =
+    (candidate.family === null || providerBoundedText(candidate.family, 128)) &&
+    (candidate.parameterSize === null || providerBoundedText(candidate.parameterSize, 64)) &&
+    (candidate.quantization === null || providerBoundedText(candidate.quantization, 64));
+  return providerBoundedText(candidate.ref, 208) &&
+    providerBoundedText(candidate.providerModelId, 200) &&
+    candidate.ref === `ollama:${candidate.providerModelId}` &&
+    providerBoundedText(candidate.displayName, 200) &&
+    typeof candidate.size === "number" &&
+    Number.isSafeInteger(candidate.size) &&
+    candidate.size >= 0 &&
+    candidate.size <= 2 ** 50 &&
+    validMetadata &&
+    validCapabilities
+    ? candidate as OllamaModel
+    : null;
+}
+
+export function parseProviderSnapshot(value: unknown): ProviderSnapshot | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const candidate = value as Partial<ProviderSnapshot>;
+  const state = candidate.state;
+  const detailCode = candidate.detailCode;
+  const refreshedAt = candidate.refreshedAt;
+  const models = Array.isArray(candidate.models) && candidate.models.length <= 64
+    ? candidate.models.map(parseOllamaModel)
+    : null;
+  return Object.keys(candidate).every((key) => ["state", "detailCode", "models", "refreshedAt"].includes(key)) &&
+    ["checking", "available", "empty", "unavailable", "malformed", "timeout"].includes(
+    state ?? "",
+  ) &&
+    providerBoundedText(detailCode, 128) &&
+    models !== null &&
+    models.every((model): model is OllamaModel => model !== null) &&
+    (refreshedAt === null ||
+      (typeof refreshedAt === "number" &&
+        Number.isSafeInteger(refreshedAt) &&
+        refreshedAt >= 0))
+    ? { state: state as ProviderState, detailCode, models, refreshedAt: refreshedAt as number | null }
+    : null;
+}
+
 export type ConversationMessageStatus =
   "pending" | "streaming" | "complete" | "failed" | "cancelled";
 
@@ -178,6 +241,100 @@ export function parseVoiceDevice(value: unknown): VoiceDevice | null {
   if (typeof value !== "object" || value === null) return null;
   const candidate = value as Partial<VoiceDevice>;
   return candidate.schemaVersion === 1 && cognitiveString(candidate.reference) && /^(local:wavein|local:waveout):\d+$/.test(candidate.reference) && (candidate.direction === "input" || candidate.direction === "output") && cognitiveString(candidate.displayName) && candidate.displayName.length <= 120 ? candidate as VoiceDevice : null;
+}
+export type VoiceProviderAvailability = "ready" | "not_configured" | "unavailable" | "invalid";
+export type VoiceProviderCheck = {
+  state: VoiceProviderAvailability;
+  reference: string | null;
+  synthetic: boolean;
+};
+export type VoiceProviderStatus = {
+  recognition: VoiceProviderCheck;
+  synthesis: VoiceProviderCheck;
+};
+
+export type LocalProviderKind = "stt" | "tts" | "visual";
+export type LocalProviderValidationStatus = "pending" | "ready" | "unavailable" | "invalid";
+export type LocalProvider = {
+  id: string;
+  kind: LocalProviderKind;
+  displayName: string;
+  protocolVersion: string;
+  enabled: boolean;
+  validationStatus: LocalProviderValidationStatus;
+  validationResult: string;
+  updatedAt: number;
+};
+
+export function parseLocalProvider(value: unknown): LocalProvider | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const candidate = value as Partial<LocalProvider>;
+  const validKind = candidate.kind === "stt" || candidate.kind === "tts" || candidate.kind === "visual";
+  const validStatus = candidate.validationStatus === "pending" || candidate.validationStatus === "ready" || candidate.validationStatus === "unavailable" || candidate.validationStatus === "invalid";
+  const validProtocol = (candidate.kind === "visual" && candidate.protocolVersion === "aip-screen-vision-v1") ||
+    ((candidate.kind === "stt" || candidate.kind === "tts") && candidate.protocolVersion === "aip-voice-v1");
+  return Object.keys(candidate).every((key) => ["id", "kind", "displayName", "protocolVersion", "enabled", "validationStatus", "validationResult", "updatedAt"].includes(key)) &&
+    providerBoundedText(candidate.id, 96) && validKind && providerBoundedText(candidate.displayName, 120) && validProtocol &&
+    typeof candidate.enabled === "boolean" && validStatus && providerBoundedText(candidate.validationResult, 256) &&
+    typeof candidate.updatedAt === "number" && Number.isSafeInteger(candidate.updatedAt) && candidate.updatedAt >= 0
+    ? candidate as LocalProvider
+    : null;
+}
+
+export function parseLocalProviders(value: unknown): LocalProvider[] | null {
+  return Array.isArray(value) && value.length <= 64
+    ? value.map(parseLocalProvider).every((entry): entry is LocalProvider => entry !== null)
+      ? value as LocalProvider[]
+      : null
+    : null;
+}
+
+export type LocalProviderRequest = {
+  agentId: string;
+  id: string;
+  kind: LocalProviderKind;
+  displayName: string;
+  executablePath: string;
+  protocolVersion: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+
+export type LocalProviderIdRequest = {
+  agentId: string;
+  id: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
+
+function isVoiceProviderReference(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 160 &&
+    /^(fixture|local):[A-Za-z0-9:._-]+$/.test(value);
+}
+
+export function parseVoiceProviderStatus(value: unknown): VoiceProviderStatus | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const candidate = value as Partial<VoiceProviderStatus>;
+  const parseCheck = (check: unknown): VoiceProviderCheck | null => {
+    if (typeof check !== "object" || check === null || Array.isArray(check)) return null;
+    const entry = check as Partial<VoiceProviderCheck>;
+    const reference = entry.reference;
+    return Object.keys(entry).every((key) => ["state", "reference", "synthetic"].includes(key)) &&
+      ["ready", "not_configured", "unavailable", "invalid"].includes(entry.state ?? "") &&
+      (reference === null || isVoiceProviderReference(reference)) &&
+      typeof entry.synthetic === "boolean" &&
+      entry.synthetic === (reference?.startsWith("fixture:") ?? false)
+      ? { state: entry.state as VoiceProviderAvailability, reference, synthetic: entry.synthetic }
+      : null;
+  };
+  const recognition = parseCheck(candidate.recognition);
+  const synthesis = parseCheck(candidate.synthesis);
+  return Object.keys(candidate).every((key) => ["recognition", "synthesis"].includes(key)) &&
+    recognition !== null && synthesis !== null
+    ? { recognition, synthesis }
+    : null;
 }
 export type VoiceSettingsRequest = {
   agentId: string;
@@ -369,11 +526,13 @@ export type WorkspaceRoot = {
   updatedAt: number;
 };
 export type WorkspaceRootRequest = {
+  agentId: string;
   path: string;
   idempotencyKey: string;
   temporaryChat: boolean;
 };
 export type WorkspaceRootIdRequest = {
+  agentId: string;
   rootId: string;
   idempotencyKey: string;
   temporaryChat: boolean;
@@ -615,6 +774,13 @@ export type ExtensionProposalRequest = {
   idempotencyKey: string;
   temporaryChat: boolean;
 };
+export type ExtensionImportRequest = {
+  agentId: string;
+  ownerUserId: string;
+  manifestJson: string;
+  idempotencyKey: string;
+  temporaryChat: boolean;
+};
 export type ExtensionAgentProposalRequest = {
   agentId: string;
   ownerUserId: string;
@@ -700,6 +866,18 @@ export type ScreenVisionFixture = {
   synthetic: boolean;
   metadataOnly: boolean;
 };
+export type ScreenVisionProviderAvailability = "ready" | "not_configured" | "unavailable" | "invalid";
+export type ScreenVisionProviderStatus = {
+  state: ScreenVisionProviderAvailability;
+};
+export function parseScreenVisionProviderStatus(value: unknown): ScreenVisionProviderStatus | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const candidate = value as Partial<ScreenVisionProviderStatus>;
+  return Object.keys(candidate).every((key) => key === "state") &&
+    ["ready", "not_configured", "unavailable", "invalid"].includes(candidate.state ?? "")
+    ? { state: candidate.state as ScreenVisionProviderAvailability }
+    : null;
+}
 export type ScreenVisionPreview = {
   fixtureId: string;
   monitorId: string;
@@ -2643,7 +2821,10 @@ function toolRecord(value: unknown): Record<string, unknown> | null {
 
 function toolBoundedText(value: unknown, maximum: number): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maximum &&
-    !/[\u0000-\u001f\u007f]/.test(value);
+    !Array.from(value).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    });
 }
 
 function toolBoundedArray(value: unknown, maximum: number, itemMaximum: number): value is string[] {
@@ -2825,14 +3006,14 @@ export function parseWorkspaceRoots(value: unknown): WorkspaceRoot[] | null {
 
 export function parseWorkspaceRootRequest(value: unknown): WorkspaceRootRequest | null {
   const candidate = toolRecord(value);
-  return candidate !== null && boundedToolPath(candidate.path) && boundedIdempotency(candidate.idempotencyKey) &&
+  return candidate !== null && toolBoundedId(candidate.agentId, 96) && boundedToolPath(candidate.path) && boundedIdempotency(candidate.idempotencyKey) &&
     typeof candidate.temporaryChat === "boolean"
     ? (candidate as unknown as WorkspaceRootRequest) : null;
 }
 
 export function parseWorkspaceRootIdRequest(value: unknown): WorkspaceRootIdRequest | null {
   const candidate = toolRecord(value);
-  return candidate !== null && boundedOpaqueRootId(candidate.rootId) && boundedIdempotency(candidate.idempotencyKey) &&
+  return candidate !== null && toolBoundedId(candidate.agentId, 96) && boundedOpaqueRootId(candidate.rootId) && boundedIdempotency(candidate.idempotencyKey) &&
     typeof candidate.temporaryChat === "boolean"
     ? (candidate as unknown as WorkspaceRootIdRequest) : null;
 }
@@ -3105,6 +3286,19 @@ export function parseExtensionManifest(
     return null;
   }
   return candidate !== null &&
+    extensionKeys(candidate, [
+      "extensionId",
+      "manifestVersion",
+      "extensionVersion",
+      "sdkVersion",
+      "name",
+      "sandboxPolicy",
+      "admissionPolicy",
+      "capabilities",
+      "localFixtureRef",
+      "untrusted",
+      "package",
+    ]) &&
     isExtensionId(candidate.extensionId) &&
     candidate.manifestVersion === 1 &&
     isExtensionVersion(candidate.extensionVersion) &&

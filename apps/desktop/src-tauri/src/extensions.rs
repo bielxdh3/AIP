@@ -145,6 +145,7 @@ pub enum ExtensionPermissionStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct ExtensionManifest {
     pub extension_id: String,
@@ -355,6 +356,17 @@ pub struct ExtensionProposalRequest {
     pub temporary_chat: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionImportRequest {
+    pub agent_id: String,
+    pub owner_user_id: String,
+    pub manifest_json: String,
+    pub idempotency_key: String,
+    pub temporary_chat: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExtensionAgentProposalRequest {
@@ -527,6 +539,26 @@ impl Database {
             .collect::<Result<Vec<_>, _>>()
             .map_err(DatabaseError::from);
         records
+    }
+
+    pub fn import_extension_manifest(
+        &self,
+        request: ExtensionImportRequest,
+    ) -> Result<ExtensionProposal, DatabaseError> {
+        if request.manifest_json.len() > MAX_EXTENSION_MANIFEST_BYTES {
+            return Err(DatabaseError::Cognitive("extension_manifest_oversized"));
+        }
+        let manifest = serde_json::from_str::<ExtensionManifest>(&request.manifest_json)
+            .map_err(|_| DatabaseError::Cognitive("extension_manifest_invalid"))?;
+        self.create_extension_proposal(ExtensionProposalRequest {
+            agent_id: request.agent_id,
+            owner_user_id: request.owner_user_id,
+            source_kind: ExtensionSourceKind::AdministratorSelected,
+            proposer_agent_id: None,
+            manifest,
+            idempotency_key: request.idempotency_key,
+            temporary_chat: request.temporary_chat,
+        })
     }
 
     pub fn create_extension_proposal(
@@ -2456,6 +2488,58 @@ mod tests {
                 temporary_chat: true
             }),
             Err(DatabaseError::Cognitive("extensions_blocked_temporary"))
+        );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn imported_manifests_are_strictly_validated_and_replayable() {
+        let path = test_path();
+        let database = Database::initialize(&path).expect("database");
+        let manifest_json = serde_json::to_string(&manifest("1.0.0", vec![])).unwrap();
+        let request = ExtensionImportRequest {
+            agent_id: ASTRA_ID.into(),
+            owner_user_id: OWNER_ID.into(),
+            manifest_json,
+            idempotency_key: "import-example".into(),
+            temporary_chat: false,
+        };
+        let first = database
+            .import_extension_manifest(request.clone())
+            .expect("imported manifest");
+        let replay = database
+            .import_extension_manifest(request)
+            .expect("replayed manifest");
+        assert_eq!(first, replay);
+        assert_eq!(
+            first.source_kind,
+            ExtensionSourceKind::AdministratorSelected
+        );
+
+        let mut unknown = serde_json::to_value(manifest("1.0.0", vec![])).unwrap();
+        unknown
+            .as_object_mut()
+            .unwrap()
+            .insert("hostAccess".into(), serde_json::json!(true));
+        assert_eq!(
+            database.import_extension_manifest(ExtensionImportRequest {
+                agent_id: ASTRA_ID.into(),
+                owner_user_id: OWNER_ID.into(),
+                manifest_json: serde_json::to_string(&unknown).unwrap(),
+                idempotency_key: "import-unknown".into(),
+                temporary_chat: false,
+            }),
+            Err(DatabaseError::Cognitive("extension_manifest_invalid"))
+        );
+        assert_eq!(
+            database.import_extension_manifest(ExtensionImportRequest {
+                agent_id: ASTRA_ID.into(),
+                owner_user_id: OWNER_ID.into(),
+                manifest_json: "x".repeat(MAX_EXTENSION_MANIFEST_BYTES + 1),
+                idempotency_key: "import-oversized".into(),
+                temporary_chat: false,
+            }),
+            Err(DatabaseError::Cognitive("extension_manifest_oversized"))
         );
         cleanup(&path);
     }
