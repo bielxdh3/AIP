@@ -1597,6 +1597,7 @@ fn temporary_conversation(agent_id: &str) -> crate::domain::PhaseOneConversation
         agent_id: agent_id.to_string(),
         title: "Conversa temporária".into(),
         model_override_ref: None,
+        is_pinned: false,
     }
 }
 

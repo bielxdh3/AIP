@@ -18,6 +18,7 @@ const loadedPhase = {
     agentId: "agent",
     title: "Conversa",
     modelOverrideRef: null,
+    isPinned: false,
   },
   messages: [
     {

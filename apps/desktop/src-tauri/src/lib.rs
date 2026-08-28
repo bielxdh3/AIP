@@ -2608,6 +2608,35 @@ fn restore_agent_conversation(
 }
 
 #[tauri::command]
+fn pin_agent_conversation(
+    state: State<'_, AppState>,
+    agent_id: String,
+    conversation_id: String,
+    pinned: bool,
+) -> Result<(), &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .set_conversation_pinned(&agent_id, &conversation_id, pinned)
+        .map_err(|_| "invalid_conversation")
+}
+
+#[tauri::command]
+fn delete_agent_conversation(
+    state: State<'_, AppState>,
+    agent_id: String,
+    conversation_id: String,
+) -> Result<(), &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .delete_conversation(&agent_id, &conversation_id)
+        .map_err(|_| "invalid_conversation")
+}
+
+#[tauri::command]
 fn list_agent_memories(
     state: State<'_, AppState>,
     agent_id: String,
@@ -2981,7 +3010,7 @@ fn retry_phase_one_runtime(state: State<'_, AppState>) -> Result<(), &'static st
 }
 
 #[tauri::command]
-fn open_main_conversation(
+fn open_agent_conversations(
     app: AppHandle,
     state: State<'_, AppState>,
     agent_id: String,
@@ -2997,7 +3026,7 @@ fn open_main_conversation(
         .ok_or("operation_unavailable")?;
     window.show().map_err(|_| "operation_failed")?;
     window.set_focus().map_err(|_| "operation_failed")?;
-    app.emit_to("main", "open-conversation", agent_id)
+    app.emit_to("main", "open-agent-conversations", agent_id)
         .map_err(|_| "operation_failed")
 }
 
@@ -3296,6 +3325,8 @@ pub fn run() {
             rename_agent_conversation,
             archive_agent_conversation,
             restore_agent_conversation,
+            pin_agent_conversation,
+            delete_agent_conversation,
             list_agent_memories,
             search_agent_memories,
             create_agent_memory,
@@ -3323,7 +3354,7 @@ pub fn run() {
             set_active_conversation_branch,
             cancel_phase_one_generation,
             retry_phase_one_runtime,
-            open_main_conversation,
+            open_agent_conversations,
             start_overlay_drag,
             set_overlay_bubble_visible,
             set_overlay_interactive_regions

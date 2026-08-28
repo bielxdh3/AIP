@@ -8,7 +8,7 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AgentAnimationState, AppSnapshot } from "@aip/contracts";
-import AgentSprite from "./components/AgentSprite";
+import AgentSprite, { type PixelOverlay } from "./components/AgentSprite";
 import {
   beginGesture,
   cancelGesture,
@@ -23,6 +23,7 @@ import {
   type SpriteMask,
 } from "./overlay-input";
 import { requestForAgent } from "./conversation-state";
+import { openAgentConversations } from "./agent-navigation";
 import { usePhaseOne } from "./use-phase-one";
 import "./App.css";
 
@@ -30,6 +31,7 @@ export default function Overlay({ agentId }: { agentId: string }) {
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [dragging, setDragging] = useState(false);
   const [spriteMask, setSpriteMask] = useState<SpriteMask | null>(null);
+  const [customPixels, setCustomPixels] = useState<PixelOverlay[]>([]);
   const { phase } = usePhaseOne(agentId);
   const spriteRef = useRef<HTMLImageElement>(null);
   const labelRef = useRef<HTMLSpanElement>(null);
@@ -66,12 +68,13 @@ export default function Overlay({ agentId }: { agentId: string }) {
           elementBounds(spriteRef.current),
           elementBounds(labelRef.current),
           elementBounds(thoughtRef.current),
+          customPixels,
         )
       : [];
     void invoke("set_overlay_interactive_regions", { agentId, regions }).catch(
       () => null,
     );
-  }, [agentId, overlayActive, spriteMask]);
+  }, [agentId, customPixels, overlayActive, spriteMask]);
 
   useLayoutEffect(() => {
     let animationFrame: number | null = null;
@@ -156,7 +159,7 @@ export default function Overlay({ agentId }: { agentId: string }) {
     if (result.action === "click") {
       void invoke("set_overlay_bubble_visible", { agentId, visible: true });
     } else if (result.action === "double_click") {
-      void invoke("open_main_conversation", { agentId });
+      void openAgentConversations(agentId);
     }
   }
 
@@ -186,6 +189,7 @@ export default function Overlay({ agentId }: { agentId: string }) {
           spriteKey={agent.spriteKey}
           name={agent.name}
           onLoad={(image) => setSpriteMask(readSpriteMask(image))}
+          onPixelsChange={setCustomPixels}
         />
         <span ref={labelRef} className="overlay-label">
           {agent.name}

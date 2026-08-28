@@ -11,6 +11,7 @@ type AgentSpriteProps = {
   spriteKey: keyof typeof sprites;
   name: string;
   onLoad?: (image: HTMLImageElement) => void;
+  onPixelsChange?: (pixels: PixelOverlay[]) => void;
 };
 
 export type PixelOverlay = { x: number; y: number; color: string };
@@ -46,8 +47,15 @@ export function pixelOverlays(source: string): PixelOverlay[] {
 }
 
 const AgentSprite = forwardRef<HTMLImageElement, AgentSpriteProps>(
-  function AgentSprite({ agentId, spriteKey, name, onLoad }, ref) {
+  function AgentSprite(
+    { agentId, spriteKey, name, onLoad, onPixelsChange },
+    ref,
+  ) {
     const [pixels, setPixels] = useState<PixelOverlay[]>([]);
+
+    useEffect(() => {
+      onPixelsChange?.(pixels);
+    }, [onPixelsChange, pixels]);
 
     useEffect(() => {
       let active = true;
