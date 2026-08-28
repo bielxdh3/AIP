@@ -70,6 +70,21 @@ pub struct VoiceDevice {
     pub display_name: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceProviderCheck {
+    pub state: String,
+    pub reference: Option<String>,
+    pub synthetic: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceProviderStatus {
+    pub recognition: VoiceProviderCheck,
+    pub synthesis: VoiceProviderCheck,
+}
+
 pub fn list_voice_devices() -> Vec<VoiceDevice> {
     #[cfg(windows)]
     {
@@ -925,6 +940,23 @@ impl Database {
             .ok_or(DatabaseError::Cognitive("voice_settings_not_found"))
     }
 
+    pub fn voice_provider_status(
+        &self,
+        agent_id: &str,
+    ) -> Result<VoiceProviderStatus, DatabaseError> {
+        let settings = self.voice_settings(agent_id)?;
+        Ok(VoiceProviderStatus {
+            recognition: provider_check(
+                settings.recognition_model_ref.as_deref(),
+                ProviderKind::Transcription,
+            ),
+            synthesis: provider_check(
+                settings.synthesis_model_ref.as_deref(),
+                ProviderKind::Synthesis,
+            ),
+        })
+    }
+
     pub fn start_voice_operation(
         &self,
         request: VoiceOperationStartRequest,
@@ -1517,6 +1549,33 @@ fn runtime_wake_degraded(
 enum ProviderKind {
     Transcription,
     Synthesis,
+}
+
+fn provider_check(reference: Option<&str>, kind: ProviderKind) -> VoiceProviderCheck {
+    let Some(reference) = reference else {
+        return VoiceProviderCheck {
+            state: "not_configured".into(),
+            reference: None,
+            synthetic: false,
+        };
+    };
+    if reference.starts_with("fixture:") {
+        return VoiceProviderCheck {
+            state: "ready".into(),
+            reference: Some(reference.into()),
+            synthetic: true,
+        };
+    }
+    let state = match provider_executable(reference, kind) {
+        Ok(_) => "ready",
+        Err("voice_model_unavailable") => "unavailable",
+        Err(_) => "invalid",
+    };
+    VoiceProviderCheck {
+        state: state.into(),
+        reference: Some(reference.into()),
+        synthetic: false,
+    }
 }
 
 fn provider_executable(reference: &str, kind: ProviderKind) -> Result<PathBuf, &'static str> {
@@ -2404,6 +2463,35 @@ mod tests {
             database.voice_settings(LUMA_ID).unwrap().base_voice_id,
             BASE_VOICE_ID
         );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn provider_status_uses_only_bounded_saved_references() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let initial = database.voice_provider_status(ASTRA_ID).unwrap();
+        assert_eq!(initial.recognition.state, "not_configured");
+        assert_eq!(initial.synthesis.state, "not_configured");
+        assert!(!initial.recognition.synthetic);
+        assert!(!initial.synthesis.synthetic);
+
+        database
+            .update_voice_settings(settings_request("provider-status"))
+            .unwrap();
+        let configured = database.voice_provider_status(ASTRA_ID).unwrap();
+        assert_eq!(configured.recognition.state, "ready");
+        assert_eq!(configured.synthesis.state, "ready");
+        assert_eq!(
+            configured.recognition.reference.as_deref(),
+            Some("fixture:stt-v1")
+        );
+        assert_eq!(
+            configured.synthesis.reference.as_deref(),
+            Some("fixture:tts-v1")
+        );
+        assert!(configured.recognition.synthetic);
+        assert!(configured.synthesis.synthetic);
         cleanup(&path);
     }
 
