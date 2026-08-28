@@ -54,6 +54,27 @@ describe("sprite alpha regions", () => {
     ]);
   });
 
+  it("unites visible custom pixels with the base mask at the alpha threshold", () => {
+    expect(
+      buildInteractiveRegions(
+        { width: 4, height: 3, regions: [{ x: 0, y: 0, width: 1, height: 1 }] },
+        { x: 10, y: 20, width: 40, height: 30 },
+        null,
+        null,
+        [
+          { x: 1, y: 1, color: "#fff" },
+          { x: 2, y: 1, color: "#ffffff80" },
+          { x: 0, y: 2, color: "#ffffff7f" },
+          { x: 3, y: 2, color: "#f00" },
+        ],
+      ),
+    ).toEqual([
+      { x: 10, y: 20, width: 10, height: 10 },
+      { x: 20, y: 30, width: 20, height: 10 },
+      { x: 40, y: 40, width: 10, height: 10 },
+    ]);
+  });
+
   it("adds and removes the bubble region with visibility", () => {
     const bounds = { x: 8, y: 8, width: 344, height: 92 };
     expect(buildBubbleInteractiveRegions(true, bounds)).toEqual([bounds]);
