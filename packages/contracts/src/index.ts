@@ -87,7 +87,10 @@ function providerBoundedText(value: unknown, maximum: number): value is string {
   return typeof value === "string" &&
     value.length > 0 &&
     value.length <= maximum &&
-    !/[\u0000-\u001f\u007f]/.test(value);
+    !Array.from(value).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    });
 }
 
 function parseOllamaModel(value: unknown): OllamaModel | null {
@@ -469,11 +472,13 @@ export type WorkspaceRoot = {
   updatedAt: number;
 };
 export type WorkspaceRootRequest = {
+  agentId: string;
   path: string;
   idempotencyKey: string;
   temporaryChat: boolean;
 };
 export type WorkspaceRootIdRequest = {
+  agentId: string;
   rootId: string;
   idempotencyKey: string;
   temporaryChat: boolean;
@@ -2762,7 +2767,10 @@ function toolRecord(value: unknown): Record<string, unknown> | null {
 
 function toolBoundedText(value: unknown, maximum: number): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maximum &&
-    !/[\u0000-\u001f\u007f]/.test(value);
+    !Array.from(value).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    });
 }
 
 function toolBoundedArray(value: unknown, maximum: number, itemMaximum: number): value is string[] {
@@ -2944,14 +2952,14 @@ export function parseWorkspaceRoots(value: unknown): WorkspaceRoot[] | null {
 
 export function parseWorkspaceRootRequest(value: unknown): WorkspaceRootRequest | null {
   const candidate = toolRecord(value);
-  return candidate !== null && boundedToolPath(candidate.path) && boundedIdempotency(candidate.idempotencyKey) &&
+  return candidate !== null && toolBoundedId(candidate.agentId, 96) && boundedToolPath(candidate.path) && boundedIdempotency(candidate.idempotencyKey) &&
     typeof candidate.temporaryChat === "boolean"
     ? (candidate as unknown as WorkspaceRootRequest) : null;
 }
 
 export function parseWorkspaceRootIdRequest(value: unknown): WorkspaceRootIdRequest | null {
   const candidate = toolRecord(value);
-  return candidate !== null && boundedOpaqueRootId(candidate.rootId) && boundedIdempotency(candidate.idempotencyKey) &&
+  return candidate !== null && toolBoundedId(candidate.agentId, 96) && boundedOpaqueRootId(candidate.rootId) && boundedIdempotency(candidate.idempotencyKey) &&
     typeof candidate.temporaryChat === "boolean"
     ? (candidate as unknown as WorkspaceRootIdRequest) : null;
 }

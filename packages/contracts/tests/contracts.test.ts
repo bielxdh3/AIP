@@ -609,8 +609,8 @@ describe("supervised tool contracts", () => {
     expect(parseToolExecutionResult({ status: "executed", output: "moved", changed: true, untrusted: true })).not.toBeNull();
     expect(parseToolCompensation({ kind: "workspace_move", available: true, description: "bounded", moves: [{ from: "a.txt", to: "b.txt", identity: "win:1:2" }] })).not.toBeNull();
     expect(parseWorkspaceRoot({ id: "wrt_opaque", enabled: true, createdAt: 1, updatedAt: 2 })).not.toBeNull();
-    expect(parseWorkspaceRootRequest({ path: "C:/workspace", idempotencyKey: "root-1", temporaryChat: false })).not.toBeNull();
-    expect(parseWorkspaceRootIdRequest({ rootId: "wrt_opaque", idempotencyKey: "root-2", temporaryChat: false })).not.toBeNull();
+    expect(parseWorkspaceRootRequest({ agentId: "agt_astra_provisional", path: "C:/workspace", idempotencyKey: "root-1", temporaryChat: false })).not.toBeNull();
+    expect(parseWorkspaceRootIdRequest({ agentId: "agt_astra_provisional", rootId: "wrt_opaque", idempotencyKey: "root-2", temporaryChat: false })).not.toBeNull();
   });
 
   it("rejects unsafe or malformed tool payloads", () => {

@@ -4252,7 +4252,7 @@ export function ToolControls({
     if (blocked || !rootPath.trim()) return;
     setBusy(true); setError(null);
     try {
-      parseToolPayload(await invoke<unknown>("add_workspace_root", { path: rootPath.trim(), idempotencyKey: `workspace-root-${crypto.randomUUID()}`, temporaryChat: false }), parseWorkspaceRoot);
+      parseToolPayload(await invoke<unknown>("add_workspace_root", { agentId, path: rootPath.trim(), idempotencyKey: `workspace-root-${crypto.randomUUID()}`, temporaryChat }), parseWorkspaceRoot);
       setRootPath(""); await loadData();
     } catch (rootError: unknown) { setError(toolErrorMessage(rootError)); } finally { setBusy(false); }
   }
@@ -4261,7 +4261,7 @@ export function ToolControls({
     if (blocked) return;
     setBusy(true); setError(null);
     try {
-      parseToolPayload(await invoke<unknown>("remove_workspace_root", { rootId, idempotencyKey: `workspace-root-disable-${crypto.randomUUID()}`, temporaryChat: false }), parseWorkspaceRoot);
+      parseToolPayload(await invoke<unknown>("remove_workspace_root", { agentId, rootId, idempotencyKey: `workspace-root-disable-${crypto.randomUUID()}`, temporaryChat }), parseWorkspaceRoot);
       await loadData();
     } catch (rootError: unknown) { setError(toolErrorMessage(rootError)); } finally { setBusy(false); }
   }
@@ -8094,18 +8094,20 @@ export function LocalCapabilityStatusCenter({
     };
   }, [agentId]);
 
+  const runtimeStatus = runtimeLocalStatus(snapshot, safeMode);
+  const ollamaStatus = ollamaLocalStatus(data?.ollama ?? null, safeMode);
   const cards = [
     {
       key: "runtime",
       label: "Runtime",
-      href: "#local-status-center",
-      status: runtimeLocalStatus(snapshot, safeMode),
+      href: "#local-capability-runtime",
+      status: runtimeStatus,
     },
     {
       key: "ollama",
       label: "Ollama",
-      href: "#local-status-center",
-      status: ollamaLocalStatus(data?.ollama ?? null, safeMode),
+      href: "#local-capability-runtime",
+      status: ollamaStatus,
     },
     {
       key: "stt",
@@ -8218,7 +8220,16 @@ export function LocalCapabilityStatusCenter({
             className="local-status-card"
             data-state={card.status.state}
             href={card.href}
+            aria-controls={card.href.slice(1)}
             key={card.key}
+            onClick={(event) => {
+              const panel = document.getElementById(card.href.slice(1));
+              if (!(panel instanceof HTMLDetailsElement)) return;
+              event.preventDefault();
+              panel.open = true;
+              panel.scrollIntoView?.({ behavior: "smooth", block: "start" });
+              panel.querySelector("summary")?.focus();
+            }}
           >
             <span>{card.label}</span>
             <strong>{card.status.state}</strong>
@@ -8226,6 +8237,22 @@ export function LocalCapabilityStatusCenter({
           </a>
         ))}
       </div>
+      <details className="local-capability-panel" id="local-capability-runtime">
+        <summary>Runtime e Ollama</summary>
+        <div>
+          <p>
+            <strong>Runtime:</strong> {runtimeStatus.state} — {runtimeStatus.detail}
+          </p>
+          <p>
+            <strong>Ollama:</strong> {ollamaStatus.state} — {ollamaStatus.detail}
+          </p>
+          <p>
+            Configuração: mantenha o Ollama local ativo e use “Atualizar” na
+            conversa para reler os modelos. Sem runtime, o histórico e as
+            leituras continuam acessíveis.
+          </p>
+        </div>
+      </details>
     </section>
   );
 }

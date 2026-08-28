@@ -55,16 +55,15 @@ use conversation::{
 use database::Database;
 use domain::{
     AgentMemory, AgentSimulatedState, AppSnapshot, CognitiveEvent, CognitiveEventExplanation,
-    CognitiveTrait, ConversationMessage, PhaseOneConversation, PhaseOneState, SendMessageResult,
-    ProviderSnapshot,
+    CognitiveTrait, ConversationMessage, PhaseOneConversation, PhaseOneState, ProviderSnapshot,
+    SendMessageResult,
 };
 use extensions::{
     ExtensionActivationRequest, ExtensionAgentProposalRequest, ExtensionAuditRecord,
     ExtensionCatalogEntry, ExtensionDisableRequest, ExtensionExecutionCancellationRequest,
-    ExtensionExecutionRequest, ExtensionExecutionResult, ExtensionInstruction, ExtensionPackage,
-    ExtensionImportRequest, ExtensionProposal, ExtensionProposalRequest, ExtensionReviewRequest,
-    ExtensionRollbackRequest,
-    ExtensionUpdateRequest,
+    ExtensionExecutionRequest, ExtensionExecutionResult, ExtensionImportRequest,
+    ExtensionInstruction, ExtensionPackage, ExtensionProposal, ExtensionProposalRequest,
+    ExtensionReviewRequest, ExtensionRollbackRequest, ExtensionUpdateRequest,
 };
 use gateway::{
     GatewayAccount, GatewayAuditRecord, GatewayProtocolInfo, GatewayReconnectRequest,
@@ -82,9 +81,8 @@ use runtime::RuntimeController;
 use screen_vision::{
     ScreenVisionAnalysisResult, ScreenVisionAuditRecord, ScreenVisionFixture, ScreenVisionJob,
     ScreenVisionJobCancellationRequest, ScreenVisionJobCleanupRequest,
-    ScreenVisionJobConfirmationRequest, ScreenVisionJobPreviewRequest, ScreenVisionSession,
-    ScreenVisionProviderStatus, ScreenVisionSessionCancellationRequest,
-    ScreenVisionSessionRequest,
+    ScreenVisionJobConfirmationRequest, ScreenVisionJobPreviewRequest, ScreenVisionProviderStatus,
+    ScreenVisionSession, ScreenVisionSessionCancellationRequest, ScreenVisionSessionRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -98,9 +96,9 @@ use tools::{
 use voice::{
     CustomVoiceConsentRequest, VoiceCaptureRequest, VoiceDevice, VoiceEmotionHypothesisRequest,
     VoiceEmotionHypothesisResult, VoiceOperationCancellationRequest, VoiceOperationStatus,
-    VoiceOperationStatusRequest, VoiceRuntime, VoiceRuntimeSynthesisResult,
+    VoiceOperationStatusRequest, VoiceProviderStatus, VoiceRuntime, VoiceRuntimeSynthesisResult,
     VoiceRuntimeTranscriptionResult, VoiceRuntimeWakeWordResult, VoiceSettings,
-    VoiceProviderStatus, VoiceSettingsRequest, VoiceSynthesisRequest, VoiceSynthesisResult,
+    VoiceSettingsRequest, VoiceSynthesisRequest, VoiceSynthesisResult,
     VoiceSynthesisRuntimeRequest, VoiceTranscriptionRequest, VoiceTranscriptionResult,
     VoiceWakeWordRequest, VoiceWakeWordResult,
 };
@@ -1137,11 +1135,7 @@ fn add_workspace_root(
     state: State<'_, AppState>,
     request: WorkspaceRootRequest,
 ) -> Result<WorkspaceRoot, &'static str> {
-    ensure_tool_mutation_allowed(
-        state.inner(),
-        "agt_astra_provisional",
-        request.temporary_chat,
-    )?;
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
     state
         .database
         .as_ref()
@@ -1165,11 +1159,7 @@ fn remove_workspace_root(
     state: State<'_, AppState>,
     request: WorkspaceRootIdRequest,
 ) -> Result<WorkspaceRoot, &'static str> {
-    ensure_tool_mutation_allowed(
-        state.inner(),
-        "agt_astra_provisional",
-        request.temporary_chat,
-    )?;
+    ensure_tool_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
     state
         .database
         .as_ref()

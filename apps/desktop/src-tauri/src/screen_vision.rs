@@ -480,6 +480,44 @@ pub struct ScreenVisionPrivacyPolicy {
     pub redaction_rules: Vec<ScreenVisionRedactionRule>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScreenVisionRedactionResult {
+    redaction_applied: bool,
+}
+
+fn redact_real_pixels(
+    pixels: &mut [u8],
+    privacy: &ScreenVisionPrivacyPolicy,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<ScreenVisionRedactionResult, ScreenVisionAdapterError> {
+    if cancelled() {
+        return Err(ScreenVisionAdapterError::Cancelled);
+    }
+    if validate_privacy(privacy).is_err()
+        || pixels.is_empty()
+        || pixels.len() > MAX_VISUAL_PROVIDER_INPUT_BYTES
+        || pixels.len() % 4 != 0
+    {
+        return Err(ScreenVisionAdapterError::Unavailable);
+    }
+
+    let mut redaction_applied = false;
+    for pixel in pixels.chunks_exact_mut(4) {
+        if cancelled() {
+            return Err(ScreenVisionAdapterError::Cancelled);
+        }
+        if pixel != [0, 0, 0, 255] {
+            pixel.copy_from_slice(&[0, 0, 0, 255]);
+            redaction_applied = true;
+        }
+    }
+    if cancelled() {
+        return Err(ScreenVisionAdapterError::Cancelled);
+    }
+
+    Ok(ScreenVisionRedactionResult { redaction_applied })
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScreenVisionFixture {
@@ -991,13 +1029,8 @@ impl Database {
             serde_json::to_string(&preview).map_err(|_| DatabaseError::Unavailable)?;
         let redaction_json =
             serde_json::to_string(&session.privacy).map_err(|_| DatabaseError::Unavailable)?;
-        let frame_metadata_json = serde_json::to_string(&json!({
-            "syntheticFixture": true,
-            "fixtureId": fixture.fixture_id,
-            "monitorId": fixture.monitor_id,
-            "redactionApplied": true,
-        }))
-        .map_err(|_| DatabaseError::Unavailable)?;
+        let frame_metadata_json = serde_json::to_string(&frame_metadata_for(&fixture, false))
+            .map_err(|_| DatabaseError::Unavailable)?;
         transaction.execute(
             "INSERT INTO screen_vision_jobs
              (id, session_id, agent_id, owner_user_id, monitor_id, fixture_id,
@@ -1117,7 +1150,7 @@ impl Database {
             let capture = WindowsScreenVisionCaptureProvider.capture(&fixture, &cancelled);
             #[cfg(not(windows))]
             let capture = Err(ScreenVisionCaptureError::Unavailable);
-            let pixels = match capture {
+            let mut pixels = match capture {
                 Ok(pixels) => pixels,
                 Err(error) => {
                     unregister_cancellation(&job_id);
@@ -1135,6 +1168,36 @@ impl Database {
                     });
                 }
             };
+            let redaction_applied = match redact_real_pixels(&mut pixels, &job.privacy, &cancelled)
+            {
+                Ok(result) => result.redaction_applied,
+                Err(ScreenVisionAdapterError::Cancelled) => {
+                    unregister_cancellation(&job_id);
+                    return Err(DatabaseError::Cognitive("screen_vision_cancelled"));
+                }
+                Err(ScreenVisionAdapterError::Unavailable) => {
+                    unregister_cancellation(&job_id);
+                    return Err(DatabaseError::Cognitive("screen_vision_unavailable"));
+                }
+            };
+            let frame_metadata_json =
+                match serde_json::to_string(&frame_metadata_for(&fixture, redaction_applied)) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        unregister_cancellation(&job_id);
+                        return Err(DatabaseError::Unavailable);
+                    }
+                };
+            transaction
+                .execute(
+                    "UPDATE screen_vision_jobs SET frame_metadata_json = ?1
+                     WHERE id = ?2 AND status = 'previewed'",
+                    params![frame_metadata_json, job_id],
+                )
+                .map_err(|error| {
+                    unregister_cancellation(&job_id);
+                    DatabaseError::from(error)
+                })?;
             let adapter = LocalScreenVisionVisualAdapter;
             let code = match adapter.analyze(&pixels, &cancelled) {
                 Ok(_) => "screen_vision_model_unavailable",
@@ -1699,6 +1762,17 @@ fn preview_for(
         confirmation_required: true,
         redaction_rule_count: privacy.redaction_rules.len(),
     }
+}
+
+fn frame_metadata_for(fixture: &ScreenVisionFixture, redaction_applied: bool) -> serde_json::Value {
+    json!({
+        "source": if fixture.synthetic { "synthetic_fixture" } else { "real_display" },
+        "syntheticFixture": fixture.synthetic,
+        "metadataOnly": fixture.metadata_only,
+        "fixtureId": fixture.fixture_id,
+        "monitorId": fixture.monitor_id,
+        "redactionApplied": redaction_applied,
+    })
 }
 
 fn analysis_result_for_job(
@@ -2360,6 +2434,48 @@ mod tests {
         );
         #[cfg(not(windows))]
         let _ = real;
+    }
+
+    #[test]
+    fn real_pixels_cross_the_redaction_boundary_before_provider_use() {
+        let fixture = screen_vision_fixtures().remove(0);
+        let real = ScreenVisionFixture {
+            synthetic: false,
+            metadata_only: false,
+            ..fixture.clone()
+        };
+        let mut pixels = vec![1, 2, 3, 255, 9, 8, 7, 255];
+        let result = redact_real_pixels(&mut pixels, &privacy(), &|| false).unwrap();
+        assert_eq!(pixels, vec![0, 0, 0, 255, 0, 0, 0, 255]);
+        assert!(result.redaction_applied);
+        let metadata = frame_metadata_for(&real, result.redaction_applied);
+        assert_eq!(metadata["source"], json!("real_display"));
+        assert_eq!(metadata["syntheticFixture"], json!(false));
+        assert_eq!(metadata["metadataOnly"], json!(false));
+        assert_eq!(metadata["redactionApplied"], json!(true));
+
+        let synthetic_metadata = frame_metadata_for(&fixture, false);
+        assert_eq!(synthetic_metadata["source"], json!("synthetic_fixture"));
+        assert_eq!(synthetic_metadata["redactionApplied"], json!(false));
+
+        let mut already_redacted = vec![0, 0, 0, 255];
+        let unchanged = redact_real_pixels(&mut already_redacted, &privacy(), &|| false).unwrap();
+        assert!(!unchanged.redaction_applied);
+
+        let mut unsafe_privacy = privacy();
+        unsafe_privacy.exclude_sensitive_content = false;
+        assert_eq!(
+            redact_real_pixels(&mut vec![1, 2, 3, 255], &unsafe_privacy, &|| false),
+            Err(ScreenVisionAdapterError::Unavailable)
+        );
+        assert_eq!(
+            redact_real_pixels(&mut vec![1, 2, 3], &privacy(), &|| false),
+            Err(ScreenVisionAdapterError::Unavailable)
+        );
+        assert_eq!(
+            redact_real_pixels(&mut vec![1, 2, 3, 255], &privacy(), &|| true),
+            Err(ScreenVisionAdapterError::Cancelled)
+        );
     }
 
     #[test]
