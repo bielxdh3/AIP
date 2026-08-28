@@ -41,7 +41,8 @@ const MIGRATION_0022: &str = include_str!("../migrations/0022_phase8_voice_runti
 const MIGRATION_0023: &str = include_str!("../migrations/0023_phase9_workspace_roots.sql");
 const MIGRATION_0024: &str = include_str!("../migrations/0024_phase10_extension_runtime.sql");
 const MIGRATION_0025: &str = include_str!("../migrations/0025_local_provider_registry.sql");
-const MIGRATIONS: [(i64, &str); 25] = [
+const MIGRATION_0026: &str = include_str!("../migrations/0026_conversation_organization.sql");
+const MIGRATIONS: [(i64, &str); 26] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
@@ -67,6 +68,7 @@ const MIGRATIONS: [(i64, &str); 25] = [
     (23, MIGRATION_0023),
     (24, MIGRATION_0024),
     (25, MIGRATION_0025),
+    (26, MIGRATION_0026),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -195,9 +197,27 @@ impl Database {
 
         for (version, sql) in MIGRATIONS {
             if version > current_version {
+                if version == 26 {
+                    Self::ensure_conversation_pinned_column(connection)?;
+                }
                 connection.execute_batch(sql)?;
             }
         }
+        Ok(())
+    }
+
+    fn ensure_conversation_pinned_column(connection: &Connection) -> Result<(), DatabaseError> {
+        let mut statement = connection.prepare("PRAGMA table_info(conversations)")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            if row.get::<_, String>(1)? == "is_pinned" {
+                return Ok(());
+            }
+        }
+        connection.execute(
+            "ALTER TABLE conversations ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0 CHECK (is_pinned IN (0, 1))",
+            [],
+        )?;
         Ok(())
     }
 
@@ -249,7 +269,7 @@ impl Database {
             transaction.execute(
                 "INSERT OR IGNORE INTO conversations
                  (id, agent_id, owner_user_id, title, kind, is_main, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, 'Conversa principal', 'normal', 1, ?4, ?4)",
+                 VALUES (?1, ?2, ?3, 'Nova conversa', 'normal', 0, ?4, ?4)",
                 params![Uuid::now_v7().to_string(), agent_id, OWNER_ID, now],
             )?;
             transaction.execute(
@@ -274,7 +294,8 @@ impl Database {
             transaction.execute(
                 "INSERT OR IGNORE INTO agent_phase3_settings (agent_id, active_conversation_id, updated_at)
                  SELECT ?1, id, ?2 FROM conversations
-                 WHERE agent_id = ?1 AND is_main = 1 AND archived_at IS NULL",
+                 WHERE agent_id = ?1 AND archived_at IS NULL
+                 ORDER BY updated_at DESC, id ASC LIMIT 1",
                 params![agent_id, now],
             )?;
             transaction.execute(
@@ -438,8 +459,9 @@ impl Database {
         let connection = self.open()?;
         connection
             .query_row(
-                "SELECT id, agent_id, title, model_override_ref FROM conversations
-                 WHERE agent_id = ?1 AND is_main = 1 AND archived_at IS NULL",
+                "SELECT id, agent_id, title, model_override_ref, is_pinned FROM conversations
+                 WHERE agent_id = ?1 AND archived_at IS NULL
+                 ORDER BY updated_at DESC, id ASC LIMIT 1",
                 params![agent_id],
                 |row| {
                     Ok(PhaseOneConversation {
@@ -447,6 +469,7 @@ impl Database {
                         agent_id: row.get(1)?,
                         title: row.get(2)?,
                         model_override_ref: row.get(3)?,
+                        is_pinned: row.get::<_, i64>(4)? != 0,
                     })
                 },
             )
@@ -460,8 +483,9 @@ impl Database {
     ) -> Result<Vec<PhaseOneConversation>, DatabaseError> {
         let connection = self.open()?;
         let mut statement = connection.prepare(
-            "SELECT id, agent_id, title, model_override_ref FROM conversations
-             WHERE agent_id = ?1 AND archived_at IS NULL ORDER BY is_main DESC, updated_at DESC, id ASC",
+            "SELECT id, agent_id, title, model_override_ref, is_pinned FROM conversations
+             WHERE agent_id = ?1 AND archived_at IS NULL
+             ORDER BY is_pinned DESC, updated_at DESC, id ASC",
         )?;
         let conversations = statement
             .query_map(params![agent_id], |row| {
@@ -470,6 +494,7 @@ impl Database {
                     agent_id: row.get(1)?,
                     title: row.get(2)?,
                     model_override_ref: row.get(3)?,
+                    is_pinned: row.get::<_, i64>(4)? != 0,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()
@@ -484,7 +509,7 @@ impl Database {
         self.agent(agent_id)?;
         let connection = self.open()?;
         let mut statement = connection.prepare(
-            "SELECT id, agent_id, title, model_override_ref FROM conversations
+            "SELECT id, agent_id, title, model_override_ref, is_pinned FROM conversations
              WHERE agent_id = ?1 AND archived_at IS NOT NULL
              ORDER BY archived_at DESC, id ASC",
         )?;
@@ -495,6 +520,7 @@ impl Database {
                     agent_id: row.get(1)?,
                     title: row.get(2)?,
                     model_override_ref: row.get(3)?,
+                    is_pinned: row.get::<_, i64>(4)? != 0,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()
@@ -517,6 +543,7 @@ impl Database {
             agent_id: agent_id.into(),
             title: title.into(),
             model_override_ref: None,
+            is_pinned: false,
         };
         let connection = self.open()?;
         let now = now_millis();
@@ -549,6 +576,43 @@ impl Database {
         if connection.execute("UPDATE conversations SET title = ?1, updated_at = ?2 WHERE id = ?3 AND agent_id = ?4 AND archived_at IS NULL", params![title, now_millis(), conversation_id, agent_id])? == 1 { Ok(()) } else { Err(DatabaseError::OwnershipMismatch) }
     }
 
+    pub fn set_conversation_pinned(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        pinned: bool,
+    ) -> Result<(), DatabaseError> {
+        let connection = self.open()?;
+        if connection.execute(
+            "UPDATE conversations SET is_pinned = ?1, updated_at = ?2
+             WHERE id = ?3 AND agent_id = ?4 AND archived_at IS NULL",
+            params![pinned, now_millis(), conversation_id, agent_id],
+        )? == 1
+        {
+            Ok(())
+        } else {
+            Err(DatabaseError::OwnershipMismatch)
+        }
+    }
+
+    pub fn delete_conversation(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+    ) -> Result<(), DatabaseError> {
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        if transaction.execute(
+            "DELETE FROM conversations WHERE id = ?1 AND agent_id = ?2",
+            params![conversation_id, agent_id],
+        )? != 1
+        {
+            return Err(DatabaseError::OwnershipMismatch);
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn set_active_conversation(
         &self,
         agent_id: &str,
@@ -567,7 +631,7 @@ impl Database {
         let connection = self.open()?;
         connection
             .query_row(
-                "SELECT c.id, c.agent_id, c.title, c.model_override_ref
+                "SELECT c.id, c.agent_id, c.title, c.model_override_ref, c.is_pinned
              FROM agent_phase3_settings s JOIN conversations c ON c.id = s.active_conversation_id
              WHERE s.agent_id = ?1 AND c.agent_id = ?1 AND c.archived_at IS NULL",
                 params![agent_id],
@@ -577,6 +641,7 @@ impl Database {
                         agent_id: row.get(1)?,
                         title: row.get(2)?,
                         model_override_ref: row.get(3)?,
+                        is_pinned: row.get::<_, i64>(4)? != 0,
                     })
                 },
             )
@@ -590,7 +655,17 @@ impl Database {
         conversation_id: &str,
     ) -> Result<(), DatabaseError> {
         let connection = self.open()?;
-        if connection.execute("UPDATE conversations SET archived_at = ?1, updated_at = ?1 WHERE id = ?2 AND agent_id = ?3 AND is_main = 0 AND archived_at IS NULL", params![now_millis(), conversation_id, agent_id])? == 1 { Ok(()) } else { Err(DatabaseError::OwnershipMismatch) }
+        let now = now_millis();
+        if connection.execute("UPDATE conversations SET archived_at = ?1, updated_at = ?1 WHERE id = ?2 AND agent_id = ?3 AND archived_at IS NULL", params![now, conversation_id, agent_id])? == 1 {
+            connection.execute(
+                "UPDATE agent_phase3_settings SET active_conversation_id = (
+                   SELECT id FROM conversations WHERE agent_id = ?1 AND archived_at IS NULL
+                   ORDER BY is_pinned DESC, updated_at DESC, id ASC LIMIT 1
+                 ), updated_at = ?2 WHERE agent_id = ?1 AND active_conversation_id = ?3",
+                params![agent_id, now, conversation_id],
+            )?;
+            Ok(())
+        } else { Err(DatabaseError::OwnershipMismatch) }
     }
 
     pub fn restore_conversation(
@@ -599,7 +674,7 @@ impl Database {
         conversation_id: &str,
     ) -> Result<(), DatabaseError> {
         let connection = self.open()?;
-        if connection.execute("UPDATE conversations SET archived_at = NULL, updated_at = ?1 WHERE id = ?2 AND agent_id = ?3 AND is_main = 0 AND archived_at IS NOT NULL", params![now_millis(), conversation_id, agent_id])? == 1 { Ok(()) } else { Err(DatabaseError::OwnershipMismatch) }
+        if connection.execute("UPDATE conversations SET archived_at = NULL, updated_at = ?1 WHERE id = ?2 AND agent_id = ?3 AND archived_at IS NOT NULL", params![now_millis(), conversation_id, agent_id])? == 1 { Ok(()) } else { Err(DatabaseError::OwnershipMismatch) }
     }
 
     pub fn memories(&self, agent_id: &str) -> Result<Vec<AgentMemory>, DatabaseError> {
@@ -2824,7 +2899,10 @@ mod tests {
     use super::{
         Database, DatabaseError, PhaseOneSettings, ASTRA_ID, LUMA_ID, MIGRATION_0001,
         MIGRATION_0002, MIGRATION_0003, MIGRATION_0004, MIGRATION_0005, MIGRATION_0006,
-        MIGRATION_0007, MIGRATION_0008, MIGRATION_0009,
+        MIGRATION_0007, MIGRATION_0008, MIGRATION_0009, MIGRATION_0010, MIGRATION_0011,
+        MIGRATION_0012, MIGRATION_0013, MIGRATION_0014, MIGRATION_0015, MIGRATION_0016,
+        MIGRATION_0017, MIGRATION_0018, MIGRATION_0019, MIGRATION_0020, MIGRATION_0021,
+        MIGRATION_0022, MIGRATION_0023, MIGRATION_0024, MIGRATION_0025,
     };
 
     fn test_path() -> std::path::PathBuf {
@@ -2848,7 +2926,7 @@ mod tests {
         for agent in &snapshot.agents {
             assert_eq!(
                 first.main_conversation(&agent.id).unwrap().title,
-                "Conversa principal"
+                "Nova conversa"
             );
         }
         drop(first);
@@ -2884,6 +2962,132 @@ mod tests {
         assert_eq!(preserved, "Preserved");
         drop(connection);
         drop(database);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn legacy_main_conversation_migrates_without_losing_history_or_active_selection() {
+        let path = test_path();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut connection = Connection::open(&path).unwrap();
+        for migration in [
+            MIGRATION_0001,
+            MIGRATION_0002,
+            MIGRATION_0003,
+            MIGRATION_0004,
+            MIGRATION_0005,
+            MIGRATION_0006,
+            MIGRATION_0007,
+            MIGRATION_0008,
+            MIGRATION_0009,
+            MIGRATION_0010,
+            MIGRATION_0011,
+            MIGRATION_0012,
+            MIGRATION_0013,
+            MIGRATION_0014,
+            MIGRATION_0015,
+            MIGRATION_0016,
+            MIGRATION_0017,
+            MIGRATION_0018,
+            MIGRATION_0019,
+            MIGRATION_0020,
+            MIGRATION_0021,
+            MIGRATION_0022,
+            MIGRATION_0023,
+            MIGRATION_0024,
+            MIGRATION_0025,
+        ] {
+            connection.execute_batch(migration).unwrap();
+        }
+        Database::seed_phase_zero(&mut connection).unwrap();
+        Database::seed_phase_one(&mut connection).unwrap();
+        let conversation_id: String = connection
+            .query_row(
+                "SELECT id FROM conversations WHERE agent_id = ?1 LIMIT 1",
+                params![ASTRA_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE conversations SET is_main = 1 WHERE id = ?1",
+                params![conversation_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO conversation_messages
+                 (id, conversation_id, agent_id, author_type, content, status, created_at, completed_at, branch_id)
+                 VALUES ('legacy-main-message', ?1, ?2, 'user', 'preservar', 'complete', 1, 1, ?1 || ':main')",
+                params![conversation_id, ASTRA_ID],
+            )
+            .unwrap();
+        drop(connection);
+
+        let upgraded = Database::initialize(&path).unwrap();
+        let connection = upgraded.open().unwrap();
+        let migrated: (i64, i64) = connection
+            .query_row(
+                "SELECT is_main, is_pinned FROM conversations WHERE id = ?1",
+                params![conversation_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(migrated, (0, 0));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT content FROM conversation_messages WHERE id = 'legacy-main-message'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "preservar"
+        );
+        assert_eq!(
+            upgraded.active_conversation(ASTRA_ID).unwrap().id,
+            conversation_id
+        );
+        drop(connection);
+        drop(upgraded);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn deleting_active_conversation_cascades_messages_and_falls_back_with_isolation() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let primary = database.main_conversation(ASTRA_ID).unwrap();
+        let secondary = database
+            .create_conversation(ASTRA_ID, "Segunda conversa")
+            .unwrap();
+        database
+            .set_active_conversation(ASTRA_ID, &secondary.id)
+            .unwrap();
+        database
+            .create_message_attempt(ASTRA_ID, &secondary.id, "apagar", "ollama:test")
+            .unwrap();
+        database
+            .delete_conversation(ASTRA_ID, &secondary.id)
+            .unwrap();
+        assert_eq!(
+            database.active_conversation(ASTRA_ID).unwrap().id,
+            primary.id
+        );
+        assert_eq!(
+            database.delete_conversation(LUMA_ID, &primary.id),
+            Err(DatabaseError::OwnershipMismatch)
+        );
+        let connection = database.open().unwrap();
+        let remaining: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM conversation_messages WHERE conversation_id = ?1",
+                params![secondary.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0);
+        drop(connection);
         cleanup(&path);
     }
 

@@ -23,6 +23,7 @@ import {
   type SpriteMask,
 } from "./overlay-input";
 import { requestForAgent } from "./conversation-state";
+import { openAgentConversations } from "./agent-navigation";
 import { usePhaseOne } from "./use-phase-one";
 import "./App.css";
 
@@ -156,7 +157,7 @@ export default function Overlay({ agentId }: { agentId: string }) {
     if (result.action === "click") {
       void invoke("set_overlay_bubble_visible", { agentId, visible: true });
     } else if (result.action === "double_click") {
-      void invoke("open_main_conversation", { agentId });
+      void openAgentConversations(agentId);
     }
   }
 

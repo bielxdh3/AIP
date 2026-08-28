@@ -63,7 +63,8 @@ import type {
   ExtensionExecutionResult,
   ExtensionProposal,
   ExtensionSourceKind,
-  VoiceSettings, VoiceDevice,
+  VoiceSettings,
+  VoiceDevice,
   VoiceSettingsRequest,
   VoiceCaptureRuntimeRequest,
   VoiceOperationCancellationRequest,
@@ -177,9 +178,15 @@ import {
   requestForAgent,
 } from "./conversation-state";
 import {
+  localizedCanonicalValue,
+  profileCanonicalOptions,
+  type ProfileCanonicalField,
+} from "./profile-localization";
+import {
   isNearConversationBottom,
   shouldScrollConversationToBottom,
 } from "./conversation-scroll";
+import { OPEN_AGENT_CONVERSATIONS_EVENT } from "./agent-navigation";
 import { usePhaseOne } from "./use-phase-one";
 import { createListenerRegistration } from "./listener-lifecycle";
 import {
@@ -496,9 +503,11 @@ function MessageItem({
 export function ConversationSurface({
   agentId,
   temporary,
+  onToggleTemporary,
 }: {
   agentId: string;
   temporary: boolean;
+  onToggleTemporary?: () => void;
 }) {
   const { phase, error, load } = usePhaseOne(agentId, temporary);
   const [draft, setDraft] = useState("");
@@ -652,60 +661,35 @@ export function ConversationSurface({
       <header className="conversation-header">
         <div>
           <p className="eyebrow">
-            {temporary ? "Conversa temporária" : "Conversa principal"}
+            {temporary ? "Conversa temporária" : "Conversa"}
           </p>
           <h1>{phase.agent.name}</h1>
+          <span className="conversation-title">{phase.conversation.title}</span>
           <span className={`provider-state ${phase.provider.state}`}>
             {providerStatusCopy(phase)}
           </span>
         </div>
         <div className="conversation-controls">
-          <div className="model-primary-control">
-            <label>
-              <span>
-                Modelo em uso: {phase.selectedModelRef ?? "Nenhum modelo"}
-                {phase.effectiveModelSource === "agent_default"
-                  ? " · padrão do agente"
-                  : " · específico desta conversa"}
-              </span>
-              <select
-                value={phase.modelOverrideRef ?? ""}
-                disabled={!modelsAvailable}
-                onChange={(event) => {
-                  const modelRef = event.target.value || null;
-                  const command = temporary
-                    ? "set_temporary_phase_one_model"
-                    : "set_conversation_model_override";
-                  const argumentsForCommand = temporary
-                    ? { agentId: currentPhase.agent.id, modelRef }
-                    : conversationOverrideArguments(
-                        currentPhase.agent.id,
-                        currentPhase.conversation.id,
-                        modelRef ?? "",
-                      );
-                  void invoke(command, argumentsForCommand).then(load);
-                }}
-              >
-                <option value="">Usar padrão do agente</option>
-                {phase.provider.models.map((model) => (
-                  <option value={model.ref} key={model.ref}>
-                    {model.displayName}
-                    {model.parameterSize ? ` · ${model.parameterSize}` : ""}
-                    {model.quantization ? ` · ${model.quantization}` : ""}
-                  </option>
-                ))}
-                {phase.modelOverrideRef !== null &&
-                !phase.selectedModelAvailable ? (
-                  <option value={phase.modelOverrideRef}>
-                    Modelo salvo (indisponível)
-                  </option>
-                ) : null}
-              </select>
-            </label>
-            <button type="button" onClick={() => void refreshModels()}>
-              Atualizar
+          {onToggleTemporary ? (
+            <button
+              className={
+                temporary ? "temporary-control active" : "temporary-control"
+              }
+              type="button"
+              aria-pressed={temporary}
+              onClick={onToggleTemporary}
+            >
+              {temporary
+                ? "Encerrar conversa temporária"
+                : "Iniciar conversa temporária"}
             </button>
-          </div>
+          ) : null}
+          {temporary ? (
+            <p className="temporary-disclosure" role="status">
+              Temporária ativa: mensagens e contexto ficam apenas na memória e
+              são apagados ao encerrar.
+            </p>
+          ) : null}
           {providerRecovery ? (
             <p className="provider-recovery" role="status">
               {providerRecovery}
@@ -714,6 +698,9 @@ export function ConversationSurface({
           <details className="model-advanced-controls">
             <summary>Opções do modelo</summary>
             <div>
+              <button type="button" onClick={() => void refreshModels()}>
+                Atualizar modelos locais
+              </button>
               <label>
                 <span>Manter modelo carregado</span>
                 <select
@@ -852,7 +839,54 @@ export function ConversationSurface({
           }}
         />
         <div className="composer-footer">
-          <span>{blocked ?? "Enter envia · Shift+Enter cria uma linha"}</span>
+          <div className="composer-actions">
+            <label className="conversation-model-selector">
+              <span>Modelo desta conversa</span>
+              <select
+                aria-label="Modelo desta conversa"
+                value={phase.modelOverrideRef ?? ""}
+                disabled={!modelsAvailable}
+                onChange={(event) => {
+                  const modelRef = event.target.value || null;
+                  const command = temporary
+                    ? "set_temporary_phase_one_model"
+                    : "set_conversation_model_override";
+                  const argumentsForCommand = temporary
+                    ? { agentId: currentPhase.agent.id, modelRef }
+                    : conversationOverrideArguments(
+                        currentPhase.agent.id,
+                        currentPhase.conversation.id,
+                        modelRef ?? "",
+                      );
+                  void invoke(command, argumentsForCommand).then(load);
+                }}
+              >
+                <option value="">
+                  Usar padrão de {phase.agent.name} ·{" "}
+                  {phase.defaultModelRef ?? "indisponível"}
+                </option>
+                {phase.provider.models.map((model) => (
+                  <option value={model.ref} key={model.ref}>
+                    {model.displayName}
+                    {model.parameterSize ? ` · ${model.parameterSize}` : ""}
+                    {model.quantization ? ` · ${model.quantization}` : ""}
+                  </option>
+                ))}
+                {phase.modelOverrideRef !== null &&
+                !phase.selectedModelAvailable ? (
+                  <option value={phase.modelOverrideRef}>
+                    {phase.modelOverrideRef} · indisponível
+                  </option>
+                ) : null}
+              </select>
+              <small>
+                {phase.selectedModelRef
+                  ? `Em uso: ${phase.selectedModelRef}${phase.effectiveModelSource === "agent_default" ? " · padrão do agente" : " · substituição desta conversa"}`
+                  : "Nenhum modelo local disponível"}
+              </small>
+            </label>
+            <span>{blocked ?? "Enter envia · Shift+Enter cria uma linha"}</span>
+          </div>
           <button
             type="button"
             disabled={!phase.canSend || !draft.trim() || busy}
@@ -863,6 +897,37 @@ export function ConversationSurface({
         </div>
       </footer>
     </section>
+  );
+}
+
+function ProfileCanonicalSelect({
+  field,
+  label,
+  value,
+  onChange,
+}: {
+  field: ProfileCanonicalField;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const current = localizedCanonicalValue(field, value);
+  const options = profileCanonicalOptions[field];
+  return (
+    <label>
+      <span>{label}</span>
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        {!options.some((option) => option.value === value) ? (
+          <option value={value}>{current.primary}</option>
+        ) : null}
+        {options.map((option) => (
+          <option value={option.value} key={option.value}>
+            {option.primary}
+            {option.secondary ? ` (${option.secondary})` : ""}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -904,36 +969,28 @@ function ProfileFields({
           }
         />
       </label>
-      <label>
-        Categoria de idade
-        <input
-          value={draft.ageCategory}
-          onChange={(event) =>
-            onChange({ ...draft, ageCategory: event.target.value })
-          }
-        />
-      </label>
-      <label>
-        Espécie
-        <input
-          value={draft.species}
-          onChange={(event) =>
-            onChange({ ...draft, species: event.target.value })
-          }
-        />
-      </label>
-      <label>
-        Pronomes
-        <input
-          value={draft.pronouns}
-          onChange={(event) =>
-            onChange({ ...draft, pronouns: event.target.value })
-          }
-        />
-      </label>
+      <ProfileCanonicalSelect
+        field="ageCategory"
+        label="Categoria de idade"
+        value={draft.ageCategory}
+        onChange={(ageCategory) => onChange({ ...draft, ageCategory })}
+      />
+      <ProfileCanonicalSelect
+        field="species"
+        label="Tipo de identidade"
+        value={draft.species}
+        onChange={(species) => onChange({ ...draft, species })}
+      />
+      <ProfileCanonicalSelect
+        field="pronouns"
+        label="Pronomes"
+        value={draft.pronouns}
+        onChange={(pronouns) => onChange({ ...draft, pronouns })}
+      />
       <label>
         Descrição
-        <input
+        <textarea
+          rows={4}
           value={draft.personalitySummary}
           onChange={(event) =>
             onChange({ ...draft, personalitySummary: event.target.value })
@@ -949,10 +1006,10 @@ function ProfileFields({
             onChange({ ...draft, traitsJson: event.target.value })
           }
         />
-        <div>
+        <div className="trait-grid">
           {initialTraits.map(([key, label]) => (
-            <label key={key}>
-              {label}
+            <label className="trait-card" key={key}>
+              <span>{label}</span>
               <input
                 type="number"
                 min="0"
@@ -984,6 +1041,7 @@ function ProfileForm({
   const [persisted, setPersisted] = useState(agent);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const { phase, load: loadPhase } = usePhaseOne(agent.id);
   useEffect(() => {
     setDraft(agent);
     setPersisted(agent);
@@ -1017,25 +1075,64 @@ function ProfileForm({
     }
   }
   return (
-    <section className="conversation-empty" aria-label="Perfil do agente">
-      <h1>{`Perfil de ${agent.name}`}</h1>
-      <ProfileFields draft={draft} onChange={setDraft} />
+    <section className="profile-form" aria-label="Perfil do agente">
+      <header className="workspace-heading">
+        <div>
+          <p className="eyebrow">Identidade do agente</p>
+          <h1>{`Perfil de ${agent.name}`}</h1>
+          <span>Detalhes, descrição e traços que orientam este agente.</span>
+        </div>
+      </header>
+      <section className="profile-section">
+        <h2>Identidade e detalhes</h2>
+        <div className="profile-fields">
+          <ProfileFields draft={draft} onChange={setDraft} />
+        </div>
+      </section>
+      <section className="profile-section profile-default-model">
+        <h2>Modelo padrão</h2>
+        <p>Novas conversas deste agente começam com este modelo.</p>
+        <label>
+          <span>Modelo padrão de {agent.name}</span>
+          <select
+            aria-label={`Modelo padrão de ${agent.name}`}
+            value={phase?.defaultModelRef ?? ""}
+            disabled={phase === null || phase.provider.models.length === 0}
+            onChange={(event) =>
+              void invoke("select_phase_one_model", {
+                agentId: agent.id,
+                modelRef: event.target.value,
+              }).then(loadPhase)
+            }
+          >
+            <option value="">Nenhum modelo local disponível</option>
+            {phase?.provider.models.map((model) => (
+              <option value={model.ref} key={model.ref}>
+                {model.displayName}
+              </option>
+            ))}
+          </select>
+        </label>
+      </section>
       {error ? <p role="alert">{error}</p> : null}
       {saved ? <p role="status">Perfil salvo.</p> : null}
-      <button type="button" onClick={() => void save()}>
-        Salvar
-      </button>
-      <button
-        type="button"
-        disabled={JSON.stringify(draft) === JSON.stringify(persisted)}
-        onClick={() => {
-          setDraft(persisted);
-          setError(null);
-          setSaved(false);
-        }}
-      >
-        Cancelar
-      </button>
+      <div className="profile-actions">
+        <button type="button" onClick={() => void save()}>
+          Salvar alterações
+        </button>
+        <button
+          type="button"
+          className="secondary-action"
+          disabled={JSON.stringify(draft) === JSON.stringify(persisted)}
+          onClick={() => {
+            setDraft(persisted);
+            setError(null);
+            setSaved(false);
+          }}
+        >
+          Cancelar
+        </button>
+      </div>
     </section>
   );
 }
@@ -1094,33 +1191,49 @@ function OnboardingForm({
     }
   }
   return (
-    <section className="conversation-empty" aria-label="Criação dos perfis">
-      <h1>Crie os dois perfis</h1>
+    <section
+      className="profile-form onboarding-form"
+      aria-label="Criação dos perfis"
+    >
+      <header className="workspace-heading">
+        <div>
+          <p className="eyebrow">Primeiro passo</p>
+          <h1>Crie os dois perfis</h1>
+          <span>
+            Você poderá ajustar cada agente depois, em seu próprio perfil.
+          </span>
+        </div>
+      </header>
       {drafts.map((agent, index) => (
-        <fieldset key={agent.id}>
+        <fieldset className="profile-section" key={agent.id}>
           <legend>{agent.name}</legend>
-          <ProfileFields
-            draft={agent}
-            onChange={(next) => update(index, next)}
-          />
+          <div className="profile-fields">
+            <ProfileFields
+              draft={agent}
+              onChange={(next) => update(index, next)}
+            />
+          </div>
         </fieldset>
       ))}
       {error ? <p role="alert">{error}</p> : null}
       {saved ? <p role="status">Perfis salvos.</p> : null}
-      <button type="button" onClick={() => void save()}>
-        Salvar
-      </button>
-      <button
-        type="button"
-        disabled={JSON.stringify(drafts) === JSON.stringify(persisted)}
-        onClick={() => {
-          setDrafts(persisted);
-          setError(null);
-          setSaved(false);
-        }}
-      >
-        Cancelar
-      </button>
+      <div className="profile-actions">
+        <button type="button" onClick={() => void save()}>
+          Salvar perfis
+        </button>
+        <button
+          type="button"
+          className="secondary-action"
+          disabled={JSON.stringify(drafts) === JSON.stringify(persisted)}
+          onClick={() => {
+            setDrafts(persisted);
+            setError(null);
+            setSaved(false);
+          }}
+        >
+          Cancelar
+        </button>
+      </div>
     </section>
   );
 }
@@ -1135,17 +1248,14 @@ export function ConversationList({
   const [items, setItems] = useState<PhaseOneConversation[]>([]);
   const [archived, setArchived] = useState<PhaseOneConversation[]>([]);
   const [title, setTitle] = useState("");
+  const [manageArchived, setManageArchived] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   const load = useCallback(
     () =>
-      void Promise.all([
-        invoke<PhaseOneConversation[]>("list_agent_conversations", { agentId }),
-        invoke<PhaseOneConversation[]>("list_archived_agent_conversations", {
-          agentId,
-        }),
-      ]).then(([current, previous]) => {
-        setItems(current);
-        setArchived(previous);
-      }),
+      void invoke<PhaseOneConversation[]>("list_agent_conversations", {
+        agentId,
+      }).then(setItems),
     [agentId],
   );
   useEffect(() => {
@@ -1153,13 +1263,71 @@ export function ConversationList({
   }, [load]);
   async function create() {
     if (!title.trim()) return;
-    await invoke("create_agent_conversation", { agentId, title });
+    const created = await invoke<PhaseOneConversation>(
+      "create_agent_conversation",
+      { agentId, title },
+    );
     setTitle("");
-    load();
+    if (created?.id) {
+      await invoke("set_active_agent_conversation", {
+        agentId,
+        conversationId: created.id,
+      });
+      changed();
+    } else {
+      await load();
+    }
   }
   async function select(conversationId: string) {
     await invoke("set_active_agent_conversation", { agentId, conversationId });
     changed();
+  }
+  async function loadArchived() {
+    const previous = await invoke<PhaseOneConversation[]>(
+      "list_archived_agent_conversations",
+      { agentId },
+    );
+    setArchived(previous);
+  }
+  async function rename(item: PhaseOneConversation) {
+    if (!renameValue.trim()) return;
+    await invoke("rename_agent_conversation", {
+      agentId,
+      conversationId: item.id,
+      title: renameValue,
+    });
+    setRenamingId(null);
+    await load();
+  }
+  async function archive(item: PhaseOneConversation) {
+    await invoke("archive_agent_conversation", {
+      agentId,
+      conversationId: item.id,
+    });
+    await load();
+    changed();
+  }
+  async function remove(item: PhaseOneConversation) {
+    if (
+      !window.confirm(
+        `Excluir “${item.title}”? As mensagens também serão removidas.`,
+      )
+    )
+      return;
+    await invoke("delete_agent_conversation", {
+      agentId,
+      conversationId: item.id,
+    });
+    await load();
+    changed();
+  }
+  async function restore(item: PhaseOneConversation) {
+    await invoke("restore_agent_conversation", {
+      agentId,
+      conversationId: item.id,
+    });
+    await loadArchived();
+    await load();
   }
   return (
     <div
@@ -1167,53 +1335,111 @@ export function ConversationList({
       role="region"
       aria-label="Conversas do agente"
     >
+      <div className="conversation-list-heading">
+        <span>Conversas recentes</span>
+        <small>Fixadas primeiro</small>
+      </div>
       {items.map((item) => (
-        <div key={item.id} className="conversation-list-item">
+        <div
+          key={item.id}
+          className="conversation-list-item"
+          data-pinned={item.isPinned}
+        >
           <button
             type="button"
             className="conversation-list-select"
             onClick={() => void select(item.id)}
           >
+            {item.isPinned ? "★ " : ""}
             {item.title}
-            {item.id === items[0]?.id ? " · Principal" : ""}
           </button>
-          {item.id !== items[0]?.id ? (
-            <button
-              type="button"
-              className="conversation-list-action"
-              onClick={() =>
-                void invoke("archive_agent_conversation", {
-                  agentId,
-                  conversationId: item.id,
-                }).then(load)
-              }
+          <details className="conversation-actions">
+            <summary aria-label={`Ações de ${item.title}`}>…</summary>
+            <div>
+              <button
+                type="button"
+                onClick={() =>
+                  void invoke("pin_agent_conversation", {
+                    agentId,
+                    conversationId: item.id,
+                    pinned: !item.isPinned,
+                  }).then(load)
+                }
+              >
+                {item.isPinned ? "Desafixar" : "Fixar"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setRenamingId(item.id);
+                  setRenameValue(item.title);
+                }}
+              >
+                Renomear
+              </button>
+              <button type="button" onClick={() => void archive(item)}>
+                Arquivar
+              </button>
+              <button
+                type="button"
+                className="danger-action"
+                onClick={() => void remove(item)}
+              >
+                Excluir
+              </button>
+            </div>
+          </details>
+          {renamingId === item.id ? (
+            <form
+              className="conversation-rename"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void rename(item);
+              }}
             >
-              Arquivar
-            </button>
+              <input
+                aria-label={`Novo nome de ${item.title}`}
+                value={renameValue}
+                maxLength={160}
+                onChange={(event) => setRenameValue(event.target.value)}
+              />
+              <button type="submit">Salvar nome</button>
+              <button type="button" onClick={() => setRenamingId(null)}>
+                Cancelar
+              </button>
+            </form>
           ) : null}
         </div>
       ))}
-      {archived.length > 0 ? (
-        <details className="conversation-list-archived">
-          <summary>Arquivadas ({archived.length})</summary>
+      <button
+        type="button"
+        className="conversation-archive-management"
+        onClick={() => {
+          setManageArchived((value) => !value);
+          if (!manageArchived) void loadArchived();
+        }}
+      >
+        {manageArchived ? "Fechar arquivadas" : "Gerenciar arquivadas"}
+      </button>
+      {manageArchived ? (
+        <div className="conversation-list-archived">
+          <strong>Conversas arquivadas</strong>
+          {archived.length === 0 ? (
+            <span>Nenhuma conversa arquivada.</span>
+          ) : null}
           {archived.map((item) => (
             <div key={item.id} className="conversation-list-item">
               <span className="conversation-list-title">{item.title}</span>
               <button
                 type="button"
                 className="conversation-list-action"
-                onClick={() =>
-                  void invoke("restore_agent_conversation", {
-                    agentId,
-                    conversationId: item.id,
-                  }).then(load)
-                }
+                onClick={() => void restore(item)}
               >
                 Restaurar
               </button>
             </div>
           ))}
-        </details>
+        </div>
       ) : null}
       <input
         className="conversation-list-input"
@@ -1570,8 +1796,10 @@ export function VoiceControls({
     void load();
     void invoke<unknown[]>("list_voice_devices")
       .then((values) => {
-        const devices = values.map(parseVoiceDevice).filter((device): device is VoiceDevice => device !== null);
-      setVoiceDevices(devices.slice(0, 64));
+        const devices = values
+          .map(parseVoiceDevice)
+          .filter((device): device is VoiceDevice => device !== null);
+        setVoiceDevices(devices.slice(0, 64));
       })
       .catch(() => setVoiceDevices([]));
     void invoke<unknown>("list_local_providers")
@@ -1594,13 +1822,23 @@ export function VoiceControls({
         kind: providerKind,
         displayName: providerName.trim(),
         executablePath: providerPath.trim(),
-        protocolVersion: providerKind === "visual" ? "aip-screen-vision-v1" : providerProtocol,
+        protocolVersion:
+          providerKind === "visual" ? "aip-screen-vision-v1" : providerProtocol,
         idempotencyKey: crypto.randomUUID(),
         temporaryChat: false,
       };
-      const provider = await invoke<LocalProvider>("register_local_provider", request);
-      setLocalProviders((current) => [...current.filter((entry) => entry.id !== provider.id), provider].sort((a, b) => a.displayName.localeCompare(b.displayName)));
-      setStatus(`Provedor local ${provider.displayName} validado e disponível.`);
+      const provider = await invoke<LocalProvider>(
+        "register_local_provider",
+        request,
+      );
+      setLocalProviders((current) =>
+        [...current.filter((entry) => entry.id !== provider.id), provider].sort(
+          (a, b) => a.displayName.localeCompare(b.displayName),
+        ),
+      );
+      setStatus(
+        `Provedor local ${provider.displayName} validado e disponível.`,
+      );
       setProviderId("");
       setProviderName("");
       setProviderPath("");
@@ -1622,8 +1860,13 @@ export function VoiceControls({
         idempotencyKey: crypto.randomUUID(),
         temporaryChat: false,
       };
-      const disabled = await invoke<LocalProvider>("disable_local_provider", request);
-      setLocalProviders((current) => current.map((entry) => entry.id === disabled.id ? disabled : entry));
+      const disabled = await invoke<LocalProvider>(
+        "disable_local_provider",
+        request,
+      );
+      setLocalProviders((current) =>
+        current.map((entry) => (entry.id === disabled.id ? disabled : entry)),
+      );
       setStatus(`Provedor ${provider.displayName} desativado.`);
     } catch (cause) {
       setError(String(cause) || "Não foi possível desativar o provedor.");
@@ -1755,10 +1998,14 @@ export function VoiceControls({
     };
     setBusy(true);
     setActiveOperation(operationId);
-    setStatus("Operação local iniciada; aguardando dispositivo/provedor configurado.");
+    setStatus(
+      "Operação local iniciada; aguardando dispositivo/provedor configurado.",
+    );
     setError(null);
     try {
-      const result = await invoke<VoiceRuntimeTranscriptionResult | VoiceRuntimeWakeWordResult>(
+      const result = await invoke<
+        VoiceRuntimeTranscriptionResult | VoiceRuntimeWakeWordResult
+      >(
         kind === "transcription"
           ? "transcribe_voice_local"
           : "detect_voice_wake_word_local",
@@ -1770,7 +2017,10 @@ export function VoiceControls({
         }; conversa de texto continua disponível.`,
       );
     } catch (cause) {
-      setError(voiceErrorCopy[String(cause)] || "A operação local está indisponível; a conversa de texto continua disponível.");
+      setError(
+        voiceErrorCopy[String(cause)] ||
+          "A operação local está indisponível; a conversa de texto continua disponível.",
+      );
     } finally {
       setActiveOperation(null);
       setBusy(false);
@@ -1789,13 +2039,23 @@ export function VoiceControls({
     };
     setBusy(true);
     setActiveOperation(operationId);
-    setStatus("Síntese local iniciada; aguardando dispositivo/provedor configurado.");
+    setStatus(
+      "Síntese local iniciada; aguardando dispositivo/provedor configurado.",
+    );
     setError(null);
     try {
-      const result = await invoke<VoiceRuntimeSynthesisResult>("synthesize_voice_local", request);
-      setStatus(`Síntese ${result.status}${result.code ? ` (${result.code})` : ""}; conversa de texto continua disponível.`);
+      const result = await invoke<VoiceRuntimeSynthesisResult>(
+        "synthesize_voice_local",
+        request,
+      );
+      setStatus(
+        `Síntese ${result.status}${result.code ? ` (${result.code})` : ""}; conversa de texto continua disponível.`,
+      );
     } catch (cause) {
-      setError(voiceErrorCopy[String(cause)] || "A operação local está indisponível; a conversa de texto continua disponível.");
+      setError(
+        voiceErrorCopy[String(cause)] ||
+          "A operação local está indisponível; a conversa de texto continua disponível.",
+      );
     } finally {
       setActiveOperation(null);
       setBusy(false);
@@ -1804,12 +2064,18 @@ export function VoiceControls({
 
   async function cancelLocalOperation() {
     if (!activeOperation) return;
-    const request: VoiceOperationCancellationRequest = { agentId, operationId: activeOperation };
+    const request: VoiceOperationCancellationRequest = {
+      agentId,
+      operationId: activeOperation,
+    };
     try {
       await invoke<boolean>("cancel_voice_operation", request);
       setStatus("Cancelamento solicitado para a operação local.");
     } catch (cause) {
-      setError(voiceErrorCopy[String(cause)] || "Não foi possível cancelar a operação local.");
+      setError(
+        voiceErrorCopy[String(cause)] ||
+          "Não foi possível cancelar a operação local.",
+      );
     }
   }
 
@@ -1826,9 +2092,12 @@ export function VoiceControls({
   }
 
   return (
-    <section aria-label="Configurações de voz">
-      <strong>Voz local</strong>
-      <p>{voiceAvailabilityCopy(settings)}</p>
+    <section className="voice-controls" aria-label="Configurações de voz">
+      <div className="voice-status-block">
+        <h3>Status</h3>
+        <strong>Voz local</strong>
+        <p>{voiceAvailabilityCopy(settings)}</p>
+      </div>
       {temporaryChat ? (
         <p role="status">
           Conversa temporária: configurações e consentimento de voz não serão
@@ -1841,12 +2110,21 @@ export function VoiceControls({
           disponível.
         </p>
       ) : null}
-      <p>Voz-base protegida: {settings.baseVoiceId}.</p>
-      <details open>
-        <summary>Registro de provedores locais (voz e visão)</summary>
+      <section className="voice-section">
+        <h3>Provedores</h3>
         <p>
-          Cadastre um executável local com protocolo explícito. O caminho é validado no dispositivo;
-          nenhuma variável de ambiente é necessária para a configuração normal.
+          STT e TTS usam provedores locais substituíveis.{" "}
+          {localProviders.length === 0
+            ? "Nenhum provedor configurado."
+            : `${localProviders.length} provedor(es) local(is) disponível(is).`}
+        </p>
+      </section>
+      <details className="voice-advanced">
+        <summary>Avançado: configurar provedores</summary>
+        <p>
+          Cadastre um executável local com protocolo explícito. O caminho é
+          validado no dispositivo; nenhuma variável de ambiente é necessária
+          para a configuração normal.
         </p>
         <div className="inline-form">
           <label>
@@ -1857,7 +2135,9 @@ export function VoiceControls({
               onChange={(event) => {
                 const kind = event.target.value as LocalProviderKind;
                 setProviderKind(kind);
-                setProviderProtocol(kind === "visual" ? "aip-screen-vision-v1" : "aip-voice-v1");
+                setProviderProtocol(
+                  kind === "visual" ? "aip-screen-vision-v1" : "aip-voice-v1",
+                );
               }}
             >
               <option value="stt">Voz — transcrição</option>
@@ -1865,106 +2145,216 @@ export function VoiceControls({
               <option value="visual">Visão de tela</option>
             </select>
           </label>
-          <label>Identificador<input value={providerId} maxLength={96} disabled={blocked || busy} onChange={(event) => setProviderId(event.target.value)} placeholder="meu-provedor" /></label>
-          <label>Nome exibido<input value={providerName} maxLength={120} disabled={blocked || busy} onChange={(event) => setProviderName(event.target.value)} placeholder="Meu provedor local" /></label>
-          <label>Caminho absoluto do executável<input value={providerPath} maxLength={1024} disabled={blocked || busy} onChange={(event) => setProviderPath(event.target.value)} placeholder="C:\\Ferramentas\\provedor.exe" /></label>
-          <button type="button" disabled={blocked || busy} onClick={() => void registerProvider()}>Validar e registrar</button>
+          <label>
+            Identificador
+            <input
+              value={providerId}
+              maxLength={96}
+              disabled={blocked || busy}
+              onChange={(event) => setProviderId(event.target.value)}
+              placeholder="meu-provedor"
+            />
+          </label>
+          <label>
+            Nome exibido
+            <input
+              value={providerName}
+              maxLength={120}
+              disabled={blocked || busy}
+              onChange={(event) => setProviderName(event.target.value)}
+              placeholder="Meu provedor local"
+            />
+          </label>
+          <label>
+            Caminho absoluto do executável
+            <input
+              value={providerPath}
+              maxLength={1024}
+              disabled={blocked || busy}
+              onChange={(event) => setProviderPath(event.target.value)}
+              placeholder="C:\\Ferramentas\\provedor.exe"
+            />
+          </label>
+          <button
+            type="button"
+            disabled={blocked || busy}
+            onClick={() => void registerProvider()}
+          >
+            Validar e registrar
+          </button>
         </div>
-        {localProviders.length === 0 ? <p>Nenhum provedor registrado. Voz e visão permanecem degradadas até a configuração local.</p> : (
+        {localProviders.length === 0 ? (
+          <p>
+            Nenhum provedor registrado. Voz e visão permanecem degradadas até a
+            configuração local.
+          </p>
+        ) : (
           <ul aria-label="Provedores locais registrados">
             {localProviders.map((provider) => (
               <li key={provider.id}>
-                <strong>{provider.displayName}</strong> ({provider.kind}) — {provider.validationStatus}: {provider.validationResult}{" "}
+                <strong>{provider.displayName}</strong> ({provider.kind}) —{" "}
+                {provider.validationStatus}: {provider.validationResult}{" "}
                 {provider.enabled ? (
                   <>
-                    <button type="button" disabled={blocked || busy} onClick={() => {
-                      if (provider.kind === "stt") setRecognitionModelRef(`local:stt:${provider.id}`);
-                      if (provider.kind === "tts") setSynthesisModelRef(`local:tts:${provider.id}`);
-                      setStatus(`Referência ${provider.displayName} selecionada; salve as configurações.`);
-                    }}>Usar</button>{" "}
-                    <button type="button" disabled={blocked || busy} onClick={() => void disableProvider(provider)}>Desativar</button>
+                    <button
+                      type="button"
+                      disabled={blocked || busy}
+                      onClick={() => {
+                        if (provider.kind === "stt")
+                          setRecognitionModelRef(`local:stt:${provider.id}`);
+                        if (provider.kind === "tts")
+                          setSynthesisModelRef(`local:tts:${provider.id}`);
+                        setStatus(
+                          `Referência ${provider.displayName} selecionada; salve as configurações.`,
+                        );
+                      }}
+                    >
+                      Usar
+                    </button>{" "}
+                    <button
+                      type="button"
+                      disabled={blocked || busy}
+                      onClick={() => void disableProvider(provider)}
+                    >
+                      Desativar
+                    </button>
                   </>
-                ) : <span>desativado</span>}
+                ) : (
+                  <span>desativado</span>
+                )}
               </li>
             ))}
           </ul>
         )}
       </details>
-      <label>
-        Modelo local de transcrição
-        <input
-          value={recognitionModelRef}
-          placeholder="local:stt:provider"
-          maxLength={160}
+      <section className="voice-section">
+        <h3>Dispositivos</h3>
+        <div className="voice-device-grid">
+          <label>
+            Microfone
+            <select
+              value={inputDeviceRef}
+              disabled={blocked || busy}
+              onChange={(event) => setInputDeviceRef(event.target.value)}
+            >
+              <option value="">Selecionar microfone</option>
+              {voiceDevices
+                .filter((device) => device.direction === "input")
+                .map((device) => (
+                  <option key={device.reference} value={device.reference}>
+                    {device.displayName}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <label>
+            Saída de áudio
+            <select
+              value={outputDeviceRef}
+              disabled={blocked || busy}
+              onChange={(event) => setOutputDeviceRef(event.target.value)}
+            >
+              <option value="">Selecionar saída</option>
+              {voiceDevices
+                .filter((device) => device.direction === "output")
+                .map((device) => (
+                  <option key={device.reference} value={device.reference}>
+                    {device.displayName}
+                  </option>
+                ))}
+            </select>
+          </label>
+        </div>
+        <button
+          type="button"
           disabled={blocked || busy}
-          onChange={(event) => setRecognitionModelRef(event.target.value)}
-        />
-      </label>
-      <label>
-        Modelo local de síntese
-        <input
-          value={synthesisModelRef}
-          placeholder="local:tts:provider"
-          maxLength={160}
+          onClick={() => {
+            void invoke<unknown[]>("list_voice_devices")
+              .then((values) => {
+                setVoiceDevices(
+                  values
+                    .map(parseVoiceDevice)
+                    .filter((device): device is VoiceDevice => device !== null)
+                    .slice(0, 64),
+                );
+              })
+              .catch(() => setVoiceDevices([]));
+          }}
+        >
+          Atualizar dispositivos
+        </button>
+      </section>
+      <details className="voice-advanced">
+        <summary>Avançado: referências e consentimento</summary>
+        <label>
+          Modelo local de transcrição
+          <input
+            value={recognitionModelRef}
+            placeholder="local:stt:provider"
+            maxLength={160}
+            disabled={blocked || busy}
+            onChange={(event) => setRecognitionModelRef(event.target.value)}
+          />
+        </label>
+        <label>
+          Modelo local de síntese
+          <input
+            value={synthesisModelRef}
+            placeholder="local:tts:provider"
+            maxLength={160}
+            disabled={blocked || busy}
+            onChange={(event) => setSynthesisModelRef(event.target.value)}
+          />
+        </label>
+        <label>
+          Referência do microfone
+          <input
+            value={inputDeviceRef}
+            placeholder="local:wavein:0"
+            maxLength={160}
+            disabled={blocked || busy}
+            onChange={(event) => setInputDeviceRef(event.target.value)}
+          />
+        </label>
+        <label>
+          Referência da saída de áudio
+          <input
+            value={outputDeviceRef}
+            placeholder="local:waveout:0"
+            maxLength={160}
+            disabled={blocked || busy}
+            onChange={(event) => setOutputDeviceRef(event.target.value)}
+          />
+        </label>
+        <label>
+          Referência de voz customizada sintética
+          <input
+            value={customVoiceRef}
+            placeholder="local:custom-neutral-v1"
+            maxLength={160}
+            disabled={blocked || busy}
+            onChange={(event) => setCustomVoiceRef(event.target.value)}
+          />
+        </label>
+        <p>Voz-base protegida: {settings.baseVoiceId}.</p>
+        <button
+          type="button"
           disabled={blocked || busy}
-          onChange={(event) => setSynthesisModelRef(event.target.value)}
-        />
-      </label>
-      <label>
-        Dispositivo local de entrada
-        <select value={inputDeviceRef} disabled={blocked || busy} onChange={(event) => setInputDeviceRef(event.target.value)}>
-          <option value="">Selecionar dispositivo (ou use a referência abaixo)</option>
-          {voiceDevices.filter((device) => device.direction === "input").map((device) => <option key={device.reference} value={device.reference}>{device.displayName}</option>)}
-        </select>
-        <input
-          value={inputDeviceRef}
-          placeholder="local:wavein:0"
-          maxLength={160}
-          disabled={blocked || busy}
-          onChange={(event) => setInputDeviceRef(event.target.value)}
-        />
-      </label>
-      <label>
-        Dispositivo local de saída
-        <select value={outputDeviceRef} disabled={blocked || busy} onChange={(event) => setOutputDeviceRef(event.target.value)}>
-          <option value="">Selecionar dispositivo (ou use a referência abaixo)</option>
-          {voiceDevices.filter((device) => device.direction === "output").map((device) => <option key={device.reference} value={device.reference}>{device.displayName}</option>)}
-        </select>
-        <input
-          value={outputDeviceRef}
-          placeholder="local:waveout:0"
-          maxLength={160}
-          disabled={blocked || busy}
-          onChange={(event) => setOutputDeviceRef(event.target.value)}
-        />
-      </label>
+          onClick={() =>
+            void changeConsent(settings.customVoiceConsent !== "granted")
+          }
+        >
+          {settings.customVoiceConsent === "granted"
+            ? "Revogar consentimento customizado"
+            : "Conceder consentimento customizado"}
+        </button>
+      </details>
       <button
         type="button"
         disabled={blocked || busy}
         onClick={() => void saveSettings()}
       >
         Salvar referências locais
-      </button>
-      <label>
-        Referência de voz customizada sintética
-        <input
-          value={customVoiceRef}
-          placeholder="local:custom-neutral-v1"
-          maxLength={160}
-          disabled={blocked || busy}
-          onChange={(event) => setCustomVoiceRef(event.target.value)}
-        />
-      </label>
-      <button
-        type="button"
-        disabled={blocked || busy}
-        onClick={() =>
-          void changeConsent(settings.customVoiceConsent !== "granted")
-        }
-      >
-        {settings.customVoiceConsent === "granted"
-          ? "Revogar consentimento customizado"
-          : "Conceder consentimento customizado"}
       </button>
       <button
         type="button"
@@ -2353,9 +2743,18 @@ type CognitiveCommandMap = {
     args: { agentId: string };
     response: CognitiveGoal[];
   };
-  list_fictional_activities: { args: { agentId: string }; response: FictionalActivity[] };
-  start_fictional_activity: { args: FictionalActivityRequest; response: FictionalActivity };
-  update_fictional_activity_status: { args: FictionalActivityStatusRequest; response: FictionalActivity };
+  list_fictional_activities: {
+    args: { agentId: string };
+    response: FictionalActivity[];
+  };
+  start_fictional_activity: {
+    args: FictionalActivityRequest;
+    response: FictionalActivity;
+  };
+  update_fictional_activity_status: {
+    args: FictionalActivityStatusRequest;
+    response: FictionalActivity;
+  };
   propose_cognitive_opinion: {
     args: OpinionCandidateRequest;
     response: CognitiveOpinion;
@@ -2877,16 +3276,36 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
   }
 
   async function startActivity(goal: CognitiveGoal) {
-    await runCognitive("start_fictional_activity", {
-      agentId, goalId: goal.id, activityType: activityType.trim(), budgetUnits: 1,
-      durationMs: 60_000, idempotencyKey: crypto.randomUUID(), temporaryChat: false,
-    }, "Atividade fictícia iniciada.");
+    await runCognitive(
+      "start_fictional_activity",
+      {
+        agentId,
+        goalId: goal.id,
+        activityType: activityType.trim(),
+        budgetUnits: 1,
+        durationMs: 60_000,
+        idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
+      },
+      "Atividade fictícia iniciada.",
+    );
   }
 
-  async function setActivityStatus(activity: FictionalActivity, status: FictionalActivity["status"]) {
-    await runCognitive("update_fictional_activity_status", {
-      agentId, activityId: activity.id, status, idempotencyKey: crypto.randomUUID(), temporaryChat: false,
-    }, "Status da atividade atualizado.");
+  async function setActivityStatus(
+    activity: FictionalActivity,
+    status: FictionalActivity["status"],
+  ) {
+    await runCognitive(
+      "update_fictional_activity_status",
+      {
+        agentId,
+        activityId: activity.id,
+        status,
+        idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
+      },
+      "Status da atividade atualizado.",
+    );
   }
 
   async function saveConversationPolicy() {
@@ -3217,7 +3636,13 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
       <ul>
         {relationships.map((relationship) => (
           <li key={relationship.id}>
-            {relationship.subjectRef}: familiaridade {relationship.values.familiarity.toFixed(2)}, confiança {relationship.values.trust.toFixed(2)}, afinidade {relationship.values.affinity.toFixed(2)}, admiração {relationship.values.admiration.toFixed(2)}, irritação {relationship.values.irritation.toFixed(2)}, confiabilidade {relationship.values.reliabilityExpectation.toFixed(2)} —{" "}
+            {relationship.subjectRef}: familiaridade{" "}
+            {relationship.values.familiarity.toFixed(2)}, confiança{" "}
+            {relationship.values.trust.toFixed(2)}, afinidade{" "}
+            {relationship.values.affinity.toFixed(2)}, admiração{" "}
+            {relationship.values.admiration.toFixed(2)}, irritação{" "}
+            {relationship.values.irritation.toFixed(2)}, confiabilidade{" "}
+            {relationship.values.reliabilityExpectation.toFixed(2)} —{" "}
             {relationship.events.length} evento(s)
             <div>
               <button
@@ -3291,7 +3716,10 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
             orçamento {goal.budgetUnits}
             <p>{goal.description}</p>
             {goal.completionEvidence ? <p>{goal.completionEvidence}</p> : null}
-            <p>Origem: {goal.origin}; prazo: {goal.dueAt ?? "sem prazo"}; expiração: {goal.expiresAt ?? "sem expiração"}; fictício: sim.</p>
+            <p>
+              Origem: {goal.origin}; prazo: {goal.dueAt ?? "sem prazo"};
+              expiração: {goal.expiresAt ?? "sem expiração"}; fictício: sim.
+            </p>
             {goal.status === "proposed" ? (
               <>
                 <button
@@ -3310,7 +3738,15 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
                 </button>
               </>
             ) : null}
-            {goal.status === "active" ? <button type="button" disabled={busy} onClick={() => void startActivity(goal)}>Iniciar atividade fictícia</button> : null}
+            {goal.status === "active" ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void startActivity(goal)}
+              >
+                Iniciar atividade fictícia
+              </button>
+            ) : null}
             {goal.status === "active" ? (
               <>
                 <button
@@ -3341,9 +3777,66 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
           </li>
         ))}
       </ul>
-      <label>Tipo de atividade fictícia<input value={activityType} maxLength={64} onChange={(event) => setActivityType(event.target.value)} /></label>
+      <label>
+        Tipo de atividade fictícia
+        <input
+          value={activityType}
+          maxLength={64}
+          onChange={(event) => setActivityType(event.target.value)}
+        />
+      </label>
       <h4>Atividades fictícias</h4>
-      <ul>{activities.map((activity) => <li key={activity.id}>{activity.activityType} — {activity.status} — orçamento {activity.budgetUnits}; somente simulação. {activity.status === "active" ? <><button type="button" disabled={busy} onClick={() => void setActivityStatus(activity, "paused")}>Pausar</button><button type="button" disabled={busy} onClick={() => void setActivityStatus(activity, "completed")}>Concluir</button><button type="button" disabled={busy} onClick={() => void setActivityStatus(activity, "expired")}>Expirar</button></> : null}{activity.status === "paused" ? <button type="button" disabled={busy} onClick={() => void setActivityStatus(activity, "active")}>Retomar</button> : null}{activity.status !== "archived" ? <button type="button" disabled={busy} onClick={() => void setActivityStatus(activity, "archived")}>Arquivar</button> : null}</li>)}</ul>
+      <ul>
+        {activities.map((activity) => (
+          <li key={activity.id}>
+            {activity.activityType} — {activity.status} — orçamento{" "}
+            {activity.budgetUnits}; somente simulação.{" "}
+            {activity.status === "active" ? (
+              <>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void setActivityStatus(activity, "paused")}
+                >
+                  Pausar
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void setActivityStatus(activity, "completed")}
+                >
+                  Concluir
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void setActivityStatus(activity, "expired")}
+                >
+                  Expirar
+                </button>
+              </>
+            ) : null}
+            {activity.status === "paused" ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void setActivityStatus(activity, "active")}
+              >
+                Retomar
+              </button>
+            ) : null}
+            {activity.status !== "archived" ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void setActivityStatus(activity, "archived")}
+              >
+                Arquivar
+              </button>
+            ) : null}
+          </li>
+        ))}
+      </ul>
       <label>
         Título do objetivo
         <input
@@ -4207,11 +4700,15 @@ const toolErrorLabels: Record<string, string> = {
   workspace_root_limit: "O limite de 64 raízes locais do Owner foi atingido.",
   workspace_path_unavailable: "O caminho relativo local não está disponível.",
   workspace_path_invalid: "O caminho relativo local não é seguro.",
-  workspace_destination_exists: "O destino local já existe; nada foi sobrescrito.",
+  workspace_destination_exists:
+    "O destino local já existe; nada foi sobrescrito.",
   workspace_move_failed: "A movimentação local falhou e foi registrada.",
-  workspace_move_partial: "A movimentação local ficou parcial e foi registrada.",
-  workspace_source_identity_unavailable: "A identidade da origem local não pôde ser verificada.",
-  workspace_source_identity_mismatch: "A origem local mudou desde a prévia; nada foi movido.",
+  workspace_move_partial:
+    "A movimentação local ficou parcial e foi registrada.",
+  workspace_source_identity_unavailable:
+    "A identidade da origem local não pôde ser verificada.",
+  workspace_source_identity_mismatch:
+    "A origem local mudou desde a prévia; nada foi movido.",
   tool_payload_invalid:
     "A resposta da ferramenta não passou no contrato seguro.",
 };
@@ -4324,9 +4821,19 @@ export function ToolControls({
     setSessions(nextSessions);
     setAudit(nextAudit);
     setRoots(nextRoots);
-    setSelectedRootId((current) => current && nextRoots.some((root) => root.id === current && root.enabled) ? current : (nextRoots.find((root) => root.enabled)?.id ?? ""));
+    setSelectedRootId((current) =>
+      current && nextRoots.some((root) => root.id === current && root.enabled)
+        ? current
+        : (nextRoots.find((root) => root.enabled)?.id ?? ""),
+    );
     setSelectedToolId((current) =>
-      current && nextCatalog.some((manifest) => manifest.toolId === current && (manifest.scopeKind !== "workspace_root" || nextRoots.some((root) => root.enabled)))
+      current &&
+      nextCatalog.some(
+        (manifest) =>
+          manifest.toolId === current &&
+          (manifest.scopeKind !== "workspace_root" ||
+            nextRoots.some((root) => root.enabled)),
+      )
         ? current
         : (nextCatalog[0]?.toolId ?? ""),
     );
@@ -4356,29 +4863,60 @@ export function ToolControls({
 
   useEffect(() => {
     if (!selectedManifest) return;
-    setScopeRef(selectedManifest.scopeKind === "workspace_root"
-      ? selectedRootId ? `workspace_root:${selectedRootId}` : ""
-      : `fixture:${selectedManifest.scopeKind}/owner`);
+    setScopeRef(
+      selectedManifest.scopeKind === "workspace_root"
+        ? selectedRootId
+          ? `workspace_root:${selectedRootId}`
+          : ""
+        : `fixture:${selectedManifest.scopeKind}/owner`,
+    );
     setAllowPreview(true);
     setAllowExecute(true);
   }, [selectedManifest, selectedRootId]);
 
   async function addRoot() {
     if (blocked || !rootPath.trim()) return;
-    setBusy(true); setError(null);
+    setBusy(true);
+    setError(null);
     try {
-      parseToolPayload(await invoke<unknown>("add_workspace_root", { agentId, path: rootPath.trim(), idempotencyKey: `workspace-root-${crypto.randomUUID()}`, temporaryChat }), parseWorkspaceRoot);
-      setRootPath(""); await loadData();
-    } catch (rootError: unknown) { setError(toolErrorMessage(rootError)); } finally { setBusy(false); }
+      parseToolPayload(
+        await invoke<unknown>("add_workspace_root", {
+          agentId,
+          path: rootPath.trim(),
+          idempotencyKey: `workspace-root-${crypto.randomUUID()}`,
+          temporaryChat,
+        }),
+        parseWorkspaceRoot,
+      );
+      setRootPath("");
+      await loadData();
+    } catch (rootError: unknown) {
+      setError(toolErrorMessage(rootError));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function disableRoot(rootId: string) {
     if (blocked) return;
-    setBusy(true); setError(null);
+    setBusy(true);
+    setError(null);
     try {
-      parseToolPayload(await invoke<unknown>("remove_workspace_root", { agentId, rootId, idempotencyKey: `workspace-root-disable-${crypto.randomUUID()}`, temporaryChat }), parseWorkspaceRoot);
+      parseToolPayload(
+        await invoke<unknown>("remove_workspace_root", {
+          agentId,
+          rootId,
+          idempotencyKey: `workspace-root-disable-${crypto.randomUUID()}`,
+          temporaryChat,
+        }),
+        parseWorkspaceRoot,
+      );
       await loadData();
-    } catch (rootError: unknown) { setError(toolErrorMessage(rootError)); } finally { setBusy(false); }
+    } catch (rootError: unknown) {
+      setError(toolErrorMessage(rootError));
+    } finally {
+      setBusy(false);
+    }
   }
 
   function buildInput(): ToolActionInput | null {
@@ -4549,7 +5087,12 @@ export function ToolControls({
   return (
     <section className="tool-controls" aria-label="Ferramentas supervisionadas">
       <h3>Ferramentas supervisionadas</h3>
-      <p>Ferramentas fixture permanecem determinísticas. Inspeção local e movimentos limitados dentro de uma raiz Owner configurada têm efeito no host somente após prévia, aprovação e segunda confirmação; calendário e mensagens continuam mocks provider-neutral.</p>
+      <p>
+        Ferramentas fixture permanecem determinísticas. Inspeção local e
+        movimentos limitados dentro de uma raiz Owner configurada têm efeito no
+        host somente após prévia, aprovação e segunda confirmação; calendário e
+        mensagens continuam mocks provider-neutral.
+      </p>
       {temporaryChat ? (
         <p role="alert">Conversa temporária: ferramentas bloqueadas.</p>
       ) : null}
@@ -4559,11 +5102,43 @@ export function ToolControls({
       {error ? <p role="alert">{error}</p> : null}
       <section className="settings-card">
         <h4>Raízes locais do Owner</h4>
-        <p>Somente caminhos escolhidos pelo Owner; a raiz é validada pelo Rust e não aparece na auditoria.</p>
-        <input value={rootPath} onChange={(event) => setRootPath(event.target.value)} placeholder="Caminho local escolhido pelo Owner" disabled={busy || blocked} />
-        <button type="button" onClick={() => void addRoot()} disabled={busy || blocked || !rootPath.trim()}>Adicionar raiz</button>
-        <ul>{roots.map((root) => <li key={root.id}><code>{root.id}</code> — {root.enabled ? "ativa" : "desativada"} <button type="button" onClick={() => void disableRoot(root.id)} disabled={busy || blocked || !root.enabled}>Desativar</button></li>)}</ul>
-        {roots.every((root) => !root.enabled) ? <p role="status">Nenhuma raiz local ativa: as ferramentas fixture continuam disponíveis, mas as ferramentas locais aguardam uma raiz do Owner.</p> : null}
+        <p>
+          Somente caminhos escolhidos pelo Owner; a raiz é validada pelo Rust e
+          não aparece na auditoria.
+        </p>
+        <input
+          value={rootPath}
+          onChange={(event) => setRootPath(event.target.value)}
+          placeholder="Caminho local escolhido pelo Owner"
+          disabled={busy || blocked}
+        />
+        <button
+          type="button"
+          onClick={() => void addRoot()}
+          disabled={busy || blocked || !rootPath.trim()}
+        >
+          Adicionar raiz
+        </button>
+        <ul>
+          {roots.map((root) => (
+            <li key={root.id}>
+              <code>{root.id}</code> — {root.enabled ? "ativa" : "desativada"}{" "}
+              <button
+                type="button"
+                onClick={() => void disableRoot(root.id)}
+                disabled={busy || blocked || !root.enabled}
+              >
+                Desativar
+              </button>
+            </li>
+          ))}
+        </ul>
+        {roots.every((root) => !root.enabled) ? (
+          <p role="status">
+            Nenhuma raiz local ativa: as ferramentas fixture continuam
+            disponíveis, mas as ferramentas locais aguardam uma raiz do Owner.
+          </p>
+        ) : null}
       </section>
       <section className="settings-card">
         <h4>Catálogo local v1</h4>
@@ -4574,7 +5149,11 @@ export function ToolControls({
                 {toolLabels[manifest.toolId] ?? "Ferramenta fixture"}
               </strong>{" "}
               <span>
-                {manifest.adapterKind === "workspace_local" ? "efeito local limitado no host" : manifest.classification === "read_only" ? "somente leitura" : "altera estado somente no mock"}
+                {manifest.adapterKind === "workspace_local"
+                  ? "efeito local limitado no host"
+                  : manifest.classification === "read_only"
+                    ? "somente leitura"
+                    : "altera estado somente no mock"}
                 {manifest.requiresSecondConfirmation
                   ? "; exige segunda confirmação"
                   : ""}
@@ -4597,7 +5176,8 @@ export function ToolControls({
             {catalog.map((manifest) => (
               <option key={manifest.toolId} value={manifest.toolId}>
                 {toolLabels[manifest.toolId] ?? manifest.toolId}
-                {manifest.scopeKind === "workspace_root" && !roots.some((root) => root.enabled)
+                {manifest.scopeKind === "workspace_root" &&
+                !roots.some((root) => root.enabled)
                   ? " — raiz necessária"
                   : ""}
               </option>
@@ -4608,7 +5188,10 @@ export function ToolControls({
           Escopo fixture
           <input
             value={scopeRef}
-            onChange={(event) => selectedManifest?.scopeKind !== "workspace_root" && setScopeRef(event.target.value)}
+            onChange={(event) =>
+              selectedManifest?.scopeKind !== "workspace_root" &&
+              setScopeRef(event.target.value)
+            }
             readOnly={selectedManifest?.scopeKind === "workspace_root"}
           />
         </label>
@@ -4616,12 +5199,26 @@ export function ToolControls({
           <>
             <label>
               Raiz local
-              <select value={selectedRootId} onChange={(event) => setSelectedRootId(event.target.value)}>
+              <select
+                value={selectedRootId}
+                onChange={(event) => setSelectedRootId(event.target.value)}
+              >
                 <option value="">Selecionar raiz ativa</option>
-                {roots.filter((root) => root.enabled).map((root) => <option key={root.id} value={root.id}>{root.id}</option>)}
+                {roots
+                  .filter((root) => root.enabled)
+                  .map((root) => (
+                    <option key={root.id} value={root.id}>
+                      {root.id}
+                    </option>
+                  ))}
               </select>
             </label>
-            {!selectedRootId ? <p role="status">Esta ferramenta local exige uma raiz local ativa do Owner para criar a sessão, gerar a prévia e solicitar aprovação.</p> : null}
+            {!selectedRootId ? (
+              <p role="status">
+                Esta ferramenta local exige uma raiz local ativa do Owner para
+                criar a sessão, gerar a prévia e solicitar aprovação.
+              </p>
+            ) : null}
           </>
         ) : null}
         <label>
@@ -4690,7 +5287,8 @@ export function ToolControls({
         disabled={busy || blocked || selectedSession?.status !== "active"}
       >
         <legend>Prévia da ação</legend>
-        {selectedToolId === "workspace.inspect_scope" || selectedToolId === "workspace.inspect_local" ? (
+        {selectedToolId === "workspace.inspect_scope" ||
+        selectedToolId === "workspace.inspect_local" ? (
           <label>
             Entradas relativas, separadas por vírgula
             <input
@@ -4699,7 +5297,8 @@ export function ToolControls({
             />
           </label>
         ) : null}
-        {selectedToolId === "workspace.organize_files" || selectedToolId === "workspace.organize_local" ? (
+        {selectedToolId === "workspace.organize_files" ||
+        selectedToolId === "workspace.organize_local" ? (
           <>
             <label>
               Origem relativa
@@ -4864,7 +5463,9 @@ export function ToolControls({
                   })
                 }
               >
-                {action?.toolId.endsWith("_local") ? "Executar efeito local explicitamente" : "Executar mock explicitamente"}
+                {action?.toolId.endsWith("_local")
+                  ? "Executar efeito local explicitamente"
+                  : "Executar mock explicitamente"}
               </button>
             ) : null}
             {actionIsPending ? (
@@ -4902,11 +5503,13 @@ export function ToolControls({
           </div>
           {action.result ? (
             <div>
-              <h5>{action.toolId.endsWith("_local") ? "Saída não confiável da execução local" : "Saída não confiável do mock"}</h5>
+              <h5>
+                {action.toolId.endsWith("_local")
+                  ? "Saída não confiável da execução local"
+                  : "Saída não confiável do mock"}
+              </h5>
               <pre>{action.result.output}</pre>
-              <p>
-                Alteração no host: {action.result.changed ? "sim" : "não"}.
-              </p>
+              <p>Alteração no host: {action.result.changed ? "sim" : "não"}.</p>
             </div>
           ) : null}
         </section>
@@ -5076,7 +5679,9 @@ export function ExtensionControls({
   const [packageToolCatalog, setPackageToolCatalog] = useState(false);
   const [packageEchoInput, setPackageEchoInput] = useState(false);
   const [executionInput, setExecutionInput] = useState("");
-  const [execution, setExecution] = useState<ExtensionExecutionResult | null>(null);
+  const [execution, setExecution] = useState<ExtensionExecutionResult | null>(
+    null,
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const blocked = temporaryChat || safeMode;
@@ -5150,17 +5755,29 @@ export function ExtensionControls({
     if (packageEchoInput) {
       instructions.push({ op: "emit_text", text: null, echoInput: true });
     } else {
-      instructions.push({ op: "emit_text", text: "Extensão A.I.P. executada.", echoInput: null });
+      instructions.push({
+        op: "emit_text",
+        text: "Extensão A.I.P. executada.",
+        echoInput: null,
+      });
     }
     if (packageAgentContext) instructions.push({ op: "read_agent_context" });
     if (packageToolCatalog) instructions.push({ op: "list_tool_catalog" });
     instructions.push({ op: "yield" });
-    const raw = await invoke<unknown>("build_extension_package", { instructions });
+    const raw = await invoke<unknown>("build_extension_package", {
+      instructions,
+    });
     return parseExtensionPayload(raw, parseExtensionPackage);
   }
 
   async function importRepositoryExample() {
-    if (blocked || catalog.some((entry) => entry.extensionId === REPOSITORY_EXTENSION_EXAMPLE_ID)) return;
+    if (
+      blocked ||
+      catalog.some(
+        (entry) => entry.extensionId === REPOSITORY_EXTENSION_EXAMPLE_ID,
+      )
+    )
+      return;
     setBusy(true);
     setError(null);
     try {
@@ -5390,7 +6007,13 @@ export function ExtensionControls({
   }
 
   async function executeSelectedExtension() {
-    if (!selectedCatalog || blocked || selectedCatalog.lifecycle !== "active" || !selectedCatalog.manifest.package) return;
+    if (
+      !selectedCatalog ||
+      blocked ||
+      selectedCatalog.lifecycle !== "active" ||
+      !selectedCatalog.manifest.package
+    )
+      return;
     setBusy(true);
     setError(null);
     try {
@@ -5419,9 +6042,17 @@ export function ExtensionControls({
     setBusy(true);
     try {
       await invoke("cancel_extension_execution", {
-        request: { agentId, ownerUserId: OWNER_USER_ID, executionId: execution.executionId },
+        request: {
+          agentId,
+          ownerUserId: OWNER_USER_ID,
+          executionId: execution.executionId,
+        },
       });
-      setExecution({ ...execution, status: "cancelled", error: "extension_execution_cancelled" });
+      setExecution({
+        ...execution,
+        status: "cancelled",
+        error: "extension_execution_cancelled",
+      });
     } catch (cancelError: unknown) {
       setError(extensionErrorMessage(cancelError));
     } finally {
@@ -5549,15 +6180,49 @@ export function ExtensionControls({
         ) : null}
         <fieldset disabled={busy || blocked}>
           <label>
-            <input type="checkbox" checked={packageEnabled} onChange={(event) => setPackageEnabled(event.target.checked)} />{" "}
+            <input
+              type="checkbox"
+              checked={packageEnabled}
+              onChange={(event) => setPackageEnabled(event.target.checked)}
+            />{" "}
             Criar pacote declarativo executável
           </label>
           {packageEnabled ? (
             <>
-              <label><input type="checkbox" checked={packageAgentContext} onChange={(event) => setPackageAgentContext(event.target.checked)} /> Ler identidade limitada do agente</label>
-              <label><input type="checkbox" checked={packageToolCatalog} onChange={(event) => setPackageToolCatalog(event.target.checked)} /> Listar catálogo limitado de ferramentas</label>
-              <label><input type="checkbox" checked={packageEchoInput} onChange={(event) => setPackageEchoInput(event.target.checked)} /> Repetir entrada limitada</label>
-              <p>O Rust constrói e calcula o hash; a interface nunca calcula nem autoriza integridade.</p>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={packageAgentContext}
+                  onChange={(event) =>
+                    setPackageAgentContext(event.target.checked)
+                  }
+                />{" "}
+                Ler identidade limitada do agente
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={packageToolCatalog}
+                  onChange={(event) =>
+                    setPackageToolCatalog(event.target.checked)
+                  }
+                />{" "}
+                Listar catálogo limitado de ferramentas
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={packageEchoInput}
+                  onChange={(event) =>
+                    setPackageEchoInput(event.target.checked)
+                  }
+                />{" "}
+                Repetir entrada limitada
+              </label>
+              <p>
+                O Rust constrói e calcula o hash; a interface nunca calcula nem
+                autoriza integridade.
+              </p>
             </>
           ) : null}
         </fieldset>
@@ -5731,16 +6396,50 @@ export function ExtensionControls({
 
       <section className="settings-card">
         <h4>Execução da revisão ativa</h4>
-        <p>Somente uma extensão executável, revisada pelo Owner e explicitamente ativa pode executar.</p>
+        <p>
+          Somente uma extensão executável, revisada pelo Owner e explicitamente
+          ativa pode executar.
+        </p>
         <label>
           Entrada limitada
-          <textarea value={executionInput} maxLength={4096} onChange={(event) => setExecutionInput(event.target.value)} />
+          <textarea
+            value={executionInput}
+            maxLength={4096}
+            onChange={(event) => setExecutionInput(event.target.value)}
+          />
         </label>
         <div className="message-actions">
-          <button type="button" disabled={busy || blocked || !selectedCatalog?.manifest.package || selectedCatalog.lifecycle !== "active"} onClick={() => void executeSelectedExtension()}>Executar revisão ativa</button>
-          <button type="button" disabled={busy || blocked || !execution || execution.status !== "succeeded"} onClick={() => void cancelSelectedExecution()}>Cancelar execução registrada</button>
+          <button
+            type="button"
+            disabled={
+              busy ||
+              blocked ||
+              !selectedCatalog?.manifest.package ||
+              selectedCatalog.lifecycle !== "active"
+            }
+            onClick={() => void executeSelectedExtension()}
+          >
+            Executar revisão ativa
+          </button>
+          <button
+            type="button"
+            disabled={
+              busy || blocked || !execution || execution.status !== "succeeded"
+            }
+            onClick={() => void cancelSelectedExecution()}
+          >
+            Cancelar execução registrada
+          </button>
         </div>
-        {execution ? <p role="status">Execução {execution.executionId}: {execution.status}; passos {execution.steps}; saída: {execution.output ?? "(vazia)"}; erro: {execution.error ?? "nenhum"}</p> : <p>Nenhuma execução solicitada.</p>}
+        {execution ? (
+          <p role="status">
+            Execução {execution.executionId}: {execution.status}; passos{" "}
+            {execution.steps}; saída: {execution.output ?? "(vazia)"}; erro:{" "}
+            {execution.error ?? "nenhum"}
+          </p>
+        ) : (
+          <p>Nenhuma execução solicitada.</p>
+        )}
       </section>
 
       <section className="settings-card">
@@ -6526,7 +7225,9 @@ export function CompanionControls({
   const [audit, setAudit] = useState<CompanionAuditRecord[]>([]);
   const [rotations, setRotations] = useState<CompanionKeyRotation[]>([]);
   const [revocations, setRevocations] = useState<CompanionRevocation[]>([]);
-  const [transport, setTransport] = useState<GatewayTransportStatus>(EMPTY_GATEWAY_TRANSPORT_STATUS);
+  const [transport, setTransport] = useState<GatewayTransportStatus>(
+    EMPTY_GATEWAY_TRANSPORT_STATUS,
+  );
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [selectedDeviceId, setSelectedDeviceId] = useState("");
   const [selectedQueueId, setSelectedQueueId] = useState("");
@@ -6576,7 +7277,9 @@ export function CompanionControls({
       rawRevocations,
       parseCompanionRevocations,
     );
-    const nextTransport = parseGatewayTransportStatus(rawTransport) ?? EMPTY_GATEWAY_TRANSPORT_STATUS;
+    const nextTransport =
+      parseGatewayTransportStatus(rawTransport) ??
+      EMPTY_GATEWAY_TRANSPORT_STATUS;
     setDevices(nextDevices);
     setSessions(nextSessions);
     setQueue(nextQueue);
@@ -6631,7 +7334,9 @@ export function CompanionControls({
 
   async function startTransport() {
     if (blocked || busy) return;
-    setBusy(true); setError(null); setPairingCode(null);
+    setBusy(true);
+    setError(null);
+    setPairingCode(null);
     try {
       const raw = await invoke<unknown>("start_companion_transport", {
         agentId,
@@ -6641,20 +7346,34 @@ export function CompanionControls({
         port: 0,
         temporaryChat,
       });
-      if (!isGatewayTransportStartResult(raw)) throw new Error("companion_response_invalid");
-      setTransport({ enabled: true, endpoint: raw.endpoint, pairingAvailable: true });
+      if (!isGatewayTransportStartResult(raw))
+        throw new Error("companion_response_invalid");
+      setTransport({
+        enabled: true,
+        endpoint: raw.endpoint,
+        pairingAvailable: true,
+      });
       setPairingCode(raw.pairingCode);
     } catch (operationError: unknown) {
       setError(companionErrorMessage(operationError));
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function stopTransport() {
     if (busy) return;
-    setBusy(true); setError(null); setPairingCode(null);
-    try { await invoke("stop_companion_transport"); setTransport(EMPTY_GATEWAY_TRANSPORT_STATUS); }
-    catch (operationError: unknown) { setError(companionErrorMessage(operationError)); }
-    finally { setBusy(false); }
+    setBusy(true);
+    setError(null);
+    setPairingCode(null);
+    try {
+      await invoke("stop_companion_transport");
+      setTransport(EMPTY_GATEWAY_TRANSPORT_STATUS);
+    } catch (operationError: unknown) {
+      setError(companionErrorMessage(operationError));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function connectSelectedDevice() {
@@ -6836,13 +7555,37 @@ export function CompanionControls({
       </ul>
       <section aria-label="Transporte de depuração do companion">
         <h4>Transporte local de depuração</h4>
-        <p>Listener TCP autenticado em loopback, somente para validação do companion Android; não é relay de produção.</p>
-        <p>Estado: <strong>{transport.enabled ? "ativo" : "parado"}</strong>; endpoint: <code>{transport.endpoint ?? "nenhum"}</code>; pairing: {transport.pairingAvailable ? "disponível" : "indisponível"}.</p>
+        <p>
+          Listener TCP autenticado em loopback, somente para validação do
+          companion Android; não é relay de produção.
+        </p>
+        <p>
+          Estado: <strong>{transport.enabled ? "ativo" : "parado"}</strong>;
+          endpoint: <code>{transport.endpoint ?? "nenhum"}</code>; pairing:{" "}
+          {transport.pairingAvailable ? "disponível" : "indisponível"}.
+        </p>
         <div className="message-actions">
-          <button type="button" disabled={busy || blocked || transport.enabled} onClick={() => void startTransport()}>Iniciar transporte local</button>
-          <button type="button" disabled={busy || !transport.enabled} onClick={() => void stopTransport()}>Parar transporte local</button>
+          <button
+            type="button"
+            disabled={busy || blocked || transport.enabled}
+            onClick={() => void startTransport()}
+          >
+            Iniciar transporte local
+          </button>
+          <button
+            type="button"
+            disabled={busy || !transport.enabled}
+            onClick={() => void stopTransport()}
+          >
+            Parar transporte local
+          </button>
         </div>
-        {pairingCode ? <p role="alert"><strong>Código transitório:</strong> <code>{pairingCode}</code>. Não persista nem compartilhe.</p> : null}
+        {pairingCode ? (
+          <p role="alert">
+            <strong>Código transitório:</strong> <code>{pairingCode}</code>. Não
+            persista nem compartilhe.
+          </p>
+        ) : null}
       </section>
       {temporaryChat ? (
         <p role="alert">
@@ -7140,7 +7883,11 @@ function parseGatewayPayload<T>(
   return parsed;
 }
 
-type GatewayTransportStartResult = { enabled: boolean; endpoint: string; pairingCode: string };
+type GatewayTransportStartResult = {
+  enabled: boolean;
+  endpoint: string;
+  pairingCode: string;
+};
 type GatewayTransportStatus = {
   enabled: boolean;
   endpoint: string | null;
@@ -7151,14 +7898,20 @@ const EMPTY_GATEWAY_TRANSPORT_STATUS: GatewayTransportStatus = {
   endpoint: null,
   pairingAvailable: false,
 };
-function parseGatewayTransportStatus(value: unknown): GatewayTransportStatus | null {
+function parseGatewayTransportStatus(
+  value: unknown,
+): GatewayTransportStatus | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
   const candidate = value as Record<string, unknown>;
-  return Object.keys(candidate).every((key) => ["enabled", "endpoint", "pairingAvailable"].includes(key)) &&
+  return Object.keys(candidate).every((key) =>
+    ["enabled", "endpoint", "pairingAvailable"].includes(key),
+  ) &&
     typeof candidate.enabled === "boolean" &&
-    (candidate.endpoint === null || (typeof candidate.endpoint === "string" && candidate.endpoint.length <= 128)) &&
+    (candidate.endpoint === null ||
+      (typeof candidate.endpoint === "string" &&
+        candidate.endpoint.length <= 128)) &&
     typeof candidate.pairingAvailable === "boolean"
     ? {
         enabled: candidate.enabled,
@@ -7167,8 +7920,16 @@ function parseGatewayTransportStatus(value: unknown): GatewayTransportStatus | n
       }
     : null;
 }
-function isGatewayTransportStartResult(value: unknown): value is GatewayTransportStartResult {
-  return value !== null && typeof value === "object" && (value as Record<string, unknown>).enabled === true && typeof (value as Record<string, unknown>).endpoint === "string" && typeof (value as Record<string, unknown>).pairingCode === "string";
+function isGatewayTransportStartResult(
+  value: unknown,
+): value is GatewayTransportStartResult {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    (value as Record<string, unknown>).enabled === true &&
+    typeof (value as Record<string, unknown>).endpoint === "string" &&
+    typeof (value as Record<string, unknown>).pairingCode === "string"
+  );
 }
 
 export function GatewayControls({
@@ -7238,7 +7999,8 @@ export function GatewayControls({
       parseGatewayRevocations,
     );
     const nextTransport =
-      parseGatewayTransportStatus(rawTransport) ?? EMPTY_GATEWAY_TRANSPORT_STATUS;
+      parseGatewayTransportStatus(rawTransport) ??
+      EMPTY_GATEWAY_TRANSPORT_STATUS;
     setProtocol(nextProtocol);
     setAccounts(nextAccounts);
     setTransfers(nextTransfers);
@@ -7436,22 +8198,46 @@ export function GatewayControls({
 
   async function startTransport() {
     if (blocked || busy) return;
-    setBusy(true); setError(null); setPairingCode(null);
+    setBusy(true);
+    setError(null);
+    setPairingCode(null);
     try {
-      const raw = await invoke<unknown>("start_gateway_transport", { agentId, ownerConfirmed: true, privateNetworkConfirmed: false, bindAddress: "127.0.0.1", port: 0, temporaryChat });
-      if (!isGatewayTransportStartResult(raw)) throw new Error("gateway_response_invalid");
-      setTransport({ enabled: true, endpoint: raw.endpoint, pairingAvailable: true });
+      const raw = await invoke<unknown>("start_gateway_transport", {
+        agentId,
+        ownerConfirmed: true,
+        privateNetworkConfirmed: false,
+        bindAddress: "127.0.0.1",
+        port: 0,
+        temporaryChat,
+      });
+      if (!isGatewayTransportStartResult(raw))
+        throw new Error("gateway_response_invalid");
+      setTransport({
+        enabled: true,
+        endpoint: raw.endpoint,
+        pairingAvailable: true,
+      });
       setPairingCode(raw.pairingCode);
-    } catch (operationError: unknown) { setError(gatewayErrorMessage(operationError)); }
-    finally { setBusy(false); }
+    } catch (operationError: unknown) {
+      setError(gatewayErrorMessage(operationError));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function stopTransport() {
     if (busy) return;
-    setBusy(true); setError(null); setPairingCode(null);
-    try { await invoke("stop_gateway_transport"); setTransport(EMPTY_GATEWAY_TRANSPORT_STATUS); }
-    catch (operationError: unknown) { setError(gatewayErrorMessage(operationError)); }
-    finally { setBusy(false); }
+    setBusy(true);
+    setError(null);
+    setPairingCode(null);
+    try {
+      await invoke("stop_gateway_transport");
+      setTransport(EMPTY_GATEWAY_TRANSPORT_STATUS);
+    } catch (operationError: unknown) {
+      setError(gatewayErrorMessage(operationError));
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -7464,10 +8250,13 @@ export function GatewayControls({
         </p>
       </header>
       <ul>
-          <li>TCP autenticado aip-gateway-v1, limitado ao local/privado e iniciado somente por ação explícita do Owner.</li>
         <li>
-          Cloudflare é apenas configuração metadata; credenciais ausentes e
-            sem credenciais, BielOS, relay ou túnel.
+          TCP autenticado aip-gateway-v1, limitado ao local/privado e iniciado
+          somente por ação explícita do Owner.
+        </li>
+        <li>
+          Cloudflare é apenas configuração metadata; credenciais ausentes e sem
+          credenciais, BielOS, relay ou túnel.
         </li>
         <li>
           Rust/SQLite mantém a autoridade sobre transferência, autenticação,
@@ -7490,12 +8279,34 @@ export function GatewayControls({
 
       <section aria-label="Ciclo de vida do gateway local">
         <h4>Listener local autenticado</h4>
-        <p>Estado: <strong>{transport.enabled ? "ativo" : "parado"}</strong>; endpoint: <code>{transport.endpoint ?? "nenhum"}</code>; pairing disponível: {transport.pairingAvailable ? "sim" : "não"}.</p>
+        <p>
+          Estado: <strong>{transport.enabled ? "ativo" : "parado"}</strong>;
+          endpoint: <code>{transport.endpoint ?? "nenhum"}</code>; pairing
+          disponível: {transport.pairingAvailable ? "sim" : "não"}.
+        </p>
         <div className="message-actions">
-          <button type="button" disabled={busy || blocked || transport.enabled} onClick={() => void startTransport()}>Iniciar gateway local</button>
-          <button type="button" disabled={busy || !transport.enabled} onClick={() => void stopTransport()}>Parar gateway local</button>
+          <button
+            type="button"
+            disabled={busy || blocked || transport.enabled}
+            onClick={() => void startTransport()}
+          >
+            Iniciar gateway local
+          </button>
+          <button
+            type="button"
+            disabled={busy || !transport.enabled}
+            onClick={() => void stopTransport()}
+          >
+            Parar gateway local
+          </button>
         </div>
-        {pairingCode ? <p role="alert"><strong>Código de pairing transitório:</strong> <code>{pairingCode}</code>. Não persista nem compartilhe este código.</p> : null}
+        {pairingCode ? (
+          <p role="alert">
+            <strong>Código de pairing transitório:</strong>{" "}
+            <code>{pairingCode}</code>. Não persista nem compartilhe este
+            código.
+          </p>
+        ) : null}
       </section>
 
       <div className="message-actions">
@@ -7959,7 +8770,10 @@ function statusFromRead<T>(
     return { state: "Indisponível", detail: "O recurso local não respondeu." };
   }
   if (read.outcome === "invalid" || read.value === null) {
-    return { state: "Erro", detail: "A resposta local não passou na validação." };
+    return {
+      state: "Erro",
+      detail: "A resposta local não passou na validação.",
+    };
   }
   return build(read.value);
 }
@@ -8004,7 +8818,10 @@ function ollamaLocalStatus(
       };
     }
     if (provider.state === "empty") {
-      return { state: "Não configurado", detail: "Nenhum modelo local registrado." };
+      return {
+        state: "Não configurado",
+        detail: "Nenhum modelo local registrado.",
+      };
     }
     return {
       state: "Indisponível",
@@ -8039,7 +8856,10 @@ function voiceLocalStatus(
     }
     return provider.state === "invalid"
       ? { state: "Erro", detail: "A referência do provedor não é válida." }
-      : { state: "Indisponível", detail: "O provedor local não está disponível." };
+      : {
+          state: "Indisponível",
+          detail: "O provedor local não está disponível.",
+        };
   });
 }
 
@@ -8048,7 +8868,9 @@ function voiceDeviceLocalStatus(
   direction: VoiceDevice["direction"],
 ): LocalCapabilityStatus {
   return statusFromRead(read, (devices) => {
-    const count = devices.filter((device) => device.direction === direction).length;
+    const count = devices.filter(
+      (device) => device.direction === direction,
+    ).length;
     return count > 0
       ? {
           state: "Pronto",
@@ -8083,7 +8905,10 @@ function visualProviderLocalStatus(
     }
     return provider.state === "invalid"
       ? { state: "Erro", detail: "A configuração visual não é válida." }
-      : { state: "Indisponível", detail: "O provedor visual não está disponível." };
+      : {
+          state: "Indisponível",
+          detail: "O provedor visual não está disponível.",
+        };
   });
 }
 
@@ -8095,7 +8920,9 @@ function screenCaptureLocalStatus(
     return blockedLocalStatus("O modo seguro bloqueia captura e análise.");
   }
   return statusFromRead(read, (fixtures) => {
-    const realFixtures = fixtures.filter((fixture) => !fixture.synthetic).length;
+    const realFixtures = fixtures.filter(
+      (fixture) => !fixture.synthetic,
+    ).length;
     if (realFixtures > 0) {
       return {
         state: "Pronto",
@@ -8107,7 +8934,10 @@ function screenCaptureLocalStatus(
           state: "Não configurado",
           detail: "Somente fixture sintética disponível; falta captura real.",
         }
-      : { state: "Indisponível", detail: "Nenhum monitor local foi detectado." };
+      : {
+          state: "Indisponível",
+          detail: "Nenhum monitor local foi detectado.",
+        };
   });
 }
 
@@ -8150,7 +8980,9 @@ function companionLocalStatus(
   safeMode: boolean,
 ): LocalCapabilityStatus {
   if (safeMode) {
-    return blockedLocalStatus("O modo seguro bloqueia alterações do companion.");
+    return blockedLocalStatus(
+      "O modo seguro bloqueia alterações do companion.",
+    );
   }
   if (devices === null || transport === null) {
     return { state: "Indisponível", detail: "Verificando o companion local." };
@@ -8158,14 +8990,21 @@ function companionLocalStatus(
   if (devices.outcome === "invalid" || transport.outcome === "invalid") {
     return { state: "Erro", detail: "A resposta do companion não é válida." };
   }
-  if (devices.outcome === "unavailable" || transport.outcome === "unavailable") {
-    return { state: "Indisponível", detail: "O companion local não respondeu." };
+  if (
+    devices.outcome === "unavailable" ||
+    transport.outcome === "unavailable"
+  ) {
+    return {
+      state: "Indisponível",
+      detail: "O companion local não respondeu.",
+    };
   }
   const paired = devices.value?.some((device) => device.status === "paired");
   if (paired || transport.value?.enabled || transport.value?.pairingAvailable) {
     return {
       state: "Pronto",
-      detail: "Fixture Android local disponível; pareamento e aprovação são obrigatórios.",
+      detail:
+        "Fixture Android local disponível; pareamento e aprovação são obrigatórios.",
     };
   }
   return {
@@ -8188,17 +9027,22 @@ function gatewayLocalStatus(
   if (protocol.outcome === "invalid" || transport.outcome === "invalid") {
     return { state: "Erro", detail: "A resposta do gateway não é válida." };
   }
-  if (protocol.outcome === "unavailable" || transport.outcome === "unavailable") {
+  if (
+    protocol.outcome === "unavailable" ||
+    transport.outcome === "unavailable"
+  ) {
     return { state: "Indisponível", detail: "O gateway local não respondeu." };
   }
   return transport.value?.enabled
     ? {
         state: "Pronto",
-        detail: "Gateway local em loopback; efeitos externos permanecem desativados.",
+        detail:
+          "Gateway local em loopback; efeitos externos permanecem desativados.",
       }
     : {
         state: "Não configurado",
-        detail: "O protocolo local está disponível; iniciar exige aprovação do Owner.",
+        detail:
+          "O protocolo local está disponível; iniciar exige aprovação do Owner.",
       };
 }
 
@@ -8218,18 +9062,74 @@ export function LocalCapabilityStatusCenter({
   useEffect(() => {
     let mounted = true;
     async function load() {
-      const [ollama, voice, devices, visualProvider, screenFixtures, workspaceRoots, extensions, companionDevices, companionTransport, gatewayProtocol, gatewayTransport] = await Promise.all([
-        readLocalCapability("get_ollama_status", undefined, parseProviderSnapshot),
-        readLocalCapability("get_voice_provider_status", { agentId }, parseVoiceProviderStatus),
-        readLocalCapability("list_voice_devices", undefined, parseLocalVoiceDevices),
-        readLocalCapability("get_screen_vision_provider_status", undefined, parseScreenVisionProviderStatus),
-        readLocalCapability("list_screen_vision_fixtures", undefined, parseScreenVisionFixtures),
-        readLocalCapability("list_workspace_roots", undefined, parseWorkspaceRoots),
-        readLocalCapability("list_extension_catalog", { agentId }, parseExtensionCatalog),
-        readLocalCapability("list_companion_devices", { agentId }, parseCompanionDevices),
-        readLocalCapability("get_companion_transport_status", undefined, parseGatewayTransportStatus),
-        readLocalCapability("get_gateway_protocol", { agentId }, parseGatewayProtocolInfo),
-        readLocalCapability("get_gateway_transport_status", undefined, parseGatewayTransportStatus),
+      const [
+        ollama,
+        voice,
+        devices,
+        visualProvider,
+        screenFixtures,
+        workspaceRoots,
+        extensions,
+        companionDevices,
+        companionTransport,
+        gatewayProtocol,
+        gatewayTransport,
+      ] = await Promise.all([
+        readLocalCapability(
+          "get_ollama_status",
+          undefined,
+          parseProviderSnapshot,
+        ),
+        readLocalCapability(
+          "get_voice_provider_status",
+          { agentId },
+          parseVoiceProviderStatus,
+        ),
+        readLocalCapability(
+          "list_voice_devices",
+          undefined,
+          parseLocalVoiceDevices,
+        ),
+        readLocalCapability(
+          "get_screen_vision_provider_status",
+          undefined,
+          parseScreenVisionProviderStatus,
+        ),
+        readLocalCapability(
+          "list_screen_vision_fixtures",
+          undefined,
+          parseScreenVisionFixtures,
+        ),
+        readLocalCapability(
+          "list_workspace_roots",
+          undefined,
+          parseWorkspaceRoots,
+        ),
+        readLocalCapability(
+          "list_extension_catalog",
+          { agentId },
+          parseExtensionCatalog,
+        ),
+        readLocalCapability(
+          "list_companion_devices",
+          { agentId },
+          parseCompanionDevices,
+        ),
+        readLocalCapability(
+          "get_companion_transport_status",
+          undefined,
+          parseGatewayTransportStatus,
+        ),
+        readLocalCapability(
+          "get_gateway_protocol",
+          { agentId },
+          parseGatewayProtocolInfo,
+        ),
+        readLocalCapability(
+          "get_gateway_transport_status",
+          undefined,
+          parseGatewayTransportStatus,
+        ),
       ]);
       if (mounted) {
         setData({
@@ -8296,19 +9196,13 @@ export function LocalCapabilityStatusCenter({
       key: "visual-provider",
       label: "Provedor visual",
       href: "#local-capability-screen-vision",
-      status: visualProviderLocalStatus(
-        data?.visualProvider ?? null,
-        safeMode,
-      ),
+      status: visualProviderLocalStatus(data?.visualProvider ?? null, safeMode),
     },
     {
       key: "screen-capture",
       label: "Captura de tela",
       href: "#local-capability-screen-vision",
-      status: screenCaptureLocalStatus(
-        data?.screenFixtures ?? null,
-        safeMode,
-      ),
+      status: screenCaptureLocalStatus(data?.screenFixtures ?? null, safeMode),
     },
     {
       key: "workspace-root",
@@ -8354,8 +9248,8 @@ export function LocalCapabilityStatusCenter({
         <p className="eyebrow">Diagnóstico local</p>
         <h2 id="local-status-heading">Centro de status local</h2>
         <span>
-          Leitura segura de hardware, providers e integrações; nenhuma referência
-          de executável é exibida.
+          Leitura segura de hardware, providers e integrações; nenhuma
+          referência de executável é exibida.
         </span>
       </header>
       {temporaryChat ? (
@@ -8400,10 +9294,12 @@ export function LocalCapabilityStatusCenter({
         <summary>Runtime e Ollama</summary>
         <div>
           <p>
-            <strong>Runtime:</strong> {runtimeStatus.state} — {runtimeStatus.detail}
+            <strong>Runtime:</strong> {runtimeStatus.state} —{" "}
+            {runtimeStatus.detail}
           </p>
           <p>
-            <strong>Ollama:</strong> {ollamaStatus.state} — {ollamaStatus.detail}
+            <strong>Ollama:</strong> {ollamaStatus.state} —{" "}
+            {ollamaStatus.detail}
           </p>
           <p>
             Configuração: mantenha o Ollama local ativo e use “Atualizar” na
@@ -8502,7 +9398,10 @@ export function LocalCapabilitiesSurface({
             safeMode={safeMode}
           />
         </details>
-        <details className="local-capability-panel" id="local-capability-gateway">
+        <details
+          className="local-capability-panel"
+          id="local-capability-gateway"
+        >
           <summary>Gateway AIP local</summary>
           <GatewayControls
             agentId={agentId}
@@ -8510,7 +9409,10 @@ export function LocalCapabilitiesSurface({
             safeMode={safeMode}
           />
         </details>
-        <details className="local-capability-panel" id="local-capability-cognitive">
+        <details
+          className="local-capability-panel"
+          id="local-capability-cognitive"
+        >
           <summary>Valores cognitivos</summary>
           <CognitivePanelGate
             agentId={agentId}
@@ -8548,7 +9450,7 @@ function App() {
 
   useEffect(() => {
     const registration = createListenerRegistration();
-    void listen<string>("open-conversation", (event) => {
+    void listen<string>(OPEN_AGENT_CONVERSATIONS_EVENT, (event) => {
       setActiveAgentId(event.payload);
       setEditingAgentId(null);
       setWorkspace("chat");
@@ -8572,12 +9474,7 @@ function App() {
 
   async function openWorkspace(
     next:
-      | "chat"
-      | "memories"
-      | "state"
-      | "appearance"
-      | "resources"
-      | "settings",
+      "chat" | "memories" | "state" | "appearance" | "resources" | "settings",
   ) {
     await leaveTemporaryChat();
     setEditingAgentId(null);
@@ -8655,23 +9552,51 @@ function App() {
           />
         ) : null}
         {activeAgentId ? (
-          <details className="agent-tools">
-            <summary>Avançado</summary>
-            <button type="button" onClick={() => void toggleTemporaryChat()}>
-              {temporaryChat
-                ? "Voltar à conversa salva"
-                : "Abrir conversa temporária"}
-            </button>
-            {snapshot?.agents.map((agent) => (
+          <nav className="sidebar-secondary" aria-label="Áreas do agente">
+            <p className="sidebar-label">Este agente</p>
+            {(
+              [
+                ["memories", "Memórias"],
+                ["state", "Estado"],
+                ["appearance", "Aparência"],
+              ] as const
+            ).map(([key, label]) => (
               <button
-                key={`profile-${agent.id}`}
+                key={key}
+                className={workspace === key ? "active" : undefined}
                 type="button"
-                onClick={() => void openProfile(agent.id)}
+                aria-current={workspace === key ? "page" : undefined}
+                onClick={() => void openWorkspace(key)}
               >
-                Perfil de {agent.name}
+                {label}
               </button>
             ))}
-          </details>
+            <button
+              type="button"
+              onClick={() => void openProfile(activeAgentId)}
+            >
+              Perfil de{" "}
+              {snapshot?.agents.find((agent) => agent.id === activeAgentId)
+                ?.name ?? "agente"}
+            </button>
+            <p className="sidebar-label">Aplicativo</p>
+            <button
+              className={workspace === "resources" ? "active" : undefined}
+              type="button"
+              aria-current={workspace === "resources" ? "page" : undefined}
+              onClick={() => void openWorkspace("resources")}
+            >
+              Recursos locais
+            </button>
+            <button
+              className={workspace === "settings" ? "active" : undefined}
+              type="button"
+              aria-current={workspace === "settings" ? "page" : undefined}
+              onClick={() => void openWorkspace("settings")}
+            >
+              Configurações
+            </button>
+          </nav>
         ) : null}
         <div className="sidebar-footer">
           <span className="local-dot" aria-hidden="true" />
@@ -8681,72 +9606,6 @@ function App() {
         </div>
       </aside>
       <main className="conversation-main">
-        {activeAgentId ? (
-          <nav className="workspace-tabs" aria-label="Área do agente">
-            <button
-              className={workspace === "chat" ? "active" : undefined}
-              type="button"
-              onClick={() => void openWorkspace("chat")}
-            >
-              Conversa
-            </button>
-            <button
-              className={workspace === "memories" ? "active" : undefined}
-              type="button"
-              onClick={() => void openWorkspace("memories")}
-            >
-              Memórias
-            </button>
-            <button
-              className={workspace === "state" ? "active" : undefined}
-              type="button"
-              onClick={() => void openWorkspace("state")}
-            >
-              Estado
-            </button>
-            <button
-              className={workspace === "appearance" ? "active" : undefined}
-              type="button"
-              onClick={() => void openWorkspace("appearance")}
-            >
-              Aparência
-            </button>
-            <button
-              aria-current={workspace === "resources" ? "page" : undefined}
-              className={workspace === "resources" ? "active" : undefined}
-              type="button"
-              onClick={() => void openWorkspace("resources")}
-            >
-              Recursos locais
-            </button>
-            <span className="workspace-spacer" />
-            <button
-              className="workspace-profile"
-              type="button"
-              onClick={() => void openProfile(activeAgentId)}
-            >
-              Perfil
-            </button>
-            <button
-              className={workspace === "settings" ? "active" : undefined}
-              type="button"
-              onClick={() => void openWorkspace("settings")}
-            >
-              Configurações
-            </button>
-            <button
-              className={
-                temporaryChat
-                  ? "workspace-temporary active"
-                  : "workspace-temporary"
-              }
-              type="button"
-              onClick={() => void toggleTemporaryChat()}
-            >
-              {temporaryChat ? "Encerrar e apagar" : "Temporária"}
-            </button>
-          </nav>
-        ) : null}
         {snapshot?.runtime.state === "unavailable" ||
         snapshot?.runtime.state === "crashed" ? (
           <div className="runtime-banner" role="status">
@@ -8837,6 +9696,7 @@ function App() {
             key={`${activeAgentId}-${conversationRevision}-${temporaryChat}`}
             agentId={activeAgentId}
             temporary={temporaryChat}
+            onToggleTemporary={() => void toggleTemporaryChat()}
           />
         )}
       </main>
