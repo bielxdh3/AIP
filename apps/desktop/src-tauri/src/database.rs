@@ -40,7 +40,8 @@ const MIGRATION_0021: &str = include_str!("../migrations/0021_corrective_tools_c
 const MIGRATION_0022: &str = include_str!("../migrations/0022_phase8_voice_runtime.sql");
 const MIGRATION_0023: &str = include_str!("../migrations/0023_phase9_workspace_roots.sql");
 const MIGRATION_0024: &str = include_str!("../migrations/0024_phase10_extension_runtime.sql");
-const MIGRATIONS: [(i64, &str); 24] = [
+const MIGRATION_0025: &str = include_str!("../migrations/0025_local_provider_registry.sql");
+const MIGRATIONS: [(i64, &str); 25] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
@@ -65,6 +66,7 @@ const MIGRATIONS: [(i64, &str); 24] = [
     (22, MIGRATION_0022),
     (23, MIGRATION_0023),
     (24, MIGRATION_0024),
+    (25, MIGRATION_0025),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";

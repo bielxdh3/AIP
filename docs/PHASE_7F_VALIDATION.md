@@ -2,7 +2,7 @@
 
 ## Current closure evidence (2026-08-24)
 
-Status: FUNCTIONAL — HUMAN VALIDATION PENDING. Automated validation is complete on
+Status: PRODUCTIZED — AUTOMATED VALIDATION COMPLETE; INSTALLED-WINDOWS HUMAN VALIDATION PENDING. Automated validation is complete on
 the current host: Rust format/check, 10 focused cognitive tests, desktop typecheck,
 contracts typecheck, and desktop Vitest (14 files, 51 tests) pass; `git diff --check`
 passes. The closure includes fail-closed memory/conversation source validation,
@@ -17,7 +17,7 @@ reservations below are retained as historical evidence.
 
 ## Current automated result
 
-Status: FUNCTIONAL — AUTOMATED VALIDATION COMPLETE. Opinion provenance, all six
+Status: PRODUCTIZED — AUTOMATED VALIDATION COMPLETE. Opinion provenance, all six
 relationship dimensions, goal origin/schedule/evidence, and Owner-visible fictional
 activity lifecycle controls are exposed. Installed-Windows interaction and
 subjective Portuguese review remain HUMAN VALIDATION PENDING.
@@ -47,11 +47,11 @@ record is [Phase 7E validation](PHASE_7E_VALIDATION.md).
 
 | Area                            | Local implementation evidence                                                                                                                                                                                | Validation status                                                                                  |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- |
-| 7B opinions                     | Rust/SQLite opinion, evidence, correction, dispute, supersession, fail-closed source lifecycle, and deterministic invalidation/recalculation paths                                                                 | FUNCTIONAL — AUTOMATED VALIDATION COMPLETE; installed-Windows and subjective Portuguese review pending |
-| 7C relationships                | Rust/SQLite bounded six-dimension relationship state, isolation, reset, rollback, and deterministic source-invalidation replay                                                                                       | FUNCTIONAL — AUTOMATED VALIDATION COMPLETE; installed-Windows and subjective Portuguese review pending |
-| 7D goals and fictional activity | Owner approval, origin/schedule/evidence, budgets, fictional-only state, and visible activity start/pause/resume/complete/expire/archive controls | FUNCTIONAL — AUTOMATED VALIDATION COMPLETE |
-| 7E public conversations         | Typed policy/start/turn/resource/candidate/list/inspect/interrupt/reject paths in Rust, contracts, and the Portuguese panel, with termination reason and consent/revocation boundaries | FUNCTIONAL — AUTOMATED VALIDATION COMPLETE; packaged/manual restart and Owner smoke pending |
-| Persistence and recovery        | Migration 0014, SQLite transactions, reopen persistence, and recovery tests are present                                                                                                                      | FUNCTIONAL — AUTOMATED VALIDATION COMPLETE locally; packaged restart remains HUMAN VALIDATION PENDING |
+| 7B opinions                     | Rust/SQLite opinion, evidence, correction, dispute, supersession, fail-closed source lifecycle, and deterministic invalidation/recalculation paths                                                                 | PRODUCTIZED — AUTOMATED VALIDATION COMPLETE; installed-Windows and subjective Portuguese review pending |
+| 7C relationships                | Rust/SQLite bounded six-dimension relationship state, isolation, reset, rollback, and deterministic source-invalidation replay                                                                                       | PRODUCTIZED — AUTOMATED VALIDATION COMPLETE; installed-Windows and subjective Portuguese review pending |
+| 7D goals and fictional activity | Owner approval, origin/schedule/evidence, budgets, fictional-only state, and visible activity start/pause/resume/complete/expire/archive controls | PRODUCTIZED — AUTOMATED VALIDATION COMPLETE |
+| 7E public conversations         | Typed policy/start/turn/resource/candidate/list/inspect/interrupt/reject paths in Rust, contracts, and the Portuguese panel, with termination reason and consent/revocation boundaries | PRODUCTIZED — AUTOMATED VALIDATION COMPLETE; packaged/manual restart and Owner smoke pending |
+| Persistence and recovery        | Migration 0014, SQLite transactions, reopen persistence, and recovery tests are present                                                                                                                      | PRODUCTIZED — AUTOMATED VALIDATION COMPLETE locally; packaged restart remains HUMAN VALIDATION PENDING |
 | Security boundary               | Owner/participant/opt-in/revocation/mode/temporary/budget guards; public-only content screening; pending candidate attribution; explicit temporary-chat fields on durable 7A–7D commands                     | Reviewed in source; no hidden/private channel or direct model durable mutation is exposed          |
 
 ## Historical validation evidence (retained)

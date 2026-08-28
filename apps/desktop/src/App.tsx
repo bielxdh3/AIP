@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
   parseProviderSnapshot,
+  parseLocalProviders,
   parseScreenVisionProviderStatus,
   parseVoiceDevice,
   parseVoiceProviderStatus,
@@ -70,6 +71,10 @@ import type {
   VoiceRuntimeTranscriptionResult,
   VoiceRuntimeWakeWordResult,
   VoiceProviderStatus,
+  LocalProvider,
+  LocalProviderKind,
+  LocalProviderRequest,
+  LocalProviderIdRequest,
   VoiceSynthesisRequest,
   VoiceSynthesisResult,
   VoiceTranscriptionRequest,
@@ -1526,6 +1531,12 @@ export function VoiceControls({
   const [inputDeviceRef, setInputDeviceRef] = useState("");
   const [outputDeviceRef, setOutputDeviceRef] = useState("");
   const [voiceDevices, setVoiceDevices] = useState<VoiceDevice[]>([]);
+  const [localProviders, setLocalProviders] = useState<LocalProvider[]>([]);
+  const [providerKind, setProviderKind] = useState<LocalProviderKind>("stt");
+  const [providerId, setProviderId] = useState("");
+  const [providerName, setProviderName] = useState("");
+  const [providerPath, setProviderPath] = useState("");
+  const [providerProtocol, setProviderProtocol] = useState("aip-voice-v1");
   const [customVoiceRef, setCustomVoiceRef] = useState(
     "fixture:custom-neutral-v1",
   );
@@ -1560,10 +1571,66 @@ export function VoiceControls({
     void invoke<unknown[]>("list_voice_devices")
       .then((values) => {
         const devices = values.map(parseVoiceDevice).filter((device): device is VoiceDevice => device !== null);
-        setVoiceDevices(devices.slice(0, 64));
+      setVoiceDevices(devices.slice(0, 64));
       })
       .catch(() => setVoiceDevices([]));
+    void invoke<unknown>("list_local_providers")
+      .then((value) => setLocalProviders(parseLocalProviders(value) ?? []))
+      .catch(() => setLocalProviders([]));
   }, [load]);
+
+  async function registerProvider() {
+    if (blocked || busy) return;
+    if (!providerId.trim() || !providerName.trim() || !providerPath.trim()) {
+      setError("Informe identificador, nome e caminho absoluto do provedor.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const request: LocalProviderRequest = {
+        agentId,
+        id: providerId.trim(),
+        kind: providerKind,
+        displayName: providerName.trim(),
+        executablePath: providerPath.trim(),
+        protocolVersion: providerKind === "visual" ? "aip-screen-vision-v1" : providerProtocol,
+        idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
+      };
+      const provider = await invoke<LocalProvider>("register_local_provider", request);
+      setLocalProviders((current) => [...current.filter((entry) => entry.id !== provider.id), provider].sort((a, b) => a.displayName.localeCompare(b.displayName)));
+      setStatus(`Provedor local ${provider.displayName} validado e disponível.`);
+      setProviderId("");
+      setProviderName("");
+      setProviderPath("");
+    } catch (cause) {
+      setError(String(cause) || "O provedor local foi recusado.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function disableProvider(provider: LocalProvider) {
+    if (blocked || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const request: LocalProviderIdRequest = {
+        agentId,
+        id: provider.id,
+        idempotencyKey: crypto.randomUUID(),
+        temporaryChat: false,
+      };
+      const disabled = await invoke<LocalProvider>("disable_local_provider", request);
+      setLocalProviders((current) => current.map((entry) => entry.id === disabled.id ? disabled : entry));
+      setStatus(`Provedor ${provider.displayName} desativado.`);
+    } catch (cause) {
+      setError(String(cause) || "Não foi possível desativar o provedor.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function saveSettings() {
     if (blocked || settings === null) return;
@@ -1775,6 +1842,54 @@ export function VoiceControls({
         </p>
       ) : null}
       <p>Voz-base protegida: {settings.baseVoiceId}.</p>
+      <details open>
+        <summary>Registro de provedores locais (voz e visão)</summary>
+        <p>
+          Cadastre um executável local com protocolo explícito. O caminho é validado no dispositivo;
+          nenhuma variável de ambiente é necessária para a configuração normal.
+        </p>
+        <div className="inline-form">
+          <label>
+            Tipo
+            <select
+              value={providerKind}
+              disabled={blocked || busy}
+              onChange={(event) => {
+                const kind = event.target.value as LocalProviderKind;
+                setProviderKind(kind);
+                setProviderProtocol(kind === "visual" ? "aip-screen-vision-v1" : "aip-voice-v1");
+              }}
+            >
+              <option value="stt">Voz — transcrição</option>
+              <option value="tts">Voz — síntese</option>
+              <option value="visual">Visão de tela</option>
+            </select>
+          </label>
+          <label>Identificador<input value={providerId} maxLength={96} disabled={blocked || busy} onChange={(event) => setProviderId(event.target.value)} placeholder="meu-provedor" /></label>
+          <label>Nome exibido<input value={providerName} maxLength={120} disabled={blocked || busy} onChange={(event) => setProviderName(event.target.value)} placeholder="Meu provedor local" /></label>
+          <label>Caminho absoluto do executável<input value={providerPath} maxLength={1024} disabled={blocked || busy} onChange={(event) => setProviderPath(event.target.value)} placeholder="C:\\Ferramentas\\provedor.exe" /></label>
+          <button type="button" disabled={blocked || busy} onClick={() => void registerProvider()}>Validar e registrar</button>
+        </div>
+        {localProviders.length === 0 ? <p>Nenhum provedor registrado. Voz e visão permanecem degradadas até a configuração local.</p> : (
+          <ul aria-label="Provedores locais registrados">
+            {localProviders.map((provider) => (
+              <li key={provider.id}>
+                <strong>{provider.displayName}</strong> ({provider.kind}) — {provider.validationStatus}: {provider.validationResult}{" "}
+                {provider.enabled ? (
+                  <>
+                    <button type="button" disabled={blocked || busy} onClick={() => {
+                      if (provider.kind === "stt") setRecognitionModelRef(`local:stt:${provider.id}`);
+                      if (provider.kind === "tts") setSynthesisModelRef(`local:tts:${provider.id}`);
+                      setStatus(`Referência ${provider.displayName} selecionada; salve as configurações.`);
+                    }}>Usar</button>{" "}
+                    <button type="button" disabled={blocked || busy} onClick={() => void disableProvider(provider)}>Desativar</button>
+                  </>
+                ) : <span>desativado</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+      </details>
       <label>
         Modelo local de transcrição
         <input
@@ -6411,6 +6526,8 @@ export function CompanionControls({
   const [audit, setAudit] = useState<CompanionAuditRecord[]>([]);
   const [rotations, setRotations] = useState<CompanionKeyRotation[]>([]);
   const [revocations, setRevocations] = useState<CompanionRevocation[]>([]);
+  const [transport, setTransport] = useState<GatewayTransportStatus>(EMPTY_GATEWAY_TRANSPORT_STATUS);
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [selectedDeviceId, setSelectedDeviceId] = useState("");
   const [selectedQueueId, setSelectedQueueId] = useState("");
   const [busy, setBusy] = useState(false);
@@ -6426,6 +6543,7 @@ export function CompanionControls({
       rawAudit,
       rawRotations,
       rawRevocations,
+      rawTransport,
     ] = await Promise.all([
       invoke<unknown>("list_companion_devices", { agentId }),
       invoke<unknown>("list_companion_sessions", { agentId }),
@@ -6434,6 +6552,7 @@ export function CompanionControls({
       invoke<unknown>("list_companion_audit", { agentId }),
       invoke<unknown>("list_companion_key_rotations", { agentId }),
       invoke<unknown>("list_companion_revocations", { agentId }),
+      invoke<unknown>("get_companion_transport_status"),
     ]);
     const nextDevices = parseCompanionPayload(
       rawDevices,
@@ -6457,6 +6576,7 @@ export function CompanionControls({
       rawRevocations,
       parseCompanionRevocations,
     );
+    const nextTransport = parseGatewayTransportStatus(rawTransport) ?? EMPTY_GATEWAY_TRANSPORT_STATUS;
     setDevices(nextDevices);
     setSessions(nextSessions);
     setQueue(nextQueue);
@@ -6464,6 +6584,7 @@ export function CompanionControls({
     setAudit(nextAudit);
     setRotations(nextRotations);
     setRevocations(nextRevocations);
+    setTransport(nextTransport);
     setSelectedDeviceId((current) =>
       nextDevices.some((device) => device.id === current)
         ? current
@@ -6506,6 +6627,34 @@ export function CompanionControls({
     } finally {
       setBusy(false);
     }
+  }
+
+  async function startTransport() {
+    if (blocked || busy) return;
+    setBusy(true); setError(null); setPairingCode(null);
+    try {
+      const raw = await invoke<unknown>("start_companion_transport", {
+        agentId,
+        ownerConfirmed: true,
+        privateNetworkConfirmed: false,
+        bindAddress: "127.0.0.1",
+        port: 0,
+        temporaryChat,
+      });
+      if (!isGatewayTransportStartResult(raw)) throw new Error("companion_response_invalid");
+      setTransport({ enabled: true, endpoint: raw.endpoint, pairingAvailable: true });
+      setPairingCode(raw.pairingCode);
+    } catch (operationError: unknown) {
+      setError(companionErrorMessage(operationError));
+    } finally { setBusy(false); }
+  }
+
+  async function stopTransport() {
+    if (busy) return;
+    setBusy(true); setError(null); setPairingCode(null);
+    try { await invoke("stop_companion_transport"); setTransport(EMPTY_GATEWAY_TRANSPORT_STATUS); }
+    catch (operationError: unknown) { setError(companionErrorMessage(operationError)); }
+    finally { setBusy(false); }
   }
 
   async function connectSelectedDevice() {
@@ -6685,6 +6834,16 @@ export function CompanionControls({
         <li>Somente metadados: bytes de mídia nunca são persistidos.</li>
         <li>Aprovação, prova de sessão, rotação e revogação são do Rust.</li>
       </ul>
+      <section aria-label="Transporte de depuração do companion">
+        <h4>Transporte local de depuração</h4>
+        <p>Listener TCP autenticado em loopback, somente para validação do companion Android; não é relay de produção.</p>
+        <p>Estado: <strong>{transport.enabled ? "ativo" : "parado"}</strong>; endpoint: <code>{transport.endpoint ?? "nenhum"}</code>; pairing: {transport.pairingAvailable ? "disponível" : "indisponível"}.</p>
+        <div className="message-actions">
+          <button type="button" disabled={busy || blocked || transport.enabled} onClick={() => void startTransport()}>Iniciar transporte local</button>
+          <button type="button" disabled={busy || !transport.enabled} onClick={() => void stopTransport()}>Parar transporte local</button>
+        </div>
+        {pairingCode ? <p role="alert"><strong>Código transitório:</strong> <code>{pairingCode}</code>. Não persista nem compartilhe.</p> : null}
+      </section>
       {temporaryChat ? (
         <p role="alert">
           Conversa temporária: alterações do companion bloqueadas; histórico e

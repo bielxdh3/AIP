@@ -201,21 +201,21 @@ runtime, manual, and remote reservations remain explicit there. This is not a v0
 
 - **Phase 7A — cognitive event foundation and protected/evolvable boundaries [APPROVED — DONE]:** typed, bounded ordinary candidates, owner correction, safe explanation, and latest-event compensating rollback. The exact commit, CI, and Owner attestation are recorded in the validation record. Live extraction and later Phase 7E–7F capabilities remain excluded.
   Owner-scoped event processing, typed source eligibility, trait limits, auditability, and temporary-chat exclusion. Conversation-source validation is a future-adapter boundary only; live extraction remains excluded.
-- **Phase 7B — opinions and evidence [FUNCTIONAL — HUMAN VALIDATION PENDING]:** sourced,
+- **Phase 7B — opinions and evidence [PRODUCTIZED — HUMAN VALIDATION PENDING]:** sourced,
   inspectable opinions with correction, dispute, supersession, fail-closed source lifecycle,
   and Owner-visible provenance. Automated Rust/TS validation is complete; installed-Windows
   and subjective Portuguese review remain pending.
-- **Phase 7C — relationships [FUNCTIONAL — HUMAN VALIDATION PENDING]:** bounded six-
+- **Phase 7C — relationships [PRODUCTIZED — HUMAN VALIDATION PENDING]:** bounded six-
   dimension relationship state, event history, limits, reset, rollback, and deterministic
   projection recomputation after source invalidation.
-- **Phase 7D — goals and fictional activities [FUNCTIONAL — HUMAN VALIDATION PENDING]:**
+- **Phase 7D — goals and fictional activities [PRODUCTIZED — HUMAN VALIDATION PENDING]:**
   approval-bound fictional goals with due/expiry semantics and explicitly fictional,
   budgeted activity lifecycle controls with no external action.
-- **Phase 7E — bounded agent-to-agent conversation [FUNCTIONAL — HUMAN VALIDATION PENDING]:**
+- **Phase 7E — bounded agent-to-agent conversation [PRODUCTIZED — HUMAN VALIDATION PENDING]:**
   visible, purpose-bound public interactions with hard resource budgets, termination reason,
   consent/revocation checks, and deferred candidate processing. See [the Phase 7E validation
   record](PHASE_7E_VALIDATION.md).
-- **Phase 7F — integrated validation and UX hardening [FUNCTIONAL — HUMAN VALIDATION PENDING]:**
+- **Phase 7F — integrated validation and UX hardening [PRODUCTIZED — HUMAN VALIDATION PENDING]:**
   current automated validation, Portuguese UI boundaries, persistence/recovery tests, safety
   controls, and honest documentation. Installed-Windows interaction and subjective Portuguese
   review remain the sole human gate; see [the Phase 7F validation record](PHASE_7F_VALIDATION.md).
@@ -227,9 +227,9 @@ and focused cognitive tests are green. Desktop Vitest is green in the current ho
 remain HUMAN VALIDATION PENDING; the earlier executor `spawn EPERM` report is
 historical environment evidence, not the current host result.
 
-## Post-v0.1 Phase 8: voice [FUNCTIONAL — HUMAN VALIDATION PENDING]
+## Post-v0.1 Phase 8: voice [EXTERNAL-PREREQUISITE PRODUCTIZED — HUMAN VALIDATION PENDING]
 
-The functional local runtime/effects checkpoint is implemented in Rust/SQLite, Tauri commands,
+The local runtime/effects checkpoint is productized in Rust/SQLite, Tauri commands,
 versioned contracts, native Windows wave-device enumeration, bounded in-memory capture/playback,
 replaceable local STT/TTS argv adapters, wake-word routing, and Portuguese Owner controls.
 Missing devices/models degrade to text fallback; no cloud path, raw-audio persistence, or hidden
@@ -242,7 +242,7 @@ memory and has no raw-audio persistence, upload/network path, real-person clonin
 listener. See the
 [Phase 8 voice specification](PHASE_8_VOICE_SPEC.md).
 
-## Post-v0.1 Phase 9: supervised tools `[FUNCTIONAL — HUMAN VALIDATION PENDING]`
+## Post-v0.1 Phase 9: supervised tools `[EXTERNAL-PREREQUISITE PRODUCTIZED — HUMAN VALIDATION PENDING]`
 
 The current checkpoint implements the bounded local architecture described in
 [PHASE_9_TOOLS_SPEC.md](PHASE_9_TOOLS_SPEC.md):
@@ -260,7 +260,7 @@ link/system-directory rejection, preview, approval, second confirmation, dry-run
 compensation. Shell, credentials, network, and external-provider mutation remain disabled;
 packaged-Windows UX and live provider credentials remain reserved validation work.
 
-## Post-v0.1 Phase 10: extensions [FUNCTIONAL — AUTOMATED VALIDATION COMPLETE]
+## Post-v0.1 Phase 10: extensions [PRODUCTIZED — AUTOMATED VALIDATION COMPLETE; HUMAN PACKAGE REVIEW PENDING]
 
 The current checkpoint implements the bounded local runtime and effects described in
 [PHASE_10_EXTENSIONS_SPEC.md](PHASE_10_EXTENSIONS_SPEC.md):
@@ -279,7 +279,7 @@ does not access the network, shell, host filesystem, credentials, remote code,
 or a public marketplace. Human package review, real plugin usability, ratings,
 packaged-Windows evidence, and release approval remain reserved.
 
-## Post-v0.1 Phase 11: screen vision `[FUNCTIONAL — HUMAN VALIDATION PENDING]`
+## Post-v0.1 Phase 11: screen vision `[EXTERNAL-PREREQUISITE PRODUCTIZED — HUMAN VALIDATION PENDING]`
 
 The current checkpoint implements the bounded local architecture described in
 [PHASE_11_SCREEN_VISION_SPEC.md](PHASE_11_SCREEN_VISION_SPEC.md):
@@ -301,7 +301,7 @@ persist visual state. The local adapter reports unavailable when its explicitly 
 provider/model is missing. Windows packaging evidence,
 privacy/visual UX validation, and release approval remain reserved work.
 
-## Post-v0.1 Phase 12: Android companion `[FUNCTIONAL — HUMAN VALIDATION PENDING]`
+## Post-v0.1 Phase 12: Android companion `[PRODUCTIZED FOR DEBUG COMPANION — HUMAN DEVICE VALIDATION PENDING]`
 
 The current checkpoint implements the bounded local architecture described in
 [PHASE_12_ANDROID_SPEC.md](PHASE_12_ANDROID_SPEC.md):
@@ -319,7 +319,7 @@ local/private protocol and explicit-connect client. Deterministic loopback is
 covered; physical-device UX, private-LAN smoke testing, and release signing
 remain reserved checks. No relay or external account is claimed.
 
-## Post-v0.1 Phase 13: gateway boundary `[FUNCTIONAL — HUMAN VALIDATION PENDING]`
+## Post-v0.1 Phase 13: gateway boundary `[BACKEND-ONLY — LOOPBACK CHECKPOINT; HUMAN PRIVATE-LAN CLIENT WORKFLOW PENDING]`
 
 The current checkpoint implements the bounded local architecture described in
 [PHASE_13_GATEWAY_SPEC.md](PHASE_13_GATEWAY_SPEC.md):
