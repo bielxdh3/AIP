@@ -56,12 +56,14 @@ use database::Database;
 use domain::{
     AgentMemory, AgentSimulatedState, AppSnapshot, CognitiveEvent, CognitiveEventExplanation,
     CognitiveTrait, ConversationMessage, PhaseOneConversation, PhaseOneState, SendMessageResult,
+    ProviderSnapshot,
 };
 use extensions::{
     ExtensionActivationRequest, ExtensionAgentProposalRequest, ExtensionAuditRecord,
     ExtensionCatalogEntry, ExtensionDisableRequest, ExtensionExecutionCancellationRequest,
     ExtensionExecutionRequest, ExtensionExecutionResult, ExtensionInstruction, ExtensionPackage,
-    ExtensionProposal, ExtensionProposalRequest, ExtensionReviewRequest, ExtensionRollbackRequest,
+    ExtensionImportRequest, ExtensionProposal, ExtensionProposalRequest, ExtensionReviewRequest,
+    ExtensionRollbackRequest,
     ExtensionUpdateRequest,
 };
 use gateway::{
@@ -81,7 +83,8 @@ use screen_vision::{
     ScreenVisionAnalysisResult, ScreenVisionAuditRecord, ScreenVisionFixture, ScreenVisionJob,
     ScreenVisionJobCancellationRequest, ScreenVisionJobCleanupRequest,
     ScreenVisionJobConfirmationRequest, ScreenVisionJobPreviewRequest, ScreenVisionSession,
-    ScreenVisionSessionCancellationRequest, ScreenVisionSessionRequest,
+    ScreenVisionProviderStatus, ScreenVisionSessionCancellationRequest,
+    ScreenVisionSessionRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -97,7 +100,7 @@ use voice::{
     VoiceEmotionHypothesisResult, VoiceOperationCancellationRequest, VoiceOperationStatus,
     VoiceOperationStatusRequest, VoiceRuntime, VoiceRuntimeSynthesisResult,
     VoiceRuntimeTranscriptionResult, VoiceRuntimeWakeWordResult, VoiceSettings,
-    VoiceSettingsRequest, VoiceSynthesisRequest, VoiceSynthesisResult,
+    VoiceProviderStatus, VoiceSettingsRequest, VoiceSynthesisRequest, VoiceSynthesisResult,
     VoiceSynthesisRuntimeRequest, VoiceTranscriptionRequest, VoiceTranscriptionResult,
     VoiceWakeWordRequest, VoiceWakeWordResult,
 };
@@ -935,6 +938,19 @@ fn get_voice_settings(
 }
 
 #[tauri::command]
+fn get_voice_provider_status(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<VoiceProviderStatus, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .voice_provider_status(&agent_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
 fn update_voice_settings(
     state: State<'_, AppState>,
     request: VoiceSettingsRequest,
@@ -1396,6 +1412,20 @@ fn create_extension_proposal(
         .as_ref()
         .ok_or("operation_unavailable")?
         .create_extension_proposal(request)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
+fn import_extension_manifest(
+    state: State<'_, AppState>,
+    request: ExtensionImportRequest,
+) -> Result<ExtensionProposal, &'static str> {
+    ensure_extension_mutation_allowed(state.inner(), &request.agent_id, request.temporary_chat)?;
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .import_extension_manifest(request)
         .map_err(|error| error.code())
 }
 
@@ -2225,6 +2255,11 @@ fn list_screen_vision_fixtures(
 }
 
 #[tauri::command]
+fn get_screen_vision_provider_status() -> ScreenVisionProviderStatus {
+    screen_vision::screen_vision_provider_status()
+}
+
+#[tauri::command]
 fn list_screen_vision_sessions(
     state: State<'_, AppState>,
     agent_id: String,
@@ -2750,6 +2785,15 @@ fn refresh_ollama_models(state: State<'_, AppState>) -> Result<(), &'static str>
 }
 
 #[tauri::command]
+fn get_ollama_status(state: State<'_, AppState>) -> Result<ProviderSnapshot, &'static str> {
+    state
+        .chat
+        .as_ref()
+        .map(ChatCoordinator::provider_snapshot)
+        .ok_or("operation_unavailable")
+}
+
+#[tauri::command]
 fn select_phase_one_model(
     state: State<'_, AppState>,
     agent_id: String,
@@ -3114,6 +3158,7 @@ pub fn run() {
             list_cognitive_candidates,
             reject_cognitive_candidate,
             get_voice_settings,
+            get_voice_provider_status,
             list_voice_devices,
             update_voice_settings,
             set_custom_voice_consent,
@@ -3143,6 +3188,7 @@ pub fn run() {
             list_extension_catalog,
             list_extension_proposals,
             create_extension_proposal,
+            import_extension_manifest,
             create_agent_extension_proposal,
             review_extension_proposal,
             activate_extension,
@@ -3191,6 +3237,7 @@ pub fn run() {
             list_gateway_revocations,
             revoke_gateway_session,
             revoke_gateway_transfer,
+            get_screen_vision_provider_status,
             list_screen_vision_fixtures,
             list_screen_vision_sessions,
             list_screen_vision_jobs,
@@ -3227,6 +3274,7 @@ pub fn run() {
             set_agent_memory_status,
             update_agent_memory,
             refresh_ollama_models,
+            get_ollama_status,
             select_phase_one_model,
             update_keep_alive,
             update_agent_profile,

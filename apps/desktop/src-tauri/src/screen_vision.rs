@@ -495,6 +495,12 @@ pub struct ScreenVisionFixture {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ScreenVisionProviderStatus {
+    pub state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScreenVisionPreview {
     pub fixture_id: String,
     pub monitor_id: String,
@@ -716,6 +722,27 @@ pub fn screen_vision_fixtures() -> Vec<ScreenVisionFixture> {
     fixtures.extend(windows_displays());
     fixtures.truncate(MAX_SCREEN_VISION_FIXTURES);
     fixtures
+}
+
+pub fn screen_vision_provider_status() -> ScreenVisionProviderStatus {
+    let Some(configured) = std::env::var_os(LOCAL_VISUAL_PROVIDER_ENV) else {
+        return ScreenVisionProviderStatus {
+            state: "not_configured".into(),
+        };
+    };
+    let Some(configured) = configured.to_str().filter(|value| !value.is_empty()) else {
+        return ScreenVisionProviderStatus {
+            state: "invalid".into(),
+        };
+    };
+    ScreenVisionProviderStatus {
+        state: if validate_local_visual_provider_path(Path::new(configured)) {
+            "ready"
+        } else {
+            "invalid"
+        }
+        .into(),
+    }
 }
 
 #[cfg(windows)]

@@ -8,8 +8,10 @@ import {
   parseCognitiveTrait,
   parseHealthResponse,
   parseOwnerCorrectionResult,
+  parseProviderSnapshot,
   parseRollbackResult,
   parseVoiceEmotionHypothesis,
+  parseVoiceProviderStatus,
   parseVoiceSettings,
   parseVoiceSynthesisResult,
   parseVoiceTranscriptionResult,
@@ -42,6 +44,7 @@ import {
   parseScreenVisionHypothesis,
   parseScreenVisionJob,
   parseScreenVisionPrivacy,
+  parseScreenVisionProviderStatus,
   parseScreenVisionSession,
   parseScreenVisionSessions,
   COMPANION_FIXTURE_APP_VERSION,
@@ -386,6 +389,63 @@ describe("voice contracts", () => {
     expect(parseVoiceDevice({ schemaVersion: 2, reference: "local:wavein:0", direction: "input", displayName: "x" })).toBeNull();
     expect(parseVoiceDevice({ schemaVersion: 1, reference: "remote:wavein:0", direction: "input", displayName: "x" })).toBeNull();
     expect(parseVoiceDevice({ schemaVersion: 1, reference: "local:wavein:0", direction: "other", displayName: "x" })).toBeNull();
+  });
+
+  it("accepts provider status without exposing executable paths", () => {
+    expect(
+      parseVoiceProviderStatus({
+        recognition: {
+          state: "ready",
+          reference: "fixture:stt-v1",
+          synthetic: true,
+        },
+        synthesis: {
+          state: "not_configured",
+          reference: null,
+          synthetic: false,
+        },
+      }),
+    ).not.toBeNull();
+    expect(
+      parseVoiceProviderStatus({
+        recognition: {
+          state: "ready",
+          reference: "C:/private/provider.exe",
+          synthetic: false,
+        },
+        synthesis: {
+          state: "not_configured",
+          reference: null,
+          synthetic: false,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("accepts bounded Ollama snapshots and rejects malformed models", () => {
+    const snapshot = {
+      state: "available" as const,
+      detailCode: "provider_available",
+      models: [{
+        ref: "ollama:fixture-model",
+        providerModelId: "fixture-model",
+        displayName: "Fixture model",
+        size: 1_024,
+        family: null,
+        parameterSize: null,
+        quantization: null,
+        capabilities: [],
+      }],
+      refreshedAt: 1,
+    };
+    const model = snapshot.models[0]!;
+    expect(parseProviderSnapshot(snapshot)).not.toBeNull();
+    expect(
+      parseProviderSnapshot({
+        ...snapshot,
+        models: [{ ...model, ref: "ollama:../private" }],
+      }),
+    ).toBeNull();
   });
 
   const settings = {
@@ -878,6 +938,8 @@ describe("metadata-only screen vision contracts", () => {
   };
 
   it("accepts bounded synthetic fixtures, lifecycle records, results and audit", () => {
+    expect(parseScreenVisionProviderStatus({ state: "not_configured" })).not.toBeNull();
+    expect(parseScreenVisionProviderStatus({ state: "not_configured", path: "hidden" })).toBeNull();
     expect(parseScreenVisionFixture(fixture)).not.toBeNull();
     expect(parseScreenVisionFixtures([fixture])).not.toBeNull();
     expect(parseScreenVisionPrivacy(privacy)).not.toBeNull();
