@@ -97,6 +97,7 @@ pub struct WorkspaceRoot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceRootRequest {
+    pub agent_id: String,
     pub path: String,
     pub idempotency_key: String,
     pub temporary_chat: bool,
@@ -105,6 +106,7 @@ pub struct WorkspaceRootRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceRootIdRequest {
+    pub agent_id: String,
     pub root_id: String,
     pub idempotency_key: String,
     pub temporary_chat: bool,
@@ -338,8 +340,8 @@ impl Database {
         let key = valid_idempotency(&request.idempotency_key)?;
         let path = validate_workspace_root(Path::new(&request.path))?;
         let mut connection = self.open()?;
-        let owner_id = OWNER_ID.to_string();
         let transaction = connection.transaction()?;
+        let owner_id = ensure_owner_tx(&transaction, &request.agent_id)?;
         let existing: Option<(String, String)> = transaction
             .query_row(
                 "SELECT id, path FROM workspace_roots WHERE owner_user_id = ?1 AND idempotency_key = ?2",
@@ -404,11 +406,12 @@ impl Database {
         let _ = valid_idempotency(&request.idempotency_key)?;
         let mut connection = self.open()?;
         let transaction = connection.transaction()?;
+        let owner_id = ensure_owner_tx(&transaction, &request.agent_id)?;
         let root = load_workspace_root_tx(&transaction, &request.root_id)?;
         transaction.execute(
             "UPDATE workspace_roots SET enabled = 0, updated_at = ?1
              WHERE id = ?2 AND owner_user_id = ?3",
-            params![now_millis(), request.root_id, OWNER_ID],
+            params![now_millis(), request.root_id, owner_id],
         )?;
         let updated = load_workspace_root_tx(&transaction, &root.id)?;
         transaction.commit()?;
@@ -2606,7 +2609,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::database::ASTRA_ID;
+    use crate::database::{ASTRA_ID, LUMA_ID};
 
     fn test_path() -> PathBuf {
         std::env::temp_dir()
@@ -2760,6 +2763,51 @@ mod tests {
     }
 
     #[test]
+    fn workspace_root_mutations_bind_to_requesting_agent_and_temporary_chat() {
+        let path = test_path();
+        let workspace = path.parent().unwrap().join("luma-workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let database = Database::initialize(&path).unwrap();
+        let root = database
+            .add_workspace_root(WorkspaceRootRequest {
+                agent_id: LUMA_ID.into(),
+                path: workspace.to_string_lossy().into_owned(),
+                idempotency_key: "luma-root-add".into(),
+                temporary_chat: false,
+            })
+            .unwrap();
+        assert!(root.enabled);
+        assert_eq!(
+            database.add_workspace_root(WorkspaceRootRequest {
+                agent_id: LUMA_ID.into(),
+                path: workspace.to_string_lossy().into_owned(),
+                idempotency_key: "luma-root-temporary-add".into(),
+                temporary_chat: true,
+            }),
+            Err(DatabaseError::Cognitive("tools_blocked_temporary"))
+        );
+        assert_eq!(
+            database.remove_workspace_root(WorkspaceRootIdRequest {
+                agent_id: LUMA_ID.into(),
+                root_id: root.id.clone(),
+                idempotency_key: "luma-root-temporary-remove".into(),
+                temporary_chat: true,
+            }),
+            Err(DatabaseError::Cognitive("tools_blocked_temporary"))
+        );
+        let removed = database
+            .remove_workspace_root(WorkspaceRootIdRequest {
+                agent_id: LUMA_ID.into(),
+                root_id: root.id,
+                idempotency_key: "luma-root-remove".into(),
+                temporary_chat: false,
+            })
+            .unwrap();
+        assert!(!removed.enabled);
+        cleanup(&path);
+    }
+
+    #[test]
     fn local_workspace_root_move_is_bounded_approved_executed_and_compensated() {
         let path = test_path();
         let workspace = path.parent().unwrap().join("workspace");
@@ -2769,6 +2817,7 @@ mod tests {
         let database = Database::initialize(&path).unwrap();
         let root = database
             .add_workspace_root(WorkspaceRootRequest {
+                agent_id: ASTRA_ID.into(),
                 path: workspace.to_string_lossy().into_owned(),
                 idempotency_key: "root-add".into(),
                 temporary_chat: false,
@@ -2971,6 +3020,7 @@ mod tests {
         let database = Database::initialize(&path).unwrap();
         let root = database
             .add_workspace_root(WorkspaceRootRequest {
+                agent_id: ASTRA_ID.into(),
                 path: workspace.to_string_lossy().into_owned(),
                 idempotency_key: "partial-root".into(),
                 temporary_chat: false,

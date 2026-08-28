@@ -2511,7 +2511,10 @@ mod tests {
             .import_extension_manifest(request)
             .expect("replayed manifest");
         assert_eq!(first, replay);
-        assert_eq!(first.source_kind, ExtensionSourceKind::AdministratorSelected);
+        assert_eq!(
+            first.source_kind,
+            ExtensionSourceKind::AdministratorSelected
+        );
 
         let mut unknown = serde_json::to_value(manifest("1.0.0", vec![])).unwrap();
         unknown
