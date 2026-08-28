@@ -35,8 +35,9 @@ function phase(agentId = "astra"): PhaseOneState {
     conversation: {
       id: `conversation-${agentId}`,
       agentId,
-      title: "Conversa principal",
+      title: "Conversa",
       modelOverrideRef: null,
+      isPinned: false,
     },
     messages: [
       {
@@ -105,12 +106,16 @@ function event(
 
 describe("conversation event reducer", () => {
   it("scopes a model override command to the active agent and conversation", () => {
-    expect(conversationOverrideArguments("luma", "secondary", "ollama:test")).toEqual({
+    expect(
+      conversationOverrideArguments("luma", "secondary", "ollama:test"),
+    ).toEqual({
       agentId: "luma",
       conversationId: "secondary",
       modelRef: "ollama:test",
     });
-    expect(conversationOverrideArguments("astra", "main", "").modelRef).toBeNull();
+    expect(
+      conversationOverrideArguments("astra", "main", "").modelRef,
+    ).toBeNull();
   });
 
   it("appends each ordered streaming chunk exactly once", () => {

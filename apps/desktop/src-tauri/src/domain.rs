@@ -294,6 +294,7 @@ pub struct PhaseOneConversation {
     pub agent_id: String,
     pub title: String,
     pub model_override_ref: Option<String>,
+    pub is_pinned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

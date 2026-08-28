@@ -17,6 +17,12 @@ type RectLike = {
   height: number;
 };
 
+export type CustomSpritePixel = {
+  x: number;
+  y: number;
+  color: string;
+};
+
 export function readSpriteMask(image: HTMLImageElement): SpriteMask | null {
   const width = image.naturalWidth;
   const height = image.naturalHeight;
@@ -98,15 +104,28 @@ export function buildInteractiveRegions(
   spriteBounds: RectLike | null,
   labelBounds: RectLike | null,
   thoughtBounds: RectLike | null,
+  customPixels: readonly CustomSpritePixel[] = [],
 ): OverlayInteractiveRegion[] {
   const regions: OverlayInteractiveRegion[] = [];
-  if (mask !== null && spriteBounds !== null) {
-    for (const pixelRegion of mask.regions) {
+  const spriteMask =
+    mask ??
+    (customPixels.length > 0
+      ? { width: 64, height: 64, regions: [] as PixelRegion[] }
+      : null);
+  if (spriteMask !== null && spriteBounds !== null) {
+    for (const pixelRegion of mergeCustomSpriteRegions(
+      spriteMask,
+      customPixels,
+    )) {
       regions.push({
-        x: spriteBounds.x + (pixelRegion.x / mask.width) * spriteBounds.width,
-        y: spriteBounds.y + (pixelRegion.y / mask.height) * spriteBounds.height,
-        width: (pixelRegion.width / mask.width) * spriteBounds.width,
-        height: (pixelRegion.height / mask.height) * spriteBounds.height,
+        x:
+          spriteBounds.x +
+          (pixelRegion.x / spriteMask.width) * spriteBounds.width,
+        y:
+          spriteBounds.y +
+          (pixelRegion.y / spriteMask.height) * spriteBounds.height,
+        width: (pixelRegion.width / spriteMask.width) * spriteBounds.width,
+        height: (pixelRegion.height / spriteMask.height) * spriteBounds.height,
       });
     }
   }
@@ -115,6 +134,51 @@ export function buildInteractiveRegions(
     if (valid !== null) regions.push(valid);
   }
   return regions;
+}
+
+function mergeCustomSpriteRegions(
+  mask: SpriteMask,
+  customPixels: readonly CustomSpritePixel[],
+): PixelRegion[] {
+  if (customPixels.length === 0) return mask.regions;
+
+  const rgba = new Uint8ClampedArray(mask.width * mask.height * 4);
+  for (const region of mask.regions) {
+    const startX = Math.max(0, Math.floor(region.x));
+    const endX = Math.min(mask.width, Math.ceil(region.x + region.width));
+    const startY = Math.max(0, Math.floor(region.y));
+    const endY = Math.min(mask.height, Math.ceil(region.y + region.height));
+    for (let y = startY; y < endY; y += 1) {
+      for (let x = startX; x < endX; x += 1) {
+        rgba[(y * mask.width + x) * 4 + 3] = 255;
+      }
+    }
+  }
+  for (const pixel of customPixels) {
+    if (
+      !Number.isInteger(pixel.x) ||
+      !Number.isInteger(pixel.y) ||
+      pixel.x < 0 ||
+      pixel.x >= mask.width ||
+      pixel.y < 0 ||
+      pixel.y >= mask.height ||
+      colorAlpha(pixel.color) < SPRITE_ALPHA_THRESHOLD
+    ) {
+      continue;
+    }
+    rgba[(pixel.y * mask.width + pixel.x) * 4 + 3] = 255;
+  }
+  return alphaPixelsToRegions(rgba, mask.width, mask.height);
+}
+
+function colorAlpha(color: string): number {
+  if (/^#[0-9a-f]{3}$/i.test(color) || /^#[0-9a-f]{6}$/i.test(color))
+    return 255;
+  if (/^#[0-9a-f]{4}$/i.test(color))
+    return Number.parseInt(color.slice(4), 16) * 17;
+  if (/^#[0-9a-f]{8}$/i.test(color))
+    return Number.parseInt(color.slice(7), 16);
+  return 0;
 }
 
 export function elementBounds(element: HTMLElement | null): RectLike | null {

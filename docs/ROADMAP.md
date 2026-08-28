@@ -242,6 +242,24 @@ memory and has no raw-audio persistence, upload/network path, real-person clonin
 listener. See the
 [Phase 8 voice specification](PHASE_8_VOICE_SPEC.md).
 
+## Future target: bundled offline voice for Windows and Android `[ROADMAP]`
+
+A future voice phase must provide a first-party offline default so the Owner
+does not need to register an external executable provider during normal setup.
+The target acceptance criteria are:
+
+- the Windows MSI includes a supported offline STT path and offline TTS path;
+- the Android APK includes hardware-appropriate bundled STT and TTS paths;
+- first-run voice works without environment-variable edits or invented provider
+  identifiers;
+- if model size prevents direct bundling, AIP manages an explicit first-party
+  offline-model installation/download flow;
+- external providers remain available as advanced alternatives, with Windows
+  and Android allowed to use different platform-appropriate runtimes.
+
+This is a roadmap target only; the current voice checkpoint remains an
+external-prerequisite local runtime and does not claim bundled STT or TTS.
+
 ## Post-v0.1 Phase 9: supervised tools `[EXTERNAL-PREREQUISITE PRODUCTIZED — HUMAN VALIDATION PENDING]`
 
 The current checkpoint implements the bounded local architecture described in

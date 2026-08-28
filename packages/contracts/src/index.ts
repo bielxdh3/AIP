@@ -184,6 +184,7 @@ export type PhaseOneConversation = {
   agentId: string;
   title: string;
   modelOverrideRef: string | null;
+  isPinned: boolean;
 };
 
 export type AgentMemory = {
