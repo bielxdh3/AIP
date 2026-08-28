@@ -138,7 +138,7 @@ One current row per agent.
 | `owner_user_id` | text FK | Access boundary |
 | `title` | text | User-facing title |
 | `kind` | text | `normal`, `private` |
-| `is_main` | integer | One main conversation per agent |
+| `is_main` | integer | Legacy compatibility flag; new UX treats rows as ordinary conversations |
 | `model_override_ref` | text nullable | Conversation override |
 | `created_at` | integer | UTC milliseconds |
 | `updated_at` | integer | UTC milliseconds |
@@ -381,7 +381,7 @@ Use typed accessors. Do not scatter unvalidated arbitrary settings across the co
 
 Required constraints include:
 
-- one main conversation per agent;
+- each conversation belongs to exactly one agent;
 - one current agent-state row per agent;
 - conversation owner and agent must match message owner boundaries;
 - memory owner and agent must match ownership boundaries;
@@ -421,8 +421,11 @@ Memory, model inventory, audit, export, and multi-user tables remain design-only
 ## 14. Phase 1 implemented subset
 
 Migration `0002_phase1_conversations.sql` adds `conversations` and
-`conversation_messages`. Rust creates exactly one active provisional main conversation for
-each existing agent, using a UUIDv7 identifier and the title `Conversa principal`.
+`conversation_messages`. The current seed creates one ordinary starter conversation for
+each existing agent, using a UUIDv7 identifier and the title `Nova conversa`. Migration `0026`
+adds pinning and converts legacy `is_main` rows to ordinary conversations without deleting
+their IDs, messages, or agent ownership. Active selection falls back deterministically when
+an archived or deleted conversation was selected.
 
 The message table stores explicit conversation and agent identifiers with a composite foreign
 key, plain text, the actual provider-qualified model reference, generation request correlation,

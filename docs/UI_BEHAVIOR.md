@@ -59,7 +59,7 @@ Shows:
 Shows:
 
 - conversation list grouped by agent;
-- main conversation marker;
+- pinned and recent conversation ordering;
 - private conversation marker;
 - temporary chat entry point;
 - active model and conversation override;
@@ -339,9 +339,9 @@ Statuses must not falsely appear as model-generated dialogue.
 ### 9.1 Conversation list
 
 - grouped or filterable by agent;
-- main conversation pinned;
+- pinned conversations first;
 - private indicator;
-- archived section;
+- archived management is secondary and not permanently visible;
 - temporary chat visually separated;
 - last updated time;
 - model override indicator.

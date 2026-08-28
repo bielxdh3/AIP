@@ -154,8 +154,13 @@ validation reservations are recorded in
   blockers, while their earlier validation notes remain useful historical evidence.
 
 - General, Owner profile, Agents, and Models settings still need their own focused functional UX pass. Safe mode and diagnostics are the currently implemented settings controls; backup/export remains unavailable.
-- The default controls and conversation management layout need a cohesive visual-design pass. This is intentionally separate from generation reliability work.
-- The current visual design is functional but unattractive; a dedicated visual redesign is deferred.
+- The conversation-first sidebar and profile layout were corrected in the current
+  UX checkpoint; installed-Windows scaling, keyboard-flow, and Portuguese
+  readability still require human review.
+- The current voice checkpoint does not bundle STT/TTS. The future Windows MSI
+  and Android APK target is documented in [ROADMAP.md](ROADMAP.md).
+- Actual Windows overlay transparency and alpha-shaped hit testing remain
+  installed-build human checks; deterministic region tests do not replace them.
 - Simulated energy, mood, and sleep currently have limited visible effects and require further manual validation.
 - The pixel editor remains layer-based. A future semantic sprite system should define reusable head, torso, arms, hands, legs, feet, hair, clothing, accessories, attachment joints, and safe animation poses without changing a user-created identity.
 - Automatic memory candidates remain subject to manual validation before broader learning behavior is expanded; low-value and temporary content must not be consolidated automatically.

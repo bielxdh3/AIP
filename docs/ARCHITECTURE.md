@@ -278,7 +278,8 @@ The agent core must not depend on Ollama-specific types.
 Responsibilities:
 
 - multiple chats per agent;
-- main chat designation;
+- agent-scoped conversation selection and ordering;
+- pinning, archiving, renaming, and deletion with ownership checks;
 - private chat flags;
 - temporary in-memory sessions;
 - message persistence;
@@ -287,6 +288,14 @@ Responsibilities:
 - streaming state;
 - cancellation;
 - concise bubble preview generation.
+
+The desktop primary surface is an agent-first sidebar: agents own the
+conversation list, while memories, state, appearance, profile, local
+resources, and application settings are secondary destinations. Legacy rows
+that carried `is_main = 1` are preserved as ordinary conversations by a
+forward migration; their IDs, messages, and agent ownership remain unchanged.
+The active conversation falls back deterministically to the newest pinned,
+then newest active row when the previous selection is archived or deleted.
 
 ### 7.3 Memory service
 

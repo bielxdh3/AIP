@@ -15,6 +15,7 @@ import {
 } from "./conversation-state";
 import { buildBubbleInteractiveRegions, elementBounds } from "./overlay-input";
 import { usePhaseOne } from "./use-phase-one";
+import { openAgentConversations } from "./agent-navigation";
 import "./App.css";
 
 export default function Bubble({ agentId }: { agentId: string }) {
@@ -191,7 +192,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
           <button
             className="bubble-open-chat"
             type="button"
-            onClick={() => void invoke("open_main_conversation", { agentId })}
+            onClick={() => void openAgentConversations(agentId)}
           >
             Abrir conversa completa
           </button>
