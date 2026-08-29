@@ -57,6 +57,7 @@ describe("ConversationList regressions", () => {
     );
     expect(list?.getAttribute("role")).toBe("region");
     expect(list?.getAttribute("aria-label")).toBe("Conversas do agente");
+    expect(list?.classList.contains("conversation-list")).toBe(true);
     expect(container.querySelectorAll(".conversation-list-item")).toHaveLength(
       2,
     );
@@ -108,5 +109,39 @@ describe("ConversationList regressions", () => {
       agentId: "agent",
     });
     expect(container.textContent).toContain("Conversa arquivada");
+  });
+
+  it("closes the action menu before focusing the rename editor", async () => {
+    invoke.mockImplementation((command: string) =>
+      command === "list_agent_conversations"
+        ? Promise.resolve(current)
+        : Promise.resolve([]),
+    );
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(<ConversationList agentId="agent" changed={vi.fn()} />);
+      await Promise.resolve();
+    });
+
+    const menu = container.querySelector(
+      ".conversation-actions",
+    ) as HTMLDetailsElement;
+    await act(async () => menu.querySelector("summary")?.click());
+    expect(menu.open).toBe(true);
+    await act(async () =>
+      Array.from(menu.querySelectorAll("button"))
+        .find((button) => button.textContent === "Renomear")
+        ?.click(),
+    );
+    expect(menu.open).toBe(false);
+    expect(container.querySelector(".conversation-rename")).not.toBeNull();
+    expect(
+      container.querySelector(".conversation-rename-actions"),
+    ).not.toBeNull();
+    expect(document.activeElement).toBe(
+      container.querySelector(".conversation-rename input"),
+    );
   });
 });

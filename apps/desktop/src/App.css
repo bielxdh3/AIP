@@ -33,11 +33,31 @@ body {
   overflow-x: hidden;
 }
 
+* {
+  scrollbar-color: #3b8778 #11161c;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #11161c;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid #11161c;
+  border-radius: 999px;
+  background: #3b8778;
+}
+
 :root[data-surface="overlay"],
 :root[data-surface="overlay"] body,
 :root[data-surface="overlay"] #root {
   min-width: 0;
-  background: transparent;
+  background: rgba(0, 0, 0, 0) !important;
   overflow: hidden;
 }
 
@@ -79,6 +99,7 @@ a:focus-visible {
   height: 100%;
   min-width: 0;
   min-height: 100vh;
+  min-height: 0;
   flex-direction: column;
   background: #0b0d11;
   overflow: hidden;
@@ -888,7 +909,8 @@ a:focus-visible {
 .profile-fields > label > input,
 .profile-fields > label > select,
 .profile-fields > label > textarea,
-.profile-default-model select {
+.profile-default-model select,
+.date-picker-trigger {
   box-sizing: border-box;
   width: 100%;
   min-height: 36px;
@@ -907,6 +929,80 @@ a:focus-visible {
 .profile-fields > label:nth-child(7),
 .profile-fields > .trait-controls {
   grid-column: 1 / -1;
+}
+
+.date-picker {
+  position: relative;
+  min-width: 0;
+}
+
+.date-picker-trigger {
+  text-align: left;
+  cursor: pointer;
+}
+
+.date-picker-trigger:hover,
+.date-picker-trigger:focus-visible {
+  border-color: #57d8bd;
+}
+
+.date-picker-popover {
+  position: absolute;
+  z-index: 4;
+  top: calc(100% + 5px);
+  left: 0;
+  width: min(280px, 100vw - 40px);
+  padding: 10px;
+  border: 1px solid #374452;
+  border-radius: 7px;
+  background: #111820;
+  box-shadow: 0 12px 28px #000a;
+}
+
+.date-picker-header,
+.date-picker-weekdays,
+.date-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 3px;
+}
+
+.date-picker-header {
+  grid-template-columns: 32px 1fr 32px;
+  align-items: center;
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.date-picker-header button,
+.date-picker-grid button {
+  min-height: 30px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #dce3eb;
+  background: transparent;
+  cursor: pointer;
+}
+
+.date-picker-header button:hover,
+.date-picker-header button:focus-visible,
+.date-picker-grid button:hover,
+.date-picker-grid button:focus-visible {
+  border-color: #3b8778;
+  background: #1a2b2b;
+}
+
+.date-picker-grid button.selected {
+  border-color: #57d8bd;
+  color: #07120f;
+  background: #57d8bd;
+}
+
+.date-picker-weekdays {
+  margin-bottom: 3px;
+  color: #7f8a98;
+  font-size: 10px;
+  text-align: center;
 }
 
 .trait-controls {
@@ -966,6 +1062,149 @@ a:focus-visible {
   color: #b9f5e8;
   background: #16342f;
   cursor: pointer;
+}
+
+.cognitive-core-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.cognitive-feature {
+  display: grid;
+  gap: 9px;
+  padding-top: 10px;
+  border-top: 1px solid #293139;
+}
+
+.cognitive-feature h4 {
+  margin: 0;
+  color: #edf0f5;
+}
+
+.cognitive-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.cognitive-form-grid label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: #aeb6c2;
+  font-size: 12px;
+}
+
+.cognitive-form-grid label:nth-child(n + 3),
+.cognitive-form-grid .cognitive-wide {
+  grid-column: 1 / -1;
+}
+
+.cognitive-form-grid input,
+.cognitive-form-grid textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 1px solid #333c47;
+  border-radius: 5px;
+  color: #e1e5eb;
+  background: #0b0f14;
+}
+
+.cognitive-form-grid textarea {
+  min-height: 80px;
+  resize: vertical;
+}
+
+.cognitive-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cognitive-feature > ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.cognitive-feature > ul li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.cognitive-core-panel {
+  min-width: 0;
+}
+
+.cognitive-core-panel > h4,
+.cognitive-core-panel > h5 {
+  margin: 18px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid #293139;
+  color: #edf0f5;
+}
+
+.cognitive-core-panel > label {
+  display: grid;
+  max-width: 760px;
+  gap: 5px;
+  margin-top: 10px;
+  color: #aeb6c2;
+  font-size: 12px;
+}
+
+.cognitive-core-panel > label input,
+.cognitive-core-panel > label select,
+.cognitive-core-panel > label textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 1px solid #333c47;
+  border-radius: 5px;
+  color: #e1e5eb;
+  background: #0b0f14;
+}
+
+.cognitive-core-panel > label textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+
+.cognitive-core-panel > button,
+.cognitive-core-panel li button {
+  width: fit-content;
+  min-height: 30px;
+  margin-top: 8px;
+  padding: 6px 9px;
+  border: 1px solid #303742;
+  border-radius: 5px;
+  color: #dce1e8;
+  background: #171d24;
+  cursor: pointer;
+}
+
+.cognitive-core-panel > button:hover:not(:disabled),
+.cognitive-core-panel > button:focus-visible,
+.cognitive-core-panel li button:hover:not(:disabled),
+.cognitive-core-panel li button:focus-visible {
+  border-color: #57d8bd;
+}
+
+.cognitive-core-panel > ul {
+  display: grid;
+  gap: 9px;
+  margin: 9px 0 0;
+  padding-left: 20px;
+}
+
+.cognitive-core-panel > ul li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
 }
 
 .profile-actions .secondary-action {
@@ -1349,17 +1588,25 @@ a:focus-visible {
   display: flex;
   height: 100vh;
   height: 100dvh;
+  min-height: 0;
   flex-direction: column;
   padding: 22px 14px 16px;
   border-right: 1px solid #22262f;
   background: #0e1116;
+  overflow: hidden;
 }
 
 .conversation-list {
   display: grid;
+  flex: 1;
   gap: 6px;
   min-width: 0;
+  min-height: 0;
   margin: 0 -4px;
+  align-content: start;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
 }
 
 .conversation-list-heading {
@@ -1469,8 +1716,8 @@ a:focus-visible {
 .conversation-rename {
   display: grid;
   grid-column: 1 / -1;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 4px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
 }
 
 .conversation-rename input {
@@ -1481,6 +1728,17 @@ a:focus-visible {
   border-radius: 4px;
   color: #e1e5eb;
   background: #0b0f14;
+}
+
+.conversation-rename-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.conversation-rename button {
+  white-space: nowrap;
 }
 
 .conversation-archive-management {
@@ -1610,6 +1868,14 @@ a:focus-visible {
   align-items: center;
   gap: 11px;
   padding: 0 8px 24px;
+}
+
+.brand-logo {
+  display: block;
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+  image-rendering: auto;
 }
 
 .brand-mark {
@@ -2123,7 +2389,7 @@ h3 {
   width: 100vw;
   height: 100vh;
   place-items: center;
-  background: transparent;
+  background: rgba(0, 0, 0, 0) !important;
   overflow: hidden;
 }
 
@@ -2135,8 +2401,12 @@ h3 {
   place-items: end center;
   padding: 12px;
   border: 0;
+  outline: 0;
+  appearance: none;
+  -webkit-appearance: none;
   color: #eef1f5;
-  background: transparent;
+  background-color: transparent !important;
+  box-shadow: none;
   cursor: grab;
   user-select: none;
   -webkit-user-select: none;
@@ -2149,6 +2419,10 @@ h3 {
 .overlay-agent .agent-sprite {
   width: 128px;
   height: 128px;
+}
+
+.overlay-agent > .agent-sprite {
+  pointer-events: none;
 }
 
 .overlay-label {
@@ -2266,6 +2540,27 @@ h3 {
   .memory-composer-actions {
     grid-column: auto;
     grid-row: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .conversation-header {
+    display: grid;
+    gap: 14px;
+    padding: 18px;
+  }
+
+  .conversation-controls {
+    width: 100%;
+  }
+
+  .message-history,
+  .composer {
+    padding-inline: 18px;
+  }
+
+  .conversation-rename button {
+    min-width: 0;
   }
 }
 

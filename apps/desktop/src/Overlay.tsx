@@ -93,13 +93,16 @@ export default function Overlay({ agentId }: { agentId: string }) {
     const observer = new ResizeObserver(scheduleReport);
     elements.forEach((element) => observer.observe(element));
     window.addEventListener("resize", scheduleReport);
-    reportInteractiveRegions();
     return () => {
       if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
       observer.disconnect();
       window.removeEventListener("resize", scheduleReport);
     };
   }, [reportInteractiveRegions]);
+
+  useLayoutEffect(() => {
+    reportInteractiveRegions();
+  }, [reportInteractiveRegions, thinking]);
 
   useEffect(
     () => () => {
