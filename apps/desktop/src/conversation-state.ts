@@ -20,6 +20,28 @@ export function conversationOverrideArguments(
 
 const terminalStatuses = new Set(["complete", "failed", "cancelled"]);
 
+export type RequestTerminalState =
+  "completed" | "cancelled" | "failed_provider" | "failed_other";
+
+export function requestTerminalState(
+  eventType: PhaseOneEvent["eventType"],
+  errorCode: string | null = null,
+): RequestTerminalState | null {
+  switch (eventType) {
+    case "generation.complete":
+      return "completed";
+    case "generation.cancelled":
+      return "cancelled";
+    case "generation.failed":
+      return errorCode === "model_unavailable" ||
+        errorCode?.startsWith("provider_")
+        ? "failed_provider"
+        : "failed_other";
+    default:
+      return null;
+  }
+}
+
 export function createConversationViewState(
   phase: PhaseOneState,
 ): ConversationViewState {
@@ -77,8 +99,8 @@ export function applyPhaseOneEvent(
     );
   }
 
-  const nextStatus = terminalStatus(event.eventType);
-  if (nextStatus === null) {
+  const terminal = requestTerminalState(event.eventType, event.errorCode);
+  if (terminal === null) {
     if (event.eventType !== "generation.started") return state;
     return updateMessage(state, messageIndex, {
       ...current,
@@ -90,9 +112,15 @@ export function applyPhaseOneEvent(
     event.eventType === "generation.cancelled" &&
     event.sequence !== null &&
     event.sequence >= lastSequence;
-  if (!cancellationSequenceCanAdvance && event.sequence !== lastSequence) {
+  if (
+    event.sequence !== null &&
+    !cancellationSequenceCanAdvance &&
+    event.sequence !== lastSequence
+  ) {
     return state;
   }
+  const nextSequences = { ...state.lastSequenceByRequest };
+  delete nextSequences[event.requestId];
   return updateMessage(
     {
       ...state,
@@ -104,11 +132,17 @@ export function applyPhaseOneEvent(
             entry.assistantMessageId !== event.assistantMessageId,
         ),
       },
+      lastSequenceByRequest: nextSequences,
     },
     messageIndex,
     {
       ...current,
-      status: nextStatus,
+      status:
+        terminal === "completed"
+          ? "complete"
+          : terminal === "cancelled"
+            ? "cancelled"
+            : "failed",
       errorCode: event.errorCode,
     },
   );
@@ -126,21 +160,6 @@ function updateMessage(
     phase: { ...state.phase, messages },
     lastSequenceByRequest: sequences,
   };
-}
-
-function terminalStatus(
-  eventType: PhaseOneEvent["eventType"],
-): ConversationMessage["status"] | null {
-  switch (eventType) {
-    case "generation.complete":
-      return "complete";
-    case "generation.failed":
-      return "failed";
-    case "generation.cancelled":
-      return "cancelled";
-    default:
-      return null;
-  }
 }
 
 export function requestForAgent(
@@ -163,7 +182,9 @@ export function canRequestCancellation(
 
 export function messageStatusCopy(message: ConversationMessage): string {
   if (message.status === "failed") {
-    return message.content ? "Resposta interrompida" : "Não foi possível gerar a resposta";
+    return message.content
+      ? "Resposta interrompida"
+      : "Não foi possível gerar a resposta";
   }
   const labels: Record<ConversationMessage["status"], string> = {
     pending: "Aguardando processamento…",

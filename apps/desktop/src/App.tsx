@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -252,6 +253,19 @@ function withInitialTraitDefaults(agent: ProvisionalAgent): ProvisionalAgent {
   return { ...agent, traitsJson: JSON.stringify(traits) };
 }
 
+type ProfileDraftUpdater = (current: ProvisionalAgent) => ProvisionalAgent;
+
+function profileDraftIsDirty(
+  draft: ProvisionalAgent,
+  persisted: ProvisionalAgent,
+  fictiveAgeText: string,
+): boolean {
+  return (
+    JSON.stringify(draft) !== JSON.stringify(persisted) ||
+    fictiveAgeText !== String(persisted.fictiveAge)
+  );
+}
+
 function validCalendarDate(value: string): boolean {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
   if (match === null) return false;
@@ -275,6 +289,7 @@ function profileValidationError(agent: ProvisionalAgent): string | null {
   if (!agent.ageCategory.trim()) return "Informe a categoria de idade.";
   if (
     !Number.isFinite(agent.fictiveAge) ||
+    !Number.isInteger(agent.fictiveAge) ||
     agent.fictiveAge < 0 ||
     agent.fictiveAge > 10000
   )
@@ -290,6 +305,200 @@ function profileValidationError(agent: ProvisionalAgent): string | null {
   )
     return "Cada traço deve ser um número entre 0 e 100.";
   return null;
+}
+
+function isoDate(year: number, month: number, day: number): string {
+  return `${year.toString().padStart(4, "0")}-${(month + 1)
+    .toString()
+    .padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
+}
+
+function dateParts(value: string): [number, number, number] | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (match === null) return null;
+  return [Number(match[1]), Number(match[2]) - 1, Number(match[3])];
+}
+
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+}
+
+function DatePicker({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const initial = dateParts(value) ?? [2000, 0, 1];
+  const [open, setOpen] = useState(false);
+  const [view, setView] = useState({ year: initial[0], month: initial[1] });
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const dayRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const popoverId = useId();
+  const selected = dateParts(value);
+  const selectedDate = selected === null ? null : isoDate(...selected);
+  const firstWeekday = new Date(Date.UTC(view.year, view.month, 1)).getUTCDay();
+  const monthLabel = new Intl.DateTimeFormat("pt-BR", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(Date.UTC(view.year, view.month, 1)));
+  const days = Array.from(
+    { length: daysInMonth(view.year, view.month) },
+    (_, index) => index + 1,
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    function closeOnOutside(event: PointerEvent) {
+      if (!pickerRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    }
+    document.addEventListener("pointerdown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const focusDate =
+      selected !== null &&
+      selected[0] === view.year &&
+      selected[1] === view.month
+        ? isoDate(...selected)
+        : isoDate(view.year, view.month, 1);
+    window.requestAnimationFrame(() => dayRefs.current[focusDate]?.focus());
+  }, [open, selected, selectedDate, view.month, view.year]);
+
+  function shiftMonth(delta: number) {
+    const next = new Date(Date.UTC(view.year, view.month + delta, 1));
+    setView({ year: next.getUTCFullYear(), month: next.getUTCMonth() });
+  }
+
+  function selectDay(day: number) {
+    onChange(isoDate(view.year, view.month, day));
+    setOpen(false);
+  }
+
+  function moveDay(day: number, delta: number) {
+    const next = new Date(Date.UTC(view.year, view.month, day + delta));
+    const nextValue = isoDate(
+      next.getUTCFullYear(),
+      next.getUTCMonth(),
+      next.getUTCDate(),
+    );
+    setView({ year: next.getUTCFullYear(), month: next.getUTCMonth() });
+    onChange(nextValue);
+    window.requestAnimationFrame(() => dayRefs.current[nextValue]?.focus());
+  }
+
+  return (
+    <div className="date-picker" ref={pickerRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="date-picker-trigger"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls={popoverId}
+        onClick={() => {
+          if (!open && selected !== null)
+            setView({ year: selected[0], month: selected[1] });
+          setOpen((current) => !current);
+        }}
+      >
+        {selected === null
+          ? "Selecionar data"
+          : `${selected[2].toString().padStart(2, "0")}/${(selected[1] + 1)
+              .toString()
+              .padStart(2, "0")}/${selected[0]}`}
+      </button>
+      {open ? (
+        <div
+          id={popoverId}
+          className="date-picker-popover"
+          role="dialog"
+          aria-label="Selecionar data"
+        >
+          <div className="date-picker-header">
+            <button
+              type="button"
+              aria-label="Mês anterior"
+              onClick={() => shiftMonth(-1)}
+            >
+              ‹
+            </button>
+            <strong>{monthLabel}</strong>
+            <button
+              type="button"
+              aria-label="Próximo mês"
+              onClick={() => shiftMonth(1)}
+            >
+              ›
+            </button>
+          </div>
+          <div className="date-picker-weekdays" aria-hidden="true">
+            {["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"].map((day) => (
+              <span key={day}>{day}</span>
+            ))}
+          </div>
+          <div className="date-picker-grid" role="grid" aria-label={monthLabel}>
+            {Array.from({ length: firstWeekday }, (_, index) => (
+              <span key={`empty-${index}`} aria-hidden="true" />
+            ))}
+            {days.map((day) => {
+              const current = isoDate(view.year, view.month, day);
+              return (
+                <button
+                  type="button"
+                  role="gridcell"
+                  key={current}
+                  aria-label={current}
+                  aria-selected={current === selectedDate}
+                  tabIndex={
+                    current ===
+                    (selectedDate ?? isoDate(view.year, view.month, 1))
+                      ? 0
+                      : -1
+                  }
+                  ref={(element) => {
+                    dayRefs.current[current] = element;
+                  }}
+                  className={current === selectedDate ? "selected" : undefined}
+                  onClick={() => selectDay(day)}
+                  onKeyDown={(event) => {
+                    const offsets: Record<string, number> = {
+                      ArrowLeft: -1,
+                      ArrowRight: 1,
+                      ArrowUp: -7,
+                      ArrowDown: 7,
+                    };
+                    const offset = offsets[event.key];
+                    if (offset !== undefined) {
+                      event.preventDefault();
+                      moveDay(day, offset);
+                    }
+                  }}
+                >
+                  {day}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function AgentButton({
@@ -934,9 +1143,13 @@ function ProfileCanonicalSelect({
 function ProfileFields({
   draft,
   onChange,
+  fictiveAgeText,
+  onFictiveAgeTextChange,
 }: {
   draft: ProvisionalAgent;
-  onChange: (next: ProvisionalAgent) => void;
+  onChange: (update: ProfileDraftUpdater) => void;
+  fictiveAgeText?: string;
+  onFictiveAgeTextChange?: (value: string) => void;
 }) {
   return (
     <>
@@ -944,48 +1157,56 @@ function ProfileFields({
         Nome
         <input
           value={draft.name}
-          onChange={(event) => onChange({ ...draft, name: event.target.value })}
+          onChange={(event) =>
+            onChange((current) => ({ ...current, name: event.target.value }))
+          }
         />
       </label>
       <label>
         Data de aniversário
-        <input
-          type="date"
+        <DatePicker
           value={draft.birthday}
-          onChange={(event) =>
-            onChange({ ...draft, birthday: event.target.value })
+          onChange={(birthday) =>
+            onChange((current) => ({ ...current, birthday }))
           }
         />
       </label>
       <label>
         Idade fictícia
         <input
-          type="number"
+          type="text"
+          inputMode="numeric"
           min="0"
           max="10000"
-          value={draft.fictiveAge}
-          onChange={(event) =>
-            onChange({ ...draft, fictiveAge: Number(event.target.value) })
-          }
+          value={fictiveAgeText ?? String(draft.fictiveAge)}
+          onChange={(event) => {
+            const text = event.target.value;
+            onFictiveAgeTextChange?.(text);
+            onChange((current) => ({ ...current, fictiveAge: Number(text) }));
+          }}
         />
       </label>
       <ProfileCanonicalSelect
         field="ageCategory"
         label="Categoria de idade"
         value={draft.ageCategory}
-        onChange={(ageCategory) => onChange({ ...draft, ageCategory })}
+        onChange={(ageCategory) =>
+          onChange((current) => ({ ...current, ageCategory }))
+        }
       />
       <ProfileCanonicalSelect
         field="species"
         label="Tipo de identidade"
         value={draft.species}
-        onChange={(species) => onChange({ ...draft, species })}
+        onChange={(species) => onChange((current) => ({ ...current, species }))}
       />
       <ProfileCanonicalSelect
         field="pronouns"
         label="Pronomes"
         value={draft.pronouns}
-        onChange={(pronouns) => onChange({ ...draft, pronouns })}
+        onChange={(pronouns) =>
+          onChange((current) => ({ ...current, pronouns }))
+        }
       />
       <label>
         Descrição
@@ -993,7 +1214,10 @@ function ProfileFields({
           rows={4}
           value={draft.personalitySummary}
           onChange={(event) =>
-            onChange({ ...draft, personalitySummary: event.target.value })
+            onChange((current) => ({
+              ...current,
+              personalitySummary: event.target.value,
+            }))
           }
         />
       </label>
@@ -1003,7 +1227,10 @@ function ProfileFields({
           type="hidden"
           value={draft.traitsJson}
           onChange={(event) =>
-            onChange({ ...draft, traitsJson: event.target.value })
+            onChange((current) => ({
+              ...current,
+              traitsJson: event.target.value,
+            }))
           }
         />
         <div className="trait-grid">
@@ -1017,8 +1244,12 @@ function ProfileFields({
                 step="1"
                 value={traitValues(draft.traitsJson)[key] ?? 50}
                 onChange={(event) =>
-                  onChange(
-                    updateInitialTrait(draft, key, Number(event.target.value)),
+                  onChange((current) =>
+                    updateInitialTrait(
+                      current,
+                      key,
+                      Number(event.target.value),
+                    ),
                   )
                 }
               />
@@ -1030,7 +1261,7 @@ function ProfileFields({
   );
 }
 
-function ProfileForm({
+export function ProfileForm({
   agent,
   done,
 }: {
@@ -1039,17 +1270,48 @@ function ProfileForm({
 }) {
   const [draft, setDraft] = useState(agent);
   const [persisted, setPersisted] = useState(agent);
+  const [fictiveAgeText, setFictiveAgeText] = useState(
+    String(agent.fictiveAge),
+  );
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const { phase, load: loadPhase } = usePhaseOne(agent.id);
+  const draftRef = useRef(draft);
+  const persistedRef = useRef(persisted);
+  const fictiveAgeTextRef = useRef(fictiveAgeText);
+  draftRef.current = draft;
+  persistedRef.current = persisted;
+  fictiveAgeTextRef.current = fictiveAgeText;
   useEffect(() => {
-    setDraft(agent);
-    setPersisted(agent);
-    setError(null);
-    setSaved(false);
+    const switchedAgent = persistedRef.current.id !== agent.id;
+    const draftIsDirty = profileDraftIsDirty(
+      draftRef.current,
+      persistedRef.current,
+      fictiveAgeTextRef.current,
+    );
+    if (switchedAgent || !draftIsDirty) {
+      setPersisted(agent);
+      persistedRef.current = agent;
+      setDraft(agent);
+      draftRef.current = agent;
+      setFictiveAgeText(String(agent.fictiveAge));
+      setError(null);
+      setSaved(false);
+    }
   }, [agent]);
+  const isDirty = profileDraftIsDirty(draft, persisted, fictiveAgeText);
   async function save() {
-    const prepared = withInitialTraitDefaults(draft);
+    const fictiveAge = Number(fictiveAgeText);
+    if (
+      !fictiveAgeText.trim() ||
+      !Number.isInteger(fictiveAge) ||
+      fictiveAge < 0 ||
+      fictiveAge > 10000
+    ) {
+      setError("Informe uma idade fictícia válida.");
+      return;
+    }
+    const prepared = withInitialTraitDefaults({ ...draft, fictiveAge });
     const validation = profileValidationError(prepared);
     if (validation !== null) {
       setError(validation);
@@ -1068,6 +1330,7 @@ function ProfileForm({
       await invoke("update_agent_profile", { agent: prepared });
       setDraft(prepared);
       setPersisted(prepared);
+      setFictiveAgeText(String(prepared.fictiveAge));
       setSaved(true);
       done();
     } catch {
@@ -1086,7 +1349,12 @@ function ProfileForm({
       <section className="profile-section">
         <h2>Identidade e detalhes</h2>
         <div className="profile-fields">
-          <ProfileFields draft={draft} onChange={setDraft} />
+          <ProfileFields
+            draft={draft}
+            onChange={(update) => setDraft(update)}
+            fictiveAgeText={fictiveAgeText}
+            onFictiveAgeTextChange={setFictiveAgeText}
+          />
         </div>
       </section>
       <section className="profile-section profile-default-model">
@@ -1123,9 +1391,10 @@ function ProfileForm({
         <button
           type="button"
           className="secondary-action"
-          disabled={JSON.stringify(draft) === JSON.stringify(persisted)}
+          disabled={!isDirty}
           onClick={() => {
             setDraft(persisted);
+            setFictiveAgeText(String(persisted.fictiveAge));
             setError(null);
             setSaved(false);
           }}
@@ -1146,22 +1415,35 @@ function OnboardingForm({
 }) {
   const [drafts, setDrafts] = useState(agents);
   const [persisted, setPersisted] = useState(agents);
+  const [fictiveAgeTexts, setFictiveAgeTexts] = useState(() =>
+    agents.map((agent) => String(agent.fictiveAge)),
+  );
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const currentAgents = useRef(agents);
+  currentAgents.current = agents;
+  const agentIds = agents.map((agent) => agent.id).join("\0");
   useEffect(() => {
-    setDrafts(agents);
-    setPersisted(agents);
+    const next = currentAgents.current;
+    setDrafts(next);
+    setPersisted(next);
+    setFictiveAgeTexts(next.map((agent) => String(agent.fictiveAge)));
     setError(null);
     setSaved(false);
-  }, [agents]);
-  const update = (index: number, next: ProvisionalAgent) =>
+  }, [agentIds]);
+  const update = (index: number, updateAgent: ProfileDraftUpdater) =>
     setDrafts((current) =>
       current.map((agent, currentIndex) =>
-        currentIndex === index ? next : agent,
+        currentIndex === index ? updateAgent(agent) : agent,
       ),
     );
   async function save() {
-    const prepared = drafts.map(withInitialTraitDefaults);
+    const prepared = drafts.map((agent, index) =>
+      withInitialTraitDefaults({
+        ...agent,
+        fictiveAge: Number(fictiveAgeTexts[index] ?? ""),
+      }),
+    );
     if (prepared.some((agent) => profileValidationError(agent) !== null)) {
       setError("Revise a data, a idade e os traços dos dois agentes.");
       return;
@@ -1210,7 +1492,15 @@ function OnboardingForm({
           <div className="profile-fields">
             <ProfileFields
               draft={agent}
-              onChange={(next) => update(index, next)}
+              onChange={(updateAgent) => update(index, updateAgent)}
+              fictiveAgeText={fictiveAgeTexts[index]}
+              onFictiveAgeTextChange={(value) =>
+                setFictiveAgeTexts((current) =>
+                  current.map((text, textIndex) =>
+                    textIndex === index ? value : text,
+                  ),
+                )
+              }
             />
           </div>
         </fieldset>
@@ -1227,6 +1517,9 @@ function OnboardingForm({
           disabled={JSON.stringify(drafts) === JSON.stringify(persisted)}
           onClick={() => {
             setDrafts(persisted);
+            setFictiveAgeTexts(
+              persisted.map((agent) => String(agent.fictiveAge)),
+            );
             setError(null);
             setSaved(false);
           }}
@@ -1249,8 +1542,10 @@ export function ConversationList({
   const [archived, setArchived] = useState<PhaseOneConversation[]>([]);
   const [title, setTitle] = useState("");
   const [manageArchived, setManageArchived] = useState(false);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
   const load = useCallback(
     () =>
       void invoke<PhaseOneConversation[]>("list_agent_conversations", {
@@ -1261,6 +1556,9 @@ export function ConversationList({
   useEffect(() => {
     load();
   }, [load]);
+  useEffect(() => {
+    if (renamingId !== null) renameInputRef.current?.focus();
+  }, [renamingId]);
   async function create() {
     if (!title.trim()) return;
     const created = await invoke<PhaseOneConversation>(
@@ -1297,6 +1595,7 @@ export function ConversationList({
       title: renameValue,
     });
     setRenamingId(null);
+    setOpenMenuId(null);
     await load();
   }
   async function archive(item: PhaseOneConversation) {
@@ -1353,7 +1652,13 @@ export function ConversationList({
             {item.isPinned ? "★ " : ""}
             {item.title}
           </button>
-          <details className="conversation-actions">
+          <details
+            className="conversation-actions"
+            open={openMenuId === item.id}
+            onToggle={(event) =>
+              setOpenMenuId(event.currentTarget.open ? item.id : null)
+            }
+          >
             <summary aria-label={`Ações de ${item.title}`}>…</summary>
             <div>
               <button
@@ -1370,7 +1675,12 @@ export function ConversationList({
               </button>
               <button
                 type="button"
-                onClick={() => {
+                onClick={(event) => {
+                  const menu = event.currentTarget.closest(
+                    "details",
+                  ) as HTMLDetailsElement | null;
+                  if (menu !== null) menu.open = false;
+                  setOpenMenuId(null);
                   setRenamingId(item.id);
                   setRenameValue(item.title);
                 }}
@@ -1398,15 +1708,21 @@ export function ConversationList({
               }}
             >
               <input
+                ref={renameInputRef}
                 aria-label={`Novo nome de ${item.title}`}
                 value={renameValue}
                 maxLength={160}
                 onChange={(event) => setRenameValue(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setRenamingId(null);
+                }}
               />
-              <button type="submit">Salvar nome</button>
-              <button type="button" onClick={() => setRenamingId(null)}>
-                Cancelar
-              </button>
+              <div className="conversation-rename-actions">
+                <button type="submit">Salvar nome</button>
+                <button type="button" onClick={() => setRenamingId(null)}>
+                  Cancelar
+                </button>
+              </div>
             </form>
           ) : null}
         </div>
@@ -3516,377 +3832,420 @@ function CognitiveCorePanel({ agentId }: { agentId: string }) {
     ) ?? selectedConversation?.conversation;
 
   return (
-    <section aria-label="Núcleo cognitivo 7B a 7E">
+    <section
+      className="cognitive-core-panel"
+      aria-label="Núcleo cognitivo 7B a 7E"
+      data-layout="cognitive-forms"
+    >
       <h3>Núcleo cognitivo</h3>
       <p>
         Opiniões, relacionamentos e objetivos são registros limitados e
         fictícios; nenhuma ação externa é executada.
       </p>
       {loading ? <p>Carregando opiniões, relações e objetivos…</p> : null}
-      <h4>Opiniões</h4>
-      <ul>
-        {opinions.map((opinion) => (
-          <li key={opinion.id}>
-            {opinion.subjectRef}: posição {opinion.stance.toFixed(2)}, confiança{" "}
-            {opinion.confidence.toFixed(2)} ({opinion.status}) —{" "}
-            {opinion.evidence.find((item) => item.status === "active")
-              ? `${opinion.evidence.find((item) => item.status === "active")!.claimValue} — fonte: ${opinion.evidence.find((item) => item.status === "active")!.sourceKind}/${opinion.evidence.find((item) => item.status === "active")!.sourceReference ?? "Owner"}, classificação: ${opinion.evidence.find((item) => item.status === "active")!.classification}, confiança: ${opinion.evidence.find((item) => item.status === "active")!.confidence.toFixed(2)}`
-              : "sem evidência ativa"}
-            <div>
-              {opinion.evidence.some((item) => item.status === "active") ? (
+      <section className="cognitive-feature" data-feature="opinions">
+        <h4>Opiniões</h4>
+        <ul>
+          {opinions.map((opinion) => (
+            <li key={opinion.id}>
+              {opinion.subjectRef}: posição {opinion.stance.toFixed(2)},
+              confiança {opinion.confidence.toFixed(2)} ({opinion.status}) —{" "}
+              {opinion.evidence.find((item) => item.status === "active")
+                ? `${opinion.evidence.find((item) => item.status === "active")!.claimValue} — fonte: ${opinion.evidence.find((item) => item.status === "active")!.sourceKind}/${opinion.evidence.find((item) => item.status === "active")!.sourceReference ?? "Owner"}, classificação: ${opinion.evidence.find((item) => item.status === "active")!.classification}, confiança: ${opinion.evidence.find((item) => item.status === "active")!.confidence.toFixed(2)}`
+                : "sem evidência ativa"}
+              <div className="cognitive-form-actions">
+                {opinion.evidence.some((item) => item.status === "active") ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    aria-label={`Corrigir evidência de ${opinion.subjectRef}`}
+                    onClick={() => selectOpinionCorrection(opinion)}
+                  >
+                    Corrigir evidência
+                  </button>
+                ) : null}{" "}
                 <button
                   type="button"
                   disabled={busy}
-                  aria-label={`Corrigir evidência de ${opinion.subjectRef}`}
-                  onClick={() => selectOpinionCorrection(opinion)}
+                  onClick={() => void setOpinionStatus(opinion)}
                 >
-                  Corrigir evidência
+                  Marcar opinião como disputada
+                </button>{" "}
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void recalculateOpinion(opinion)}
+                >
+                  Recalcular opinião
                 </button>
-              ) : null}{" "}
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void setOpinionStatus(opinion)}
-              >
-                Marcar opinião como disputada
-              </button>{" "}
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void recalculateOpinion(opinion)}
-              >
-                Recalcular opinião
-              </button>
-            </div>
-          </li>
-        ))}
-      </ul>
-      <label>
-        Assunto da opinião
-        <input
-          value={opinionSubject}
-          maxLength={128}
-          onChange={(event) => setOpinionSubject(event.target.value)}
-        />
-      </label>
-      <label>
-        Posição (-1 a 1)
-        <input
-          type="number"
-          min="-1"
-          max="1"
-          step="0.01"
-          value={opinionStance}
-          onChange={(event) => setOpinionStance(event.target.value)}
-        />
-      </label>
-      <label>
-        Evidência do Owner
-        <textarea
-          value={opinionClaim}
-          maxLength={500}
-          onChange={(event) => setOpinionClaim(event.target.value)}
-        />
-      </label>
-      <label>
-        Motivo da opinião
-        <textarea
-          value={opinionReason}
-          maxLength={500}
-          onChange={(event) => setOpinionReason(event.target.value)}
-        />
-      </label>
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => void proposeOpinion()}
-      >
-        Propor opinião
-      </button>
-      <label>
-        Motivo da ação de opinião
-        <textarea
-          value={opinionActionReason}
-          maxLength={500}
-          onChange={(event) => setOpinionActionReason(event.target.value)}
-        />
-      </label>
-      {correctionOpinionId ? (
-        <div>
-          <p>Correção da evidência selecionada</p>
+              </div>
+            </li>
+          ))}
+        </ul>
+        <div className="cognitive-form-grid">
           <label>
-            Nova evidência
-            <textarea
-              value={correctionClaim}
-              maxLength={500}
-              onChange={(event) => setCorrectionClaim(event.target.value)}
+            Assunto da opinião
+            <input
+              value={opinionSubject}
+              maxLength={128}
+              onChange={(event) => setOpinionSubject(event.target.value)}
             />
           </label>
+          <label>
+            Posição (-1 a 1)
+            <input
+              type="number"
+              min="-1"
+              max="1"
+              step="0.01"
+              value={opinionStance}
+              onChange={(event) => setOpinionStance(event.target.value)}
+            />
+          </label>
+          <label>
+            Evidência do Owner
+            <textarea
+              value={opinionClaim}
+              maxLength={500}
+              onChange={(event) => setOpinionClaim(event.target.value)}
+            />
+          </label>
+          <label>
+            Motivo da opinião
+            <textarea
+              value={opinionReason}
+              maxLength={500}
+              onChange={(event) => setOpinionReason(event.target.value)}
+            />
+          </label>
+        </div>
+        <div className="cognitive-form-actions">
           <button
             type="button"
             disabled={busy}
-            onClick={() => void correctOpinion()}
+            onClick={() => void proposeOpinion()}
           >
-            Confirmar correção da evidência
+            Propor opinião
           </button>
         </div>
-      ) : null}
-
-      <h4>Relacionamentos</h4>
-      <ul>
-        {relationships.map((relationship) => (
-          <li key={relationship.id}>
-            {relationship.subjectRef}: familiaridade{" "}
-            {relationship.values.familiarity.toFixed(2)}, confiança{" "}
-            {relationship.values.trust.toFixed(2)}, afinidade{" "}
-            {relationship.values.affinity.toFixed(2)}, admiração{" "}
-            {relationship.values.admiration.toFixed(2)}, irritação{" "}
-            {relationship.values.irritation.toFixed(2)}, confiabilidade{" "}
-            {relationship.values.reliabilityExpectation.toFixed(2)} —{" "}
-            {relationship.events.length} evento(s)
-            <div>
+        <div className="cognitive-form-grid">
+          <label>
+            Motivo da ação de opinião
+            <textarea
+              value={opinionActionReason}
+              maxLength={500}
+              onChange={(event) => setOpinionActionReason(event.target.value)}
+            />
+          </label>
+        </div>
+        {correctionOpinionId ? (
+          <div className="cognitive-form-grid cognitive-wide">
+            <p>Correção da evidência selecionada</p>
+            <label>
+              Nova evidência
+              <textarea
+                value={correctionClaim}
+                maxLength={500}
+                onChange={(event) => setCorrectionClaim(event.target.value)}
+              />
+            </label>
+            <div className="cognitive-form-actions">
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => void resetRelationship(relationship)}
+                onClick={() => void correctOpinion()}
               >
-                Redefinir relacionamento
-              </button>{" "}
-              {relationship.events[0]?.status === "applied" ? (
+                Confirmar correção da evidência
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      <section className="cognitive-feature" data-feature="relationships">
+        <h4>Relacionamentos</h4>
+        <ul>
+          {relationships.map((relationship) => (
+            <li key={relationship.id}>
+              {relationship.subjectRef}: familiaridade{" "}
+              {relationship.values.familiarity.toFixed(2)}, confiança{" "}
+              {relationship.values.trust.toFixed(2)}, afinidade{" "}
+              {relationship.values.affinity.toFixed(2)}, admiração{" "}
+              {relationship.values.admiration.toFixed(2)}, irritação{" "}
+              {relationship.values.irritation.toFixed(2)}, confiabilidade{" "}
+              {relationship.values.reliabilityExpectation.toFixed(2)} —{" "}
+              {relationship.events.length} evento(s)
+              <div className="cognitive-form-actions">
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => void rollbackRelationship(relationship)}
+                  onClick={() => void resetRelationship(relationship)}
                 >
-                  Reverter último evento
+                  Redefinir relacionamento
+                </button>{" "}
+                {relationship.events[0]?.status === "applied" ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void rollbackRelationship(relationship)}
+                  >
+                    Reverter último evento
+                  </button>
+                ) : null}
+              </div>
+            </li>
+          ))}
+        </ul>
+        <div className="cognitive-form-grid">
+          <label>
+            Assunto do relacionamento
+            <input
+              value={relationshipSubject}
+              maxLength={128}
+              onChange={(event) => setRelationshipSubject(event.target.value)}
+            />
+          </label>
+          <label>
+            Alteração de confiança (-0,1 a 0,1)
+            <input
+              type="number"
+              min="-0.1"
+              max="0.1"
+              step="0.01"
+              value={relationshipTrust}
+              onChange={(event) => setRelationshipTrust(event.target.value)}
+            />
+          </label>
+          <label>
+            Motivo do relacionamento
+            <textarea
+              value={relationshipReason}
+              maxLength={500}
+              onChange={(event) => setRelationshipReason(event.target.value)}
+            />
+          </label>
+        </div>
+        <div className="cognitive-form-actions">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void proposeRelationship()}
+          >
+            Propor alteração de relacionamento
+          </button>
+        </div>
+        <div className="cognitive-form-grid">
+          <label>
+            Motivo da redefinição do relacionamento
+            <textarea
+              value={relationshipActionReason}
+              maxLength={500}
+              onChange={(event) =>
+                setRelationshipActionReason(event.target.value)
+              }
+            />
+          </label>
+        </div>
+      </section>
+
+      <section className="cognitive-feature" data-feature="goals">
+        <h4>Objetivos fictícios</h4>
+        <ul>
+          {goals.map((goal) => (
+            <li key={goal.id}>
+              <strong>{goal.title}</strong> — {coreGoalStatusCopy[goal.status]}{" "}
+              — orçamento {goal.budgetUnits}
+              <p>{goal.description}</p>
+              {goal.completionEvidence ? (
+                <p>{goal.completionEvidence}</p>
+              ) : null}
+              <p>
+                Origem: {goal.origin}; prazo: {goal.dueAt ?? "sem prazo"};
+                expiração: {goal.expiresAt ?? "sem expiração"}; fictício: sim.
+              </p>
+              {goal.status === "proposed" ? (
+                <>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void approveGoal(goal)}
+                  >
+                    Aprovar objetivo
+                  </button>{" "}
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void setGoalStatus(goal, "rejected")}
+                  >
+                    Rejeitar objetivo
+                  </button>
+                </>
+              ) : null}
+              {goal.status === "active" ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void startActivity(goal)}
+                >
+                  Iniciar atividade fictícia
                 </button>
               ) : null}
-            </div>
-          </li>
-        ))}
-      </ul>
-      <label>
-        Assunto do relacionamento
-        <input
-          value={relationshipSubject}
-          maxLength={128}
-          onChange={(event) => setRelationshipSubject(event.target.value)}
-        />
-      </label>
-      <label>
-        Alteração de confiança (-0,1 a 0,1)
-        <input
-          type="number"
-          min="-0.1"
-          max="0.1"
-          step="0.01"
-          value={relationshipTrust}
-          onChange={(event) => setRelationshipTrust(event.target.value)}
-        />
-      </label>
-      <label>
-        Motivo do relacionamento
-        <textarea
-          value={relationshipReason}
-          maxLength={500}
-          onChange={(event) => setRelationshipReason(event.target.value)}
-        />
-      </label>
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => void proposeRelationship()}
-      >
-        Propor alteração de relacionamento
-      </button>
-      <label>
-        Motivo da redefinição do relacionamento
-        <textarea
-          value={relationshipActionReason}
-          maxLength={500}
-          onChange={(event) => setRelationshipActionReason(event.target.value)}
-        />
-      </label>
+              {goal.status === "active" ? (
+                <>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void setGoalStatus(goal, "completed")}
+                  >
+                    Concluir objetivo
+                  </button>{" "}
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void setGoalStatus(goal, "suspended")}
+                  >
+                    Suspender objetivo
+                  </button>
+                </>
+              ) : null}
+              {goal.status === "suspended" ? (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void setGoalStatus(goal, "active")}
+                >
+                  Retomar objetivo
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+        <div className="cognitive-form-grid">
+          <label>
+            Tipo de atividade fictícia
+            <input
+              value={activityType}
+              maxLength={64}
+              onChange={(event) => setActivityType(event.target.value)}
+            />
+          </label>
+        </div>
+      </section>
 
-      <h4>Objetivos fictícios</h4>
-      <ul>
-        {goals.map((goal) => (
-          <li key={goal.id}>
-            <strong>{goal.title}</strong> — {coreGoalStatusCopy[goal.status]} —
-            orçamento {goal.budgetUnits}
-            <p>{goal.description}</p>
-            {goal.completionEvidence ? <p>{goal.completionEvidence}</p> : null}
-            <p>
-              Origem: {goal.origin}; prazo: {goal.dueAt ?? "sem prazo"};
-              expiração: {goal.expiresAt ?? "sem expiração"}; fictício: sim.
-            </p>
-            {goal.status === "proposed" ? (
-              <>
+      <section className="cognitive-feature" data-feature="activities">
+        <h4>Atividades fictícias</h4>
+        <ul>
+          {activities.map((activity) => (
+            <li key={activity.id}>
+              {activity.activityType} — {activity.status} — orçamento{" "}
+              {activity.budgetUnits}; somente simulação.{" "}
+              {activity.status === "active" ? (
+                <>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void setActivityStatus(activity, "paused")}
+                  >
+                    Pausar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() =>
+                      void setActivityStatus(activity, "completed")
+                    }
+                  >
+                    Concluir
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void setActivityStatus(activity, "expired")}
+                  >
+                    Expirar
+                  </button>
+                </>
+              ) : null}
+              {activity.status === "paused" ? (
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => void approveGoal(goal)}
+                  onClick={() => void setActivityStatus(activity, "active")}
                 >
-                  Aprovar objetivo
-                </button>{" "}
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void setGoalStatus(goal, "rejected")}
-                >
-                  Rejeitar objetivo
+                  Retomar
                 </button>
-              </>
-            ) : null}
-            {goal.status === "active" ? (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void startActivity(goal)}
-              >
-                Iniciar atividade fictícia
-              </button>
-            ) : null}
-            {goal.status === "active" ? (
-              <>
+              ) : null}
+              {activity.status !== "archived" ? (
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => void setGoalStatus(goal, "completed")}
+                  onClick={() => void setActivityStatus(activity, "archived")}
                 >
-                  Concluir objetivo
-                </button>{" "}
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void setGoalStatus(goal, "suspended")}
-                >
-                  Suspender objetivo
+                  Arquivar
                 </button>
-              </>
-            ) : null}
-            {goal.status === "suspended" ? (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void setGoalStatus(goal, "active")}
-              >
-                Retomar objetivo
-              </button>
-            ) : null}
-          </li>
-        ))}
-      </ul>
-      <label>
-        Tipo de atividade fictícia
-        <input
-          value={activityType}
-          maxLength={64}
-          onChange={(event) => setActivityType(event.target.value)}
-        />
-      </label>
-      <h4>Atividades fictícias</h4>
-      <ul>
-        {activities.map((activity) => (
-          <li key={activity.id}>
-            {activity.activityType} — {activity.status} — orçamento{" "}
-            {activity.budgetUnits}; somente simulação.{" "}
-            {activity.status === "active" ? (
-              <>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void setActivityStatus(activity, "paused")}
-                >
-                  Pausar
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void setActivityStatus(activity, "completed")}
-                >
-                  Concluir
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void setActivityStatus(activity, "expired")}
-                >
-                  Expirar
-                </button>
-              </>
-            ) : null}
-            {activity.status === "paused" ? (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void setActivityStatus(activity, "active")}
-              >
-                Retomar
-              </button>
-            ) : null}
-            {activity.status !== "archived" ? (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void setActivityStatus(activity, "archived")}
-              >
-                Arquivar
-              </button>
-            ) : null}
-          </li>
-        ))}
-      </ul>
-      <label>
-        Título do objetivo
-        <input
-          value={goalTitle}
-          maxLength={160}
-          onChange={(event) => setGoalTitle(event.target.value)}
-        />
-      </label>
-      <label>
-        Descrição do objetivo
-        <textarea
-          value={goalDescription}
-          maxLength={1000}
-          onChange={(event) => setGoalDescription(event.target.value)}
-        />
-      </label>
-      <label>
-        Prioridade (0 a 100)
-        <input
-          type="number"
-          min="0"
-          max="100"
-          value={goalPriority}
-          onChange={(event) => setGoalPriority(event.target.value)}
-        />
-      </label>
-      <label>
-        Orçamento fictício (1 a 1000)
-        <input
-          type="number"
-          min="1"
-          max="1000"
-          value={goalBudget}
-          onChange={(event) => setGoalBudget(event.target.value)}
-        />
-      </label>
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => void saveGoal("agent_proposal")}
-      >
-        Propor objetivo fictício
-      </button>
-      <button
-        type="button"
-        disabled={busy}
-        onClick={() => void saveGoal("owner")}
-      >
-        Criar objetivo do Owner
-      </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section className="cognitive-feature" data-feature="goal-form">
+        <h4>Novo objetivo fictício</h4>
+        <div className="cognitive-form-grid">
+          <label>
+            Título do objetivo
+            <input
+              value={goalTitle}
+              maxLength={160}
+              onChange={(event) => setGoalTitle(event.target.value)}
+            />
+          </label>
+          <label>
+            Descrição do objetivo
+            <textarea
+              value={goalDescription}
+              maxLength={1000}
+              onChange={(event) => setGoalDescription(event.target.value)}
+            />
+          </label>
+          <label>
+            Prioridade (0 a 100)
+            <input
+              type="number"
+              min="0"
+              max="100"
+              value={goalPriority}
+              onChange={(event) => setGoalPriority(event.target.value)}
+            />
+          </label>
+          <label>
+            Orçamento fictício (1 a 1000)
+            <input
+              type="number"
+              min="1"
+              max="1000"
+              value={goalBudget}
+              onChange={(event) => setGoalBudget(event.target.value)}
+            />
+          </label>
+        </div>
+        <div className="cognitive-form-actions">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void saveGoal("agent_proposal")}
+          >
+            Propor objetivo fictício
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void saveGoal("owner")}
+          >
+            Criar objetivo do Owner
+          </button>
+        </div>
+      </section>
       <h4>Conversas públicas entre agentes</h4>
       <p>
         Cada propósito precisa de autorização explícita nos dois agentes.
@@ -9522,7 +9881,7 @@ function App() {
           aria-label="Abrir configurações"
           onClick={() => void openWorkspace("settings")}
         >
-          <span className="brand-glyph">AI</span>
+          <img className="brand-logo" src="/icon.ico" alt="" />
           <div>
             <strong>A.I.P.</strong>
             <small>Conversa local</small>

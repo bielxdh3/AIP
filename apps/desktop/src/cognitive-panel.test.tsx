@@ -90,6 +90,35 @@ describe("CognitivePanel", () => {
       "protected_identity: 0.50 — protegido",
     );
     expect(container.textContent).toContain("curiosity: 0.50 — evolutivo");
+    expect(
+      container.querySelector('[data-layout="cognitive-forms"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-feature="opinions"] .cognitive-form-grid'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(
+        '[data-feature="relationships"] .cognitive-form-grid',
+      ),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-feature="goals"] .cognitive-form-grid'),
+    ).not.toBeNull();
+    const cognitiveFields = container.querySelectorAll(
+      '[data-layout="cognitive-forms"] .cognitive-form-grid label',
+    );
+    expect(cognitiveFields.length).toBeGreaterThan(0);
+    expect(
+      Array.from(cognitiveFields).every(
+        (field) =>
+          field.querySelectorAll("input, select, textarea").length === 1,
+      ),
+    ).toBe(true);
+    expect(
+      container.querySelectorAll(
+        '[data-layout="cognitive-forms"] .cognitive-form-actions',
+      ).length,
+    ).toBeGreaterThan(0);
     expect(container.querySelectorAll('[aria-label^="Reverter"]').length).toBe(
       1,
     );
@@ -194,9 +223,7 @@ describe("CognitivePanel", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    act(() =>
-      root.render(<CognitivePanel agentId="agt_astra_provisional" />),
-    );
+    act(() => root.render(<CognitivePanel agentId="agt_astra_provisional" />));
     expect(container.textContent).toContain("Carregando valores cognitivos");
     await act(async () => {
       resolveTraits?.(traits);
@@ -602,9 +629,7 @@ describe("CognitivePanel", () => {
     expect(container.textContent).toContain("estado fictício");
   });
 
-  it(
-    "invokes bounded public conversation and resource commands with pending-only candidates",
-    async () => {
+  it("invokes bounded public conversation and resource commands with pending-only candidates", async () => {
     (
       globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
     ).IS_REACT_ACT_ENVIRONMENT = true;
@@ -862,13 +887,12 @@ describe("CognitivePanel", () => {
         (button) => button.textContent === "Rejeitar candidato",
       ),
     ).toHaveLength(0);
-      expect(
-        invoke.mock.calls.some(
-          ([command]) => command === "emit_cognitive_candidate",
-        ),
-      ).toBe(false);
-    },
-  );
+    expect(
+      invoke.mock.calls.some(
+        ([command]) => command === "emit_cognitive_candidate",
+      ),
+    ).toBe(false);
+  });
 
   it("renders safe Portuguese copy for a public conversation backend error", async () => {
     (
