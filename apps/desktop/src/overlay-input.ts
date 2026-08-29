@@ -176,8 +176,7 @@ function colorAlpha(color: string): number {
     return 255;
   if (/^#[0-9a-f]{4}$/i.test(color))
     return Number.parseInt(color.slice(4), 16) * 17;
-  if (/^#[0-9a-f]{8}$/i.test(color))
-    return Number.parseInt(color.slice(7), 16);
+  if (/^#[0-9a-f]{8}$/i.test(color)) return Number.parseInt(color.slice(7), 16);
   return 0;
 }
 

@@ -76,6 +76,34 @@ enum ChunkDecision {
     OutputLimitExceeded,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestTerminalState {
+    Completed,
+    Cancelled,
+    FailedProvider,
+    FailedOther,
+}
+
+fn request_terminal_state(
+    event_type: &str,
+    error_code: Option<&str>,
+) -> Option<RequestTerminalState> {
+    match event_type {
+        "generation.complete" => Some(RequestTerminalState::Completed),
+        "generation.cancelled" => Some(RequestTerminalState::Cancelled),
+        "generation.failed" => Some(if error_code.is_some_and(is_provider_error_code) {
+            RequestTerminalState::FailedProvider
+        } else {
+            RequestTerminalState::FailedOther
+        }),
+        _ => None,
+    }
+}
+
+fn is_provider_error_code(code: &str) -> bool {
+    code == "model_unavailable" || code.starts_with("provider_")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RequestTraceEntry {
     code: &'static str,
@@ -1047,7 +1075,7 @@ impl ChatCoordinator {
             .cancellation_recovery
             .store(true, Ordering::SeqCst);
         lock(&self.inner.discovery_requests).clear();
-        *lock(&self.inner.provider) = ProviderSnapshot::unavailable("runtime_restarting");
+        // A cancellation recovery is a runtime lifecycle event, not provider health evidence.
         self.inner.runtime.shutdown();
         self.inner.runtime.start();
         self.emit_refresh(Some(&job.agent_id));
@@ -1127,12 +1155,17 @@ impl ChatCoordinator {
             }
             RuntimeNotice::Disconnected { detail_code } => {
                 lock(&self.inner.discovery_requests).clear();
-                *lock(&self.inner.provider) = ProviderSnapshot::unavailable(detail_code);
-                if !self
+                let cancellation_recovery = self
                     .inner
                     .cancellation_recovery
-                    .swap(false, Ordering::SeqCst)
-                {
+                    .swap(false, Ordering::SeqCst);
+                let current_provider = lock(&self.inner.provider).clone();
+                *lock(&self.inner.provider) = provider_after_runtime_disconnect(
+                    current_provider,
+                    detail_code,
+                    cancellation_recovery,
+                );
+                if !cancellation_recovery {
                     self.fail_all("runtime_interrupted");
                 }
                 self.emit_refresh(None);
@@ -1207,7 +1240,12 @@ impl ChatCoordinator {
                     return;
                 }
                 self.trace(&request_id, "terminal_received", event.sequence, None);
-                self.finish_runtime_terminal(&request_id, MessageStatus::Complete, None, event)
+                self.finish_runtime_terminal(
+                    &request_id,
+                    RequestTerminalState::Completed,
+                    None,
+                    event,
+                )
             }
             "generation.failed" => {
                 if !lock(&self.inner.queue).accepts_terminal(&event) {
@@ -1231,7 +1269,8 @@ impl ChatCoordinator {
                 );
                 self.finish_runtime_terminal(
                     &request_id,
-                    MessageStatus::Failed,
+                    request_terminal_state("generation.failed", Some(&error_code))
+                        .expect("failed events have a terminal state"),
                     Some(&error_code),
                     event,
                 );
@@ -1242,7 +1281,12 @@ impl ChatCoordinator {
                     return;
                 }
                 self.trace(&request_id, "terminal_received", event.sequence, None);
-                self.finish_runtime_terminal(&request_id, MessageStatus::Cancelled, None, event)
+                self.finish_runtime_terminal(
+                    &request_id,
+                    RequestTerminalState::Cancelled,
+                    None,
+                    event,
+                )
             }
             _ => {}
         }
@@ -1251,10 +1295,17 @@ impl ChatCoordinator {
     fn finish_runtime_terminal(
         &self,
         request_id: &str,
-        status: MessageStatus,
+        terminal: RequestTerminalState,
         error_code: Option<&str>,
         event: PhaseOneEvent,
     ) {
+        let status = match terminal {
+            RequestTerminalState::Completed => MessageStatus::Complete,
+            RequestTerminalState::Cancelled => MessageStatus::Cancelled,
+            RequestTerminalState::FailedProvider | RequestTerminalState::FailedOther => {
+                MessageStatus::Failed
+            }
+        };
         self.finish_active(request_id, status, error_code, event);
     }
 
@@ -1666,6 +1717,18 @@ fn provider_error_snapshot(code: &str) -> ProviderSnapshot {
     }
 }
 
+fn provider_after_runtime_disconnect(
+    current: ProviderSnapshot,
+    detail_code: &str,
+    cancellation_recovery: bool,
+) -> ProviderSnapshot {
+    if cancellation_recovery {
+        current
+    } else {
+        ProviderSnapshot::unavailable(detail_code)
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
@@ -1685,6 +1748,53 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+
+    #[test]
+    fn cancellation_recovery_preserves_provider_health() {
+        let provider = ProviderSnapshot {
+            state: ProviderState::Available,
+            detail_code: "provider_available".into(),
+            models: Vec::new(),
+            refreshed_at: Some(1),
+        };
+        assert_eq!(
+            provider_after_runtime_disconnect(provider.clone(), "runtime_disconnected", true),
+            provider
+        );
+        assert_eq!(
+            provider_after_runtime_disconnect(provider, "runtime_disconnected", false).state,
+            ProviderState::Unavailable
+        );
+        assert_eq!(
+            provider_after_runtime_disconnect(
+                ProviderSnapshot::checking(),
+                "runtime_process_exit_unexpected",
+                false,
+            )
+            .detail_code,
+            "runtime_process_exit_unexpected"
+        );
+    }
+
+    #[test]
+    fn request_terminals_keep_provider_and_other_failures_distinct() {
+        assert_eq!(
+            request_terminal_state("generation.complete", None),
+            Some(RequestTerminalState::Completed)
+        );
+        assert_eq!(
+            request_terminal_state("generation.cancelled", None),
+            Some(RequestTerminalState::Cancelled)
+        );
+        assert_eq!(
+            request_terminal_state("generation.failed", Some("provider_stream_failed")),
+            Some(RequestTerminalState::FailedProvider)
+        );
+        assert_eq!(
+            request_terminal_state("generation.failed", Some("runtime_interrupted")),
+            Some(RequestTerminalState::FailedOther)
+        );
+    }
 
     fn job(id: &str, agent: &str) -> GenerationJob {
         GenerationJob {
