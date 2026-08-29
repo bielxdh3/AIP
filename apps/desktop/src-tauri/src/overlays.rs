@@ -6,7 +6,8 @@ use std::{
 
 use serde::Deserialize;
 use tauri::{
-    App, AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+    window::Color, App, AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    WindowEvent,
 };
 use thiserror::Error;
 
@@ -197,6 +198,7 @@ pub fn create_windows(
             .inner_size(OVERLAY_WIDTH, OVERLAY_HEIGHT)
             .position(agent.position.x, agent.position.y)
             .transparent(true)
+            .background_color(Color(0, 0, 0, 0))
             .decorations(false)
             .shadow(false)
             .always_on_top(true)
@@ -228,6 +230,7 @@ pub fn create_windows(
             .title(format!("A.I.P. â€” conversa com {}", agent.name))
             .inner_size(BUBBLE_WIDTH, BUBBLE_HEIGHT)
             .transparent(true)
+            .background_color(Color(0, 0, 0, 0))
             .decorations(false)
             .shadow(false)
             .always_on_top(true)
@@ -490,6 +493,20 @@ mod tests {
         assert!(!point_is_interactive(true, &painted, 9.0, 20.0));
         assert!(!point_is_interactive(true, &[], 10.0, 20.0));
         assert!(!point_is_interactive(false, &painted, 10.0, 20.0));
+    }
+
+    #[test]
+    fn native_shape_keeps_transparent_holes_pass_through() {
+        let painted = [
+            region(0.0, 0.0, 4.0, 1.0),
+            region(0.0, 1.0, 1.0, 1.0),
+            region(3.0, 1.0, 1.0, 1.0),
+            region(0.0, 2.0, 4.0, 1.0),
+        ];
+        assert!(point_is_interactive(true, &painted, 0.5, 0.5));
+        assert!(point_is_interactive(true, &painted, 3.5, 1.5));
+        assert!(!point_is_interactive(true, &painted, 1.5, 1.5));
+        assert!(!point_is_interactive(true, &painted, 2.5, 1.5));
     }
 
     #[test]

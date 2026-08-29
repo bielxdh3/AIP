@@ -12,6 +12,7 @@ import {
   messageStatusCopy,
   providerRecoveryCopy,
   providerStatusCopy,
+  requestTerminalState,
   requestForAgent,
 } from "./conversation-state";
 
@@ -155,6 +156,7 @@ describe("conversation event reducer", () => {
     );
     expect(complete.phase.messages[0]?.status).toBe("complete");
     expect(complete.phase.queue).toEqual([]);
+    expect(complete.lastSequenceByRequest).toEqual({});
     expect(
       applyPhaseOneEvent(complete, event("generation.failed", 0, null)),
     ).toBe(complete);
@@ -192,6 +194,21 @@ describe("conversation event reducer", () => {
       applyPhaseOneEvent(chunked, event("generation.cancelled", 1, null)).phase
         .queue,
     ).toEqual([]);
+    expect(
+      applyPhaseOneEvent(chunked, event("generation.cancelled", 1, null))
+        .lastSequenceByRequest,
+    ).toEqual({});
+  });
+
+  it("keeps completed, cancelled, provider-failed and other-failed terminals distinct", () => {
+    expect(requestTerminalState("generation.complete")).toBe("completed");
+    expect(requestTerminalState("generation.cancelled")).toBe("cancelled");
+    expect(
+      requestTerminalState("generation.failed", "provider_stream_failed"),
+    ).toBe("failed_provider");
+    expect(
+      requestTerminalState("generation.failed", "runtime_interrupted"),
+    ).toBe("failed_other");
   });
 
   it("settles cancellation when a racing chunk was intentionally suppressed", () => {

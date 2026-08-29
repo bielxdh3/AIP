@@ -31,6 +31,39 @@ describe("sprite alpha regions", () => {
     expect(projected).toEqual([{ x: 20, y: 30, width: 20, height: 20 }]);
   });
 
+  it("preserves transparent holes and disconnected painted regions", () => {
+    const regions = alphaPixelsToRegions(
+      rgbaMask(["####", "#..#", "####"]),
+      4,
+      3,
+    );
+    expect(regions).toEqual([
+      { x: 0, y: 0, width: 4, height: 1 },
+      { x: 0, y: 1, width: 1, height: 1 },
+      { x: 3, y: 1, width: 1, height: 1 },
+      { x: 0, y: 2, width: 4, height: 1 },
+    ]);
+    expect(
+      buildInteractiveRegions(
+        { width: 4, height: 3, regions },
+        { x: 0, y: 0, width: 40, height: 30 },
+        null,
+        null,
+      ),
+    ).not.toContainEqual({ x: 10, y: 10, width: 20, height: 10 });
+  });
+
+  it("does not turn an empty alpha mask into a full sprite hitbox", () => {
+    expect(
+      buildInteractiveRegions(
+        { width: 64, height: 64, regions: [] },
+        { x: 10, y: 20, width: 128, height: 128 },
+        null,
+        null,
+      ),
+    ).toEqual([]);
+  });
+
   it("adds label and only the currently visible thought rectangle", () => {
     const label = { x: 5, y: 6, width: 20, height: 8 };
     const thought = { x: 30, y: 2, width: 16, height: 10 };
