@@ -150,7 +150,16 @@ Default model keep-alive is 15 minutes and is configurable.
 
 Each agent supports multiple conversations similar to ChatGPT.
 
-One conversation is marked as the main conversation and has no fixed subject.
+Conversations are ordinary, owner-scoped records belonging to one agent. The Owner
+explicitly selects the active conversation for each agent; there is no special primary
+record. The selected conversation is restored locally for that agent.
+
+Normal conversations are persisted in local history. A newly created empty conversation
+is also persisted as a draft; the current UI requires a bounded non-empty title, using
+`Nova conversa` for the fallback record created when an agent needs a replacement active
+conversation. Explicitly created empty drafts expire after seven days and are removed
+during later conversation access if they still contain no messages. Creating a message
+clears that expiry, so a conversation with content is retained.
 
 Conversation types:
 
