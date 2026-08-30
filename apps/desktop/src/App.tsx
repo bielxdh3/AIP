@@ -1547,10 +1547,15 @@ export function ConversationList({
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
   const load = useCallback(
-    () =>
-      void invoke<PhaseOneConversation[]>("list_agent_conversations", {
-        agentId,
-      }).then(setItems),
+    async () => {
+      const next = await invoke<PhaseOneConversation[]>(
+        "list_agent_conversations",
+        {
+          agentId,
+        },
+      );
+      setItems(next);
+    },
     [agentId],
   );
   useEffect(() => {
@@ -1571,6 +1576,7 @@ export function ConversationList({
         agentId,
         conversationId: created.id,
       });
+      await load();
       changed();
     } else {
       await load();
@@ -1597,6 +1603,7 @@ export function ConversationList({
     setRenamingId(null);
     setOpenMenuId(null);
     await load();
+    changed();
   }
   async function archive(item: PhaseOneConversation) {
     await invoke("archive_agent_conversation", {
@@ -1620,6 +1627,15 @@ export function ConversationList({
     await load();
     changed();
   }
+  async function pin(item: PhaseOneConversation) {
+    await invoke("pin_agent_conversation", {
+      agentId,
+      conversationId: item.id,
+      pinned: !item.isPinned,
+    });
+    await load();
+    changed();
+  }
   async function restore(item: PhaseOneConversation) {
     await invoke("restore_agent_conversation", {
       agentId,
@@ -1627,6 +1643,7 @@ export function ConversationList({
     });
     await loadArchived();
     await load();
+    changed();
   }
   return (
     <div
@@ -1663,13 +1680,7 @@ export function ConversationList({
             <div>
               <button
                 type="button"
-                onClick={() =>
-                  void invoke("pin_agent_conversation", {
-                    agentId,
-                    conversationId: item.id,
-                    pinned: !item.isPinned,
-                  }).then(load)
-                }
+                onClick={() => void pin(item)}
               >
                 {item.isPinned ? "Desafixar" : "Fixar"}
               </button>
