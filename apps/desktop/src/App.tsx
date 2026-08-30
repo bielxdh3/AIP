@@ -112,6 +112,7 @@ import type {
   ToolSession,
   ProviderSnapshot,
   OllamaModel,
+  PhaseOneState,
   WorkspaceRoot,
 } from "@aip/contracts";
 import {
@@ -1510,6 +1511,192 @@ export function ConversationSurface({
   );
 }
 
+export function ConversationDraftSurface({
+  agentId,
+  onPersisted,
+}: {
+  agentId: string;
+  onPersisted: () => void;
+}) {
+  const { phase, error, load } = usePhaseOne(agentId, false);
+  const [title, setTitle] = useState("");
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
+    null,
+  );
+
+  if (error) {
+    return (
+      <section className="conversation-empty" role="alert">
+        <p>Não foi possível carregar os dados locais para este rascunho.</p>
+        <button type="button" onClick={() => void load()}>
+          Tentar novamente
+        </button>
+      </section>
+    );
+  }
+  if (phase === null)
+    return <section className="conversation-empty">Carregando rascunho…</section>;
+
+  const currentPhase: PhaseOneState = phase;
+  const request = requestForAgent(currentPhase.queue, agentId);
+  const blocked = blockedSendCopy(currentPhase.sendBlockedCode);
+  const canSend = canSendConversationMessage(currentPhase);
+  const canDraft = canDraftConversationMessage(currentPhase);
+
+  async function cancelCurrentRequest() {
+    if (
+      request === null ||
+      !canRequestCancellation(request, cancellingRequestId)
+    )
+      return;
+    setCancellingRequestId(request.requestId);
+    try {
+      await invoke("cancel_phase_one_generation", {
+        requestId: request.requestId,
+      });
+      void load();
+    } catch {
+      setCancellingRequestId(null);
+    }
+  }
+
+  async function persist(sendContent: string | null) {
+    const trimmedTitle = title.trim();
+    if (sendContent === null && !trimmedTitle) {
+      setErrorMessage("Informe um nome para salvar a conversa.");
+      return;
+    }
+    if (busy || (sendContent !== null && (!sendContent || !canSend))) return;
+    setBusy(true);
+    setErrorMessage(null);
+    try {
+      const persistedTitle = (trimmedTitle || "Nova conversa").slice(0, 160);
+      const created = await invoke<PhaseOneConversation>(
+        "create_agent_conversation",
+        { agentId, title: persistedTitle },
+      );
+      if (!created?.id) throw new Error("conversation_create_failed");
+      await invoke("set_active_agent_conversation", {
+        agentId,
+        conversationId: created.id,
+      });
+      onPersisted();
+      if (sendContent !== null) {
+        await invoke("send_phase_one_message", {
+          agentId,
+          conversationId: created.id,
+          content: sendContent,
+        });
+      }
+    } catch {
+      setErrorMessage("Não foi possível salvar a conversa local.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section
+      className="conversation-surface conversation-draft-surface"
+      aria-label={`Nova conversa com ${currentPhase.agent.name}`}
+    >
+      <header className="conversation-header">
+        <div>
+          <p className="eyebrow">Rascunho local</p>
+          <h1>{currentPhase.agent.name}</h1>
+          <span className="conversation-title">
+            Ainda não foi salvo no histórico
+          </span>
+          <span className={`provider-state ${currentPhase.provider.state}`}>
+            {providerStatusCopy(currentPhase)}
+          </span>
+        </div>
+        <div className="conversation-controls draft-controls">
+          <label className="draft-title-field">
+            <span>Nome da conversa (opcional)</span>
+            <input
+              value={title}
+              maxLength={160}
+              placeholder="Nova conversa"
+              disabled={busy}
+              onChange={(event) => setTitle(event.target.value)}
+            />
+          </label>
+          <button
+            type="button"
+            disabled={busy || !title.trim()}
+            onClick={() => void persist(null)}
+          >
+            Salvar nome
+          </button>
+        </div>
+      </header>
+
+      <div className="message-history" aria-live="polite">
+        <div className="history-placeholder">
+          <strong>Rascunho ainda não persistido.</strong>
+          <span>Salve um nome ou envie a primeira mensagem para começar.</span>
+        </div>
+      </div>
+
+      <footer className="composer">
+        {request !== null ? (
+          <div className="queue-banner">
+            <span>
+              {request.active
+                ? request.cancellationRequested
+                  ? "Cancelando resposta…"
+                  : "Gerando resposta…"
+                : "Aguardando processamento…"}
+            </span>
+            <button
+              type="button"
+              disabled={!canRequestCancellation(request, cancellingRequestId)}
+              onClick={() => void cancelCurrentRequest()}
+            >
+              {request.cancellationRequested ||
+              cancellingRequestId === request.requestId
+                ? "Cancelando…"
+                : "Cancelar"}
+            </button>
+          </div>
+        ) : null}
+        <textarea
+          value={draft}
+          maxLength={16_384}
+          placeholder={blocked ?? `Escreva para ${currentPhase.agent.name}`}
+          disabled={!canDraft || busy}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              void persist(draft.trim());
+            }
+          }}
+        />
+        <div className="composer-footer">
+          <span>{blocked ?? "Enter salva e envia · Shift+Enter cria uma linha"}</span>
+          <button
+            type="button"
+            disabled={!canSend || !draft.trim() || busy}
+            onClick={() => void persist(draft.trim())}
+          >
+            Enviar
+          </button>
+        </div>
+        {errorMessage ? (
+          <p className="draft-error" role="alert">
+            {errorMessage}
+          </p>
+        ) : null}
+      </footer>
+    </section>
+  );
+}
+
 function ProfileCanonicalSelect({
   field,
   label,
@@ -2001,13 +2188,16 @@ function OnboardingForm({
 export function ConversationList({
   agentId,
   changed,
+  onNewDraft,
+  onSelectExisting,
 }: {
   agentId: string;
   changed: () => void;
+  onNewDraft?: () => void;
+  onSelectExisting?: () => void;
 }) {
   const [items, setItems] = useState<PhaseOneConversation[]>([]);
   const [archived, setArchived] = useState<PhaseOneConversation[]>([]);
-  const [title, setTitle] = useState("");
   const [manageArchived, setManageArchived] = useState(false);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -2033,25 +2223,8 @@ export function ConversationList({
   useEffect(() => {
     if (renamingId !== null) renameInputRef.current?.focus();
   }, [renamingId]);
-  async function create() {
-    if (!title.trim()) return;
-    const created = await invoke<PhaseOneConversation>(
-      "create_agent_conversation",
-      { agentId, title },
-    );
-    setTitle("");
-    if (created?.id) {
-      await invoke("set_active_agent_conversation", {
-        agentId,
-        conversationId: created.id,
-      });
-      await load();
-      changed();
-    } else {
-      await load();
-    }
-  }
   async function select(conversationId: string) {
+    onSelectExisting?.();
     await invoke("set_active_agent_conversation", { agentId, conversationId });
     changed();
   }
@@ -2237,20 +2410,12 @@ export function ConversationList({
           ))}
         </div>
       ) : null}
-      <input
-        className="conversation-list-input"
-        type="text"
-        value={title}
-        placeholder="Nova conversa"
-        aria-label="Título da nova conversa"
-        onChange={(event) => setTitle(event.target.value)}
-      />
       <button
         type="button"
         className="conversation-list-create"
-        onClick={() => void create()}
+        onClick={() => onNewDraft?.()}
       >
-        Criar conversa
+        Nova conversa
       </button>
       {pendingRemoval ? (
         <ConfirmDialog
@@ -10331,6 +10496,12 @@ function App() {
   const [changingMode, setChangingMode] = useState(false);
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
   const [conversationRevision, setConversationRevision] = useState(0);
+  const [conversationListRevision, setConversationListRevision] = useState(0);
+  const [conversationDraftAgentId, setConversationDraftAgentId] = useState<
+    string | null
+  >(null);
+  const [conversationDraftRevision, setConversationDraftRevision] =
+    useState(0);
   const [temporaryChat, setTemporaryChat] = useState(false);
   const [workspace, setWorkspace] = useState<
     "chat" | "memories" | "state" | "appearance" | "resources" | "settings"
@@ -10351,6 +10522,7 @@ function App() {
   useEffect(() => {
     const registration = createListenerRegistration();
     void listen<string>(OPEN_AGENT_CONVERSATIONS_EVENT, (event) => {
+      setConversationDraftAgentId(null);
       setActiveAgentId(event.payload);
       setEditingAgentId(null);
       setWorkspace("chat");
@@ -10376,12 +10548,14 @@ function App() {
     next:
       "chat" | "memories" | "state" | "appearance" | "resources" | "settings",
   ) {
+    setConversationDraftAgentId(null);
     await leaveTemporaryChat();
     setEditingAgentId(null);
     setWorkspace(next);
   }
 
   async function openProfile(agentId: string) {
+    setConversationDraftAgentId(null);
     await leaveTemporaryChat();
     setWorkspace("chat");
     setEditingAgentId(agentId);
@@ -10397,6 +10571,7 @@ function App() {
   }
 
   async function toggleTemporaryChat() {
+    setConversationDraftAgentId(null);
     if (temporaryChat) {
       await leaveTemporaryChat();
       return;
@@ -10407,10 +10582,20 @@ function App() {
   }
 
   async function selectAgent(agentId: string) {
+    setConversationDraftAgentId(null);
     await leaveTemporaryChat();
     setActiveAgentId(agentId);
     setEditingAgentId(null);
     setWorkspace("chat");
+  }
+
+  function openConversationDraft() {
+    if (activeAgentId === null) return;
+    setConversationDraftAgentId(activeAgentId);
+    setConversationDraftRevision((value) => value + 1);
+    setEditingAgentId(null);
+    setWorkspace("chat");
+    void leaveTemporaryChat();
   }
 
   return (
@@ -10441,9 +10626,13 @@ function App() {
         </div>
         {activeAgentId ? (
           <ConversationList
+            key={`${activeAgentId}-${conversationListRevision}`}
             agentId={activeAgentId}
+            onNewDraft={openConversationDraft}
+            onSelectExisting={() => setConversationDraftAgentId(null)}
             changed={() => {
               void leaveTemporaryChat().then(() => {
+                setConversationDraftAgentId(null);
                 setConversationRevision((value) => value + 1);
                 setEditingAgentId(null);
                 setWorkspace("chat");
@@ -10591,6 +10780,17 @@ function App() {
               <PixelDocumentEditor agentId={activeAgentId} />
             </section>
           </section>
+        ) : conversationDraftAgentId === activeAgentId && !temporaryChat ? (
+          <ConversationDraftSurface
+            key={`${activeAgentId}-${conversationDraftRevision}`}
+            agentId={activeAgentId}
+            onPersisted={() => {
+              setConversationDraftAgentId(null);
+              setConversationRevision((value) => value + 1);
+              setConversationListRevision((value) => value + 1);
+              setWorkspace("chat");
+            }}
+          />
         ) : (
           <ConversationSurface
             key={`${activeAgentId}-${conversationRevision}-${temporaryChat}`}
