@@ -6,6 +6,9 @@ import type { PhaseOneState } from "@aip/contracts";
 import { ConversationSurface } from "./App";
 
 let phase: PhaseOneState | null = null;
+const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
 vi.mock("./use-phase-one", () => ({
   usePhaseOne: () => ({ phase, error: false, load: vi.fn() }),
@@ -64,7 +67,23 @@ describe("ConversationSurface", () => {
     act(() => root?.unmount());
     container?.remove();
     phase = null;
+    vi.clearAllMocks();
   });
+
+  function renderSurface() {
+    act(() => {
+      root.render(<ConversationSurface agentId="agent" temporary={false} />);
+    });
+  }
+
+  function change(element: HTMLTextAreaElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value",
+    )?.set;
+    setter?.call(element, value);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  }
 
   it("rerenders from loading without a hook-order error and shows retry", () => {
     (
@@ -129,13 +148,94 @@ describe("ConversationSurface", () => {
     document.body.append(container);
     root = createRoot(container);
 
-    act(() => {
-      root.render(<ConversationSurface agentId="agent" temporary={false} />);
-    });
+    renderSurface();
 
-    expect(container.querySelector(".chat-message .message-actions")).toBeNull();
+    expect(
+      container.querySelector(".chat-message .message-actions"),
+    ).toBeNull();
     expect(container.querySelector(".queue-banner")?.textContent).toContain(
       "Cancelar",
     );
+  });
+
+  it("keeps the draft editable but blocks send and Enter during generation", async () => {
+    phase = {
+      ...loadedPhase,
+      queue: [
+        {
+          agentId: "agent",
+          requestId: "request",
+          assistantMessageId: "assistant",
+          active: true,
+          cancellationRequested: false,
+        },
+      ],
+    } as unknown as PhaseOneState;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    renderSurface();
+
+    const textarea =
+      container.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+    const send = container.querySelector<HTMLButtonElement>(
+      ".composer-footer > button",
+    )!;
+    expect(textarea.disabled).toBe(false);
+    expect(send.disabled).toBe(true);
+    await act(async () => {
+      change(textarea, "rascunho para depois");
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+    });
+    expect(invoke).not.toHaveBeenCalledWith(
+      "send_phase_one_message",
+      expect.anything(),
+    );
+  });
+
+  it("allows a new send after cancellation removes the queued request", async () => {
+    invoke.mockResolvedValue(undefined);
+    phase = {
+      ...loadedPhase,
+      queue: [
+        {
+          agentId: "agent",
+          requestId: "request",
+          assistantMessageId: "assistant",
+          active: true,
+          cancellationRequested: false,
+        },
+      ],
+    } as unknown as PhaseOneState;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    renderSurface();
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(".queue-banner button")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith("cancel_phase_one_generation", {
+      requestId: "request",
+    });
+
+    phase = loadedPhase;
+    renderSurface();
+    const textarea =
+      container.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+    change(textarea, "próxima mensagem");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(".composer-footer > button")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith("send_phase_one_message", {
+      agentId: "agent",
+      conversationId: "conversation",
+      content: "próxima mensagem",
+    });
   });
 });
