@@ -22,6 +22,7 @@
 html,
 body,
 #root {
+  height: 100%;
   min-width: 320px;
   min-height: 100%;
   margin: 0;
@@ -30,7 +31,7 @@ body,
 body {
   min-height: 100vh;
   min-height: 100dvh;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
 * {
@@ -80,6 +81,7 @@ a:focus-visible {
   outline-offset: 3px;
 }
 
+/* Keep page scroll in the shell; nested surfaces contain their own scroll. */
 .app-shell {
   display: grid;
   height: 100vh;
@@ -88,6 +90,7 @@ a:focus-visible {
   min-height: 100dvh;
   grid-template-columns: 220px minmax(0, 1fr);
   background: #0b0d11;
+  overflow: auto;
 }
 
 .conversation-layout {
@@ -199,6 +202,12 @@ a:focus-visible {
   padding: 24px 28px 40px;
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+.profile-form,
+.memory-records {
+  overscroll-behavior: contain;
 }
 
 .workspace-panel > .memory-list,
@@ -962,12 +971,15 @@ a:focus-visible {
   z-index: 4;
   top: calc(100% + 5px);
   left: 0;
+  box-sizing: border-box;
   width: min(280px, 100vw - 40px);
+  max-height: calc(100dvh - 40px);
   padding: 10px;
   border: 1px solid #374452;
   border-radius: 7px;
   background: #111820;
   box-shadow: 0 12px 28px #000a;
+  overflow-y: auto;
 }
 
 .date-picker-header,
@@ -1342,13 +1354,16 @@ a:focus-visible {
   top: calc(100% + 6px);
   right: 0;
   left: 0;
+  box-sizing: border-box;
   display: grid;
+  max-height: calc(100dvh - 32px);
   gap: 7px;
   padding: 8px;
   border: 1px solid #3b4b56;
   border-radius: 8px;
   background: #121a22;
   box-shadow: 0 12px 28px #000b;
+  overflow-y: auto;
 }
 
 .model-picker-popover > input {
@@ -1539,6 +1554,7 @@ a:focus-visible {
   min-height: 0;
   padding: 22px 28px;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .chat-message {
@@ -1663,6 +1679,8 @@ a:focus-visible {
   display: flex;
   min-width: 320px;
   min-height: 320px;
+  max-width: calc(100% - 16px);
+  max-height: calc(100% - 16px);
   flex-direction: column;
   height: calc(100% - 16px);
   overflow: hidden;
@@ -1718,6 +1736,7 @@ a:focus-visible {
 
 .bubble-message-scroll {
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 92px;
   margin: 9px 0;
   padding: 8px;
@@ -1725,6 +1744,7 @@ a:focus-visible {
   border: 1px solid #2c3540;
   color: #d9dee6;
   background: #0b0f14;
+  overscroll-behavior: contain;
 }
 
 .bubble-message-scroll p {
@@ -1787,6 +1807,7 @@ a:focus-visible {
   align-content: start;
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
 
@@ -1859,13 +1880,16 @@ a:focus-visible {
   z-index: 2;
   top: calc(100% + 3px);
   right: 0;
+  box-sizing: border-box;
   display: grid;
   min-width: 130px;
+  max-height: calc(100dvh - 32px);
   padding: 4px;
   border: 1px solid #303742;
   border-radius: 6px;
   background: #11161c;
   box-shadow: 0 8px 20px #0008;
+  overflow-y: auto;
 }
 
 .conversation-actions button,
@@ -2154,13 +2178,16 @@ a:focus-visible {
 }
 
 .aip-modal {
+  box-sizing: border-box;
   width: min(440px, 100%);
+  max-height: calc(100dvh - 48px);
   padding: 22px;
   border: 1px solid #3b4d58;
   border-radius: 12px;
   color: #e7eaf0;
   background: #151c24;
   box-shadow: 0 18px 48px #000b;
+  overflow-y: auto;
 }
 
 .aip-modal h2 {
