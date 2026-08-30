@@ -68,6 +68,12 @@ Changing, removing, or replacing a model must not erase or replace:
 
 Each agent has a unique identifier. Imported duplicates become derived individuals with new identifiers and a new copy birthday while preserving the original creation lineage.
 
+Pronouns may use a canonical option or Owner-entered bounded custom text and persist
+with the profile. Gender and sexuality are optional Owner-entered values shown and
+saved only for `human` and `human-compatible` identity types. They are never inferred
+and are never required for non-human identities; Rust remains authoritative for
+validation, normalization, and persistence.
+
 ## 5. Initial agent profiles
 
 The Owner's agent is initially:
@@ -150,7 +156,19 @@ Default model keep-alive is 15 minutes and is configurable.
 
 Each agent supports multiple conversations similar to ChatGPT.
 
-One conversation is marked as the main conversation and has no fixed subject.
+Conversations are ordinary, owner-scoped records belonging to one agent. The Owner
+explicitly selects the active conversation for each agent; there is no special primary
+record. The selected conversation is restored locally for that agent.
+
+Normal conversations are persisted in local history. Selecting `Nova conversa` opens an
+in-memory draft surface only; it does not create a conversation row or history entry.
+Leaving the draft, changing agent or workspace, or opening an existing conversation
+discards it. The draft is persisted only when the Owner saves a bounded non-empty name,
+or sends its first message. The first-message path uses `Nova conversa` as its bounded
+fallback title, selects the new conversation, and then sends through the normal chat
+path. Only explicitly named empty persisted conversations use the seven-day TTL and
+are removed during later conversation access if they still contain no messages; adding
+the first message clears that expiry.
 
 Conversation types:
 
@@ -246,6 +264,15 @@ v0.1 includes initial support for:
 - energy;
 - mood.
 
+The current State control stores one of three per-agent modes: `normal` (Normal),
+`voice_muted` (voice-muted), or `silent` (silent). Normal permits ordinary text and
+configured voice subject to the Rust authority and provider gates. Voice-muted keeps
+text available while suppressing synthesized voice. Silent blocks agent-initiated
+cognitive/public conversation and voice-setting mutations; voice input/wake handling
+is also blocked. Direct Phase One text remains subject to the normal Rust authority,
+provider, and suspension gates. Energy, mood, and sleep are fictional simulated
+values for presentation, not health telemetry.
+
 Later state may include:
 
 - hunger;
@@ -253,7 +280,7 @@ Later state may include:
 - focus;
 - social fatigue.
 
-State may affect:
+Future state behavior may later affect:
 
 - visual animation;
 - writing style;
@@ -261,13 +288,17 @@ State may affect:
 - frequency of spontaneous conversation;
 - choice of fictional activities.
 
-Agents may choose fictional activities such as sleeping, resting, playing, or reading to recover state.
+Future behavior may include fictional activities such as sleeping, resting, playing,
+or reading to recover state.
 
-When the PC is off, time-based state and conceptual goals continue and are applied gradually after startup.
+The local simulation applies elapsed state updates when it is read after startup; this
+does not imply autonomous activities or conceptual-goal execution.
 
-Suspension pauses activities, goals, and fictional states, but age continues.
-
-An `wake now` control temporarily overrides sleep and fatigue.
+Suspension pauses simulated-state advancement and blocks generation/voice runtime
+operations, while age continues. `Acordar agora` adjusts only fictional sleep and
+energy for a temporary wake interval; it does not wake a real person or remove the
+suspension. Any later mode behavior described below is planned behavior, not a current
+implementation claim.
 
 ## 12. Desktop visual system
 
@@ -382,6 +413,12 @@ Example statuses:
 - `Modo silencioso ativo`.
 
 ## 15. Modes
+
+The current implementation persists and displays the three modes above and applies
+only the effects stated in the current State paragraph. The distinct autonomous,
+spontaneous, or other future-oriented effects listed below are planned, not shipped;
+no mode should be read as health telemetry or as permission to bypass the Rust
+authority.
 
 ### Normal mode
 

@@ -31,6 +31,10 @@ pub struct ProvisionalAgent {
     pub age_category: String,
     pub species: String,
     pub pronouns: String,
+    #[serde(default)]
+    pub gender: Option<String>,
+    #[serde(default)]
+    pub sexuality: Option<String>,
     pub personality_summary: String,
     pub traits_json: String,
     pub appearance_preset: String,

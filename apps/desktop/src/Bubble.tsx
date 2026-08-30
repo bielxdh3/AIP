@@ -10,6 +10,8 @@ import type { AppSnapshot } from "@aip/contracts";
 import {
   blockedSendCopy,
   bubblePresentation,
+  canDraftConversationMessage,
+  canSendConversationMessage,
   canRequestCancellation,
   providerStatusCopy,
 } from "./conversation-state";
@@ -26,6 +28,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
   const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
     null,
   );
+  const [sending, setSending] = useState(false);
   const bubbleRef = useRef<HTMLElement>(null);
 
   const reportRegion = useCallback(() => {
@@ -82,21 +85,29 @@ export default function Bubble({ agentId }: { agentId: string }) {
     );
   }
 
-  const presentation = bubblePresentation(phase);
+  const currentPhase = phase;
+  const presentation = bubblePresentation(currentPhase);
   const request = presentation.request;
   const status = presentation.preview;
-  const blocked = blockedSendCopy(phase.sendBlockedCode);
+  const blocked = blockedSendCopy(currentPhase.sendBlockedCode);
+  const canSend = canSendConversationMessage(currentPhase);
+  const canDraft = canDraftConversationMessage(currentPhase);
 
   async function send() {
     const content = draft.trim();
-    if (!content || !phase?.canSend) return;
-    await invoke("send_phase_one_message", {
-      agentId,
-      conversationId: phase.conversation.id,
-      content,
-    });
-    setDraft("");
-    await load();
+    if (!content || sending || !canSend) return;
+    setSending(true);
+    try {
+      await invoke("send_phase_one_message", {
+        agentId,
+        conversationId: currentPhase.conversation.id,
+        content,
+      });
+      setDraft("");
+      await load();
+    } finally {
+      setSending(false);
+    }
   }
 
   async function cancelCurrentRequest() {
@@ -171,7 +182,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
             <textarea
               value={draft}
               maxLength={16_384}
-              disabled={!phase.canSend}
+              disabled={!canDraft || sending}
               placeholder={blocked ?? "Responder…"}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
@@ -183,7 +194,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
             />
             <button
               type="button"
-              disabled={!phase.canSend || !draft.trim()}
+              disabled={!canSend || !draft.trim() || sending}
               onClick={() => void send()}
             >
               Enviar

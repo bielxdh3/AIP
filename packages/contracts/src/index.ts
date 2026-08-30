@@ -44,6 +44,8 @@ export type ProvisionalAgent = {
   ageCategory: string;
   species: string;
   pronouns: string;
+  gender?: string | null;
+  sexuality?: string | null;
   personalitySummary: string;
   traitsJson: string;
   appearancePreset: string;

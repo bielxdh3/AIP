@@ -1677,6 +1677,9 @@ fn assemble_context(
     let mut used = instruction.len();
     let mut selected = Vec::new();
     for message in messages.into_iter().rev() {
+        if selected.len() == MAX_HISTORY_MESSAGES {
+            break;
+        }
         let bytes = message.content.len();
         if used.saturating_add(bytes) > MAX_CONTEXT_BYTES {
             break;
@@ -2095,6 +2098,8 @@ mod tests {
                 age_category: "adult".into(),
                 species: "agent".into(),
                 pronouns: "they/them".into(),
+                gender: None,
+                sexuality: None,
                 personality_summary: "curious".into(),
                 traits_json: r#"{"curiosity":80}"#.into(),
                 appearance_preset: "astra".into(),
@@ -2110,6 +2115,7 @@ mod tests {
                 .sum::<usize>()
                 <= MAX_CONTEXT_BYTES
         );
+        assert_eq!(prompt.len(), MAX_HISTORY_MESSAGES + 1);
     }
 
     #[test]

@@ -5,6 +5,8 @@ import {
   blockedSendCopy,
   bubblePresentation,
   canRequestCancellation,
+  canDraftConversationMessage,
+  canSendConversationMessage,
   conversationOverrideArguments,
   compactPreview,
   createConversationViewState,
@@ -106,6 +108,23 @@ function event(
 }
 
 describe("conversation event reducer", () => {
+  it("keeps drafting available but blocks send for the current agent queue", () => {
+    const current = phase();
+    expect(canDraftConversationMessage(current)).toBe(true);
+    expect(canSendConversationMessage(current)).toBe(false);
+
+    current.queue = [];
+    expect(canSendConversationMessage(current)).toBe(true);
+
+    current.queue = [
+      {
+        ...phase("luma").queue[0]!,
+        agentId: "luma",
+      },
+    ];
+    expect(canSendConversationMessage(current)).toBe(true);
+  });
+
   it("scopes a model override command to the active agent and conversation", () => {
     expect(
       conversationOverrideArguments("luma", "secondary", "ollama:test"),
