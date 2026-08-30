@@ -541,7 +541,8 @@ a:focus-visible {
 }
 
 .state-workspace .agent-state-controls > strong,
-.state-workspace .agent-state-controls > small {
+.state-workspace .agent-state-controls > small,
+.state-workspace .agent-state-controls > p {
   grid-column: 1 / -1;
 }
 
@@ -557,6 +558,15 @@ a:focus-visible {
   color: #99a5b2;
   background: #0d141b;
   font-size: 13px;
+}
+
+.state-guidance,
+.memory-guidance,
+.memory-category-help {
+  margin: 0;
+  color: #99a5b2;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .state-workspace .agent-state-controls label {
@@ -927,7 +937,7 @@ a:focus-visible {
   resize: vertical;
 }
 
-.profile-fields > label:nth-child(7),
+.profile-description-field,
 .profile-fields > .trait-controls {
   grid-column: 1 / -1;
 }
@@ -969,10 +979,44 @@ a:focus-visible {
 }
 
 .date-picker-header {
-  grid-template-columns: 32px 1fr 32px;
+  grid-template-columns: 32px minmax(0, 1fr) 32px;
   align-items: center;
   margin-bottom: 8px;
   text-align: center;
+}
+
+.date-picker-navigation {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  gap: 4px;
+}
+
+.date-picker-navigation label {
+  min-width: 0;
+}
+
+.date-picker-navigation select,
+.date-picker-navigation input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 5px;
+  border: 1px solid #333c47;
+  border-radius: 4px;
+  color: #dce3eb;
+  background: #0b0f14;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .date-picker-header button,

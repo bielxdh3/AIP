@@ -308,6 +308,10 @@ function profileValidationError(agent: ProvisionalAgent): string | null {
   return null;
 }
 
+function isHumanCompatibleSpecies(species: string): boolean {
+  return ["human", "human-compatible"].includes(species.trim());
+}
+
 function isoDate(year: number, month: number, day: number): string {
   return `${year.toString().padStart(4, "0")}-${(month + 1)
     .toString()
@@ -334,6 +338,7 @@ function DatePicker({
   const initial = dateParts(value) ?? [2000, 0, 1];
   const [open, setOpen] = useState(false);
   const [view, setView] = useState({ year: initial[0], month: initial[1] });
+  const [yearText, setYearText] = useState(String(initial[0]));
   const pickerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dayRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -384,6 +389,20 @@ function DatePicker({
   function shiftMonth(delta: number) {
     const next = new Date(Date.UTC(view.year, view.month + delta, 1));
     setView({ year: next.getUTCFullYear(), month: next.getUTCMonth() });
+    setYearText(String(next.getUTCFullYear()));
+  }
+
+  function selectMonth(month: number) {
+    setView((current) => ({ ...current, month }));
+  }
+
+  function selectYear(text: string) {
+    setYearText(text);
+    if (/^\d{1,4}$/.test(text)) {
+      const year = Number(text);
+      if (year >= 1 && year <= 9999)
+        setView((current) => ({ ...current, year }));
+    }
   }
 
   function selectDay(day: number) {
@@ -415,6 +434,7 @@ function DatePicker({
         onClick={() => {
           if (!open && selected !== null)
             setView({ year: selected[0], month: selected[1] });
+          if (!open && selected !== null) setYearText(String(selected[0]));
           setOpen((current) => !current);
         }}
       >
@@ -439,7 +459,40 @@ function DatePicker({
             >
               ‹
             </button>
-            <strong>{monthLabel}</strong>
+            <div
+              className="date-picker-navigation"
+              aria-label="Navegação do calendário"
+            >
+              <label>
+                <span className="visually-hidden">Mês</span>
+                <select
+                  aria-label="Mês"
+                  value={view.month}
+                  onChange={(event) => selectMonth(Number(event.target.value))}
+                >
+                  {Array.from({ length: 12 }, (_, month) => (
+                    <option value={month} key={month}>
+                      {new Intl.DateTimeFormat("pt-BR", {
+                        month: "long",
+                        timeZone: "UTC",
+                      }).format(new Date(Date.UTC(2000, month, 1)))}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span className="visually-hidden">Ano</span>
+                <input
+                  aria-label="Ano"
+                  inputMode="numeric"
+                  min="1"
+                  max="9999"
+                  value={yearText}
+                  onChange={(event) => selectYear(event.target.value)}
+                  onBlur={() => setYearText(String(view.year))}
+                />
+              </label>
+            </div>
             <button
               type="button"
               aria-label="Próximo mês"
@@ -1495,6 +1548,11 @@ function ProfileFields({
   fictiveAgeText?: string;
   onFictiveAgeTextChange?: (value: string) => void;
 }) {
+  const hasCanonicalPronouns = profileCanonicalOptions.pronouns.some(
+    (option) => option.value === draft.pronouns,
+  );
+  const customPronouns = !hasCanonicalPronouns;
+  const humanCompatible = isHumanCompatibleSpecies(draft.species);
   return (
     <>
       <label>
@@ -1547,12 +1605,63 @@ function ProfileFields({
       <ProfileCanonicalSelect
         field="pronouns"
         label="Pronomes"
-        value={draft.pronouns}
+        value={customPronouns ? "custom" : draft.pronouns}
         onChange={(pronouns) =>
-          onChange((current) => ({ ...current, pronouns }))
+          onChange((current) => ({
+            ...current,
+            pronouns:
+              pronouns === "custom"
+                ? customPronouns
+                  ? current.pronouns
+                  : ""
+                : pronouns,
+          }))
         }
       />
-      <label>
+      {customPronouns ? (
+        <label>
+          Pronomes personalizados
+          <input
+            value={draft.pronouns}
+            placeholder="Ex.: elu/delu"
+            onChange={(event) =>
+              onChange((current) => ({
+                ...current,
+                pronouns: event.target.value,
+              }))
+            }
+          />
+        </label>
+      ) : null}
+      {humanCompatible ? (
+        <>
+          <label>
+            Gênero (opcional)
+            <input
+              value={draft.gender ?? ""}
+              onChange={(event) =>
+                onChange((current) => ({
+                  ...current,
+                  gender: event.target.value.trim() || null,
+                }))
+              }
+            />
+          </label>
+          <label>
+            Sexualidade (opcional)
+            <input
+              value={draft.sexuality ?? ""}
+              onChange={(event) =>
+                onChange((current) => ({
+                  ...current,
+                  sexuality: event.target.value.trim() || null,
+                }))
+              }
+            />
+          </label>
+        </>
+      ) : null}
+      <label className="profile-description-field">
         Descrição
         <textarea
           rows={4}
@@ -1655,7 +1764,16 @@ export function ProfileForm({
       setError("Informe uma idade fictícia válida.");
       return;
     }
-    const prepared = withInitialTraitDefaults({ ...draft, fictiveAge });
+    const prepared = withInitialTraitDefaults({
+      ...draft,
+      fictiveAge,
+      gender: isHumanCompatibleSpecies(draft.species)
+        ? draft.gender?.trim() || null
+        : null,
+      sexuality: isHumanCompatibleSpecies(draft.species)
+        ? draft.sexuality?.trim() || null
+        : null,
+    });
     const validation = profileValidationError(prepared);
     if (validation !== null) {
       setError(validation);
@@ -1781,6 +1899,12 @@ function OnboardingForm({
       withInitialTraitDefaults({
         ...agent,
         fictiveAge: Number(fictiveAgeTexts[index] ?? ""),
+        gender: isHumanCompatibleSpecies(agent.species)
+          ? agent.gender?.trim() || null
+          : null,
+        sexuality: isHumanCompatibleSpecies(agent.species)
+          ? agent.sexuality?.trim() || null
+          : null,
       }),
     );
     if (prepared.some((agent) => profileValidationError(agent) !== null)) {
@@ -2137,7 +2261,15 @@ export function ConversationList({
   );
 }
 
-function MemoryWorkspace({ agentId }: { agentId: string }) {
+const memoryCategoryHelp: Record<string, string> = {
+  fact: "Um dado estável sobre a pessoa ou o agente.",
+  preference: "Uma preferência que pode orientar respostas futuras.",
+  rule: "Uma regra explícita para preservar ao conversar.",
+  emotional: "Uma lembrança afetiva, sem transformar sentimento em diagnóstico.",
+  permanent: "Um registro durável que o Owner escolheu manter.",
+};
+
+export function MemoryWorkspace({ agentId }: { agentId: string }) {
   const [items, setItems] = useState<AgentMemory[]>([]);
   const [content, setContent] = useState("");
   const [category, setCategory] = useState("preference");
@@ -2187,8 +2319,14 @@ function MemoryWorkspace({ agentId }: { agentId: string }) {
           <h2>Memórias</h2>
           <span>Fatos, preferências e regras ficam separados por agente.</span>
         </div>
-        <span className="workspace-count">{items.length}</span>
+        <span className="workspace-count">
+          {items.length} {status === "active" ? "memórias ativas" : "memórias"}
+        </span>
       </header>
+      <p className="memory-guidance">
+        As memórias pertencem somente a este agente e podem influenciar o
+        contexto das conversas. O Owner decide o que fica salvo.
+      </p>
       <div className="memory-filters">
         <label>
           Buscar
@@ -2288,6 +2426,9 @@ function MemoryWorkspace({ agentId }: { agentId: string }) {
             <option value="emotional">Lembrança afetiva</option>
             <option value="permanent">Permanente</option>
           </select>
+          <small className="memory-category-help">
+            {memoryCategoryHelp[category]}
+          </small>
         </label>
         <label className="memory-content-field">
           Conteúdo
@@ -2299,17 +2440,27 @@ function MemoryWorkspace({ agentId }: { agentId: string }) {
           />
         </label>
         <div className="memory-composer-actions">
-          <button type="submit">Salvar memória</button>
-          <button type="button" onClick={() => void save(false)}>
+          <button type="submit" title="Salvar como memória durável do Owner">
+            Salvar memória
+          </button>
+          <button
+            type="button"
+            title="Criar uma proposta que precisa de confirmação"
+            onClick={() => void save(false)}
+          >
             Propor memória
           </button>
         </div>
       </form>
+      <p className="memory-guidance">
+        “Salvar memória” grava uma memória durável. “Propor memória” cria uma
+        candidata pendente para o Owner confirmar ou rejeitar.
+      </p>
     </section>
   );
 }
 
-function AgentStateControls({ agentId }: { agentId: string }) {
+export function AgentStateControls({ agentId }: { agentId: string }) {
   const [state, setState] = useState<AgentSimulatedState | null>(null);
   const [saving, setSaving] = useState(false);
   const load = useCallback(
@@ -2339,6 +2490,12 @@ function AgentStateControls({ agentId }: { agentId: string }) {
   return (
     <section className="agent-state-controls" aria-label="Estado do agente">
       <strong>Estado</strong>
+      <p className="state-guidance">
+        Normal mantém a atividade configurada; Sem voz mantém o texto e evita
+        a voz; Silencioso reduz as saídas do agente. Energia, humor e sono são
+        valores fictícios simulados para orientar a apresentação local — não
+        são medições de saúde nem mudam a identidade.
+      </p>
       <label>
         Modo
         <select
@@ -2382,6 +2539,11 @@ function AgentStateControls({ agentId }: { agentId: string }) {
       >
         Acordar agora
       </button>
+      <small>
+        Suspender pausa o avanço simulado; Retomar permite que ele continue.
+        “Acordar agora” aplica um impulso temporário de vigília, sem acordar
+        uma pessoa real.
+      </small>
     </section>
   );
 }

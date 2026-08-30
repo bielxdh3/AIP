@@ -43,7 +43,8 @@ const MIGRATION_0024: &str = include_str!("../migrations/0024_phase10_extension_
 const MIGRATION_0025: &str = include_str!("../migrations/0025_local_provider_registry.sql");
 const MIGRATION_0026: &str = include_str!("../migrations/0026_conversation_organization.sql");
 const MIGRATION_0027: &str = include_str!("../migrations/0027_conversation_empty_expiry.sql");
-const MIGRATIONS: [(i64, &str); 27] = [
+const MIGRATION_0028: &str = include_str!("../migrations/0028_optional_human_identity.sql");
+const MIGRATIONS: [(i64, &str); 28] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
@@ -71,6 +72,7 @@ const MIGRATIONS: [(i64, &str); 27] = [
     (25, MIGRATION_0025),
     (26, MIGRATION_0026),
     (27, MIGRATION_0027),
+    (28, MIGRATION_0028),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -207,6 +209,9 @@ impl Database {
                 if version == 27 {
                     Self::ensure_conversation_empty_expiry_column(connection)?;
                 }
+                if version == 28 {
+                    Self::ensure_optional_human_identity_columns(connection)?;
+                }
                 connection.execute_batch(sql)?;
             }
         }
@@ -242,6 +247,29 @@ impl Database {
             "ALTER TABLE conversations ADD COLUMN empty_expires_at INTEGER",
             [],
         )?;
+        Ok(())
+    }
+
+    fn ensure_optional_human_identity_columns(
+        connection: &Connection,
+    ) -> Result<(), DatabaseError> {
+        let existing = {
+            let mut statement = connection.prepare("PRAGMA table_info(agent_identity_profiles)")?;
+            let mut rows = statement.query([])?;
+            let mut columns = HashSet::new();
+            while let Some(row) = rows.next()? {
+                columns.insert(row.get::<_, String>(1)?);
+            }
+            columns
+        };
+        for column in ["gender", "sexuality"] {
+            if !existing.contains(column) {
+                connection.execute(
+                    &format!("ALTER TABLE agent_identity_profiles ADD COLUMN {column} TEXT"),
+                    [],
+                )?;
+            }
+        }
         Ok(())
     }
 
@@ -440,8 +468,8 @@ impl Database {
         let mut statement = connection.prepare(
             "SELECT a.id, a.name, a.profile_key, a.sprite_key,
                     p.preferred_x, p.preferred_y, i.birthday, i.fictive_age,
-                    i.age_category, i.species, i.pronouns, i.personality_summary,
-                    i.traits_json, i.appearance_preset
+                    i.age_category, i.species, i.pronouns, i.gender, i.sexuality,
+                    i.personality_summary, i.traits_json, i.appearance_preset
              FROM agents a
              JOIN agent_screen_preferences p ON p.agent_id = a.id
              JOIN agent_identity_profiles i ON i.agent_id = a.id
@@ -466,8 +494,8 @@ impl Database {
             .query_row(
                 "SELECT a.id, a.name, a.profile_key, a.sprite_key,
                         p.preferred_x, p.preferred_y, i.birthday, i.fictive_age,
-                        i.age_category, i.species, i.pronouns, i.personality_summary,
-                        i.traits_json, i.appearance_preset
+                        i.age_category, i.species, i.pronouns, i.gender, i.sexuality,
+                        i.personality_summary, i.traits_json, i.appearance_preset
                  FROM agents a
                  JOIN agent_screen_preferences p ON p.agent_id = a.id
                  JOIN agent_identity_profiles i ON i.agent_id = a.id
@@ -1472,6 +1500,8 @@ impl Database {
         let mut connection = self.open()?;
         let transaction = connection.transaction()?;
         let now = now_millis();
+        let gender = optional_human_identity_value(agent, agent.gender.as_ref());
+        let sexuality = optional_human_identity_value(agent, agent.sexuality.as_ref());
         let changed = transaction.execute(
             "UPDATE agents SET name = ?1, updated_at = ?2 WHERE id = ?3",
             params![agent.name.trim(), now, agent.id],
@@ -1481,14 +1511,17 @@ impl Database {
         }
         let identity_changed = transaction.execute(
             "UPDATE agent_identity_profiles SET birthday = ?1, fictive_age = ?2,
-             age_category = ?3, species = ?4, pronouns = ?5, personality_summary = ?6,
-             traits_json = ?7, appearance_preset = ?8, updated_at = ?9 WHERE agent_id = ?10",
+             age_category = ?3, species = ?4, pronouns = ?5, gender = ?6, sexuality = ?7,
+             personality_summary = ?8, traits_json = ?9, appearance_preset = ?10,
+             updated_at = ?11 WHERE agent_id = ?12",
             params![
                 agent.birthday,
                 agent.fictive_age,
                 agent.age_category,
                 agent.species,
                 agent.pronouns,
+                gender,
+                sexuality,
                 agent.personality_summary,
                 agent.traits_json,
                 agent.appearance_preset,
@@ -1519,6 +1552,8 @@ impl Database {
         let transaction = connection.transaction()?;
         let now = now_millis();
         for agent in agents {
+            let gender = optional_human_identity_value(agent, agent.gender.as_ref());
+            let sexuality = optional_human_identity_value(agent, agent.sexuality.as_ref());
             let changed = transaction.execute(
                 "UPDATE agents SET name = ?1, updated_at = ?2 WHERE id = ?3",
                 params![agent.name.trim(), now, agent.id],
@@ -1528,14 +1563,17 @@ impl Database {
             }
             let identity_changed = transaction.execute(
                 "UPDATE agent_identity_profiles SET birthday = ?1, fictive_age = ?2,
-                 age_category = ?3, species = ?4, pronouns = ?5, personality_summary = ?6,
-                 traits_json = ?7, appearance_preset = ?8, updated_at = ?9 WHERE agent_id = ?10",
+                 age_category = ?3, species = ?4, pronouns = ?5, gender = ?6, sexuality = ?7,
+                 personality_summary = ?8, traits_json = ?9, appearance_preset = ?10,
+                 updated_at = ?11 WHERE agent_id = ?12",
                 params![
                     agent.birthday,
                     agent.fictive_age,
                     agent.age_category,
                     agent.species,
                     agent.pronouns,
+                    gender,
+                    sexuality,
                     agent.personality_summary,
                     agent.traits_json,
                     agent.appearance_preset,
@@ -2211,6 +2249,14 @@ fn validate_profile(agent: &ProvisionalAgent) -> Result<(), DatabaseError> {
         || agent.species.len() > 120
         || agent.pronouns.trim().is_empty()
         || agent.pronouns.len() > 120
+        || agent
+            .gender
+            .as_deref()
+            .is_some_and(|value| value.len() > 120)
+        || agent
+            .sexuality
+            .as_deref()
+            .is_some_and(|value| value.len() > 120)
         || agent.personality_summary.len() > 1_000
         || !traits_are_valid
         || agent.traits_json.len() > 8_192
@@ -2220,6 +2266,19 @@ fn validate_profile(agent: &ProvisionalAgent) -> Result<(), DatabaseError> {
         return Err(DatabaseError::InvalidValue);
     }
     Ok(())
+}
+
+fn optional_human_identity_value<'a>(
+    agent: &'a ProvisionalAgent,
+    value: Option<&'a String>,
+) -> Option<&'a str> {
+    if !matches!(agent.species.trim(), "human" | "human-compatible") {
+        return None;
+    }
+    value
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 fn valid_calendar_date(value: &str) -> bool {
@@ -2893,9 +2952,11 @@ fn map_agent(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProvisionalAgent> {
         age_category: row.get(8)?,
         species: row.get(9)?,
         pronouns: row.get(10)?,
-        personality_summary: row.get(11)?,
-        traits_json: row.get(12)?,
-        appearance_preset: row.get(13)?,
+        gender: row.get(11)?,
+        sexuality: row.get(12)?,
+        personality_summary: row.get(13)?,
+        traits_json: row.get(14)?,
+        appearance_preset: row.get(15)?,
     })
 }
 
@@ -3845,14 +3906,23 @@ mod tests {
             .unwrap();
         database.set_keep_alive(ASTRA_ID, 30).unwrap();
         agent.name = "Astra edited".into();
-        agent.species = "fox".into();
+        agent.species = "human".into();
+        agent.gender = Some("não-binário".into());
+        agent.sexuality = Some("bissexual".into());
         agent.traits_json = r#"{"curiosity":80}"#.into();
         database.update_profile(&agent).unwrap();
 
         let restored = database.agent(ASTRA_ID).unwrap();
         assert_eq!(restored.name, "Astra edited");
-        assert_eq!(restored.species, "fox");
+        assert_eq!(restored.species, "human");
+        assert_eq!(restored.gender.as_deref(), Some("não-binário"));
+        assert_eq!(restored.sexuality.as_deref(), Some("bissexual"));
         assert_eq!(restored.traits_json, r#"{"curiosity":80}"#);
+        agent.species = "fox".into();
+        database.update_profile(&agent).unwrap();
+        let restored = database.agent(ASTRA_ID).unwrap();
+        assert_eq!(restored.gender, None);
+        assert_eq!(restored.sexuality, None);
         assert_eq!(
             database.main_conversation(ASTRA_ID).unwrap().id,
             conversation.id
