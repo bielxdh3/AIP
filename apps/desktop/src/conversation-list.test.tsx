@@ -16,15 +16,6 @@ const archived = [{ id: "old", title: "Conversa arquivada", isPinned: false }];
 let root: Root | undefined;
 let container: HTMLDivElement | undefined;
 
-function change(element: HTMLInputElement, value: string) {
-  const setter = Object.getOwnPropertyDescriptor(
-    Object.getPrototypeOf(element),
-    "value",
-  )?.set;
-  setter?.call(element, value);
-  element.dispatchEvent(new Event("input", { bubbles: true }));
-}
-
 afterEach(() => {
   if (root !== undefined) act(() => root?.unmount());
   container?.remove();
@@ -34,6 +25,57 @@ afterEach(() => {
 });
 
 describe("ConversationList regressions", () => {
+  it("requires explicit confirmation before deleting a conversation", async () => {
+    invoke.mockImplementation((command: string) =>
+      command === "list_agent_conversations"
+        ? Promise.resolve(current)
+        : Promise.resolve(undefined),
+    );
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<ConversationList agentId="agent" changed={vi.fn()} />);
+      await Promise.resolve();
+    });
+
+    const deleteButton = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".conversation-actions button"),
+    ).find((button) => button.textContent === "Excluir");
+    if (deleteButton === undefined) throw new Error("Missing delete button");
+    await act(async () => deleteButton.click());
+    const dialog = container.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog?.textContent).toContain("Conversa inicial");
+    expect(document.activeElement?.textContent).toBe("Cancelar");
+    expect(invoke).not.toHaveBeenCalledWith("delete_agent_conversation", {
+      agentId: "agent",
+      conversationId: "main",
+    });
+
+    await act(async () =>
+      dialog?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      ),
+    );
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+
+    await act(async () => deleteButton.click());
+    const confirm = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Excluir conversa",
+    );
+    if (confirm === undefined) throw new Error("Missing confirmation button");
+    await act(async () => {
+      confirm.click();
+      await Promise.resolve();
+    });
+    expect(invoke).toHaveBeenCalledWith("delete_agent_conversation", {
+      agentId: "agent",
+      conversationId: "main",
+    });
+  });
+
   it("exposes scoped semantic hooks and accessible creation controls", async () => {
     invoke.mockImplementation((command: string) => {
       if (command === "list_agent_conversations")
@@ -45,16 +87,20 @@ describe("ConversationList regressions", () => {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
+    const onNewDraft = vi.fn();
 
     await act(async () => {
-      root?.render(<ConversationList agentId="agent" changed={vi.fn()} />);
+      root?.render(
+        <ConversationList
+          agentId="agent"
+          changed={vi.fn()}
+          onNewDraft={onNewDraft}
+        />,
+      );
       await Promise.resolve();
     });
 
     const list = container.querySelector(".conversation-list");
-    const input = container.querySelector<HTMLInputElement>(
-      ".conversation-list-input",
-    );
     expect(list?.getAttribute("role")).toBe("region");
     expect(list?.getAttribute("aria-label")).toBe("Conversas do agente");
     expect(list?.classList.contains("conversation-list")).toBe(true);
@@ -62,25 +108,22 @@ describe("ConversationList regressions", () => {
       2,
     );
     expect(container.textContent).not.toContain("Conversa arquivada");
-    expect(input?.type).toBe("text");
-    expect(input?.getAttribute("aria-label")).toBe("Título da nova conversa");
-    expect(container.querySelector(".conversation-list-create")).not.toBeNull();
+    const create = container.querySelector<HTMLButtonElement>(
+      ".conversation-list-create",
+    );
+    expect(create?.textContent).toBe("Nova conversa");
     expect(
       container.querySelector(".conversation-archive-management"),
     ).not.toBeNull();
     expect(container.querySelectorAll(".conversation-actions")).toHaveLength(2);
 
-    if (input === null) throw new Error("Missing conversation title input");
-    change(input, "Nova conversa");
-    const create = container.querySelector<HTMLButtonElement>(
-      ".conversation-list-create",
-    );
     if (create === null) throw new Error("Missing create button");
     await act(async () => create.click());
-    expect(invoke).toHaveBeenCalledWith("create_agent_conversation", {
-      agentId: "agent",
-      title: "Nova conversa",
-    });
+    expect(onNewDraft).toHaveBeenCalledOnce();
+    expect(invoke).not.toHaveBeenCalledWith(
+      "create_agent_conversation",
+      expect.anything(),
+    );
   });
 
   it("opens archived management only on request", async () => {
@@ -109,6 +152,39 @@ describe("ConversationList regressions", () => {
       agentId: "agent",
     });
     expect(container.textContent).toContain("Conversa arquivada");
+  });
+
+  it("notifies the parent before selecting an existing conversation", async () => {
+    invoke.mockImplementation((command: string) =>
+      command === "list_agent_conversations"
+        ? Promise.resolve(current)
+        : Promise.resolve(undefined),
+    );
+    const onSelectExisting = vi.fn();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        <ConversationList
+          agentId="agent"
+          changed={vi.fn()}
+          onSelectExisting={onSelectExisting}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () =>
+      container
+        ?.querySelector<HTMLButtonElement>(".conversation-list-select")
+        ?.click(),
+    );
+    expect(onSelectExisting).toHaveBeenCalledOnce();
+    expect(invoke).toHaveBeenCalledWith("set_active_agent_conversation", {
+      agentId: "agent",
+      conversationId: "main",
+    });
   });
 
   it("closes the action menu before focusing the rename editor", async () => {
