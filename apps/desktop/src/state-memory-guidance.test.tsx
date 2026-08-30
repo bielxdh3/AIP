@@ -43,7 +43,11 @@ describe("State and memory guidance", () => {
       root?.render(<AgentStateControls agentId="agent" />),
     );
     expect(container.textContent).toContain("valores fictícios simulados");
+    expect(container.textContent).toContain("silencia a voz sintetizada");
+    expect(container.textContent).toContain("alterações de configurações de voz");
+    expect(container.textContent).toContain("não são medições de saúde");
     expect(container.textContent).toContain("pausa o avanço simulado");
+    expect(container.textContent).toContain("sem remover a suspensão");
     expect(container.textContent).toContain("Acordar agora");
   });
 
