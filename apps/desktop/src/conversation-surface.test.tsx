@@ -92,6 +92,14 @@ describe("ConversationSurface", () => {
     ).not.toThrow();
     expect(container.textContent).toContain("Resposta elegível");
     expect(container.textContent).toContain("Tentar novamente");
+    expect(
+      container.querySelector(
+        '.conversation-model-selector [aria-haspopup="listbox"]',
+      ),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(".conversation-model-selector select"),
+    ).toBeNull();
     expect(consoleError).not.toHaveBeenCalledWith(
       expect.stringContaining("Rendered more hooks"),
     );

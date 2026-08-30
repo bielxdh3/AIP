@@ -58,6 +58,10 @@ describe("ProfileForm", () => {
     await act(async () =>
       root?.render(<ProfileForm agent={agent} done={vi.fn()} />),
     );
+    expect(
+      container.querySelector('.profile-default-model [aria-haspopup="listbox"]'),
+    ).not.toBeNull();
+    expect(container.querySelector(".profile-default-model select")).toBeNull();
 
     const fields = container.querySelectorAll(".profile-fields > label");
     const age = fields[2]?.querySelector("input") as HTMLInputElement;

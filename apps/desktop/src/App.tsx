@@ -111,6 +111,7 @@ import type {
   ToolPermission,
   ToolSession,
   ProviderSnapshot,
+  OllamaModel,
   WorkspaceRoot,
 } from "@aip/contracts";
 import {
@@ -599,6 +600,292 @@ function ConfirmDialog({
   );
 }
 
+type ModelPickerOption = {
+  ref: string | null;
+  label: string;
+  detail: string;
+  searchText: string;
+  unavailable?: boolean;
+};
+
+const modelPickerStateCopy: Record<
+  ProviderSnapshot["state"],
+  { label: string; detail: string }
+> = {
+  checking: {
+    label: "Verificando modelos locais…",
+    detail: "Aguarde a resposta do Ollama.",
+  },
+  available: {
+    label: "Nenhum modelo local disponível",
+    detail: "Instale ou atualize um modelo local para continuar.",
+  },
+  empty: {
+    label: "Nenhum modelo local disponível",
+    detail: "O Ollama está ativo, mas não há modelos instalados.",
+  },
+  unavailable: {
+    label: "Ollama indisponível",
+    detail: "Inicie o Ollama para consultar os modelos locais.",
+  },
+  malformed: {
+    label: "Resposta inválida do Ollama",
+    detail: "O provedor devolveu dados que não puderam ser usados.",
+  },
+  timeout: {
+    label: "O Ollama não respondeu a tempo",
+    detail: "Tente atualizar os modelos novamente.",
+  },
+};
+
+function modelSizeLabel(size: number): string | null {
+  if (!Number.isFinite(size) || size <= 0) return null;
+  const gigabytes = size / 1_000_000_000;
+  return `${gigabytes >= 1 ? gigabytes.toFixed(1) : (size / 1_000_000).toFixed(0)} ${gigabytes >= 1 ? "GB" : "MB"}`;
+}
+
+function modelOption(model: OllamaModel): ModelPickerOption {
+  const capabilities = model.capabilities ?? [];
+  const metadata = [
+    "Ollama",
+    model.parameterSize,
+    model.quantization,
+    model.family,
+    modelSizeLabel(model.size),
+    capabilities.length > 0 ? capabilities.join(", ") : null,
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  return {
+    ref: model.ref,
+    label: model.displayName,
+    detail: metadata.join(" · "),
+    searchText: [model.displayName, model.ref, model.providerModelId, ...metadata]
+      .join(" ")
+      .toLowerCase(),
+  };
+}
+
+export function ModelPicker({
+  label,
+  ariaLabel,
+  models,
+  value,
+  providerState,
+  defaultOption,
+  statusText,
+  disabled = false,
+  onSelect,
+}: {
+  label: string;
+  ariaLabel?: string;
+  models: OllamaModel[];
+  value: string | null;
+  providerState: ProviderSnapshot["state"];
+  defaultOption?: { label: string; detail: string };
+  statusText?: string;
+  disabled?: boolean;
+  onSelect: (modelRef: string | null) => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [selecting, setSelecting] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const listboxId = useId();
+
+  const options: ModelPickerOption[] = [
+    ...(defaultOption
+      ? [
+          {
+            ref: null,
+            label: defaultOption.label,
+            detail: defaultOption.detail,
+            searchText: `${defaultOption.label} ${defaultOption.detail}`.toLowerCase(),
+          },
+        ]
+      : []),
+    ...models.map(modelOption),
+    ...(value !== null && !models.some((model) => model.ref === value)
+      ? [
+          {
+            ref: value,
+            label: value,
+            detail: "Indisponível · selecione outro modelo",
+            searchText: `${value} indisponível`.toLowerCase(),
+            unavailable: true,
+          },
+        ]
+      : []),
+  ];
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredOptions = normalizedQuery
+    ? options.filter((option) => option.searchText.includes(normalizedQuery))
+    : options;
+  const selectedOption = options.find((option) => option.ref === value);
+  const stateCopy = modelPickerStateCopy[providerState];
+  const triggerLabel =
+    selectedOption?.label ??
+    (models.length > 0 ? "Selecione um modelo local" : stateCopy.label);
+  const triggerDetail = selectedOption?.detail ?? stateCopy.detail;
+
+  useEffect(() => {
+    if (open) searchRef.current?.focus();
+  }, [open]);
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [query, open]);
+  useEffect(() => {
+    if (!open) return;
+    function closeFromOutside(event: PointerEvent) {
+      if (
+        rootRef.current !== null &&
+        event.target instanceof Node &&
+        !rootRef.current.contains(event.target)
+      ) {
+        setOpen(false);
+        setQuery("");
+      }
+    }
+    document.addEventListener("pointerdown", closeFromOutside);
+    return () => document.removeEventListener("pointerdown", closeFromOutside);
+  }, [open]);
+
+  function closePicker() {
+    setOpen(false);
+    setQuery("");
+    triggerRef.current?.focus();
+  }
+  function openPicker() {
+    if (disabled || selecting) return;
+    setOpen(true);
+  }
+  async function selectOption(option: ModelPickerOption) {
+    if (selecting) return;
+    setSelecting(true);
+    try {
+      await onSelect(option.ref);
+      setOpen(false);
+      setQuery("");
+      triggerRef.current?.focus();
+    } finally {
+      setSelecting(false);
+    }
+  }
+  function handleSearchKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closePicker();
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActiveIndex((index) =>
+        filteredOptions.length === 0
+          ? 0
+          : Math.min(index + 1, filteredOptions.length - 1),
+      );
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveIndex((index) => Math.max(index - 1, 0));
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const option = filteredOptions[activeIndex];
+      if (option !== undefined) void selectOption(option);
+    }
+  }
+
+  return (
+    <div ref={rootRef} className="model-picker-field" data-provider-state={providerState}>
+      <span className="model-picker-label">{label}</span>
+      <div className="model-picker">
+        <button
+          ref={triggerRef}
+          type="button"
+          className="model-picker-trigger"
+          aria-label={ariaLabel ?? label}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-controls={listboxId}
+          disabled={disabled || selecting}
+          onClick={() => (open ? closePicker() : openPicker())}
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && open) {
+              event.preventDefault();
+              closePicker();
+            } else if (
+              event.key === "Enter" ||
+              event.key === " " ||
+              event.key === "ArrowDown"
+            ) {
+              event.preventDefault();
+              openPicker();
+            }
+          }}
+        >
+          <span className="model-picker-trigger-copy">
+            <strong>{triggerLabel}</strong>
+            <small>{triggerDetail}</small>
+          </span>
+          <span aria-hidden="true">⌄</span>
+        </button>
+        {open ? (
+          <div className="model-picker-popover">
+            <input
+              ref={searchRef}
+              type="search"
+              value={query}
+              aria-label={`Buscar em ${label.toLowerCase()}`}
+              placeholder="Buscar por nome, ref. ou metadados"
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={handleSearchKeyDown}
+            />
+            <div id={listboxId} className="model-picker-options" role="listbox" aria-label={label}>
+              {filteredOptions.length > 0 ? (
+                filteredOptions.map((option, index) => (
+                  <div
+                    key={option.ref ?? "default"}
+                    role="option"
+                    aria-selected={option.ref === value}
+                    aria-disabled={option.unavailable}
+                    className={
+                      index === activeIndex
+                        ? "model-picker-option active"
+                        : "model-picker-option"
+                    }
+                    onMouseEnter={() => setActiveIndex(index)}
+                    onClick={() => void selectOption(option)}
+                  >
+                    <strong>
+                      {option.label}
+                      {option.unavailable ? " · indisponível" : ""}
+                    </strong>
+                    <small>{option.detail}</small>
+                  </div>
+                ))
+              ) : (
+                <p className="model-picker-empty">Nenhum modelo corresponde à busca.</p>
+              )}
+            </div>
+          </div>
+        ) : null}
+      </div>
+      <small className="model-picker-status">
+        {providerState !== "available"
+          ? `${stateCopy.label} · ${statusText ?? stateCopy.detail}`
+          : statusText ??
+            (models.length > 0
+              ? "Escolha uma opção local."
+              : stateCopy.detail)}
+      </small>
+    </div>
+  );
+}
+
 function MessageItem({
   message,
   onRegenerate,
@@ -614,7 +901,7 @@ function MessageItem({
   variants?: Array<{ id: string; branchId: string; active: boolean }>;
   onSelectVariant?: (id: string) => void;
   retrying: boolean;
-  models: Array<{ ref: string }>;
+  models: OllamaModel[];
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
@@ -709,27 +996,18 @@ function MessageItem({
                 </button>
                 {advancedRetry ? (
                   <div>
-                    <small>
-                      Modelo usado: {message.modelRef ?? "indisponível"}
-                    </small>
-                    <select
-                      value={retryModel}
-                      onChange={(event) => setRetryModel(event.target.value)}
-                    >
-                      {message.modelRef &&
-                      !models.some(
-                        (model) => model.ref === message.modelRef,
-                      ) ? (
-                        <option value={message.modelRef}>
-                          {message.modelRef} (indisponível)
-                        </option>
-                      ) : null}
-                      {models.map((model) => (
-                        <option value={model.ref} key={model.ref}>
-                          {model.ref}
-                        </option>
-                      ))}
-                    </select>
+                    <ModelPicker
+                      label="Modelo para nova tentativa"
+                      ariaLabel="Modelo para nova tentativa"
+                      models={models}
+                      value={retryModel || null}
+                      providerState="available"
+                      disabled={retrying}
+                      statusText={`Modelo usado: ${message.modelRef ?? "indisponível"}`}
+                      onSelect={(modelRef) => {
+                        if (modelRef !== null) setRetryModel(modelRef);
+                      }}
+                    />
                     <button
                       type="button"
                       disabled={retrying || !retryModel}
@@ -1127,14 +1405,24 @@ export function ConversationSurface({
         />
         <div className="composer-footer">
           <div className="composer-actions">
-            <label className="conversation-model-selector">
-              <span>Modelo desta conversa</span>
-              <select
-                aria-label="Modelo desta conversa"
-                value={phase.modelOverrideRef ?? ""}
+            <div className="conversation-model-selector">
+              <ModelPicker
+                label="Modelo desta conversa"
+                ariaLabel="Modelo desta conversa"
+                models={phase.provider.models}
+                value={phase.modelOverrideRef}
+                providerState={phase.provider.state}
                 disabled={!modelsAvailable}
-                onChange={(event) => {
-                  const modelRef = event.target.value || null;
+                defaultOption={{
+                  label: `Usar padrão de ${phase.agent.name}`,
+                  detail: phase.defaultModelRef ?? "indisponível",
+                }}
+                statusText={
+                  phase.selectedModelRef
+                    ? `Em uso: ${phase.selectedModelRef}${phase.effectiveModelSource === "agent_default" ? " · padrão do agente" : " · substituição desta conversa"}`
+                    : "Nenhum modelo local disponível"
+                }
+                onSelect={async (modelRef) => {
                   const command = temporary
                     ? "set_temporary_phase_one_model"
                     : "set_conversation_model_override";
@@ -1145,34 +1433,12 @@ export function ConversationSurface({
                         currentPhase.conversation.id,
                         modelRef ?? "",
                       );
-                  void invoke(command, argumentsForCommand).then(load);
+                  await invoke(command, argumentsForCommand);
+                  await load();
                 }}
-              >
-                <option value="">
-                  Usar padrão de {phase.agent.name} ·{" "}
-                  {phase.defaultModelRef ?? "indisponível"}
-                </option>
-                {phase.provider.models.map((model) => (
-                  <option value={model.ref} key={model.ref}>
-                    {model.displayName}
-                    {model.parameterSize ? ` · ${model.parameterSize}` : ""}
-                    {model.quantization ? ` · ${model.quantization}` : ""}
-                  </option>
-                ))}
-                {phase.modelOverrideRef !== null &&
-                !phase.selectedModelAvailable ? (
-                  <option value={phase.modelOverrideRef}>
-                    {phase.modelOverrideRef} · indisponível
-                  </option>
-                ) : null}
-              </select>
-              <small>
-                {phase.selectedModelRef
-                  ? `Em uso: ${phase.selectedModelRef}${phase.effectiveModelSource === "agent_default" ? " · padrão do agente" : " · substituição desta conversa"}`
-                  : "Nenhum modelo local disponível"}
-              </small>
-            </label>
-            <span>{blocked ?? "Enter envia · Shift+Enter cria uma linha"}</span>
+              />
+              <span>{blocked ?? "Enter envia · Shift+Enter cria uma linha"}</span>
+            </div>
           </div>
           <button
             type="button"
@@ -1438,27 +1704,22 @@ export function ProfileForm({
       <section className="profile-section profile-default-model">
         <h2>Modelo padrão</h2>
         <p>Novas conversas deste agente começam com este modelo.</p>
-        <label>
-          <span>Modelo padrão de {agent.name}</span>
-          <select
-            aria-label={`Modelo padrão de ${agent.name}`}
-            value={phase?.defaultModelRef ?? ""}
-            disabled={phase === null || phase.provider.models.length === 0}
-            onChange={(event) =>
-              void invoke("select_phase_one_model", {
-                agentId: agent.id,
-                modelRef: event.target.value,
-              }).then(loadPhase)
-            }
-          >
-            <option value="">Nenhum modelo local disponível</option>
-            {phase?.provider.models.map((model) => (
-              <option value={model.ref} key={model.ref}>
-                {model.displayName}
-              </option>
-            ))}
-          </select>
-        </label>
+        <ModelPicker
+          label={`Modelo padrão de ${agent.name}`}
+          ariaLabel={`Modelo padrão de ${agent.name}`}
+          models={phase?.provider.models ?? []}
+          value={phase?.defaultModelRef ?? null}
+          providerState={phase?.provider.state ?? "checking"}
+          disabled={phase === null || phase.provider.models.length === 0}
+          onSelect={async (modelRef) => {
+            if (modelRef === null) return;
+            await invoke("select_phase_one_model", {
+              agentId: agent.id,
+              modelRef,
+            });
+            await loadPhase();
+          }}
+        />
       </section>
       {error ? <p role="alert">{error}</p> : null}
       {saved ? <p role="status">Perfil salvo.</p> : null}
