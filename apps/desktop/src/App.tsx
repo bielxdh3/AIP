@@ -526,6 +526,79 @@ function AgentButton({
   );
 }
 
+function ConfirmDialog({
+  title,
+  description,
+  confirmLabel,
+  onCancel,
+  onConfirm,
+}: {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const titleId = useId();
+  const descriptionId = useId();
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    cancelRef.current?.focus();
+    return () => previouslyFocused?.focus();
+  }, []);
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    if (event.shiftKey && document.activeElement === cancelRef.current) {
+      event.preventDefault();
+      confirmRef.current?.focus();
+    } else if (!event.shiftKey && document.activeElement === confirmRef.current) {
+      event.preventDefault();
+      cancelRef.current?.focus();
+    }
+  }
+
+  return (
+    <div className="aip-modal-backdrop">
+      <div
+        className="aip-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        onKeyDown={handleKeyDown}
+      >
+        <h2 id={titleId}>{title}</h2>
+        <p id={descriptionId}>{description}</p>
+        <div className="aip-modal-actions">
+          <button ref={cancelRef} type="button" onClick={onCancel}>
+            Cancelar
+          </button>
+          <button
+            ref={confirmRef}
+            type="button"
+            className="danger-action"
+            onClick={onConfirm}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MessageItem({
   message,
   onRegenerate,
@@ -552,6 +625,9 @@ function MessageItem({
     message.author === "agent" &&
     message.status !== "pending" &&
     message.status !== "streaming";
+  const pendingAssistant =
+    message.author === "agent" &&
+    (message.status === "pending" || message.status === "streaming");
   return (
     <article
       className={`chat-message ${message.author}`}
@@ -590,37 +666,38 @@ function MessageItem({
       ) : message.content ? (
         <p>{message.content}</p>
       ) : null}
-      <div className="message-actions">
-        <button
-          type="button"
-          onClick={() => void navigator.clipboard?.writeText(message.content)}
-        >
-          Copiar
-        </button>
-        {message.author === "user" ? (
-          <button type="button" onClick={() => setEditing(true)}>
-            Editar
+      {!pendingAssistant ? (
+        <div className="message-actions">
+          <button
+            type="button"
+            onClick={() => void navigator.clipboard?.writeText(message.content)}
+          >
+            Copiar
           </button>
-        ) : null}
-        {retryable ? (
-          <>
-            <button
-              type="button"
-              disabled={retrying}
-              onClick={() => onRegenerate(message)}
-            >
-              Tentar novamente
+          {message.author === "user" ? (
+            <button type="button" onClick={() => setEditing(true)}>
+              Editar
             </button>
-            <button
-              type="button"
-              aria-label="Opções de tentativa"
-              disabled={retrying}
-              onClick={() => setRetryMenuOpen(!retryMenuOpen)}
-            >
-              ⌄
-            </button>
-            {retryMenuOpen ? (
-              <div className="retry-menu">
+          ) : null}
+          {retryable ? (
+            <>
+              <button
+                type="button"
+                disabled={retrying}
+                onClick={() => onRegenerate(message)}
+              >
+                Tentar novamente
+              </button>
+              <button
+                type="button"
+                aria-label="Opções de tentativa"
+                disabled={retrying}
+                onClick={() => setRetryMenuOpen(!retryMenuOpen)}
+              >
+                ⌄
+              </button>
+              {retryMenuOpen ? (
+                <div className="retry-menu">
                 <button type="button" onClick={() => onRegenerate(message)}>
                   Tentar novamente
                 </button>
@@ -662,49 +739,50 @@ function MessageItem({
                     </button>
                   </div>
                 ) : null}
-              </div>
-            ) : null}
-          </>
-        ) : null}
-        {message.author === "agent" && message.modelRef ? (
-          <details>
-            <summary>Modelo</summary>
-            <span>{message.modelRef}</span>
-          </details>
-        ) : null}
-        {variants.length > 1 ? (
-          <span className="turn-variants">
-            <button
-              type="button"
-              disabled={variants.findIndex((variant) => variant.active) <= 0}
-              onClick={() => {
-                const index = variants.findIndex((variant) => variant.active);
-                if (index > 0) onSelectVariant?.(variants[index - 1]!.branchId);
-              }}
-            >
-              ‹
-            </button>
-            <span>
-              {variants.findIndex((variant) => variant.active) + 1}/
-              {variants.length}
+                </div>
+              ) : null}
+            </>
+          ) : null}
+          {message.author === "agent" && message.modelRef ? (
+            <details>
+              <summary>Modelo</summary>
+              <span>{message.modelRef}</span>
+            </details>
+          ) : null}
+          {variants.length > 1 ? (
+            <span className="turn-variants">
+              <button
+                type="button"
+                disabled={variants.findIndex((variant) => variant.active) <= 0}
+                onClick={() => {
+                  const index = variants.findIndex((variant) => variant.active);
+                  if (index > 0) onSelectVariant?.(variants[index - 1]!.branchId);
+                }}
+              >
+                ‹
+              </button>
+              <span>
+                {variants.findIndex((variant) => variant.active) + 1}/
+                {variants.length}
+              </span>
+              <button
+                type="button"
+                disabled={
+                  variants.findIndex((variant) => variant.active) >=
+                  variants.length - 1
+                }
+                onClick={() => {
+                  const index = variants.findIndex((variant) => variant.active);
+                  if (index >= 0 && index < variants.length - 1)
+                    onSelectVariant?.(variants[index + 1]!.branchId);
+                }}
+              >
+                ›
+              </button>
             </span>
-            <button
-              type="button"
-              disabled={
-                variants.findIndex((variant) => variant.active) >=
-                variants.length - 1
-              }
-              onClick={() => {
-                const index = variants.findIndex((variant) => variant.active);
-                if (index >= 0 && index < variants.length - 1)
-                  onSelectVariant?.(variants[index + 1]!.branchId);
-              }}
-            >
-              ›
-            </button>
-          </span>
-        ) : null}
-      </div>
+          ) : null}
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -1545,6 +1623,8 @@ export function ConversationList({
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [pendingRemoval, setPendingRemoval] =
+    useState<PhaseOneConversation | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const load = useCallback(
     async () => {
@@ -1613,13 +1693,13 @@ export function ConversationList({
     await load();
     changed();
   }
-  async function remove(item: PhaseOneConversation) {
-    if (
-      !window.confirm(
-        `Excluir “${item.title}”? As mensagens também serão removidas.`,
-      )
-    )
-      return;
+  function remove(item: PhaseOneConversation) {
+    setPendingRemoval(item);
+  }
+  async function confirmRemoval() {
+    const item = pendingRemoval;
+    if (item === null) return;
+    setPendingRemoval(null);
     await invoke("delete_agent_conversation", {
       agentId,
       conversationId: item.id,
@@ -1704,7 +1784,7 @@ export function ConversationList({
               <button
                 type="button"
                 className="danger-action"
-                onClick={() => void remove(item)}
+                onClick={() => remove(item)}
               >
                 Excluir
               </button>
@@ -1783,6 +1863,15 @@ export function ConversationList({
       >
         Criar conversa
       </button>
+      {pendingRemoval ? (
+        <ConfirmDialog
+          title="Excluir conversa?"
+          description={`As mensagens de “${pendingRemoval.title}” também serão removidas.`}
+          confirmLabel="Excluir conversa"
+          onCancel={() => setPendingRemoval(null)}
+          onConfirm={() => void confirmRemoval()}
+        />
+      ) : null}
     </div>
   );
 }
@@ -4473,6 +4562,8 @@ export function PixelDocumentEditor({ agentId }: { agentId: string }) {
   >("pencil");
   const [mirror, setMirror] = useState(false);
   const [selection, setSelection] = useState<PixelSelection | null>(null);
+  const [pendingLayerDeletion, setPendingLayerDeletion] =
+    useState<PixelDocument["layers"][number] | null>(null);
   const [zoom, setZoom] = useState(4);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
@@ -4616,6 +4707,17 @@ export function PixelDocumentEditor({ agentId }: { agentId: string }) {
   function updateLayers(next: PixelDocument, nextActive = activeLayerId) {
     setActiveLayerId(nextActive);
     replaceSource(JSON.stringify(next));
+  }
+  function confirmLayerDeletion() {
+    if (document === null || pendingLayerDeletion === null) return;
+    const layers = document.layers.filter(
+      (current) => current.id !== pendingLayerDeletion.id,
+    );
+    updateLayers(
+      { ...document, layers },
+      layers[0]?.id ?? "body",
+    );
+    setPendingLayerDeletion(null);
   }
   function moveSelection(dx: number, dy: number) {
     if (
@@ -4950,15 +5052,7 @@ export function PixelDocumentEditor({ agentId }: { agentId: string }) {
                 type="button"
                 disabled={document.layers.length === 1}
                 onClick={() => {
-                  if (!window.confirm(`Excluir a camada ${layer.name}?`))
-                    return;
-                  const layers = document.layers.filter(
-                    (current) => current.id !== layer.id,
-                  );
-                  updateLayers(
-                    { ...document, layers },
-                    layers[0]?.id ?? "body",
-                  );
+                  setPendingLayerDeletion(layer);
                 }}
               >
                 Excluir
@@ -4966,6 +5060,15 @@ export function PixelDocumentEditor({ agentId }: { agentId: string }) {
             </div>
           ))}
         </div>
+      ) : null}
+      {pendingLayerDeletion ? (
+        <ConfirmDialog
+          title="Excluir camada?"
+          description={`A camada “${pendingLayerDeletion.name}” será removida da arte.`}
+          confirmLabel="Excluir camada"
+          onCancel={() => setPendingLayerDeletion(null)}
+          onConfirm={confirmLayerDeletion}
+        />
       ) : null}
       {document ? (
         <div className="pixel-attachment">
