@@ -265,4 +265,77 @@ describe("ProfileForm", () => {
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
     expect(document.activeElement).toBe(trigger);
   });
+
+  it("jumps directly to a month and year without losing the day grid", async () => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () =>
+      root?.render(<ProfileForm agent={agent} done={vi.fn()} />),
+    );
+    const trigger = container.querySelector<HTMLButtonElement>(
+      ".date-picker-trigger",
+    );
+    if (trigger === null) throw new Error("Missing date picker trigger");
+    await act(async () => trigger.click());
+    const year = container.querySelector<HTMLInputElement>('[aria-label="Ano"]');
+    if (year === null) throw new Error("Missing year control");
+    change(year, "1995");
+    const month = container.querySelector<HTMLSelectElement>(
+      '[aria-label="Mês"]',
+    );
+    if (month === null) throw new Error("Missing month control");
+    await act(async () => {
+      month.value = "6";
+      month.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(container.querySelector('[role="grid"]')?.getAttribute("aria-label"))
+      .toMatch(/1995/);
+    expect(container.querySelectorAll('[role="gridcell"]').length).toBe(31);
+  });
+
+  it("saves custom pronouns and optional human fields without requiring them", async () => {
+    invoke.mockResolvedValue(undefined);
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () =>
+      root?.render(
+        <ProfileForm agent={{ ...agent, species: "human" }} done={vi.fn()} />,
+      ),
+    );
+    const selects = container.querySelectorAll<HTMLSelectElement>(
+      ".profile-fields select",
+    );
+    await act(async () => {
+      selects[2]!.value = "custom";
+      selects[2]!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const customPronouns = Array.from(container.querySelectorAll("label"))
+      .find((label) => label.textContent?.includes("Pronomes personalizados"))
+      ?.querySelector("input") as HTMLInputElement;
+    const gender = Array.from(container.querySelectorAll("label"))
+      .find((label) => label.textContent?.includes("Gênero (opcional)"))
+      ?.querySelector("input") as HTMLInputElement;
+    const sexuality = Array.from(container.querySelectorAll("label"))
+      .find((label) => label.textContent?.includes("Sexualidade (opcional)"))
+      ?.querySelector("input") as HTMLInputElement;
+    change(customPronouns, "ze/zir");
+    change(gender, "não-binário");
+    change(sexuality, "bissexual");
+    const save = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Salvar alterações",
+    );
+    await act(async () => save?.click());
+    expect(invoke).toHaveBeenCalledWith(
+      "update_agent_profile",
+      expect.objectContaining({
+        agent: expect.objectContaining({
+          pronouns: "ze/zir",
+          gender: "não-binário",
+          sexuality: "bissexual",
+        }),
+      }),
+    );
+  });
 });

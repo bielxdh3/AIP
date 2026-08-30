@@ -2098,6 +2098,8 @@ mod tests {
                 age_category: "adult".into(),
                 species: "agent".into(),
                 pronouns: "they/them".into(),
+                gender: None,
+                sexuality: None,
                 personality_summary: "curious".into(),
                 traits_json: r#"{"curiosity":80}"#.into(),
                 appearance_preset: "astra".into(),
