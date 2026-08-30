@@ -63,6 +63,7 @@ describe("ConversationSurface", () => {
   afterEach(() => {
     act(() => root?.unmount());
     container?.remove();
+    phase = null;
   });
 
   it("rerenders from loading without a hook-order error and shows retry", () => {
@@ -95,5 +96,38 @@ describe("ConversationSurface", () => {
       expect.stringContaining("Rendered more hooks"),
     );
     consoleError.mockRestore();
+  });
+
+  it("hides assistant actions while keeping queue cancellation available", () => {
+    phase = {
+      ...loadedPhase,
+      messages: [
+        {
+          ...loadedPhase.messages[0],
+          status: "streaming",
+        },
+      ],
+      queue: [
+        {
+          agentId: "agent",
+          requestId: "request",
+          assistantMessageId: "assistant",
+          active: true,
+          cancellationRequested: false,
+        },
+      ],
+    } as unknown as PhaseOneState;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    act(() => {
+      root.render(<ConversationSurface agentId="agent" temporary={false} />);
+    });
+
+    expect(container.querySelector(".chat-message .message-actions")).toBeNull();
+    expect(container.querySelector(".queue-banner")?.textContent).toContain(
+      "Cancelar",
+    );
   });
 });

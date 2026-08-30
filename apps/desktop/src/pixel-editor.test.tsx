@@ -115,6 +115,27 @@ beforeEach(() => {
 });
 
 describe("PixelDocumentEditor regressions", () => {
+  it("requires explicit confirmation before deleting a layer", async () => {
+    await renderEditor();
+    const textarea = container?.querySelector<HTMLTextAreaElement>(
+      '[aria-label="Documento de pixel art"]',
+    );
+    if (textarea === null || textarea === undefined)
+      throw new Error("Missing source editor");
+
+    await act(async () => button("Excluir").click());
+    expect(container?.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(JSON.parse(textarea.value).layers).toHaveLength(2);
+
+    await act(async () => button("Cancelar").click());
+    expect(container?.querySelector('[role="dialog"]')).toBeNull();
+    expect(JSON.parse(textarea.value).layers).toHaveLength(2);
+
+    await act(async () => button("Excluir").click());
+    await act(async () => button("Excluir camada").click());
+    expect(JSON.parse(textarea.value).layers).toHaveLength(1);
+  });
+
   it("keeps Pencil edits isolated and supports undo/redo", async () => {
     const canvas = await renderEditor();
 

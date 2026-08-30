@@ -34,6 +34,57 @@ afterEach(() => {
 });
 
 describe("ConversationList regressions", () => {
+  it("requires explicit confirmation before deleting a conversation", async () => {
+    invoke.mockImplementation((command: string) =>
+      command === "list_agent_conversations"
+        ? Promise.resolve(current)
+        : Promise.resolve(undefined),
+    );
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<ConversationList agentId="agent" changed={vi.fn()} />);
+      await Promise.resolve();
+    });
+
+    const deleteButton = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".conversation-actions button"),
+    ).find((button) => button.textContent === "Excluir");
+    if (deleteButton === undefined) throw new Error("Missing delete button");
+    await act(async () => deleteButton.click());
+    const dialog = container.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog?.textContent).toContain("Conversa inicial");
+    expect(document.activeElement?.textContent).toBe("Cancelar");
+    expect(invoke).not.toHaveBeenCalledWith("delete_agent_conversation", {
+      agentId: "agent",
+      conversationId: "main",
+    });
+
+    await act(async () =>
+      dialog?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      ),
+    );
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+
+    await act(async () => deleteButton.click());
+    const confirm = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Excluir conversa",
+    );
+    if (confirm === undefined) throw new Error("Missing confirmation button");
+    await act(async () => {
+      confirm.click();
+      await Promise.resolve();
+    });
+    expect(invoke).toHaveBeenCalledWith("delete_agent_conversation", {
+      agentId: "agent",
+      conversationId: "main",
+    });
+  });
+
   it("exposes scoped semantic hooks and accessible creation controls", async () => {
     invoke.mockImplementation((command: string) => {
       if (command === "list_agent_conversations")
