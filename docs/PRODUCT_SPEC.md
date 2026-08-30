@@ -267,10 +267,11 @@ v0.1 includes initial support for:
 The current State control stores one of three per-agent modes: `normal` (Normal),
 `voice_muted` (voice-muted), or `silent` (silent). Normal permits ordinary text and
 configured voice subject to the Rust authority and provider gates. Voice-muted keeps
-text available while suppressing synthesized voice. Silent blocks spontaneous or
-agent-initiated conversation starts and voice input/wake handling; direct text remains
-subject to the normal Rust authority and gates. Energy, mood, and sleep are fictional
-simulated values for presentation, not health telemetry.
+text available while suppressing synthesized voice. Silent blocks agent-initiated
+cognitive/public conversation and voice-setting mutations; voice input/wake handling
+is also blocked. Direct Phase One text remains subject to the normal Rust authority,
+provider, and suspension gates. Energy, mood, and sleep are fictional simulated
+values for presentation, not health telemetry.
 
 Later state may include:
 
@@ -279,7 +280,7 @@ Later state may include:
 - focus;
 - social fatigue.
 
-State may affect:
+Future state behavior may later affect:
 
 - visual animation;
 - writing style;
@@ -287,14 +288,16 @@ State may affect:
 - frequency of spontaneous conversation;
 - choice of fictional activities.
 
-Agents may choose fictional activities such as sleeping, resting, playing, or reading to recover state.
+Future behavior may include fictional activities such as sleeping, resting, playing,
+or reading to recover state.
 
-When the PC is off, time-based state and conceptual goals continue and are applied gradually after startup.
+The local simulation applies elapsed state updates when it is read after startup; this
+does not imply autonomous activities or conceptual-goal execution.
 
 Suspension pauses simulated-state advancement and blocks generation/voice runtime
-operations, while age continues. `Acordar agora` sets sleep to zero and temporarily
-prevents sleep from advancing; it does not wake a real person or remove the suspension.
-Any later mode behavior described below is planned behavior, not a current
+operations, while age continues. `Acordar agora` adjusts only fictional sleep and
+energy for a temporary wake interval; it does not wake a real person or remove the
+suspension. Any later mode behavior described below is planned behavior, not a current
 implementation claim.
 
 ## 12. Desktop visual system
@@ -411,10 +414,11 @@ Example statuses:
 
 ## 15. Modes
 
-The current implementation persists and displays the three modes above, but does not
-implement the distinct autonomous, spontaneous, or voice effects listed in these
-future-oriented descriptions. No mode should be read as health telemetry or as a
-permission to bypass the Rust authority.
+The current implementation persists and displays the three modes above and applies
+only the effects stated in the current State paragraph. The distinct autonomous,
+spontaneous, or other future-oriented effects listed below are planned, not shipped;
+no mode should be read as health telemetry or as permission to bypass the Rust
+authority.
 
 ### Normal mode
 

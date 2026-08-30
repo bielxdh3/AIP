@@ -2660,10 +2660,12 @@ export function AgentStateControls({ agentId }: { agentId: string }) {
     <section className="agent-state-controls" aria-label="Estado do agente">
       <strong>Estado</strong>
       <p className="state-guidance">
-        Normal mantém a atividade configurada; Sem voz mantém o texto e evita
-        a voz; Silencioso reduz as saídas do agente. Energia, humor e sono são
-        valores fictícios simulados para orientar a apresentação local — não
-        são medições de saúde nem mudam a identidade.
+        Normal permite texto e voz configurada conforme as guardas do Rust e do
+        provedor; Sem voz mantém o texto e silencia a voz sintetizada;
+        Silencioso bloqueia conversas cognitivas/públicas iniciadas pelo agente
+        e alterações de configurações de voz. Texto direto continua sujeito às
+        guardas normais, inclusive suspensão. Energia, humor e sono são valores
+        fictícios simulados — não são medições de saúde.
       </p>
       <label>
         Modo
@@ -2710,8 +2712,8 @@ export function AgentStateControls({ agentId }: { agentId: string }) {
       </button>
       <small>
         Suspender pausa o avanço simulado; Retomar permite que ele continue.
-        “Acordar agora” aplica um impulso temporário de vigília, sem acordar
-        uma pessoa real.
+        “Acordar agora” ajusta somente o sono e a energia fictícios por um
+        período temporário, sem remover a suspensão ou acordar uma pessoa real.
       </small>
     </section>
   );
