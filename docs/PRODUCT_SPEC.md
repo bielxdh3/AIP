@@ -68,6 +68,12 @@ Changing, removing, or replacing a model must not erase or replace:
 
 Each agent has a unique identifier. Imported duplicates become derived individuals with new identifiers and a new copy birthday while preserving the original creation lineage.
 
+Pronouns may use a canonical option or Owner-entered bounded custom text and persist
+with the profile. Gender and sexuality are optional Owner-entered values shown and
+saved only for `human` and `human-compatible` identity types. They are never inferred
+and are never required for non-human identities; Rust remains authoritative for
+validation, normalization, and persistence.
+
 ## 5. Initial agent profiles
 
 The Owner's agent is initially:
@@ -258,6 +264,14 @@ v0.1 includes initial support for:
 - energy;
 - mood.
 
+The current State control stores one of three per-agent modes: `normal` (Normal),
+`voice_muted` (voice-muted), or `silent` (silent). Normal permits ordinary text and
+configured voice subject to the Rust authority and provider gates. Voice-muted keeps
+text available while suppressing synthesized voice. Silent blocks spontaneous or
+agent-initiated conversation starts and voice input/wake handling; direct text remains
+subject to the normal Rust authority and gates. Energy, mood, and sleep are fictional
+simulated values for presentation, not health telemetry.
+
 Later state may include:
 
 - hunger;
@@ -277,9 +291,11 @@ Agents may choose fictional activities such as sleeping, resting, playing, or re
 
 When the PC is off, time-based state and conceptual goals continue and are applied gradually after startup.
 
-Suspension pauses activities, goals, and fictional states, but age continues.
-
-An `wake now` control temporarily overrides sleep and fatigue.
+Suspension pauses simulated-state advancement and blocks generation/voice runtime
+operations, while age continues. `Acordar agora` sets sleep to zero and temporarily
+prevents sleep from advancing; it does not wake a real person or remove the suspension.
+Any later mode behavior described below is planned behavior, not a current
+implementation claim.
 
 ## 12. Desktop visual system
 
@@ -394,6 +410,11 @@ Example statuses:
 - `Modo silencioso ativo`.
 
 ## 15. Modes
+
+The current implementation persists and displays the three modes above, but does not
+implement the distinct autonomous, spontaneous, or voice effects listed in these
+future-oriented descriptions. No mode should be read as health telemetry or as a
+permission to bypass the Rust authority.
 
 ### Normal mode
 

@@ -123,11 +123,28 @@ describe("ModelPicker", () => {
     expect(container?.textContent).toContain("O Ollama não respondeu a tempo");
 
     await act(async () => trigger.click());
-    expect(
-      Array.from(container?.querySelectorAll('[role="option"]') ?? []).some(
-        (option) => option.textContent?.includes("indisponível"),
+    const unavailable = container?.querySelector<HTMLElement>(
+      '[role="option"][aria-disabled="true"]',
+    );
+    if (unavailable === null || unavailable === undefined)
+      throw new Error("Missing unavailable option");
+    expect(unavailable.textContent).toContain("indisponível");
+    await act(async () => unavailable.click());
+    expect(onSelect).not.toHaveBeenCalled();
+
+    const search = container?.querySelector<HTMLInputElement>('input[type="search"]');
+    if (search === null || search === undefined) throw new Error("Missing search");
+    await act(async () =>
+      search.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
       ),
-    ).toBe(true);
+    );
+    await act(async () =>
+      search.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      ),
+    );
+    expect(onSelect).not.toHaveBeenCalled();
   });
 
   it("supports Arrow, Enter and Escape from the search field", async () => {

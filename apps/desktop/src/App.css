@@ -1438,7 +1438,20 @@ a:focus-visible {
 }
 
 .model-picker-option[aria-disabled="true"] strong {
-  color: #e2a5a5;
+  color: #b77f7f;
+}
+
+.model-picker-option[aria-disabled="true"] {
+  color: #7d8794;
+  background: #12171d;
+  cursor: not-allowed;
+}
+
+.model-picker-option[aria-disabled="true"]:hover,
+.model-picker-option[aria-disabled="true"].active,
+.model-picker-option[aria-disabled="true"][aria-selected="true"] {
+  border-color: transparent;
+  background: #12171d;
 }
 
 .model-picker-empty {

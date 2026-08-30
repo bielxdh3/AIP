@@ -817,7 +817,7 @@ export function ModelPicker({
     setOpen(true);
   }
   async function selectOption(option: ModelPickerOption) {
-    if (selecting) return;
+    if (selecting || option.unavailable) return;
     setSelecting(true);
     try {
       await onSelect(option.ref);
