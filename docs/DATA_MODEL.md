@@ -17,9 +17,11 @@ an activity whose bounded duration elapses becomes `expired`.
 ## Phase 2 identity
 
 One implicit local Owner owns the two fixed initial agents. Migration `0004` adds a
-per-agent identity profile and a nullable main-conversation model override. Existing
-Astra and Luma records, positions, histories, main conversations, model defaults, and
-keep-alive settings are preserved; missing identity fields receive deterministic defaults.
+per-agent identity profile and a nullable legacy main-conversation model override.
+The legacy main-conversation fields remain compatibility references; current active
+conversation selection is ordinary, agent-scoped selection. Existing Astra and Luma
+records, positions, histories, main conversations, model defaults, and keep-alive
+settings are preserved; missing identity fields receive deterministic defaults.
 
 ## 1. Principles
 
@@ -70,11 +72,15 @@ v0.1 inserts one Owner row during initialization.
 | `created_at` | integer | Real creation time |
 | `origin_agent_id` | text nullable | Derived-copy lineage |
 | `status` | text | `active`, `suspended`, `archived` |
-| `main_conversation_id` | text nullable | Assigned after chat creation |
+| `main_conversation_id` | text nullable | Legacy compatibility reference; active selection is stored separately |
 | `default_model_ref` | text nullable | Replaceable model reference |
 | `safe_mode_only` | integer | Recovery flag when needed |
 | `created_by_user_id` | text FK | Audit ownership |
 | `updated_at` | integer | UTC milliseconds |
+
+The additive identity profile columns `gender` and `sexuality` are nullable,
+Owner-controlled, bounded values. They are retained only for human-compatible
+identity types; Rust validation and persistence remain authoritative.
 
 ### `agent_traits`
 
@@ -143,6 +149,7 @@ One current row per agent.
 | `created_at` | integer | UTC milliseconds |
 | `updated_at` | integer | UTC milliseconds |
 | `archived_at` | integer nullable | Archive time |
+| `empty_expires_at` | integer nullable | Expiry for explicitly named empty conversations; cleared after the first message |
 
 Temporary conversations are not stored here.
 
@@ -426,6 +433,11 @@ each existing agent, using a UUIDv7 identifier and the title `Nova conversa`. Mi
 adds pinning and converts legacy `is_main` rows to ordinary conversations without deleting
 their IDs, messages, or agent ownership. Active selection falls back deterministically when
 an archived or deleted conversation was selected.
+
+Migration `0027` adds the nullable `conversations.empty_expires_at` expiry field, and
+migration `0028` adds nullable `agent_identity_profiles.gender` and `sexuality`. These
+are additive compatibility/data fields; migration history remains the authority for
+how they are introduced.
 
 The message table stores explicit conversation and agent identifiers with a composite foreign
 key, plain text, the actual provider-qualified model reference, generation request correlation,
