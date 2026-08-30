@@ -154,12 +154,15 @@ Conversations are ordinary, owner-scoped records belonging to one agent. The Own
 explicitly selects the active conversation for each agent; there is no special primary
 record. The selected conversation is restored locally for that agent.
 
-Normal conversations are persisted in local history. A newly created empty conversation
-is also persisted as a draft; the current UI requires a bounded non-empty title, using
-`Nova conversa` for the fallback record created when an agent needs a replacement active
-conversation. Explicitly created empty drafts expire after seven days and are removed
-during later conversation access if they still contain no messages. Creating a message
-clears that expiry, so a conversation with content is retained.
+Normal conversations are persisted in local history. Selecting `Nova conversa` opens an
+in-memory draft surface only; it does not create a conversation row or history entry.
+Leaving the draft, changing agent or workspace, or opening an existing conversation
+discards it. The draft is persisted only when the Owner saves a bounded non-empty name,
+or sends its first message. The first-message path uses `Nova conversa` as its bounded
+fallback title, selects the new conversation, and then sends through the normal chat
+path. Only explicitly named empty persisted conversations use the seven-day TTL and
+are removed during later conversation access if they still contain no messages; adding
+the first message clears that expiry.
 
 Conversation types:
 

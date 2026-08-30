@@ -815,6 +815,29 @@ a:focus-visible {
   gap: 8px;
 }
 
+.draft-title-field {
+  display: grid;
+  gap: 5px;
+  color: #aeb6c2;
+  font-size: 11px;
+}
+
+.draft-title-field input {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 8px;
+  border: 1px solid #303742;
+  border-radius: 5px;
+  color: #e1e5eb;
+  background: #11161c;
+}
+
+.draft-error {
+  margin: 8px 0 0;
+  color: #f0a5a5;
+  font-size: 11px;
+}
+
 .temporary-control {
   min-height: 34px;
   padding: 7px 10px;
