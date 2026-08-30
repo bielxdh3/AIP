@@ -42,7 +42,8 @@ const MIGRATION_0023: &str = include_str!("../migrations/0023_phase9_workspace_r
 const MIGRATION_0024: &str = include_str!("../migrations/0024_phase10_extension_runtime.sql");
 const MIGRATION_0025: &str = include_str!("../migrations/0025_local_provider_registry.sql");
 const MIGRATION_0026: &str = include_str!("../migrations/0026_conversation_organization.sql");
-const MIGRATIONS: [(i64, &str); 26] = [
+const MIGRATION_0027: &str = include_str!("../migrations/0027_conversation_empty_expiry.sql");
+const MIGRATIONS: [(i64, &str); 27] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
@@ -69,10 +70,12 @@ const MIGRATIONS: [(i64, &str); 26] = [
     (24, MIGRATION_0024),
     (25, MIGRATION_0025),
     (26, MIGRATION_0026),
+    (27, MIGRATION_0027),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
 pub const LUMA_ID: &str = "agt_luma_provisional";
+const EMPTY_CONVERSATION_TTL_MILLIS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum DatabaseError {
@@ -165,6 +168,7 @@ impl Database {
         Self::seed_phase_one(&mut connection)?;
         Self::seed_phase8_voice(&mut connection)?;
         Self::seed_phase13_gateway(&mut connection)?;
+        Self::cleanup_expired_empty_conversations(&connection, now_millis())?;
         Self::recover_interrupted(&connection)?;
         Ok(database)
     }
@@ -200,6 +204,9 @@ impl Database {
                 if version == 26 {
                     Self::ensure_conversation_pinned_column(connection)?;
                 }
+                if version == 27 {
+                    Self::ensure_conversation_empty_expiry_column(connection)?;
+                }
                 connection.execute_batch(sql)?;
             }
         }
@@ -216,6 +223,23 @@ impl Database {
         }
         connection.execute(
             "ALTER TABLE conversations ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0 CHECK (is_pinned IN (0, 1))",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn ensure_conversation_empty_expiry_column(
+        connection: &Connection,
+    ) -> Result<(), DatabaseError> {
+        let mut statement = connection.prepare("PRAGMA table_info(conversations)")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            if row.get::<_, String>(1)? == "empty_expires_at" {
+                return Ok(());
+            }
+        }
+        connection.execute(
+            "ALTER TABLE conversations ADD COLUMN empty_expires_at INTEGER",
             [],
         )?;
         Ok(())
@@ -482,6 +506,7 @@ impl Database {
         agent_id: &str,
     ) -> Result<Vec<PhaseOneConversation>, DatabaseError> {
         let connection = self.open()?;
+        Self::cleanup_expired_empty_conversations(&connection, now_millis())?;
         let mut statement = connection.prepare(
             "SELECT id, agent_id, title, model_override_ref, is_pinned FROM conversations
              WHERE agent_id = ?1 AND archived_at IS NULL
@@ -502,12 +527,29 @@ impl Database {
         Ok(conversations)
     }
 
+    fn cleanup_expired_empty_conversations(
+        connection: &Connection,
+        now: i64,
+    ) -> Result<(), DatabaseError> {
+        connection.execute(
+            "DELETE FROM conversations
+             WHERE empty_expires_at IS NOT NULL AND empty_expires_at <= ?1
+               AND NOT EXISTS (
+                 SELECT 1 FROM conversation_messages
+                 WHERE conversation_messages.conversation_id = conversations.id
+               )",
+            params![now],
+        )?;
+        Ok(())
+    }
+
     pub fn archived_conversations(
         &self,
         agent_id: &str,
     ) -> Result<Vec<PhaseOneConversation>, DatabaseError> {
         self.agent(agent_id)?;
         let connection = self.open()?;
+        Self::cleanup_expired_empty_conversations(&connection, now_millis())?;
         let mut statement = connection.prepare(
             "SELECT id, agent_id, title, model_override_ref, is_pinned FROM conversations
              WHERE agent_id = ?1 AND archived_at IS NOT NULL
@@ -547,8 +589,9 @@ impl Database {
         };
         let connection = self.open()?;
         let now = now_millis();
-        connection.execute("INSERT INTO conversations (id, agent_id, owner_user_id, title, kind, is_main, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, 'normal', 0, ?5, ?5)", params![conversation.id, agent_id, OWNER_ID, title, now])?;
+        let empty_expires_at = now.saturating_add(EMPTY_CONVERSATION_TTL_MILLIS);
+        connection.execute("INSERT INTO conversations (id, agent_id, owner_user_id, title, kind, is_main, created_at, updated_at, empty_expires_at)
+            VALUES (?1, ?2, ?3, ?4, 'normal', 0, ?5, ?5, ?6)", params![conversation.id, agent_id, OWNER_ID, title, now, empty_expires_at])?;
         connection.execute(
             "INSERT INTO conversation_branches (id, conversation_id, agent_id, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?4)",
@@ -602,6 +645,15 @@ impl Database {
     ) -> Result<(), DatabaseError> {
         let mut connection = self.open()?;
         let transaction = connection.transaction()?;
+        let was_active = transaction
+            .query_row(
+                "SELECT active_conversation_id FROM agent_phase3_settings WHERE agent_id = ?1",
+                params![agent_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+            .is_some_and(|active_id| active_id == conversation_id);
         if transaction.execute(
             "DELETE FROM conversations WHERE id = ?1 AND agent_id = ?2",
             params![conversation_id, agent_id],
@@ -609,7 +661,59 @@ impl Database {
         {
             return Err(DatabaseError::OwnershipMismatch);
         }
+        if was_active {
+            Self::ensure_active_conversation(&transaction, agent_id, now_millis())?;
+        }
         transaction.commit()?;
+        Ok(())
+    }
+
+    fn ensure_active_conversation(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        now: i64,
+    ) -> Result<(), DatabaseError> {
+        let conversation_id = match transaction
+            .query_row(
+                "SELECT id FROM conversations
+                 WHERE agent_id = ?1 AND archived_at IS NULL
+                 ORDER BY is_pinned DESC, updated_at DESC, id ASC LIMIT 1",
+                params![agent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            Some(id) => id,
+            None => {
+                let id = Uuid::now_v7().to_string();
+                transaction.execute(
+                    "INSERT INTO conversations
+                     (id, agent_id, owner_user_id, title, kind, is_main,
+                      created_at, updated_at, empty_expires_at)
+                     VALUES (?1, ?2, ?3, 'Nova conversa', 'normal', 0, ?4, ?4, NULL)",
+                    params![id, agent_id, OWNER_ID, now],
+                )?;
+                transaction.execute(
+                    "INSERT INTO conversation_branches
+                     (id, conversation_id, agent_id, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?4)",
+                    params![format!("{id}:main"), id, agent_id, now],
+                )?;
+                transaction.execute(
+                    "INSERT INTO conversation_active_branches
+                     (conversation_id, agent_id, branch_id, updated_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![id, agent_id, format!("{id}:main"), now],
+                )?;
+                id
+            }
+        };
+        transaction.execute(
+            "UPDATE agent_phase3_settings
+             SET active_conversation_id = ?1, updated_at = ?2
+             WHERE agent_id = ?3",
+            params![conversation_id, now, agent_id],
+        )?;
         Ok(())
     }
 
@@ -654,18 +758,26 @@ impl Database {
         agent_id: &str,
         conversation_id: &str,
     ) -> Result<(), DatabaseError> {
-        let connection = self.open()?;
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
         let now = now_millis();
-        if connection.execute("UPDATE conversations SET archived_at = ?1, updated_at = ?1 WHERE id = ?2 AND agent_id = ?3 AND archived_at IS NULL", params![now, conversation_id, agent_id])? == 1 {
-            connection.execute(
-                "UPDATE agent_phase3_settings SET active_conversation_id = (
-                   SELECT id FROM conversations WHERE agent_id = ?1 AND archived_at IS NULL
-                   ORDER BY is_pinned DESC, updated_at DESC, id ASC LIMIT 1
-                 ), updated_at = ?2 WHERE agent_id = ?1 AND active_conversation_id = ?3",
-                params![agent_id, now, conversation_id],
-            )?;
-            Ok(())
-        } else { Err(DatabaseError::OwnershipMismatch) }
+        let was_active = transaction
+            .query_row(
+                "SELECT active_conversation_id FROM agent_phase3_settings WHERE agent_id = ?1",
+                params![agent_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+            .is_some_and(|active_id| active_id == conversation_id);
+        if transaction.execute("UPDATE conversations SET archived_at = ?1, updated_at = ?1 WHERE id = ?2 AND agent_id = ?3 AND archived_at IS NULL", params![now, conversation_id, agent_id])? != 1 {
+            return Err(DatabaseError::OwnershipMismatch);
+        }
+        if was_active {
+            Self::ensure_active_conversation(&transaction, agent_id, now)?;
+        }
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn restore_conversation(
@@ -1522,7 +1634,7 @@ impl Database {
             ],
         )?;
         transaction.execute(
-            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            "UPDATE conversations SET updated_at = ?1, empty_expires_at = NULL WHERE id = ?2",
             params![now + 1, conversation_id],
         )?;
         transaction.commit()?;
@@ -2897,12 +3009,13 @@ mod tests {
     };
 
     use super::{
-        Database, DatabaseError, PhaseOneSettings, ASTRA_ID, LUMA_ID, MIGRATION_0001,
-        MIGRATION_0002, MIGRATION_0003, MIGRATION_0004, MIGRATION_0005, MIGRATION_0006,
-        MIGRATION_0007, MIGRATION_0008, MIGRATION_0009, MIGRATION_0010, MIGRATION_0011,
-        MIGRATION_0012, MIGRATION_0013, MIGRATION_0014, MIGRATION_0015, MIGRATION_0016,
-        MIGRATION_0017, MIGRATION_0018, MIGRATION_0019, MIGRATION_0020, MIGRATION_0021,
-        MIGRATION_0022, MIGRATION_0023, MIGRATION_0024, MIGRATION_0025,
+        now_millis, Database, DatabaseError, PhaseOneSettings, ASTRA_ID,
+        EMPTY_CONVERSATION_TTL_MILLIS, LUMA_ID, MIGRATION_0001, MIGRATION_0002, MIGRATION_0003,
+        MIGRATION_0004, MIGRATION_0005, MIGRATION_0006, MIGRATION_0007, MIGRATION_0008,
+        MIGRATION_0009, MIGRATION_0010, MIGRATION_0011, MIGRATION_0012, MIGRATION_0013,
+        MIGRATION_0014, MIGRATION_0015, MIGRATION_0016, MIGRATION_0017, MIGRATION_0018,
+        MIGRATION_0019, MIGRATION_0020, MIGRATION_0021, MIGRATION_0022, MIGRATION_0023,
+        MIGRATION_0024, MIGRATION_0025,
     };
 
     fn test_path() -> std::path::PathBuf {
@@ -3050,6 +3163,101 @@ mod tests {
         );
         drop(connection);
         drop(upgraded);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn named_empty_conversations_expire_during_normal_initialization() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let expired = database
+            .create_conversation(ASTRA_ID, "Expira em sete dias")
+            .unwrap();
+        let connection = database.open().unwrap();
+        let (created_at, expires_at): (i64, i64) = connection
+            .query_row(
+                "SELECT created_at, empty_expires_at FROM conversations WHERE id = ?1",
+                params![expired.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(expires_at, created_at + EMPTY_CONVERSATION_TTL_MILLIS);
+        connection
+            .execute(
+                "UPDATE conversations SET empty_expires_at = ?1 WHERE id = ?2",
+                params![now_millis() - 1, expired.id],
+            )
+            .unwrap();
+        drop(connection);
+        drop(database);
+
+        let reopened = Database::initialize(&path).unwrap();
+        assert!(!reopened
+            .conversations(ASTRA_ID)
+            .unwrap()
+            .iter()
+            .any(|conversation| conversation.id == expired.id));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn first_persisted_message_clears_empty_conversation_expiry() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let conversation = database
+            .create_conversation(ASTRA_ID, "Conversa com primeira mensagem")
+            .unwrap();
+        let attempt = database
+            .create_message_attempt(ASTRA_ID, &conversation.id, "primeira", "ollama:test")
+            .unwrap();
+        let connection = database.open().unwrap();
+        let expiry: Option<i64> = connection
+            .query_row(
+                "SELECT empty_expires_at FROM conversations WHERE id = ?1",
+                params![conversation.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(expiry, None);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM conversation_messages WHERE id = ?1",
+                    params![attempt.user_message_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn deleting_the_last_active_conversation_creates_a_valid_fallback() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let current = database.main_conversation(ASTRA_ID).unwrap();
+        database.delete_conversation(ASTRA_ID, &current.id).unwrap();
+        let replacement = database.active_conversation(ASTRA_ID).unwrap();
+        assert_ne!(replacement.id, current.id);
+        assert_eq!(replacement.title, "Nova conversa");
+        assert_eq!(database.conversations(ASTRA_ID).unwrap().len(), 1);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn archiving_the_last_active_conversation_creates_a_valid_fallback() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let current = database.main_conversation(ASTRA_ID).unwrap();
+        database
+            .archive_conversation(ASTRA_ID, &current.id)
+            .unwrap();
+        let replacement = database.active_conversation(ASTRA_ID).unwrap();
+        assert_ne!(replacement.id, current.id);
+        assert_eq!(replacement.title, "Nova conversa");
+        assert_eq!(database.conversations(ASTRA_ID).unwrap().len(), 1);
         cleanup(&path);
     }
 
