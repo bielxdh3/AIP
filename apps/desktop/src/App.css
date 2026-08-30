@@ -65,7 +65,7 @@ body {
 :root[data-surface="bubble"] body,
 :root[data-surface="bubble"] #root {
   min-width: 0;
-  background: transparent;
+  background: transparent !important;
   overflow: hidden;
 }
 
@@ -1660,6 +1660,10 @@ a:focus-visible {
 }
 
 .agent-bubble.expanded {
+  display: flex;
+  min-width: 320px;
+  min-height: 320px;
+  flex-direction: column;
   height: calc(100% - 16px);
   overflow: hidden;
 }
@@ -1713,7 +1717,8 @@ a:focus-visible {
 }
 
 .bubble-message-scroll {
-  height: 92px;
+  flex: 1 1 auto;
+  min-height: 92px;
   margin: 9px 0;
   padding: 8px;
   overflow-y: auto;
@@ -1736,11 +1741,13 @@ a:focus-visible {
 
 .bubble-cancel,
 .bubble-open-chat {
+  flex: 0 0 auto;
   width: 100%;
   font-size: 10px;
 }
 
 .bubble-composer {
+  flex: 0 0 auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px;

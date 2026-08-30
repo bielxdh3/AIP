@@ -172,6 +172,8 @@ import {
 import AgentSprite from "./components/AgentSprite";
 import {
   blockedSendCopy,
+  canDraftConversationMessage,
+  canSendConversationMessage,
   canRequestCancellation,
   conversationOverrideArguments,
   messageStatusCopy,
@@ -1190,10 +1192,12 @@ export function ConversationSurface({
   const blocked = blockedSendCopy(phase.sendBlockedCode);
   const providerRecovery = providerRecoveryCopy(phase);
   const modelsAvailable = phase.provider.models.length > 0;
+  const canSend = canSendConversationMessage(currentPhase);
+  const canDraft = canDraftConversationMessage(currentPhase);
 
   async function send() {
     const content = draft.trim();
-    if (!content || busy || !currentPhase.canSend) return;
+    if (!content || busy || !canSend) return;
     followsBottomRef.current = true;
     setBusy(true);
     try {
@@ -1447,7 +1451,7 @@ export function ConversationSurface({
           value={draft}
           maxLength={16_384}
           placeholder={blocked ?? `Escreva para ${phase.agent.name}`}
-          disabled={!phase.canSend || busy}
+          disabled={!canDraft || busy}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
@@ -1495,7 +1499,7 @@ export function ConversationSurface({
           </div>
           <button
             type="button"
-            disabled={!phase.canSend || !draft.trim() || busy}
+            disabled={!canSend || !draft.trim() || busy}
             onClick={() => void send()}
           >
             Enviar

@@ -18,8 +18,8 @@ use crate::{
 
 const OVERLAY_WIDTH: f64 = 180.0;
 const OVERLAY_HEIGHT: f64 = 192.0;
-const BUBBLE_WIDTH: f64 = 360.0;
-const BUBBLE_HEIGHT: f64 = 280.0;
+const BUBBLE_WIDTH: f64 = 380.0;
+const BUBBLE_HEIGHT: f64 = 360.0;
 const MAX_INTERACTIVE_REGIONS: usize = 256;
 const MAX_REGION_COORDINATE: f64 = 4096.0;
 const OVERLAY_LABELS: [&str; 4] = [
@@ -446,26 +446,44 @@ fn position_bubble(app: &AppHandle, agent_id: &str) -> Result<(), OverlayInputEr
         .current_monitor()
         .map_err(|_| OverlayInputError::NativeRegionFailed)?
         .ok_or(OverlayInputError::NativeRegionFailed)?;
-    let monitor_position = monitor.position();
-    let monitor_size = monitor.size();
     let bubble_width = (BUBBLE_WIDTH * scale).round() as i32;
     let bubble_height = (BUBBLE_HEIGHT * scale).round() as i32;
     let agent_width = (OVERLAY_WIDTH * scale).round() as i32;
-    let right = monitor_position.x + monitor_size.width as i32;
-    let bottom = monitor_position.y + monitor_size.height as i32;
+    let work_area = monitor.work_area();
+    let position = bubble_position(
+        agent_position,
+        agent_width,
+        bubble_width,
+        bubble_height,
+        work_area.position,
+        work_area.size,
+    );
+    bubble
+        .set_position(position)
+        .map_err(|_| OverlayInputError::NativeRegionFailed)
+}
+
+fn bubble_position(
+    agent_position: tauri::PhysicalPosition<i32>,
+    agent_width: i32,
+    bubble_width: i32,
+    bubble_height: i32,
+    work_area_position: tauri::PhysicalPosition<i32>,
+    work_area_size: tauri::PhysicalSize<u32>,
+) -> tauri::PhysicalPosition<i32> {
+    let right = work_area_position.x + work_area_size.width as i32;
+    let bottom = work_area_position.y + work_area_size.height as i32;
     let preferred_x = agent_position.x + agent_width;
     let x = if preferred_x + bubble_width <= right {
         preferred_x
     } else {
-        (agent_position.x - bubble_width).max(monitor_position.x)
+        (agent_position.x - bubble_width).max(work_area_position.x)
     };
     let y = agent_position.y.clamp(
-        monitor_position.y,
-        (bottom - bubble_height).max(monitor_position.y),
+        work_area_position.y,
+        (bottom - bubble_height).max(work_area_position.y),
     );
-    bubble
-        .set_position(tauri::PhysicalPosition::new(x, y))
-        .map_err(|_| OverlayInputError::NativeRegionFailed)
+    tauri::PhysicalPosition::new(x, y)
 }
 
 #[cfg(test)]
@@ -585,5 +603,30 @@ mod tests {
         state.set_bubble_visible("agent-astra-bubble", false);
         assert!(!state.bubble_visible("agent-astra-bubble"));
         assert!(state.bubble_visible("agent-luma-bubble"));
+    }
+
+    #[test]
+    fn bubble_position_stays_inside_work_area_and_flips_left_at_the_edge() {
+        let work_area_position = tauri::PhysicalPosition::new(100, 40);
+        let work_area_size = tauri::PhysicalSize::new(800, 600);
+        let right = bubble_position(
+            tauri::PhysicalPosition::new(700, 500),
+            180,
+            380,
+            360,
+            work_area_position,
+            work_area_size,
+        );
+        assert_eq!(right, tauri::PhysicalPosition::new(320, 280));
+
+        let top_left = bubble_position(
+            tauri::PhysicalPosition::new(100, 40),
+            180,
+            380,
+            360,
+            work_area_position,
+            work_area_size,
+        );
+        assert_eq!(top_left, tauri::PhysicalPosition::new(280, 40));
     }
 }

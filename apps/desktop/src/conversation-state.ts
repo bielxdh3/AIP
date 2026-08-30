@@ -169,6 +169,14 @@ export function requestForAgent(
   return queue.find((entry) => entry.agentId === agentId) ?? null;
 }
 
+export function canSendConversationMessage(state: PhaseOneState): boolean {
+  return state.canSend && requestForAgent(state.queue, state.agent.id) === null;
+}
+
+export function canDraftConversationMessage(state: PhaseOneState): boolean {
+  return state.canSend || requestForAgent(state.queue, state.agent.id) !== null;
+}
+
 export function canRequestCancellation(
   request: QueueEntry | null,
   locallyPendingRequestId: string | null,
