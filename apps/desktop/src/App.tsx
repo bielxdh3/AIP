@@ -5983,7 +5983,7 @@ export function PixelDocumentEditor({ agentId }: { agentId: string }) {
         </div>
         <div className="pixel-tool-group" data-tool-group="transform-view">
           <span className="pixel-tool-group-label">
-            Transformar e visualizar
+            Seleção · Transformar · Visualizar
           </span>
           <div className="pixel-tool-group-controls">
             <label className="pixel-checkbox-control">
