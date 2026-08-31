@@ -129,6 +129,132 @@ a:focus-visible {
   outline-offset: 3px;
 }
 
+.aip-select {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.aip-select-label {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.aip-select-trigger {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  background: var(--color-surface-deep);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color var(--motion-fast) ease,
+    background-color var(--motion-fast) ease;
+}
+
+.aip-select-trigger:hover:not(:disabled),
+.aip-select-trigger[aria-expanded="true"],
+.aip-select-trigger:focus-visible {
+  border-color: var(--color-primary);
+}
+
+.aip-select-trigger:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.aip-select-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.aip-select-trigger > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aip-select-chevron {
+  flex: 0 0 auto;
+  color: var(--color-text-subtle);
+  font-size: 12px;
+}
+
+.aip-select-menu {
+  position: fixed;
+  z-index: 100;
+  box-sizing: border-box;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: 0 10px 24px #0009;
+  transform-origin: center top;
+  animation: aip-select-enter var(--motion-fast) ease-out;
+}
+
+.aip-select-menu[data-placement="above"] {
+  transform-origin: center bottom;
+}
+
+.aip-select-option {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  cursor: pointer;
+  line-height: 1.3;
+  user-select: none;
+}
+
+.aip-select-option:hover,
+.aip-select-option[data-active="true"] {
+  border-color: var(--color-border);
+  background: var(--color-surface-raised);
+}
+
+.aip-select-option[aria-selected="true"] {
+  color: var(--color-text-strong);
+  box-shadow: inset 3px 0 0 var(--color-primary);
+}
+
+.aip-select-option[aria-disabled="true"] {
+  color: var(--color-text-subtle);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.aip-select-description {
+  color: var(--color-text-subtle);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+@keyframes aip-select-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-2px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 /* Keep page scroll in the shell; nested surfaces contain their own scroll. */
 .app-shell {
   display: grid;
@@ -463,9 +589,9 @@ a:focus-visible {
 }
 
 .memory-filters input,
-.memory-filters select,
+.memory-filters .aip-select-trigger,
 .memory-composer textarea,
-.memory-composer select {
+.memory-composer .aip-select-trigger {
   width: 100%;
   min-height: 38px;
   padding: 8px 10px;
@@ -1005,7 +1131,7 @@ a:focus-visible {
 }
 
 .profile-fields > label > input,
-.profile-fields > label > select,
+.profile-fields > label > .aip-select-trigger,
 .profile-fields > label > textarea,
 .profile-default-model select,
 .date-picker-trigger {
@@ -2306,7 +2432,7 @@ a:focus-visible {
   font-size: 12px;
 }
 
-.theme-controls select {
+.theme-controls .aip-select-trigger {
   min-height: 34px;
   padding: 6px 8px;
   border: 1px solid var(--color-border-strong);

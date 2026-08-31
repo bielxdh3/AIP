@@ -8,6 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { AipSelect } from "./shared-controls";
 
 export const THEME_STORAGE_KEY = "aip.ui.theme";
 
@@ -300,19 +301,20 @@ export function ThemeControls() {
   return (
     <fieldset className="theme-controls">
       <legend>Aparência da interface</legend>
-      <label>
-        Modo de aparência
-        <select
-          value={preferences.mode}
-          onChange={(event) =>
-            updatePreferences({ mode: event.target.value as ThemeMode })
-          }
-        >
-          <option value="dark">Escuro</option>
-          <option value="light">Claro</option>
-          <option value="system">Sistema</option>
-        </select>
-      </label>
+      <AipSelect
+        id="theme-mode"
+        label="Modo de aparência"
+        value={preferences.mode}
+        options={[
+          { value: "dark", label: "Escuro" },
+          { value: "light", label: "Claro" },
+          { value: "system", label: "Sistema" },
+        ]}
+        onChange={(mode) => {
+          if (THEME_MODES.includes(mode as ThemeMode))
+            updatePreferences({ mode: mode as ThemeMode });
+        }}
+      />
       <div className="theme-color-grid">
         <label>
           Cor primária
@@ -335,36 +337,32 @@ export function ThemeControls() {
           />
         </label>
       </div>
-      <label>
-        Raio global
-        <select
-          value={preferences.radius}
-          onChange={(event) =>
-            updatePreferences({ radius: event.target.value as RadiusPreset })
-          }
-        >
-          {Object.entries(RADIUS_PRESETS).map(([value, preset]) => (
-            <option key={value} value={value}>
-              {preset.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        Fonte da interface
-        <select
-          value={preferences.font}
-          onChange={(event) =>
-            updatePreferences({ font: event.target.value as UiFont })
-          }
-        >
-          {Object.entries(UI_FONTS).map(([value, font]) => (
-            <option key={value} value={value}>
-              {font.label}
-            </option>
-          ))}
-        </select>
-      </label>
+      <AipSelect
+        id="theme-radius"
+        label="Raio global"
+        value={preferences.radius}
+        options={Object.entries(RADIUS_PRESETS).map(([value, preset]) => ({
+          value,
+          label: preset.label,
+        }))}
+        onChange={(radius) => {
+          if (Object.hasOwn(RADIUS_PRESETS, radius))
+            updatePreferences({ radius: radius as RadiusPreset });
+        }}
+      />
+      <AipSelect
+        id="theme-font"
+        label="Fonte da interface"
+        value={preferences.font}
+        options={Object.entries(UI_FONTS).map(([value, font]) => ({
+          value,
+          label: font.label,
+        }))}
+        onChange={(font) => {
+          if (Object.hasOwn(UI_FONTS, font))
+            updatePreferences({ font: font as UiFont });
+        }}
+      />
       <small role="status">
         Tema ativo: {resolvedMode === "light" ? "claro" : "escuro"}. Animações:{" "}
         {reducedMotion ? "reduzidas" : "normais"}.

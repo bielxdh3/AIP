@@ -199,6 +199,7 @@ import {
 import { usePhaseOne } from "./use-phase-one";
 import { createListenerRegistration } from "./listener-lifecycle";
 import { ThemeControls } from "./theme";
+import { AipSelect } from "./shared-controls";
 import {
   nextLayerId,
   floodFillLayer,
@@ -1810,22 +1811,27 @@ function ProfileCanonicalSelect({
   onChange: (value: string) => void;
 }) {
   const current = localizedCanonicalValue(field, value);
-  const options = profileCanonicalOptions[field];
+  const options = profileCanonicalOptions[field].some(
+    (option) => option.value === value,
+  )
+    ? profileCanonicalOptions[field]
+    : [{ value, primary: current.primary }, ...profileCanonicalOptions[field]];
   return (
-    <label>
-      <span>{label}</span>
-      <select value={value} onChange={(event) => onChange(event.target.value)}>
-        {!options.some((option) => option.value === value) ? (
-          <option value={value}>{current.primary}</option>
-        ) : null}
-        {options.map((option) => (
-          <option value={option.value} key={option.value}>
+    <AipSelect
+      id={`profile-${field}`}
+      label={label}
+      value={value}
+      options={options.map((option) => ({
+        value: option.value,
+        label: (
+          <>
             {option.primary}
             {option.secondary ? ` (${option.secondary})` : ""}
-          </option>
-        ))}
-      </select>
-    </label>
+          </>
+        ),
+      }))}
+      onChange={onChange}
+    />
   );
 }
 
@@ -2797,19 +2803,19 @@ export function MemoryWorkspace({ agentId }: { agentId: string }) {
             placeholder="Buscar memórias"
           />
         </label>
-        <label>
-          Mostrar
-          <select
-            value={status}
-            onChange={(event) => setStatus(event.target.value)}
-          >
-            <option value="active">Ativas</option>
-            <option value="archived">Arquivadas</option>
-            <option value="trashed">Lixeira</option>
-            <option value="candidate_rejected">Rejeitadas</option>
-            <option value="all">Todas</option>
-          </select>
-        </label>
+        <AipSelect
+          id="memory-status"
+          label="Mostrar"
+          value={status}
+          options={[
+            { value: "active", label: "Ativas" },
+            { value: "archived", label: "Arquivadas" },
+            { value: "trashed", label: "Lixeira" },
+            { value: "candidate_rejected", label: "Rejeitadas" },
+            { value: "all", label: "Todas" },
+          ]}
+          onChange={setStatus}
+        />
       </div>
       <div className="memory-records">
         {items.map((item) => (
@@ -2875,22 +2881,24 @@ export function MemoryWorkspace({ agentId }: { agentId: string }) {
           <p className="eyebrow">Adicionar</p>
           <h3>Nova memória</h3>
         </div>
-        <label>
-          Categoria
-          <select
-            value={category}
-            onChange={(event) => setCategory(event.target.value)}
-          >
-            <option value="fact">Fato</option>
-            <option value="preference">Preferência</option>
-            <option value="rule">Regra</option>
-            <option value="emotional">Lembrança afetiva</option>
-            <option value="permanent">Permanente</option>
-          </select>
-          <small className="memory-category-help">
-            {memoryCategoryHelp[category]}
-          </small>
-        </label>
+        <AipSelect
+          id="memory-category"
+          label="Categoria"
+          value={category}
+          options={[
+            { value: "fact", label: "Fato" },
+            { value: "preference", label: "Preferência" },
+            { value: "rule", label: "Regra" },
+            { value: "emotional", label: "Lembrança afetiva" },
+            { value: "permanent", label: "Permanente" },
+          ]}
+          onChange={setCategory}
+          description={
+            <small className="memory-category-help">
+              {memoryCategoryHelp[category]}
+            </small>
+          }
+        />
         <label className="memory-content-field">
           Conteúdo
           <textarea

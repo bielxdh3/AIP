@@ -20,11 +20,6 @@ type QueryState = {
   removeEventListener: (type: string, listener: () => void) => void;
 };
 
-function change(element: HTMLSelectElement, value: string) {
-  element.value = value;
-  element.dispatchEvent(new Event("change", { bubbles: true }));
-}
-
 function changeColor(element: HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(
     HTMLInputElement.prototype,
@@ -33,6 +28,17 @@ function changeColor(element: HTMLInputElement, value: string) {
   setter?.call(element, value);
   element.dispatchEvent(new Event("input", { bubbles: true }));
   element.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+async function chooseOption(container: HTMLElement, id: string, value: string) {
+  const trigger = container.querySelector<HTMLButtonElement>(`#${id}-trigger`);
+  if (trigger === null) throw new Error(`Missing ${id} trigger`);
+  await act(async () => trigger.click());
+  const option = document.body.querySelector<HTMLElement>(
+    `.aip-select-option[data-value="${value}"]`,
+  );
+  if (option === null) throw new Error(`Missing ${value} option`);
+  await act(async () => option.click());
 }
 
 function StateProbe() {
@@ -103,14 +109,13 @@ describe("theme foundations", () => {
       </>,
     );
     expect(document.documentElement.dataset.theme).toBe("dark");
-    const mode = container?.querySelector("select");
-    if (mode === undefined || mode === null) throw new Error("Missing mode");
-    await act(async () => change(mode, "light"));
+    if (container === undefined) throw new Error("Missing theme container");
+    await chooseOption(container, "theme-mode", "light");
     expect(document.documentElement.dataset.theme).toBe("light");
-    await act(async () => change(mode, "dark"));
+    await chooseOption(container, "theme-mode", "dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
     systemLight = true;
-    await act(async () => change(mode, "system"));
+    await chooseOption(container, "theme-mode", "system");
     const query = queries.get("(prefers-color-scheme: light)")!;
     query.matches = true;
     await act(async () => query.listeners.forEach((listener) => listener()));
@@ -120,10 +125,8 @@ describe("theme foundations", () => {
   it("follows system appearance changes and keeps readable custom colors", async () => {
     systemLight = false;
     render(<ThemeControls />);
-    const selects = container?.querySelectorAll("select");
-    const mode = selects?.[0];
-    if (mode === undefined) throw new Error("Missing appearance mode select");
-    await act(async () => change(mode, "system"));
+    if (container === undefined) throw new Error("Missing theme container");
+    await chooseOption(container, "theme-mode", "system");
     expect(document.documentElement.dataset.theme).toBe("dark");
 
     systemLight = true;
@@ -162,13 +165,9 @@ describe("theme foundations", () => {
 
   it("persists allowlisted radius and font preferences", async () => {
     render(<ThemeControls />);
-    const selects = container?.querySelectorAll("select");
-    if (selects === undefined || selects.length < 3)
-      throw new Error("Missing theme controls");
-    await act(async () => {
-      change(selects[1]!, "soft");
-      change(selects[2]!, "atkinson");
-    });
+    if (container === undefined) throw new Error("Missing theme container");
+    await chooseOption(container, "theme-radius", "soft");
+    await chooseOption(container, "theme-font", "atkinson");
     expect(document.documentElement.style.getPropertyValue("--radius-md")).toBe(
       "12px",
     );
