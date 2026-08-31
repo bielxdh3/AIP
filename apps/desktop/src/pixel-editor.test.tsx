@@ -117,6 +117,7 @@ beforeEach(() => {
 describe("PixelDocumentEditor regressions", () => {
   it("requires explicit confirmation before deleting a layer", async () => {
     await renderEditor();
+    expect(container?.textContent).not.toContain("Encaixe do balão");
     const textarea = container?.querySelector<HTMLTextAreaElement>(
       '[aria-label="Documento de pixel art"]',
     );

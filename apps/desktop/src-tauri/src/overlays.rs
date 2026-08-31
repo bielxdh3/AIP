@@ -18,10 +18,16 @@ use crate::{
 
 const OVERLAY_WIDTH: f64 = 180.0;
 const OVERLAY_HEIGHT: f64 = 192.0;
+const SPRITE_WIDTH: f64 = 128.0;
+const SPRITE_HEIGHT: f64 = 128.0;
+const SPRITE_OFFSET_X: f64 = 26.0;
+const SPRITE_OFFSET_Y: f64 = 38.0;
+const BUBBLE_GAP: f64 = 8.0;
 const BUBBLE_WIDTH: f64 = 380.0;
 const BUBBLE_HEIGHT: f64 = 360.0;
 const MAX_INTERACTIVE_REGIONS: usize = 256;
 const MAX_REGION_COORDINATE: f64 = 4096.0;
+const AGENT_IDS: [&str; 2] = ["agt_astra_provisional", "agt_luma_provisional"];
 const OVERLAY_LABELS: [&str; 4] = [
     "agent-astra",
     "agent-luma",
@@ -29,6 +35,23 @@ const OVERLAY_LABELS: [&str; 4] = [
     "agent-luma-bubble",
 ];
 const AGENT_LABELS: [&str; 2] = ["agent-astra", "agent-luma"];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WindowSurfaceContract {
+    transparent: bool,
+    background: [u8; 4],
+    decorations: bool,
+    shadow: bool,
+}
+
+const fn overlay_surface_contract() -> WindowSurfaceContract {
+    WindowSurfaceContract {
+        transparent: true,
+        background: [0, 0, 0, 0],
+        decorations: false,
+        shadow: false,
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -99,7 +122,7 @@ impl OverlayInputState {
         label: &str,
         regions: &[InteractiveRegion],
     ) -> Result<(), OverlayInputError> {
-        if !OVERLAY_LABELS.contains(&label) {
+        if ownership_for_window_label(label).is_none() {
             return Err(OverlayInputError::UnknownWindow);
         }
         if regions.len() > MAX_INTERACTIVE_REGIONS {
@@ -139,23 +162,23 @@ impl OverlayInputState {
         }
     }
 
-    fn set_bubble_visible(&self, label: &str, visible: bool) {
+    fn set_bubble_visible(&self, agent_id: &str, visible: bool) {
         let mut bubbles = self
             .visible_bubbles
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if visible {
-            bubbles.insert(label.to_string());
+            bubbles.insert(agent_id.to_string());
         } else {
-            bubbles.remove(label);
+            bubbles.remove(agent_id);
         }
     }
 
-    fn bubble_visible(&self, label: &str) -> bool {
+    fn bubble_visible(&self, agent_id: &str) -> bool {
         self.visible_bubbles
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(label)
+            .contains(agent_id)
     }
 
     fn remove_window(&self, label: &str) {
@@ -166,20 +189,43 @@ impl OverlayInputState {
     }
 }
 
-pub fn window_label(agent_id: &str) -> Option<&'static str> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OverlayOwnership {
+    agent_id: &'static str,
+    agent_label: &'static str,
+    bubble_label: &'static str,
+}
+
+fn ownership_for_agent(agent_id: &str) -> Option<OverlayOwnership> {
     match agent_id {
-        "agt_astra_provisional" => Some("agent-astra"),
-        "agt_luma_provisional" => Some("agent-luma"),
+        "agt_astra_provisional" => Some(OverlayOwnership {
+            agent_id: "agt_astra_provisional",
+            agent_label: "agent-astra",
+            bubble_label: "agent-astra-bubble",
+        }),
+        "agt_luma_provisional" => Some(OverlayOwnership {
+            agent_id: "agt_luma_provisional",
+            agent_label: "agent-luma",
+            bubble_label: "agent-luma-bubble",
+        }),
         _ => None,
     }
 }
 
-pub fn bubble_window_label(agent_id: &str) -> Option<&'static str> {
-    match agent_id {
-        "agt_astra_provisional" => Some("agent-astra-bubble"),
-        "agt_luma_provisional" => Some("agent-luma-bubble"),
+fn ownership_for_window_label(label: &str) -> Option<OverlayOwnership> {
+    match label {
+        "agent-astra" | "agent-astra-bubble" => ownership_for_agent("agt_astra_provisional"),
+        "agent-luma" | "agent-luma-bubble" => ownership_for_agent("agt_luma_provisional"),
         _ => None,
     }
+}
+
+pub fn window_label(agent_id: &str) -> Option<&'static str> {
+    ownership_for_agent(agent_id).map(|ownership| ownership.agent_label)
+}
+
+pub fn bubble_window_label(agent_id: &str) -> Option<&'static str> {
+    ownership_for_agent(agent_id).map(|ownership| ownership.bubble_label)
 }
 
 pub fn create_windows(
@@ -188,19 +234,26 @@ pub fn create_windows(
     safe_mode: bool,
     input_state: OverlayInputState,
 ) -> Result<(), Box<dyn Error>> {
+    let surface = overlay_surface_contract();
     for agent in database.snapshot()?.agents {
-        let Some(label) = window_label(&agent.id) else {
+        let Some(ownership) = ownership_for_agent(&agent.id) else {
             continue;
         };
+        let label = ownership.agent_label;
         let url = WebviewUrl::App(format!("index.html?agent={}", agent.id).into());
         let window = WebviewWindowBuilder::new(app, label, url)
             .title(format!("A.I.P. — {}", agent.name))
             .inner_size(OVERLAY_WIDTH, OVERLAY_HEIGHT)
             .position(agent.position.x, agent.position.y)
-            .transparent(true)
-            .background_color(Color(0, 0, 0, 0))
-            .decorations(false)
-            .shadow(false)
+            .transparent(surface.transparent)
+            .background_color(Color(
+                surface.background[0],
+                surface.background[1],
+                surface.background[2],
+                surface.background[3],
+            ))
+            .decorations(surface.decorations)
+            .shadow(surface.shadow)
             .always_on_top(true)
             .skip_taskbar(true)
             .resizable(false)
@@ -222,17 +275,20 @@ pub fn create_windows(
             window.show()?;
         }
 
-        let Some(bubble_label) = bubble_window_label(&agent.id) else {
-            continue;
-        };
+        let bubble_label = ownership.bubble_label;
         let bubble_url = WebviewUrl::App(format!("index.html?bubble={}", agent.id).into());
         let bubble = WebviewWindowBuilder::new(app, bubble_label, bubble_url)
             .title(format!("A.I.P. â€” conversa com {}", agent.name))
             .inner_size(BUBBLE_WIDTH, BUBBLE_HEIGHT)
-            .transparent(true)
-            .background_color(Color(0, 0, 0, 0))
-            .decorations(false)
-            .shadow(false)
+            .transparent(surface.transparent)
+            .background_color(Color(
+                surface.background[0],
+                surface.background[1],
+                surface.background[2],
+                surface.background[3],
+            ))
+            .decorations(surface.decorations)
+            .shadow(surface.shadow)
             .always_on_top(true)
             .skip_taskbar(true)
             .resizable(false)
@@ -241,10 +297,11 @@ pub fn create_windows(
             .build()?;
         install_regions(&bubble, bubble_label, &input_state, Vec::new())?;
         let bubble_state = input_state.clone();
+        let bubble_agent_id = ownership.agent_id;
         bubble.on_window_event(move |event| {
             if matches!(event, WindowEvent::Destroyed) {
                 bubble_state.remove_window(bubble_label);
-                bubble_state.set_bubble_visible(bubble_label, false);
+                bubble_state.set_bubble_visible(bubble_agent_id, false);
             }
         });
     }
@@ -264,13 +321,15 @@ pub fn set_visible(app: &AppHandle, input_state: &OverlayInputState, visible: bo
             }
         }
     }
-    for label in ["agent-astra-bubble", "agent-luma-bubble"] {
-        if let Some(window) = app.get_webview_window(label) {
-            if visible && input_state.bubble_visible(label) {
-                let _ = window.unminimize();
-                let _ = window.show();
-            } else {
-                let _ = window.hide();
+    for agent_id in AGENT_IDS {
+        if let Some(label) = bubble_window_label(agent_id) {
+            if let Some(window) = app.get_webview_window(label) {
+                if visible && input_state.bubble_visible(agent_id) {
+                    let _ = window.unminimize();
+                    let _ = window.show();
+                } else {
+                    let _ = window.hide();
+                }
             }
         }
     }
@@ -282,7 +341,8 @@ pub fn set_bubble_visible(
     agent_id: &str,
     visible: bool,
 ) -> Result<(), OverlayInputError> {
-    let bubble_label = bubble_window_label(agent_id).ok_or(OverlayInputError::UnknownWindow)?;
+    let ownership = ownership_for_agent(agent_id).ok_or(OverlayInputError::UnknownWindow)?;
+    let bubble_label = ownership.bubble_label;
     let bubble = app
         .get_webview_window(bubble_label)
         .ok_or(OverlayInputError::UnknownWindow)?;
@@ -302,15 +362,18 @@ pub fn set_bubble_visible(
             let _ = install_regions(&bubble, bubble_label, input_state, Vec::new());
             return Err(error);
         }
-        input_state.set_bubble_visible(bubble_label, true);
+        input_state.set_bubble_visible(agent_id, true);
+        bubble
+            .unminimize()
+            .map_err(|_| OverlayInputError::NativeRegionFailed)?;
         if bubble.show().is_err() {
-            input_state.set_bubble_visible(bubble_label, false);
+            input_state.set_bubble_visible(agent_id, false);
             let _ = install_regions(&bubble, bubble_label, input_state, Vec::new());
             return Err(OverlayInputError::NativeRegionFailed);
         }
         let _ = bubble.set_focus();
     } else {
-        input_state.set_bubble_visible(bubble_label, false);
+        input_state.set_bubble_visible(agent_id, false);
         install_regions(&bubble, bubble_label, input_state, Vec::new())?;
         bubble
             .hide()
@@ -412,13 +475,7 @@ fn track_lifecycle(
                 f64::from(position.x) / scale,
                 f64::from(position.y) / scale,
             );
-            if input_state
-                .visible_bubbles
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .iter()
-                .any(|bubble| bubble_window_label(&agent_id) == Some(bubble.as_str()))
-            {
+            if input_state.bubble_visible(&agent_id) {
                 let _ = position_bubble(&app, &agent_id);
             }
         }
@@ -428,8 +485,9 @@ fn track_lifecycle(
 }
 
 fn position_bubble(app: &AppHandle, agent_id: &str) -> Result<(), OverlayInputError> {
-    let agent_label = window_label(agent_id).ok_or(OverlayInputError::UnknownWindow)?;
-    let bubble_label = bubble_window_label(agent_id).ok_or(OverlayInputError::UnknownWindow)?;
+    let ownership = ownership_for_agent(agent_id).ok_or(OverlayInputError::UnknownWindow)?;
+    let agent_label = ownership.agent_label;
+    let bubble_label = ownership.bubble_label;
     let agent = app
         .get_webview_window(agent_label)
         .ok_or(OverlayInputError::UnknownWindow)?;
@@ -448,11 +506,10 @@ fn position_bubble(app: &AppHandle, agent_id: &str) -> Result<(), OverlayInputEr
         .ok_or(OverlayInputError::NativeRegionFailed)?;
     let bubble_width = (BUBBLE_WIDTH * scale).round() as i32;
     let bubble_height = (BUBBLE_HEIGHT * scale).round() as i32;
-    let agent_width = (OVERLAY_WIDTH * scale).round() as i32;
     let work_area = monitor.work_area();
     let position = bubble_position(
         agent_position,
-        agent_width,
+        scale,
         bubble_width,
         bubble_height,
         work_area.position,
@@ -463,27 +520,73 @@ fn position_bubble(app: &AppHandle, agent_id: &str) -> Result<(), OverlayInputEr
         .map_err(|_| OverlayInputError::NativeRegionFailed)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ScreenRect {
+    left: i64,
+    top: i64,
+    right: i64,
+    bottom: i64,
+}
+
+fn visible_sprite_bounds(agent_position: tauri::PhysicalPosition<i32>, scale: f64) -> ScreenRect {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let left = i64::from(agent_position.x) + (SPRITE_OFFSET_X * scale).round() as i64;
+    let top = i64::from(agent_position.y) + (SPRITE_OFFSET_Y * scale).round() as i64;
+    let width = (SPRITE_WIDTH * scale).round() as i64;
+    let height = (SPRITE_HEIGHT * scale).round() as i64;
+    ScreenRect {
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+    }
+}
+
 fn bubble_position(
     agent_position: tauri::PhysicalPosition<i32>,
-    agent_width: i32,
+    scale: f64,
     bubble_width: i32,
     bubble_height: i32,
     work_area_position: tauri::PhysicalPosition<i32>,
     work_area_size: tauri::PhysicalSize<u32>,
 ) -> tauri::PhysicalPosition<i32> {
-    let right = work_area_position.x + work_area_size.width as i32;
-    let bottom = work_area_position.y + work_area_size.height as i32;
-    let preferred_x = agent_position.x + agent_width;
-    let x = if preferred_x + bubble_width <= right {
-        preferred_x
+    let left = i64::from(work_area_position.x);
+    let top = i64::from(work_area_position.y);
+    let right = left + i64::from(work_area_size.width);
+    let bottom = top + i64::from(work_area_size.height);
+    let bubble_width = i64::from(bubble_width);
+    let bubble_height = i64::from(bubble_height);
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
     } else {
-        (agent_position.x - bubble_width).max(work_area_position.x)
+        1.0
     };
-    let y = agent_position.y.clamp(
-        work_area_position.y,
-        (bottom - bubble_height).max(work_area_position.y),
-    );
-    tauri::PhysicalPosition::new(x, y)
+    let sprite = visible_sprite_bounds(agent_position, scale);
+    let center_x = (sprite.left + sprite.right) / 2;
+    let gap = (BUBBLE_GAP * scale).round() as i64;
+    let candidates = [
+        (
+            center_x - bubble_width / 2,
+            sprite.top - gap - bubble_height,
+        ),
+        (sprite.right + gap, sprite.top),
+        (sprite.left - gap - bubble_width, sprite.top),
+        (center_x - bubble_width / 2, sprite.bottom + gap),
+    ];
+    let (x, y) = candidates
+        .into_iter()
+        .find(|(x, y)| {
+            *x >= left && *y >= top && *x + bubble_width <= right && *y + bubble_height <= bottom
+        })
+        .unwrap_or(candidates[0]);
+    tauri::PhysicalPosition::new(
+        x.clamp(left, (right - bubble_width).max(left)) as i32,
+        y.clamp(top, (bottom - bubble_height).max(top)) as i32,
+    )
 }
 
 #[cfg(test)]
@@ -596,37 +699,115 @@ mod tests {
     #[test]
     fn simultaneous_bubble_visibility_is_independent() {
         let state = OverlayInputState::default();
-        state.set_bubble_visible("agent-astra-bubble", true);
-        state.set_bubble_visible("agent-luma-bubble", true);
-        assert!(state.bubble_visible("agent-astra-bubble"));
-        assert!(state.bubble_visible("agent-luma-bubble"));
-        state.set_bubble_visible("agent-astra-bubble", false);
-        assert!(!state.bubble_visible("agent-astra-bubble"));
-        assert!(state.bubble_visible("agent-luma-bubble"));
+        state.set_bubble_visible("agt_astra_provisional", true);
+        state.set_bubble_visible("agt_luma_provisional", true);
+        assert!(state.bubble_visible("agt_astra_provisional"));
+        assert!(state.bubble_visible("agt_luma_provisional"));
+        state.set_bubble_visible("agt_astra_provisional", false);
+        assert!(!state.bubble_visible("agt_astra_provisional"));
+        assert!(state.bubble_visible("agt_luma_provisional"));
     }
 
     #[test]
-    fn bubble_position_stays_inside_work_area_and_flips_left_at_the_edge() {
-        let work_area_position = tauri::PhysicalPosition::new(100, 40);
-        let work_area_size = tauri::PhysicalSize::new(800, 600);
-        let right = bubble_position(
-            tauri::PhysicalPosition::new(700, 500),
-            180,
+    fn bubble_position_prefers_top_then_flips_to_available_sides() {
+        let work_area_position = tauri::PhysicalPosition::new(0, 0);
+        let work_area_size = tauri::PhysicalSize::new(1920, 1080);
+        let top = bubble_position(
+            tauri::PhysicalPosition::new(700, 400),
+            1.0,
             380,
             360,
             work_area_position,
             work_area_size,
         );
-        assert_eq!(right, tauri::PhysicalPosition::new(320, 280));
+        assert_eq!(top, tauri::PhysicalPosition::new(600, 70));
 
-        let top_left = bubble_position(
-            tauri::PhysicalPosition::new(100, 40),
-            180,
+        let right_edge = bubble_position(
+            tauri::PhysicalPosition::new(1780, 400),
+            1.0,
             380,
             360,
             work_area_position,
             work_area_size,
         );
-        assert_eq!(top_left, tauri::PhysicalPosition::new(280, 40));
+        assert_eq!(right_edge, tauri::PhysicalPosition::new(1418, 438));
+
+        let left_edge = bubble_position(
+            tauri::PhysicalPosition::new(0, 400),
+            1.0,
+            380,
+            360,
+            work_area_position,
+            work_area_size,
+        );
+        assert_eq!(left_edge, tauri::PhysicalPosition::new(162, 438));
+
+        let top_edge = bubble_position(
+            tauri::PhysicalPosition::new(700, 0),
+            1.0,
+            380,
+            360,
+            work_area_position,
+            work_area_size,
+        );
+        assert_eq!(top_edge, tauri::PhysicalPosition::new(862, 38));
+    }
+
+    #[test]
+    fn ownership_keeps_each_bubble_bound_to_its_agent_id() {
+        let astra = ownership_for_agent("agt_astra_provisional").unwrap();
+        let luma = ownership_for_window_label("agent-luma-bubble").unwrap();
+        assert_eq!(astra.agent_label, "agent-astra");
+        assert_eq!(astra.bubble_label, "agent-astra-bubble");
+        assert_eq!(luma.agent_id, "agt_luma_provisional");
+        assert_eq!(ownership_for_agent("unknown"), None);
+    }
+
+    #[test]
+    fn transparent_surface_contract_has_no_window_chrome_or_shadow() {
+        assert_eq!(
+            overlay_surface_contract(),
+            WindowSurfaceContract {
+                transparent: true,
+                background: [0, 0, 0, 0],
+                decorations: false,
+                shadow: false,
+            }
+        );
+    }
+
+    #[test]
+    fn bubble_position_clamps_negative_and_narrow_monitor_coordinates() {
+        let position = bubble_position(
+            tauri::PhysicalPosition::new(-300, -100),
+            1.0,
+            380,
+            360,
+            tauri::PhysicalPosition::new(-400, -200),
+            tauri::PhysicalSize::new(300, 240),
+        );
+        assert_eq!(position, tauri::PhysicalPosition::new(-400, -200));
+    }
+
+    #[test]
+    fn bubble_position_follows_agent_movement_from_visible_sprite_bounds() {
+        let first = bubble_position(
+            tauri::PhysicalPosition::new(700, 400),
+            1.0,
+            380,
+            360,
+            tauri::PhysicalPosition::new(0, 0),
+            tauri::PhysicalSize::new(1920, 1080),
+        );
+        let moved = bubble_position(
+            tauri::PhysicalPosition::new(900, 400),
+            1.0,
+            380,
+            360,
+            tauri::PhysicalPosition::new(0, 0),
+            tauri::PhysicalSize::new(1920, 1080),
+        );
+        assert_eq!(first, tauri::PhysicalPosition::new(600, 70));
+        assert_eq!(moved, tauri::PhysicalPosition::new(800, 70));
     }
 }

@@ -130,6 +130,19 @@ class OllamaDiscoveryTests(unittest.TestCase):
         self.assertEqual(shown["capabilities"], ["completion"])
         self.assertEqual(connection.requests[0][0:2], ("POST", "/api/show"))
 
+    def test_health_requires_a_bounded_nonempty_response(self) -> None:
+        client, connection = client_for(FakeResponse(b"Ollama is running\n"))
+        client.health()
+        self.assertEqual(connection.requests[0][0:2], ("GET", "/"))
+
+        empty, _ = client_for(FakeResponse(b""))
+        with self.assertRaisesRegex(ProviderError, "provider_malformed"):
+            empty.health()
+
+        malformed, _ = client_for(FakeResponse(b"\xff"))
+        with self.assertRaisesRegex(ProviderError, "provider_malformed"):
+            malformed.health()
+
     def test_unavailable_malformed_excessive_and_redirect_are_safe(self) -> None:
         def unavailable() -> ConnectionLike:
             raise OSError("synthetic")

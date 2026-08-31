@@ -47,7 +47,10 @@ const loadedPhase = {
   sendBlockedCode: null,
 } as unknown as PhaseOneState;
 
-function change(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
+function change(
+  element: HTMLInputElement | HTMLTextAreaElement,
+  value: string,
+) {
   const setter = Object.getOwnPropertyDescriptor(
     Object.getPrototypeOf(element),
     "value",
@@ -71,17 +74,81 @@ describe("ConversationDraftSurface", () => {
     invoke.mockReset();
   });
 
-  function renderDraft(onPersisted = vi.fn()) {
+  function renderDraft(onPersisted = vi.fn(), onCreated = vi.fn()) {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
     act(() => {
       root?.render(
-        <ConversationDraftSurface agentId="agent" onPersisted={onPersisted} />,
+        <ConversationDraftSurface
+          agentId="agent"
+          onCreated={onCreated}
+          onPersisted={onPersisted}
+        />,
       );
     });
     return onPersisted;
   }
+
+  it("preserves the first message and retries without creating duplicates", async () => {
+    hookState.phase = loadedPhase;
+    const created = {
+      ...loadedPhase.conversation,
+      id: "created",
+      title: "Nova conversa",
+    };
+    let sendAttempts = 0;
+    const onPersisted = vi.fn();
+    const onCreated = vi.fn();
+    invoke.mockImplementation((command: string) => {
+      if (command === "create_agent_conversation")
+        return Promise.resolve(created);
+      if (command === "send_phase_one_message") {
+        sendAttempts += 1;
+        return sendAttempts === 1
+          ? Promise.reject(new Error("send_failed"))
+          : Promise.resolve(undefined);
+      }
+      return Promise.resolve(undefined);
+    });
+    renderDraft(onPersisted, onCreated);
+    const textarea = container?.querySelector<HTMLTextAreaElement>(
+      ".conversation-draft-surface .composer textarea",
+    );
+    if (textarea === null || textarea === undefined)
+      throw new Error("Missing draft composer");
+    change(textarea, "mensagem para tentar");
+    await act(async () =>
+      container
+        ?.querySelector<HTMLButtonElement>(
+          ".conversation-draft-surface .composer-footer > button",
+        )
+        ?.click(),
+    );
+
+    expect(onCreated).toHaveBeenCalledOnce();
+    expect(onPersisted).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("mensagem para tentar");
+    expect(container?.textContent).toContain("rascunho foi preservado");
+    const retry = Array.from(container?.querySelectorAll("button") ?? []).find(
+      (button) => button.textContent === "Tentar novamente",
+    );
+    if (retry === undefined) throw new Error("Missing retry button");
+    await act(async () => retry.click());
+
+    expect(
+      invoke.mock.calls.filter(
+        ([command]) => command === "create_agent_conversation",
+      ),
+    ).toHaveLength(1);
+    expect(
+      invoke.mock.calls.filter(
+        ([command]) => command === "send_phase_one_message",
+      ),
+    ).toHaveLength(2);
+    expect(onPersisted).toHaveBeenCalledOnce();
+    expect(textarea.value).toBe("");
+  });
 
   it("can be abandoned without creating a persisted conversation or fake history", () => {
     hookState.phase = loadedPhase;
@@ -137,6 +204,12 @@ describe("ConversationDraftSurface", () => {
       agentId: "agent",
       conversationId: "created",
       content: "primeira mensagem",
+      policy: {
+        mode: "auto",
+        excludedModelRefs: [],
+        fallbackOnlyModelRefs: [],
+        preferredModelRef: null,
+      },
     });
     expect(onPersisted).toHaveBeenCalledOnce();
   });

@@ -76,13 +76,34 @@ describe("ModelPicker", () => {
     const trigger = container?.querySelector<HTMLButtonElement>(
       '[aria-haspopup="listbox"]',
     );
-    if (trigger === null || trigger === undefined) throw new Error("Missing trigger");
+    if (trigger === null || trigger === undefined)
+      throw new Error("Missing trigger");
 
     await act(async () => trigger.click());
-    const search = container?.querySelector<HTMLInputElement>('input[type="search"]');
-    if (search === null || search === undefined) throw new Error("Missing search");
+    const search = container?.querySelector<HTMLInputElement>(
+      'input[type="search"]',
+    );
+    if (search === null || search === undefined)
+      throw new Error("Missing search");
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
-    expect(container?.querySelector('[role="listbox"]')).not.toBeNull();
+    const listbox = container?.querySelector<HTMLElement>('[role="listbox"]');
+    const initialSearch = container?.querySelector<HTMLInputElement>(
+      'input[type="search"]',
+    );
+    if (listbox === null || listbox === undefined)
+      throw new Error("Missing listbox");
+    if (initialSearch === null || initialSearch === undefined)
+      throw new Error("Missing search");
+    expect(trigger.getAttribute("aria-controls")).toBe(listbox.id);
+    expect(initialSearch.getAttribute("aria-controls")).toBe(listbox.id);
+    const initialActiveId = initialSearch.getAttribute("aria-activedescendant");
+    expect(initialActiveId).not.toBeNull();
+    expect(
+      document.getElementById(initialActiveId!)?.getAttribute("data-active"),
+    ).toBe("true");
+    const visionBeforeFilter = Array.from(
+      container?.querySelectorAll<HTMLElement>('[role="option"]') ?? [],
+    ).find((candidate) => candidate.textContent?.includes("Vision local"));
 
     await act(async () => {
       changeInput(search, "vision");
@@ -94,14 +115,20 @@ describe("ModelPicker", () => {
     ).toEqual([expect.stringContaining("Vision local")]);
 
     const option = container?.querySelector<HTMLElement>('[role="option"]');
-    if (option === null || option === undefined) throw new Error("Missing option");
+    if (option === null || option === undefined)
+      throw new Error("Missing option");
+    expect(initialSearch.getAttribute("aria-activedescendant")).toBe(option.id);
+    expect(option.getAttribute("data-active")).toBe("true");
+    expect(visionBeforeFilter?.id).toBe(option.id);
     await act(async () => option.click());
     expect(onSelect).toHaveBeenCalledWith("ollama:vision");
     expect(container?.querySelector('[role="listbox"]')).toBeNull();
 
     await act(async () => trigger.click());
     await act(async () =>
-      document.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })),
+      document.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true }),
+      ),
     );
     expect(container?.querySelector('[role="listbox"]')).toBeNull();
   });
@@ -117,7 +144,8 @@ describe("ModelPicker", () => {
     const trigger = container?.querySelector<HTMLButtonElement>(
       '[aria-haspopup="listbox"]',
     );
-    if (trigger === null || trigger === undefined) throw new Error("Missing trigger");
+    if (trigger === null || trigger === undefined)
+      throw new Error("Missing trigger");
     expect(trigger.textContent).toContain("ollama:missing");
     expect(trigger.textContent).toContain("Indisponível");
     expect(container?.textContent).toContain("O Ollama não respondeu a tempo");
@@ -132,8 +160,11 @@ describe("ModelPicker", () => {
     await act(async () => unavailable.click());
     expect(onSelect).not.toHaveBeenCalled();
 
-    const search = container?.querySelector<HTMLInputElement>('input[type="search"]');
-    if (search === null || search === undefined) throw new Error("Missing search");
+    const search = container?.querySelector<HTMLInputElement>(
+      'input[type="search"]',
+    );
+    if (search === null || search === undefined)
+      throw new Error("Missing search");
     await act(async () =>
       search.dispatchEvent(
         new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
@@ -153,15 +184,23 @@ describe("ModelPicker", () => {
     const trigger = container?.querySelector<HTMLButtonElement>(
       '[aria-haspopup="listbox"]',
     );
-    if (trigger === null || trigger === undefined) throw new Error("Missing trigger");
+    if (trigger === null || trigger === undefined)
+      throw new Error("Missing trigger");
     await act(async () =>
-      trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })),
+      trigger.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+      ),
     );
-    const search = container?.querySelector<HTMLInputElement>('input[type="search"]');
-    if (search === null || search === undefined) throw new Error("Missing search");
+    const search = container?.querySelector<HTMLInputElement>(
+      'input[type="search"]',
+    );
+    if (search === null || search === undefined)
+      throw new Error("Missing search");
     expect(document.activeElement).toBe(search);
     await act(async () =>
-      search.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })),
+      search.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      ),
     );
     expect(onSelect).toHaveBeenCalledWith(null);
 

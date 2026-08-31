@@ -16,13 +16,16 @@ import {
   providerStatusCopy,
 } from "./conversation-state";
 import { buildBubbleInteractiveRegions, elementBounds } from "./overlay-input";
+import { routingPolicyPayload, useModelPreferences } from "./model-preferences";
 import { usePhaseOne } from "./use-phase-one";
 import { openAgentConversations } from "./agent-navigation";
 import "./App.css";
 
 export default function Bubble({ agentId }: { agentId: string }) {
   const { phase, error, load } = usePhaseOne(agentId);
+  const [modelPreferences] = useModelPreferences();
   const [expanded, setExpanded] = useState(false);
+  const [minimized, setMinimized] = useState(false);
   const [draft, setDraft] = useState("");
   const [safeMode, setSafeMode] = useState(false);
   const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
@@ -92,6 +95,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
   const blocked = blockedSendCopy(currentPhase.sendBlockedCode);
   const canSend = canSendConversationMessage(currentPhase);
   const canDraft = canDraftConversationMessage(currentPhase);
+  const routingPolicy = routingPolicyPayload(modelPreferences);
 
   async function send() {
     const content = draft.trim();
@@ -102,6 +106,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
         agentId,
         conversationId: currentPhase.conversation.id,
         content,
+        policy: routingPolicy,
       });
       setDraft("");
       await load();
@@ -130,25 +135,57 @@ export default function Bubble({ agentId }: { agentId: string }) {
   return (
     <main
       ref={bubbleRef}
-      className={expanded ? "agent-bubble expanded" : "agent-bubble compact"}
+      className={`agent-bubble ${minimized ? "minimized" : expanded ? "expanded" : "compact"}`}
     >
       <div className="bubble-heading">
         <button
           className="bubble-title"
           type="button"
-          onClick={() => setExpanded((value) => !value)}
+          onClick={() => {
+            if (minimized) {
+              setMinimized(false);
+              setExpanded(true);
+            } else {
+              setExpanded((value) => !value);
+            }
+          }}
         >
           <strong>{phase.agent.name}</strong>
-          <small>
+          <small className="readable-helper">
             {request?.active
               ? "Modelo local em uso"
               : providerStatusCopy(phase)}
           </small>
         </button>
-        <CloseBubble agentId={agentId} onClose={() => setExpanded(false)} />
+        <div className="bubble-heading-actions">
+          {minimized ? (
+            <button
+              className="bubble-restore"
+              type="button"
+              onClick={() => {
+                setMinimized(false);
+                setExpanded(true);
+              }}
+            >
+              Restaurar
+            </button>
+          ) : expanded ? (
+            <button
+              className="bubble-minimize"
+              type="button"
+              aria-label="Minimizar balão"
+              onClick={() => setMinimized(true)}
+            >
+              −
+            </button>
+          ) : null}
+          <CloseBubble agentId={agentId} onClose={() => setExpanded(false)} />
+        </div>
       </div>
 
-      {!expanded ? (
+      {minimized ? (
+        <p className="bubble-minimized-preview">{status}</p>
+      ) : !expanded ? (
         <button
           className="bubble-preview"
           type="button"
@@ -162,7 +199,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
             {presentation.fullText ? (
               <p>{presentation.fullText}</p>
             ) : (
-              <p className="bubble-muted">{status}</p>
+              <p className="bubble-muted readable-helper">{status}</p>
             )}
           </div>
           {request !== null ? (
@@ -203,7 +240,9 @@ export default function Bubble({ agentId }: { agentId: string }) {
           <button
             className="bubble-open-chat"
             type="button"
-            onClick={() => void openAgentConversations(agentId)}
+            onClick={() =>
+              void openAgentConversations(agentId, currentPhase.conversation.id)
+            }
           >
             Abrir conversa completa
           </button>

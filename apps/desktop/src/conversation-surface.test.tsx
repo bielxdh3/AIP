@@ -70,9 +70,11 @@ describe("ConversationSurface", () => {
     vi.clearAllMocks();
   });
 
-  function renderSurface() {
+  function renderSurface(temporary = false) {
     act(() => {
-      root.render(<ConversationSurface agentId="agent" temporary={false} />);
+      root.render(
+        <ConversationSurface agentId="agent" temporary={temporary} />,
+      );
     });
   }
 
@@ -116,6 +118,14 @@ describe("ConversationSurface", () => {
         '.conversation-model-selector [aria-haspopup="listbox"]',
       ),
     ).not.toBeNull();
+    expect(
+      container.querySelector(
+        '.conversation-model-selector [aria-haspopup="listbox"]',
+      )?.textContent,
+    ).toContain("Modelo: Automático");
+    expect(
+      container.querySelector(".conversation-model-selector")?.textContent,
+    ).toContain("Equilibrado");
     expect(
       container.querySelector(".conversation-model-selector select"),
     ).toBeNull();
@@ -236,6 +246,40 @@ describe("ConversationSurface", () => {
       agentId: "agent",
       conversationId: "conversation",
       content: "próxima mensagem",
+      policy: {
+        mode: "auto",
+        excludedModelRefs: [],
+        fallbackOnlyModelRefs: [],
+        preferredModelRef: null,
+      },
+    });
+  });
+
+  it("passes the bounded routing policy to temporary sends", async () => {
+    phase = loadedPhase;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    renderSurface(true);
+
+    const textarea =
+      container.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+    change(textarea, "mensagem temporária");
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(".composer-footer > button")
+        ?.click(),
+    );
+
+    expect(invoke).toHaveBeenCalledWith("send_temporary_phase_one_message", {
+      agentId: "agent",
+      content: "mensagem temporária",
+      policy: {
+        mode: "auto",
+        excludedModelRefs: [],
+        fallbackOnlyModelRefs: [],
+        preferredModelRef: null,
+      },
     });
   });
 });

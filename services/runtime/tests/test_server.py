@@ -37,6 +37,11 @@ class ExplodingCloseConnection(FakeConnection):
 class FakeClient:
     def __init__(self) -> None:
         self.started = threading.Event()
+        self.health_calls = 0
+
+    def health(self) -> None:
+        self.health_calls += 1
+        return
 
     def discover(self) -> list[dict[str, object]]:
         return [
@@ -265,7 +270,8 @@ class RuntimeServerTests(unittest.TestCase):
 
     def test_provider_discovery_and_shutdown_use_versioned_envelopes(self) -> None:
         output = io.StringIO()
-        server = RuntimeServer(output, FakeClient())  # type: ignore[arg-type]
+        client = FakeClient()
+        server = RuntimeServer(output, client)  # type: ignore[arg-type]
         payload = b"\n".join(
             [
                 b'{"protocolVersion":1,"id":"discover","method":"provider.discover","params":{}}',
@@ -277,6 +283,7 @@ class RuntimeServerTests(unittest.TestCase):
         lines = decoded_lines(output)
         by_id = {str(line.get("id")): line for line in lines}
         self.assertEqual(by_id["discover"]["result"]["provider"], "ollama")  # type: ignore[index]
+        self.assertEqual(client.health_calls, 1)
         self.assertEqual(by_id["stop"]["result"], {"status": "stopping"})
         self.assertTrue(all(line.get("protocolVersion") == 1 for line in lines))
 

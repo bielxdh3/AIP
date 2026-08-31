@@ -17,6 +17,10 @@ use crate::{
         MAX_ASSISTANT_OUTPUT_BYTES, MAX_CONTEXT_BYTES, MAX_HISTORY_MESSAGES, MAX_QUEUE_LENGTH,
         MAX_USER_MESSAGE_BYTES,
     },
+    orchestration::{
+        ConnectivityState, HealthSnapshot, HealthState, OrchestrationError, OrchestrationManager,
+        RequestPriority, RoutingMode, RoutingPolicy, RoutingRequest,
+    },
     overlays,
     protocol::{
         cancellation_request, discovery_request, generation_request, show_model_request,
@@ -371,6 +375,7 @@ struct ChatInner {
     app: AppHandle,
     database: Database,
     runtime: RuntimeController,
+    orchestration: Arc<Mutex<OrchestrationManager>>,
     safe_mode: Arc<AtomicBool>,
     provider: Mutex<ProviderSnapshot>,
     discovery_requests: Mutex<HashSet<String>>,
@@ -393,6 +398,7 @@ impl ChatCoordinator {
         database: Database,
         runtime: RuntimeController,
         safe_mode: Arc<AtomicBool>,
+        orchestration: Arc<Mutex<OrchestrationManager>>,
     ) -> Self {
         let receiver = runtime.subscribe();
         let coordinator = Self {
@@ -400,6 +406,7 @@ impl ChatCoordinator {
                 app,
                 database,
                 runtime,
+                orchestration,
                 safe_mode,
                 provider: Mutex::new(ProviderSnapshot::checking()),
                 discovery_requests: Mutex::new(HashSet::new()),
@@ -474,6 +481,7 @@ impl ChatCoordinator {
                 .iter()
                 .any(|model| &model.model_ref == selected)
         });
+        let auto_candidate_available = self.auto_candidate_available();
         let queue = lock(&self.inner.queue).snapshots();
         let simulated_state = self
             .inner
@@ -486,6 +494,7 @@ impl ChatCoordinator {
             selected_model_available,
             queue.len(),
             simulated_state.suspended,
+            auto_candidate_available,
         );
         Ok(PhaseOneState {
             agent,
@@ -518,20 +527,26 @@ impl ChatCoordinator {
             return Err("operation_unavailable");
         }
         if self.inner.runtime.snapshot().state != RuntimeState::Ready {
-            *lock(&self.inner.provider) = ProviderSnapshot::unavailable("runtime_unavailable");
+            let snapshot = ProviderSnapshot::unavailable("runtime_unavailable");
+            self.sync_orchestration(&snapshot);
+            *lock(&self.inner.provider) = snapshot;
             self.emit_refresh(None);
             return Err("runtime_unavailable");
         }
         if !lock(&self.inner.discovery_requests).is_empty() {
             return Ok(());
         }
-        *lock(&self.inner.provider) = ProviderSnapshot::checking();
+        let snapshot = ProviderSnapshot::checking();
+        self.sync_orchestration(&snapshot);
+        *lock(&self.inner.provider) = snapshot;
         let request_id = format!("discover-{}", uuid::Uuid::now_v7());
         lock(&self.inner.discovery_requests).insert(request_id.clone());
         let request = discovery_request(&request_id).map_err(|_| "operation_failed")?;
         if let Err(error) = self.inner.runtime.send(request) {
             lock(&self.inner.discovery_requests).remove(&request_id);
-            *lock(&self.inner.provider) = ProviderSnapshot::unavailable(error);
+            let snapshot = ProviderSnapshot::unavailable(error);
+            self.sync_orchestration(&snapshot);
+            *lock(&self.inner.provider) = snapshot;
             self.emit_refresh(None);
             return Err(error);
         }
@@ -602,6 +617,7 @@ impl ChatCoordinator {
                 state.selected_model_available,
                 state.queue.len(),
                 simulated_state.suspended,
+                self.auto_candidate_available(),
             )
             .map(str::to_string);
         state.can_send = state.send_blocked_code.is_none();
@@ -693,11 +709,22 @@ impl ChatCoordinator {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn send_message(
         &self,
         agent_id: &str,
         conversation_id: &str,
         content: &str,
+    ) -> Result<SendMessageResult, &'static str> {
+        self.send_message_with_policy(agent_id, conversation_id, content, RoutingPolicy::default())
+    }
+
+    pub fn send_message_with_policy(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        content: &str,
+        policy: RoutingPolicy,
     ) -> Result<SendMessageResult, &'static str> {
         let _send_guard = lock(&self.inner.send_lock);
         if content.is_empty() || content.len() > MAX_USER_MESSAGE_BYTES {
@@ -708,20 +735,43 @@ impl ChatCoordinator {
             return Err("operation_unavailable");
         }
         if let Some(code) = state.send_blocked_code.as_deref() {
-            return Err(match code {
-                "queue_full" => "queue_full",
-                "safe_mode_active" => "safe_mode_active",
-                "agent_suspended" => "agent_suspended",
-                "model_not_selected" | "selected_model_unavailable" => "model_unavailable",
-                _ => "runtime_unavailable",
-            });
+            let auto_can_resolve = matches!(
+                policy.mode,
+                RoutingMode::Auto | RoutingMode::Quality | RoutingMode::Speed
+            );
+            if !auto_can_resolve
+                || !matches!(
+                    code,
+                    "model_not_selected" | "selected_model_unavailable" | "no_candidate"
+                )
+            {
+                return Err(match code {
+                    "queue_full" => "queue_full",
+                    "safe_mode_active" => "safe_mode_active",
+                    "agent_suspended" => "agent_suspended",
+                    "model_not_selected" | "selected_model_unavailable" => "model_unavailable",
+                    "no_candidate" => "no_candidate",
+                    _ => "runtime_unavailable",
+                });
+            }
         }
-        let model_ref = state.selected_model_ref.ok_or("model_unavailable")?;
+        let request_id = uuid::Uuid::now_v7().to_string();
+        let model_ref =
+            self.reserve_route(&request_id, state.selected_model_ref.as_deref(), &policy)?;
         let attempt = self
             .inner
             .database
-            .create_message_attempt(agent_id, conversation_id, content, &model_ref)
-            .map_err(|_| "operation_failed")?;
+            .create_message_attempt_with_request_id(
+                agent_id,
+                conversation_id,
+                content,
+                &model_ref,
+                &request_id,
+            )
+            .map_err(|_| {
+                self.release_route(&request_id);
+                "operation_failed"
+            })?;
         let job = job_from_attempt(agent_id, conversation_id, &model_ref, &attempt);
         if let Err(code) = lock(&self.inner.queue).enqueue(job.clone()) {
             let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
@@ -825,8 +875,21 @@ impl ChatCoordinator {
         if state.send_blocked_code.is_some() {
             return Err("runtime_unavailable");
         }
-        let attempt = create_attempt(&self.inner.database, model_ref, request_id)
-            .map_err(|_| "operation_failed")?;
+        self.reserve_route(
+            request_id,
+            Some(model_ref),
+            &RoutingPolicy {
+                mode: RoutingMode::Manual,
+                ..RoutingPolicy::default()
+            },
+        )?;
+        let attempt = match create_attempt(&self.inner.database, model_ref, request_id) {
+            Ok(attempt) => attempt,
+            Err(_) => {
+                self.release_route(request_id);
+                return Err("operation_failed");
+            }
+        };
         let job = job_from_attempt(agent_id, conversation_id, model_ref, &attempt);
         if let Err(code) = lock(&self.inner.queue).enqueue(job.clone()) {
             if code == "duplicate_request" {
@@ -865,10 +928,20 @@ impl ChatCoordinator {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn send_temporary_message(
         &self,
         agent_id: &str,
         content: &str,
+    ) -> Result<SendMessageResult, &'static str> {
+        self.send_temporary_message_with_policy(agent_id, content, RoutingPolicy::default())
+    }
+
+    pub fn send_temporary_message_with_policy(
+        &self,
+        agent_id: &str,
+        content: &str,
+        policy: RoutingPolicy,
     ) -> Result<SendMessageResult, &'static str> {
         let _send_guard = lock(&self.inner.send_lock);
         if content.is_empty() || content.len() > MAX_USER_MESSAGE_BYTES {
@@ -876,17 +949,30 @@ impl ChatCoordinator {
         }
         let state = self.temporary_state(agent_id)?;
         if let Some(code) = state.send_blocked_code.as_deref() {
-            return Err(match code {
-                "queue_full" => "queue_full",
-                "safe_mode_active" => "safe_mode_active",
-                "agent_suspended" => "agent_suspended",
-                "model_not_selected" | "selected_model_unavailable" => "model_unavailable",
-                _ => "runtime_unavailable",
-            });
+            let auto_can_resolve = matches!(
+                policy.mode,
+                RoutingMode::Auto | RoutingMode::Quality | RoutingMode::Speed
+            );
+            if !auto_can_resolve
+                || !matches!(
+                    code,
+                    "model_not_selected" | "selected_model_unavailable" | "no_candidate"
+                )
+            {
+                return Err(match code {
+                    "queue_full" => "queue_full",
+                    "safe_mode_active" => "safe_mode_active",
+                    "agent_suspended" => "agent_suspended",
+                    "model_not_selected" | "selected_model_unavailable" => "model_unavailable",
+                    "no_candidate" => "no_candidate",
+                    _ => "runtime_unavailable",
+                });
+            }
         }
-        let model_ref = state.selected_model_ref.ok_or("model_unavailable")?;
         let now = now_millis();
         let request_id = uuid::Uuid::now_v7().to_string();
+        let model_ref =
+            self.reserve_route(&request_id, state.selected_model_ref.as_deref(), &policy)?;
         let user_message_id = uuid::Uuid::now_v7().to_string();
         let assistant_message_id = uuid::Uuid::now_v7().to_string();
         let conversation = state.conversation.clone();
@@ -1026,14 +1112,18 @@ impl ChatCoordinator {
         if !self.inner.safe_mode.load(Ordering::SeqCst) {
             lock(&self.inner.discovery_requests).clear();
             self.inner.runtime.start();
-            *lock(&self.inner.provider) = ProviderSnapshot::checking();
+            let snapshot = ProviderSnapshot::checking();
+            self.sync_orchestration(&snapshot);
+            *lock(&self.inner.provider) = snapshot;
             self.emit_refresh(None);
         }
     }
 
     fn expire_discovery(&self, request_id: &str) {
         if lock(&self.inner.discovery_requests).remove(request_id) {
-            *lock(&self.inner.provider) = provider_error_snapshot("provider_timeout");
+            let snapshot = provider_error_snapshot("provider_timeout");
+            self.sync_orchestration(&snapshot);
+            *lock(&self.inner.provider) = snapshot;
             self.trace(
                 request_id,
                 "discovery_timed_out",
@@ -1081,6 +1171,62 @@ impl ChatCoordinator {
         self.emit_refresh(Some(&job.agent_id));
     }
 
+    fn auto_candidate_available(&self) -> bool {
+        let request = RoutingRequest {
+            request_id: "state-auto".into(),
+            model_ref: None,
+            capability: crate::orchestration::ModelCapability::TextGeneration,
+            priority: RequestPriority::ActiveConversation,
+            additional_ram_mb: 0,
+            max_latency_ms: None,
+            created_at_ms: now_millis() as u64,
+        };
+        lock(&self.inner.orchestration)
+            .rank_candidates_with_policy(&request, &RoutingPolicy::default())
+            .is_ok()
+    }
+
+    fn reserve_route(
+        &self,
+        request_id: &str,
+        selected_model: Option<&str>,
+        policy: &RoutingPolicy,
+    ) -> Result<String, &'static str> {
+        if policy.mode == RoutingMode::Manual && selected_model.is_none() {
+            return Err("model_unavailable");
+        }
+        let policy = routing_policy_with_selection(policy, selected_model);
+        let request = RoutingRequest {
+            request_id: request_id.to_string(),
+            model_ref: (policy.mode == RoutingMode::Manual)
+                .then(|| selected_model.map(str::to_string))
+                .flatten(),
+            capability: crate::orchestration::ModelCapability::TextGeneration,
+            priority: RequestPriority::ActiveConversation,
+            additional_ram_mb: 0,
+            max_latency_ms: None,
+            created_at_ms: now_millis() as u64,
+        };
+        lock(&self.inner.orchestration)
+            .reserve_with_policy(request, policy, |_| Ok(()))
+            .map(|reservation| reservation.model_ref)
+            .map_err(orchestration_error_code)
+    }
+
+    fn release_route(&self, request_id: &str) {
+        let _ = lock(&self.inner.orchestration).complete(request_id);
+    }
+
+    fn sync_orchestration(&self, provider: &ProviderSnapshot) {
+        let health = provider_health(provider.state);
+        let model_refs = provider
+            .models
+            .iter()
+            .map(|model| model.model_ref.clone())
+            .collect::<Vec<_>>();
+        let _ = lock(&self.inner.orchestration).sync_local_provider(&model_refs, health, health);
+    }
+
     fn send_blocked_code(
         &self,
         provider: &ProviderSnapshot,
@@ -1088,34 +1234,25 @@ impl ChatCoordinator {
         selected_available: bool,
         queue_length: usize,
         suspended: bool,
+        auto_candidate_available: bool,
     ) -> Option<&'static str> {
-        if self.inner.safe_mode.load(Ordering::SeqCst) {
-            Some("safe_mode_active")
-        } else if self.inner.runtime.snapshot().state != RuntimeState::Ready {
-            Some("runtime_unavailable")
-        } else if provider.state == ProviderState::Checking {
-            Some("provider_checking")
-        } else if provider.state == ProviderState::Empty {
-            Some("provider_empty")
-        } else if provider.state != ProviderState::Available {
-            Some("provider_unavailable")
-        } else if selected_model.is_none() {
-            Some("model_not_selected")
-        } else if !selected_available {
-            Some("selected_model_unavailable")
-        } else if suspended {
-            Some("agent_suspended")
-        } else if queue_length >= MAX_QUEUE_LENGTH {
-            Some("queue_full")
-        } else {
-            None
-        }
+        send_blocked_code_for_state(
+            self.inner.safe_mode.load(Ordering::SeqCst),
+            self.inner.runtime.snapshot().state,
+            provider,
+            selected_model,
+            selected_available,
+            queue_length,
+            suspended,
+            auto_candidate_available,
+        )
     }
 
     fn handle_notice(&self, notice: RuntimeNotice) {
         match notice {
             RuntimeNotice::Output(RuntimeOutput::Provider { id, mut snapshot }) => {
                 if lock(&self.inner.discovery_requests).remove(&id) {
+                    self.sync_orchestration(&snapshot);
                     snapshot.refreshed_at = Some(now_millis());
                     *lock(&self.inner.provider) = snapshot;
                     self.emit_refresh(None);
@@ -1123,7 +1260,9 @@ impl ChatCoordinator {
             }
             RuntimeNotice::Output(RuntimeOutput::Error { id, code }) => {
                 if lock(&self.inner.discovery_requests).remove(&id) {
-                    *lock(&self.inner.provider) = provider_error_snapshot(&code);
+                    let snapshot = provider_error_snapshot(&code);
+                    self.sync_orchestration(&snapshot);
+                    *lock(&self.inner.provider) = snapshot;
                     self.emit_refresh(None);
                 } else if lock(&self.inner.model_detail_requests)
                     .remove(&id)
@@ -1160,11 +1299,13 @@ impl ChatCoordinator {
                     .cancellation_recovery
                     .swap(false, Ordering::SeqCst);
                 let current_provider = lock(&self.inner.provider).clone();
-                *lock(&self.inner.provider) = provider_after_runtime_disconnect(
+                let snapshot = provider_after_runtime_disconnect(
                     current_provider,
                     detail_code,
                     cancellation_recovery,
                 );
+                self.sync_orchestration(&snapshot);
+                *lock(&self.inner.provider) = snapshot;
                 if !cancellation_recovery {
                     self.fail_all("runtime_interrupted");
                 }
@@ -1476,6 +1617,7 @@ impl ChatCoordinator {
         status: MessageStatus,
         error_code: Option<&str>,
     ) -> Result<(), &'static str> {
+        self.release_route(&job.request_id);
         if job.temporary {
             return self.finish_temporary(job, status, error_code);
         }
@@ -1704,6 +1846,55 @@ fn assemble_context(
     prompt
 }
 
+fn routing_policy_with_selection(
+    policy: &RoutingPolicy,
+    selected_model: Option<&str>,
+) -> RoutingPolicy {
+    let mut policy = policy.clone();
+    if policy.mode != RoutingMode::Manual && policy.preferred_model_ref.is_none() {
+        policy.preferred_model_ref = selected_model.map(str::to_string);
+    }
+    policy
+}
+
+#[allow(clippy::too_many_arguments)]
+fn send_blocked_code_for_state(
+    safe_mode: bool,
+    runtime_state: RuntimeState,
+    provider: &ProviderSnapshot,
+    selected_model: Option<&str>,
+    selected_available: bool,
+    queue_length: usize,
+    suspended: bool,
+    auto_candidate_available: bool,
+) -> Option<&'static str> {
+    if safe_mode {
+        Some("safe_mode_active")
+    } else if suspended {
+        Some("agent_suspended")
+    } else if queue_length >= MAX_QUEUE_LENGTH {
+        Some("queue_full")
+    } else if runtime_state != RuntimeState::Ready {
+        Some("runtime_unavailable")
+    } else if provider.state == ProviderState::Checking {
+        Some("provider_checking")
+    } else if provider.state == ProviderState::Empty {
+        Some("provider_empty")
+    } else if provider.state != ProviderState::Available {
+        Some("provider_unavailable")
+    } else if selected_model.is_none() || !selected_available {
+        if auto_candidate_available {
+            None
+        } else if selected_model.is_none() {
+            Some("no_candidate")
+        } else {
+            Some("selected_model_unavailable")
+        }
+    } else {
+        None
+    }
+}
+
 fn provider_error_snapshot(code: &str) -> ProviderSnapshot {
     let state = match code {
         "provider_malformed" | "provider_payload_too_large" | "provider_model_limit" => {
@@ -1717,6 +1908,44 @@ fn provider_error_snapshot(code: &str) -> ProviderSnapshot {
         detail_code: code.to_string(),
         models: Vec::new(),
         refreshed_at: Some(now_millis()),
+    }
+}
+
+fn orchestration_error_code(error: OrchestrationError) -> &'static str {
+    match error {
+        OrchestrationError::NoCompatibleCandidate
+        | OrchestrationError::NoHealthyCandidate
+        | OrchestrationError::NoResources
+        | OrchestrationError::QueueFull
+        | OrchestrationError::ReservationFailed
+        | OrchestrationError::ReservationStoreFull => "no_candidate",
+        OrchestrationError::InvalidContract("routing_policy") => "routing_policy_invalid",
+        _ => "orchestration_unavailable",
+    }
+}
+
+fn provider_health(state: ProviderState) -> HealthSnapshot {
+    match state {
+        ProviderState::Available | ProviderState::Empty => HealthSnapshot {
+            state: HealthState::Healthy,
+            connectivity: ConnectivityState::Connected,
+            last_health_at_ms: Some(now_millis() as u64),
+            latency_ms: None,
+        },
+        ProviderState::Checking => HealthSnapshot {
+            state: HealthState::Unknown,
+            connectivity: ConnectivityState::Checking,
+            last_health_at_ms: None,
+            latency_ms: None,
+        },
+        ProviderState::Unavailable | ProviderState::Malformed | ProviderState::Timeout => {
+            HealthSnapshot {
+                state: HealthState::Unavailable,
+                connectivity: ConnectivityState::Disconnected,
+                last_health_at_ms: None,
+                latency_ms: None,
+            }
+        }
     }
 }
 
@@ -1777,6 +2006,65 @@ mod tests {
             .detail_code,
             "runtime_process_exit_unexpected"
         );
+    }
+
+    fn available_provider() -> ProviderSnapshot {
+        ProviderSnapshot {
+            state: ProviderState::Available,
+            detail_code: "provider_available".into(),
+            models: Vec::new(),
+            refreshed_at: Some(1),
+        }
+    }
+
+    #[test]
+    fn auto_routing_never_bypasses_suspension_or_queue_limits() {
+        let provider = available_provider();
+        assert_eq!(
+            send_blocked_code_for_state(
+                false,
+                RuntimeState::Ready,
+                &provider,
+                None,
+                false,
+                0,
+                true,
+                true,
+            ),
+            Some("agent_suspended")
+        );
+        assert_eq!(
+            send_blocked_code_for_state(
+                false,
+                RuntimeState::Ready,
+                &provider,
+                None,
+                false,
+                MAX_QUEUE_LENGTH,
+                false,
+                true,
+            ),
+            Some("queue_full")
+        );
+    }
+
+    #[test]
+    fn auto_selection_preserves_selected_model_as_preference() {
+        let policy =
+            routing_policy_with_selection(&RoutingPolicy::default(), Some("ollama:selected"));
+        assert_eq!(
+            policy.preferred_model_ref.as_deref(),
+            Some("ollama:selected")
+        );
+
+        let manual = routing_policy_with_selection(
+            &RoutingPolicy {
+                mode: RoutingMode::Manual,
+                ..RoutingPolicy::default()
+            },
+            Some("ollama:selected"),
+        );
+        assert_eq!(manual.preferred_model_ref, None);
     }
 
     #[test]
