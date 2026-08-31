@@ -192,7 +192,10 @@ import {
   isNearConversationBottom,
   shouldScrollConversationToBottom,
 } from "./conversation-scroll";
-import { OPEN_AGENT_CONVERSATIONS_EVENT } from "./agent-navigation";
+import {
+  OPEN_AGENT_CONVERSATIONS_EVENT,
+  type OpenAgentConversationsPayload,
+} from "./agent-navigation";
 import { usePhaseOne } from "./use-phase-one";
 import { createListenerRegistration } from "./listener-lifecycle";
 import {
@@ -1185,10 +1188,12 @@ export function ConversationSurface({
   agentId,
   temporary,
   onToggleTemporary,
+  refreshRevision = 0,
 }: {
   agentId: string;
   temporary: boolean;
   onToggleTemporary?: () => void;
+  refreshRevision?: number;
 }) {
   const { phase, error, load } = usePhaseOne(agentId, temporary);
   const [draft, setDraft] = useState("");
@@ -1203,6 +1208,10 @@ export function ConversationSurface({
   const historyRef = useRef<HTMLDivElement>(null);
   const conversationIdRef = useRef<string | null>(null);
   const followsBottomRef = useRef(true);
+
+  useEffect(() => {
+    if (refreshRevision > 0) void load();
+  }, [load, refreshRevision]);
 
   useLayoutEffect(() => {
     const history = historyRef.current;
@@ -5690,17 +5699,6 @@ export function PixelDocumentEditor({ agentId }: { agentId: string }) {
       if (importRef.current !== null) importRef.current.value = "";
     }
   }
-  function updateBubbleAttachment(axis: "x" | "y", value: number) {
-    if (document === null) return;
-    const current = document.attachmentPoints.bubble ?? { x: 32, y: 8 };
-    updateLayers({
-      ...document,
-      attachmentPoints: {
-        ...document.attachmentPoints,
-        bubble: { ...current, [axis]: Math.max(0, Math.min(63, value || 0)) },
-      },
-    });
-  }
   return (
     <details className="pixel-editor" open>
       <summary>Editor de pixel art (64×64)</summary>
@@ -5943,35 +5941,6 @@ export function PixelDocumentEditor({ agentId }: { agentId: string }) {
           onCancel={() => setPendingLayerDeletion(null)}
           onConfirm={confirmLayerDeletion}
         />
-      ) : null}
-      {document ? (
-        <div className="pixel-attachment">
-          <strong>Encaixe do balão</strong>
-          <label>
-            X{" "}
-            <input
-              type="number"
-              min="0"
-              max="63"
-              value={document.attachmentPoints.bubble?.x ?? 32}
-              onChange={(event) =>
-                updateBubbleAttachment("x", Number(event.target.value))
-              }
-            />
-          </label>
-          <label>
-            Y{" "}
-            <input
-              type="number"
-              min="0"
-              max="63"
-              value={document.attachmentPoints.bubble?.y ?? 8}
-              onChange={(event) =>
-                updateBubbleAttachment("y", Number(event.target.value))
-              }
-            />
-          </label>
-        </div>
       ) : null}
       <canvas
         ref={canvasRef}
@@ -10778,6 +10747,8 @@ function App() {
   const [changingMode, setChangingMode] = useState(false);
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
   const [conversationRevision, setConversationRevision] = useState(0);
+  const [conversationNavigationRevision, setConversationNavigationRevision] =
+    useState(0);
   const [conversationListRevision, setConversationListRevision] = useState(0);
   const [conversationDraftAgentId, setConversationDraftAgentId] = useState<
     string | null
@@ -10802,12 +10773,17 @@ function App() {
 
   useEffect(() => {
     const registration = createListenerRegistration();
-    void listen<string>(OPEN_AGENT_CONVERSATIONS_EVENT, (event) => {
-      setConversationDraftAgentId(null);
-      setActiveAgentId(event.payload);
-      setEditingAgentId(null);
-      setWorkspace("chat");
-    }).then(registration.register);
+    void listen<OpenAgentConversationsPayload>(
+      OPEN_AGENT_CONVERSATIONS_EVENT,
+      (event) => {
+        const { agentId } = event.payload;
+        setConversationDraftAgentId(null);
+        setActiveAgentId(agentId);
+        setEditingAgentId(null);
+        setWorkspace("chat");
+        setConversationNavigationRevision((value) => value + 1);
+      },
+    ).then(registration.register);
     return registration.dispose;
   }, []);
 
@@ -11078,6 +11054,7 @@ function App() {
             key={`${activeAgentId}-${conversationRevision}-${temporaryChat}`}
             agentId={activeAgentId}
             temporary={temporaryChat}
+            refreshRevision={conversationNavigationRevision}
             onToggleTemporary={() => void toggleTemporaryChat()}
           />
         )}

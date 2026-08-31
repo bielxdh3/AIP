@@ -3014,13 +3014,26 @@ fn open_agent_conversations(
     app: AppHandle,
     state: State<'_, AppState>,
     agent_id: String,
+    conversation_id: Option<String>,
 ) -> Result<(), &'static str> {
-    state
-        .database
-        .as_ref()
-        .ok_or("operation_unavailable")?
+    let database = state.database.as_ref().ok_or("operation_unavailable")?;
+    database
         .agent(&agent_id)
         .map_err(|_| "operation_unavailable")?;
+    let conversation_id = match conversation_id {
+        Some(conversation_id) => {
+            database
+                .set_active_conversation(&agent_id, &conversation_id)
+                .map_err(|_| "operation_unavailable")?;
+            conversation_id
+        }
+        None => {
+            database
+                .active_conversation(&agent_id)
+                .map_err(|_| "operation_unavailable")?
+                .id
+        }
+    };
     let window = app
         .get_webview_window("main")
         .ok_or("operation_unavailable")?;
@@ -3029,8 +3042,22 @@ fn open_agent_conversations(
         window.show().map_err(|_| "operation_failed")?;
     }
     window.set_focus().map_err(|_| "operation_failed")?;
-    app.emit_to("main", "open-agent-conversations", agent_id)
-        .map_err(|_| "operation_failed")
+    app.emit_to(
+        "main",
+        "open-agent-conversations",
+        OpenAgentConversationsEvent {
+            agent_id,
+            conversation_id,
+        },
+    )
+    .map_err(|_| "operation_failed")
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenAgentConversationsEvent {
+    agent_id: String,
+    conversation_id: String,
 }
 
 #[cfg(test)]
@@ -3470,6 +3497,22 @@ mod conversation_command_tests {
             "unminimize-show-and-focus"
         );
         assert_eq!(super::workspace_window_action(true), "unminimize-and-focus");
+    }
+
+    #[test]
+    fn workspace_navigation_event_preserves_agent_and_conversation() {
+        let payload = serde_json::to_value(super::OpenAgentConversationsEvent {
+            agent_id: "agt_luma_provisional".into(),
+            conversation_id: "conversation-luma-2".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "agentId": "agt_luma_provisional",
+                "conversationId": "conversation-luma-2"
+            })
+        );
     }
 
     fn policy(agent_id: &str, purpose: &str, max_turns: i64) -> ConversationPolicyRequest {

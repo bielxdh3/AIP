@@ -18,6 +18,11 @@ use crate::{
 
 const OVERLAY_WIDTH: f64 = 180.0;
 const OVERLAY_HEIGHT: f64 = 192.0;
+const SPRITE_WIDTH: f64 = 128.0;
+const SPRITE_HEIGHT: f64 = 128.0;
+const SPRITE_OFFSET_X: f64 = 26.0;
+const SPRITE_OFFSET_Y: f64 = 38.0;
+const BUBBLE_GAP: f64 = 8.0;
 const BUBBLE_WIDTH: f64 = 380.0;
 const BUBBLE_HEIGHT: f64 = 360.0;
 const MAX_INTERACTIVE_REGIONS: usize = 256;
@@ -501,11 +506,10 @@ fn position_bubble(app: &AppHandle, agent_id: &str) -> Result<(), OverlayInputEr
         .ok_or(OverlayInputError::NativeRegionFailed)?;
     let bubble_width = (BUBBLE_WIDTH * scale).round() as i32;
     let bubble_height = (BUBBLE_HEIGHT * scale).round() as i32;
-    let agent_width = (OVERLAY_WIDTH * scale).round() as i32;
     let work_area = monitor.work_area();
     let position = bubble_position(
         agent_position,
-        agent_width,
+        scale,
         bubble_width,
         bubble_height,
         work_area.position,
@@ -516,9 +520,35 @@ fn position_bubble(app: &AppHandle, agent_id: &str) -> Result<(), OverlayInputEr
         .map_err(|_| OverlayInputError::NativeRegionFailed)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ScreenRect {
+    left: i64,
+    top: i64,
+    right: i64,
+    bottom: i64,
+}
+
+fn visible_sprite_bounds(agent_position: tauri::PhysicalPosition<i32>, scale: f64) -> ScreenRect {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    let left = i64::from(agent_position.x) + (SPRITE_OFFSET_X * scale).round() as i64;
+    let top = i64::from(agent_position.y) + (SPRITE_OFFSET_Y * scale).round() as i64;
+    let width = (SPRITE_WIDTH * scale).round() as i64;
+    let height = (SPRITE_HEIGHT * scale).round() as i64;
+    ScreenRect {
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+    }
+}
+
 fn bubble_position(
     agent_position: tauri::PhysicalPosition<i32>,
-    agent_width: i32,
+    scale: f64,
     bubble_width: i32,
     bubble_height: i32,
     work_area_position: tauri::PhysicalPosition<i32>,
@@ -530,15 +560,33 @@ fn bubble_position(
     let bottom = top + i64::from(work_area_size.height);
     let bubble_width = i64::from(bubble_width);
     let bubble_height = i64::from(bubble_height);
-    let preferred_x = i64::from(agent_position.x) + i64::from(agent_width);
-    let candidate_x = if preferred_x + bubble_width <= right {
-        preferred_x
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
     } else {
-        i64::from(agent_position.x) - bubble_width
+        1.0
     };
-    let x = candidate_x.clamp(left, (right - bubble_width).max(left));
-    let y = i64::from(agent_position.y).clamp(top, (bottom - bubble_height).max(top));
-    tauri::PhysicalPosition::new(x as i32, y as i32)
+    let sprite = visible_sprite_bounds(agent_position, scale);
+    let center_x = (sprite.left + sprite.right) / 2;
+    let gap = (BUBBLE_GAP * scale).round() as i64;
+    let candidates = [
+        (
+            center_x - bubble_width / 2,
+            sprite.top - gap - bubble_height,
+        ),
+        (sprite.right + gap, sprite.top),
+        (sprite.left - gap - bubble_width, sprite.top),
+        (center_x - bubble_width / 2, sprite.bottom + gap),
+    ];
+    let (x, y) = candidates
+        .into_iter()
+        .find(|(x, y)| {
+            *x >= left && *y >= top && *x + bubble_width <= right && *y + bubble_height <= bottom
+        })
+        .unwrap_or(candidates[0]);
+    tauri::PhysicalPosition::new(
+        x.clamp(left, (right - bubble_width).max(left)) as i32,
+        y.clamp(top, (bottom - bubble_height).max(top)) as i32,
+    )
 }
 
 #[cfg(test)]
@@ -661,28 +709,48 @@ mod tests {
     }
 
     #[test]
-    fn bubble_position_stays_inside_work_area_and_flips_left_at_the_edge() {
-        let work_area_position = tauri::PhysicalPosition::new(100, 40);
-        let work_area_size = tauri::PhysicalSize::new(800, 600);
-        let right = bubble_position(
-            tauri::PhysicalPosition::new(700, 500),
-            180,
+    fn bubble_position_prefers_top_then_flips_to_available_sides() {
+        let work_area_position = tauri::PhysicalPosition::new(0, 0);
+        let work_area_size = tauri::PhysicalSize::new(1920, 1080);
+        let top = bubble_position(
+            tauri::PhysicalPosition::new(700, 400),
+            1.0,
             380,
             360,
             work_area_position,
             work_area_size,
         );
-        assert_eq!(right, tauri::PhysicalPosition::new(320, 280));
+        assert_eq!(top, tauri::PhysicalPosition::new(600, 70));
 
-        let top_left = bubble_position(
-            tauri::PhysicalPosition::new(100, 40),
-            180,
+        let right_edge = bubble_position(
+            tauri::PhysicalPosition::new(1780, 400),
+            1.0,
             380,
             360,
             work_area_position,
             work_area_size,
         );
-        assert_eq!(top_left, tauri::PhysicalPosition::new(280, 40));
+        assert_eq!(right_edge, tauri::PhysicalPosition::new(1418, 438));
+
+        let left_edge = bubble_position(
+            tauri::PhysicalPosition::new(0, 400),
+            1.0,
+            380,
+            360,
+            work_area_position,
+            work_area_size,
+        );
+        assert_eq!(left_edge, tauri::PhysicalPosition::new(162, 438));
+
+        let top_edge = bubble_position(
+            tauri::PhysicalPosition::new(700, 0),
+            1.0,
+            380,
+            360,
+            work_area_position,
+            work_area_size,
+        );
+        assert_eq!(top_edge, tauri::PhysicalPosition::new(862, 38));
     }
 
     #[test]
@@ -712,12 +780,34 @@ mod tests {
     fn bubble_position_clamps_negative_and_narrow_monitor_coordinates() {
         let position = bubble_position(
             tauri::PhysicalPosition::new(-300, -100),
-            180,
+            1.0,
             380,
             360,
             tauri::PhysicalPosition::new(-400, -200),
             tauri::PhysicalSize::new(300, 240),
         );
         assert_eq!(position, tauri::PhysicalPosition::new(-400, -200));
+    }
+
+    #[test]
+    fn bubble_position_follows_agent_movement_from_visible_sprite_bounds() {
+        let first = bubble_position(
+            tauri::PhysicalPosition::new(700, 400),
+            1.0,
+            380,
+            360,
+            tauri::PhysicalPosition::new(0, 0),
+            tauri::PhysicalSize::new(1920, 1080),
+        );
+        let moved = bubble_position(
+            tauri::PhysicalPosition::new(900, 400),
+            1.0,
+            380,
+            360,
+            tauri::PhysicalPosition::new(0, 0),
+            tauri::PhysicalSize::new(1920, 1080),
+        );
+        assert_eq!(first, tauri::PhysicalPosition::new(600, 70));
+        assert_eq!(moved, tauri::PhysicalPosition::new(800, 70));
     }
 }

@@ -23,6 +23,7 @@ import "./App.css";
 export default function Bubble({ agentId }: { agentId: string }) {
   const { phase, error, load } = usePhaseOne(agentId);
   const [expanded, setExpanded] = useState(false);
+  const [minimized, setMinimized] = useState(false);
   const [draft, setDraft] = useState("");
   const [safeMode, setSafeMode] = useState(false);
   const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
@@ -130,13 +131,20 @@ export default function Bubble({ agentId }: { agentId: string }) {
   return (
     <main
       ref={bubbleRef}
-      className={expanded ? "agent-bubble expanded" : "agent-bubble compact"}
+      className={`agent-bubble ${minimized ? "minimized" : expanded ? "expanded" : "compact"}`}
     >
       <div className="bubble-heading">
         <button
           className="bubble-title"
           type="button"
-          onClick={() => setExpanded((value) => !value)}
+          onClick={() => {
+            if (minimized) {
+              setMinimized(false);
+              setExpanded(true);
+            } else {
+              setExpanded((value) => !value);
+            }
+          }}
         >
           <strong>{phase.agent.name}</strong>
           <small>
@@ -145,10 +153,35 @@ export default function Bubble({ agentId }: { agentId: string }) {
               : providerStatusCopy(phase)}
           </small>
         </button>
-        <CloseBubble agentId={agentId} onClose={() => setExpanded(false)} />
+        <div className="bubble-heading-actions">
+          {minimized ? (
+            <button
+              className="bubble-restore"
+              type="button"
+              onClick={() => {
+                setMinimized(false);
+                setExpanded(true);
+              }}
+            >
+              Restaurar
+            </button>
+          ) : expanded ? (
+            <button
+              className="bubble-minimize"
+              type="button"
+              aria-label="Minimizar balão"
+              onClick={() => setMinimized(true)}
+            >
+              −
+            </button>
+          ) : null}
+          <CloseBubble agentId={agentId} onClose={() => setExpanded(false)} />
+        </div>
       </div>
 
-      {!expanded ? (
+      {minimized ? (
+        <p className="bubble-minimized-preview">{status}</p>
+      ) : !expanded ? (
         <button
           className="bubble-preview"
           type="button"
@@ -203,7 +236,9 @@ export default function Bubble({ agentId }: { agentId: string }) {
           <button
             className="bubble-open-chat"
             type="button"
-            onClick={() => void openAgentConversations(agentId)}
+            onClick={() =>
+              void openAgentConversations(agentId, currentPhase.conversation.id)
+            }
           >
             Abrir conversa completa
           </button>

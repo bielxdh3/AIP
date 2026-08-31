@@ -622,8 +622,7 @@ a:focus-visible {
   font-size: 11px;
 }
 
-.pixel-layers,
-.pixel-attachment {
+.pixel-layers {
   padding: 12px;
   border: 1px solid #2e3a46;
   border-radius: 7px;
@@ -644,10 +643,6 @@ a:focus-visible {
 .pixel-layer input {
   min-width: 120px;
   flex: 1;
-}
-
-.pixel-attachment {
-  margin: 0;
 }
 
 .appearance-workspace .pixel-canvas {
@@ -1713,6 +1708,12 @@ a:focus-visible {
   max-height: 108px;
 }
 
+.agent-bubble.minimized {
+  width: 180px;
+  max-width: calc(100% - 16px);
+  padding: 7px 8px;
+}
+
 .agent-bubble.expanded {
   display: flex;
   min-width: 320px;
@@ -1733,7 +1734,9 @@ a:focus-visible {
 
 .bubble-title,
 .bubble-preview,
-.bubble-close {
+.bubble-close,
+.bubble-minimize,
+.bubble-restore {
   border: 0;
   color: inherit;
   background: transparent;
@@ -1752,10 +1755,36 @@ a:focus-visible {
   font-size: 9px;
 }
 
+.bubble-heading-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+
+.bubble-minimize,
+.bubble-restore {
+  padding: 3px 5px;
+  color: #aeb8c5;
+  font-size: 10px;
+}
+
 .bubble-close {
   padding: 0 4px;
   color: #8993a1;
   font-size: 19px;
+}
+
+.bubble-minimized-preview {
+  display: -webkit-box;
+  margin: 5px 0 0;
+  overflow: hidden;
+  color: #c9d0d9;
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .bubble-preview {
@@ -2917,18 +2946,6 @@ h3 {
   color: #57d8bd;
 }
 
-.pixel-attachment {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin: 10px 0;
-}
-
-.pixel-attachment input {
-  width: 52px;
-}
-
 .pixel-canvas {
   display: block;
   width: min(256px, 100%);
@@ -3029,8 +3046,7 @@ h3 {
   }
 
   .pixel-tools,
-  .pixel-layer,
-  .pixel-attachment {
+  .pixel-layer {
     align-items: stretch;
   }
 
