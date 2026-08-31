@@ -566,6 +566,7 @@ impl OrchestrationManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn update_node_health(
         &mut self,
         node_id: &str,
@@ -579,6 +580,7 @@ impl OrchestrationManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn update_provider_health(
         &mut self,
         provider_id: &str,
@@ -592,6 +594,7 @@ impl OrchestrationManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn rank_candidates(
         &self,
         request: &RoutingRequest,
@@ -716,6 +719,7 @@ impl OrchestrationManager {
         Ok(candidates)
     }
 
+    #[allow(dead_code)]
     pub fn reserve(
         &mut self,
         request: RoutingRequest,
@@ -723,10 +727,11 @@ impl OrchestrationManager {
         self.reserve_with_policy(request, RoutingPolicy::default(), |_| Ok(()))
     }
 
+    #[allow(dead_code)]
     pub fn reserve_with<F>(
         &mut self,
         request: RoutingRequest,
-        mut try_reserve: F,
+        try_reserve: F,
     ) -> Result<GenerationReservation, OrchestrationError>
     where
         F: FnMut(&RouteCandidate) -> Result<(), &'static str>,
@@ -794,6 +799,7 @@ impl OrchestrationManager {
         Ok(completed)
     }
 
+    #[allow(dead_code)]
     pub fn queue_status(&self, node_id: &str) -> Result<QueueLoad, OrchestrationError> {
         self.nodes
             .get(node_id)
@@ -1339,7 +1345,7 @@ mod tests {
     fn contracts_validate_bounds_and_preserve_health_timestamp_serialization() {
         let health = healthy();
         assert_eq!(health.last_health_at_ms, Some(100));
-        let serialized = serde_json::to_value(&health).unwrap();
+        let serialized = serde_json::to_value(health).unwrap();
         assert_eq!(serialized["lastHealthAtMs"], 100);
 
         let invalid = ComputeNode {

@@ -709,6 +709,7 @@ impl ChatCoordinator {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn send_message(
         &self,
         agent_id: &str,
@@ -927,6 +928,7 @@ impl ChatCoordinator {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn send_temporary_message(
         &self,
         agent_id: &str,
@@ -1855,6 +1857,7 @@ fn routing_policy_with_selection(
     policy
 }
 
+#[allow(clippy::too_many_arguments)]
 fn send_blocked_code_for_state(
     safe_mode: bool,
     runtime_state: RuntimeState,

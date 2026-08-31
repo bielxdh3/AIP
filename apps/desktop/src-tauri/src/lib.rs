@@ -120,7 +120,6 @@ struct AppState {
     overlay_input: OverlayInputState,
     companion_transport: Arc<Mutex<CompanionTransportState>>,
     gateway_transport: Arc<Mutex<GatewayTransportState>>,
-    pub(crate) orchestration: Arc<Mutex<OrchestrationManager>>,
 }
 
 fn routing_policy_or_default(policy: Option<RoutingPolicy>) -> RoutingPolicy {
@@ -3229,7 +3228,6 @@ pub fn run() {
                 overlay_input: overlay_input.clone(),
                 companion_transport: Arc::new(Mutex::new(CompanionTransportState::default())),
                 gateway_transport: Arc::new(Mutex::new(GatewayTransportState::default())),
-                orchestration,
             });
             if let Some(database) = database.as_ref() {
                 overlays::create_windows(app, database, stored_safe_mode, overlay_input.clone())?;
@@ -3466,7 +3464,7 @@ mod conversation_command_tests {
         reserve_heavy_generation_for_state, routing_policy_or_default,
         set_custom_voice_consent_for_state, start_agent_conversation_for_state,
         update_voice_settings_for_state, AppState, CompanionTransportState, GatewayTransportState,
-        OrchestrationManager, RoutingPolicy,
+        RoutingPolicy,
     };
     use crate::{
         companion::{
@@ -3505,7 +3503,6 @@ mod conversation_command_tests {
             overlay_input: OverlayInputState::default(),
             companion_transport: Arc::new(Mutex::new(CompanionTransportState::default())),
             gateway_transport: Arc::new(Mutex::new(GatewayTransportState::default())),
-            orchestration: Arc::new(Mutex::new(OrchestrationManager::default())),
         }
     }
 

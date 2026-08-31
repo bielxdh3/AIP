@@ -1617,6 +1617,7 @@ impl Database {
         }
     }
 
+    #[allow(dead_code)]
     pub fn create_message_attempt(
         &self,
         agent_id: &str,
