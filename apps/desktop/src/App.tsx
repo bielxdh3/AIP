@@ -201,6 +201,11 @@ import { createListenerRegistration } from "./listener-lifecycle";
 import { ThemeControls } from "./theme";
 import { AipSelect, FilePicker } from "./shared-controls";
 import {
+  MODEL_POLICY_MODES,
+  type ModelPolicyMode,
+  useModelPreferences,
+} from "./model-preferences";
+import {
   nextLayerId,
   floodFillLayer,
   paintPixelLayer,
@@ -813,7 +818,10 @@ function modelSizeLabel(size: number): string | null {
   return `${gigabytes >= 1 ? gigabytes.toFixed(1) : (size / 1_000_000).toFixed(0)} ${gigabytes >= 1 ? "GB" : "MB"}`;
 }
 
-function modelOption(model: OllamaModel): ModelPickerOption {
+function modelOption(
+  model: OllamaModel,
+  unavailable = false,
+): ModelPickerOption {
   const capabilities = model.capabilities ?? [];
   const metadata = [
     "Ollama",
@@ -829,6 +837,7 @@ function modelOption(model: OllamaModel): ModelPickerOption {
     ref: model.ref,
     label: model.displayName,
     detail: metadata.join(" · "),
+    unavailable,
     searchText: [
       model.displayName,
       model.ref,
@@ -876,6 +885,23 @@ export function ModelPicker({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const listboxId = useId();
+  const [modelPreferences] = useModelPreferences();
+
+  const visibleModels = models.filter(
+    (model) => !modelPreferences.hiddenModelRefs.includes(model.ref),
+  );
+  const hiddenSelectedModel =
+    value === null
+      ? undefined
+      : models.find(
+          (model) =>
+            model.ref === value &&
+            modelPreferences.hiddenModelRefs.includes(model.ref),
+        );
+  const pickerModels =
+    hiddenSelectedModel === undefined
+      ? visibleModels
+      : [...visibleModels, hiddenSelectedModel];
 
   const options: ModelPickerOption[] = [
     ...(defaultOption
@@ -889,8 +915,10 @@ export function ModelPicker({
           },
         ]
       : []),
-    ...models.map(modelOption),
-    ...(value !== null && !models.some((model) => model.ref === value)
+    ...pickerModels.map((model) =>
+      modelOption(model, modelPreferences.hiddenModelRefs.includes(model.ref)),
+    ),
+    ...(value !== null && !pickerModels.some((model) => model.ref === value)
       ? [
           {
             ref: value,
@@ -2104,9 +2132,11 @@ function ProfileFields({
 export function ProfileForm({
   agent,
   done,
+  focusDefaultModel = false,
 }: {
   agent: ProvisionalAgent;
   done: () => void;
+  focusDefaultModel?: boolean;
 }) {
   const [draft, setDraft] = useState(agent);
   const [persisted, setPersisted] = useState(agent);
@@ -2116,6 +2146,7 @@ export function ProfileForm({
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const { phase, load: loadPhase } = usePhaseOne(agent.id);
+  const defaultModelSectionRef = useRef<HTMLElement>(null);
   const draftRef = useRef(draft);
   const persistedRef = useRef(persisted);
   const fictiveAgeTextRef = useRef(fictiveAgeText);
@@ -2140,6 +2171,12 @@ export function ProfileForm({
     }
   }, [agent]);
   const isDirty = profileDraftIsDirty(draft, persisted, fictiveAgeText);
+  useEffect(() => {
+    if (!focusDefaultModel) return;
+    const section = defaultModelSectionRef.current;
+    section?.scrollIntoView({ block: "start" });
+    section?.focus({ preventScroll: true });
+  }, [focusDefaultModel]);
   async function save() {
     const fictiveAge = Number(fictiveAgeText);
     if (
@@ -2208,8 +2245,14 @@ export function ProfileForm({
           />
         </div>
       </section>
-      <section className="profile-section profile-default-model">
-        <h2>Modelo padrão</h2>
+      <section
+        ref={defaultModelSectionRef}
+        className="profile-section profile-default-model"
+        id="profile-default-model"
+        tabIndex={-1}
+        aria-labelledby="profile-default-model-heading"
+      >
+        <h2 id="profile-default-model-heading">Modelo padrão</h2>
         <p className="readable-helper">
           Novas conversas deste agente começam com este modelo.
         </p>
@@ -10050,16 +10093,323 @@ export function GatewayControls({
   );
 }
 
-function SettingsSurface({
+const modelPolicyLabels: Record<ModelPolicyMode, string> = {
+  auto: "Auto/Equilibrado",
+  quality: "Priorizar qualidade",
+  speed: "Priorizar velocidade",
+  manual: "Manual/Avançado",
+};
+
+const providerStateLabels: Record<ProviderSnapshot["state"], string> = {
+  checking: "Verificando disponibilidade",
+  available: "Provedor disponível",
+  empty: "Nenhum modelo disponível",
+  unavailable: "Provedor indisponível",
+  malformed: "Resposta do provedor inválida",
+  timeout: "Provedor não respondeu a tempo",
+};
+
+function useSettingsAgentPhases(agents: ProvisionalAgent[]) {
+  const agentIds = agents.map((agent) => agent.id).join("\0");
+  const [phases, setPhases] = useState<Record<string, PhaseOneState>>({});
+  useEffect(() => {
+    let active = true;
+    const ids = agentIds === "" ? [] : agentIds.split("\0");
+    setPhases({});
+    void Promise.all(
+      ids.map(async (agentId) => {
+        try {
+          return [
+            agentId,
+            await invoke<PhaseOneState>("get_phase_one_state", { agentId }),
+          ] as const;
+        } catch {
+          return null;
+        }
+      }),
+    ).then((results) => {
+      if (!active) return;
+      const next: Record<string, PhaseOneState> = {};
+      for (const result of results) {
+        if (result !== null) next[result[0]] = result[1];
+      }
+      setPhases(next);
+    });
+    return () => {
+      active = false;
+    };
+  }, [agentIds]);
+  return phases;
+}
+
+function settingsAgentStatus(
+  snapshot: AppSnapshot | null,
+  phase: PhaseOneState | undefined,
+): string {
+  if (snapshot === null) return "Verificando aplicativo";
+  if (snapshot.safeMode || snapshot.runtime.state === "safe_mode") {
+    return "Bloqueado pelo modo seguro";
+  }
+  if (
+    snapshot.runtime.state === "unavailable" ||
+    snapshot.runtime.state === "crashed"
+  ) {
+    return "Runtime indisponível";
+  }
+  if (snapshot.runtime.state !== "ready")
+    return runtimeLabels[snapshot.runtime.state];
+  return phase === undefined ? "Dados do agente indisponíveis" : "Disponível";
+}
+
+function modelListFromPhases(phases: Record<string, PhaseOneState>) {
+  const models = new Map<string, OllamaModel>();
+  for (const phase of Object.values(phases)) {
+    for (const model of phase.provider.models) models.set(model.ref, model);
+  }
+  return [...models.values()];
+}
+
+function SettingsModelsPanel({
+  provider,
+  models,
+}: {
+  provider: ProviderSnapshot | null;
+  models: OllamaModel[];
+}) {
+  const [preferences, updatePreferences] = useModelPreferences();
+  const policyOptions = MODEL_POLICY_MODES.map((value) => ({
+    value,
+    label: modelPolicyLabels[value],
+  }));
+  const providerState = provider?.state ?? "checking";
+
+  function toggleRef(
+    refs: string[],
+    modelRef: string,
+    included: boolean,
+  ): string[] {
+    return included
+      ? refs.includes(modelRef)
+        ? refs
+        : [...refs, modelRef]
+      : refs.filter((ref) => ref !== modelRef);
+  }
+
+  return (
+    <section className="settings-card settings-models-panel">
+      <h2>Modelos e roteamento</h2>
+      <p className="readable-helper">
+        Modelos conhecidos pelo snapshot do provedor local. Preferências abaixo
+        só afetam a apresentação e a elegibilidade local; não instalam, removem
+        ou carregam modelos.
+      </p>
+      <div className="settings-model-policy">
+        <AipSelect
+          id="settings-model-policy"
+          label="Política de seleção"
+          value={preferences.policyMode}
+          options={policyOptions}
+          description="A política fica salva apenas neste computador."
+          onChange={(value) => {
+            if (!MODEL_POLICY_MODES.includes(value as ModelPolicyMode)) return;
+            updatePreferences((current) => ({
+              ...current,
+              policyMode: value as ModelPolicyMode,
+            }));
+          }}
+        />
+        <p className="readable-helper" role="status">
+          Estado do provedor: {providerStateLabels[providerState]}.
+          {provider?.detailCode ? ` Código: ${provider.detailCode}.` : ""}
+        </p>
+      </div>
+      {models.length === 0 ? (
+        <p className="readable-helper">
+          Nenhum modelo conhecido no momento. Atualize os modelos na conversa
+          quando o provedor local estiver disponível.
+        </p>
+      ) : (
+        <div className="settings-model-list" aria-label="Modelos conhecidos">
+          {models.map((model) => {
+            const hidden = preferences.hiddenModelRefs.includes(model.ref);
+            const excluded = preferences.excludedModelRefs.includes(model.ref);
+            const fallbackOnly = preferences.fallbackOnlyModelRefs.includes(
+              model.ref,
+            );
+            const preferred = preferences.preferredModelRef === model.ref;
+            return (
+              <article
+                className={
+                  hidden ? "settings-model-card hidden" : "settings-model-card"
+                }
+                data-model-ref={model.ref}
+                key={model.ref}
+              >
+                <header>
+                  <div>
+                    <h3>{model.displayName}</h3>
+                    <p className="readable-helper">Provedor: Ollama</p>
+                  </div>
+                  <div className="settings-model-badges">
+                    {preferred ? (
+                      <span className="settings-model-badge">Preferido</span>
+                    ) : null}
+                    {hidden ? (
+                      <span className="settings-model-badge">Oculto</span>
+                    ) : null}
+                  </div>
+                </header>
+                <dl>
+                  <div>
+                    <dt>Ref. do modelo</dt>
+                    <dd>{model.ref}</dd>
+                  </div>
+                  <div>
+                    <dt>Ref. no provedor</dt>
+                    <dd>{model.providerModelId}</dd>
+                  </div>
+                  <div>
+                    <dt>Disponibilidade</dt>
+                    <dd>{providerStateLabels[providerState]}</dd>
+                  </div>
+                  <div>
+                    <dt>Carga</dt>
+                    <dd>Não informada pelo snapshot do provedor</dd>
+                  </div>
+                  {model.family ? (
+                    <div>
+                      <dt>Família</dt>
+                      <dd>{model.family}</dd>
+                    </div>
+                  ) : null}
+                  {model.parameterSize ? (
+                    <div>
+                      <dt>Parâmetros</dt>
+                      <dd>{model.parameterSize}</dd>
+                    </div>
+                  ) : null}
+                  {model.quantization ? (
+                    <div>
+                      <dt>Quantização</dt>
+                      <dd>{model.quantization}</dd>
+                    </div>
+                  ) : null}
+                  {model.size > 0 ? (
+                    <div>
+                      <dt>Tamanho</dt>
+                      <dd>{modelSizeLabel(model.size)}</dd>
+                    </div>
+                  ) : null}
+                </dl>
+                <div className="settings-model-actions">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={!hidden}
+                      aria-label={`Mostrar ${model.displayName} nos seletores`}
+                      onChange={(event) =>
+                        updatePreferences((current) => ({
+                          ...current,
+                          hiddenModelRefs: toggleRef(
+                            current.hiddenModelRefs,
+                            model.ref,
+                            !event.target.checked,
+                          ),
+                          preferredModelRef:
+                            !event.target.checked && preferred
+                              ? null
+                              : current.preferredModelRef,
+                        }))
+                      }
+                    />{" "}
+                    Mostrar nos seletores
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={!excluded}
+                      aria-label={`Elegível no Auto: ${model.displayName}`}
+                      onChange={(event) =>
+                        updatePreferences((current) => ({
+                          ...current,
+                          excludedModelRefs: toggleRef(
+                            current.excludedModelRefs,
+                            model.ref,
+                            !event.target.checked,
+                          ),
+                        }))
+                      }
+                    />{" "}
+                    Elegível no Auto
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={fallbackOnly}
+                      aria-label={`Usar ${model.displayName} apenas como fallback`}
+                      onChange={(event) =>
+                        updatePreferences((current) => ({
+                          ...current,
+                          fallbackOnlyModelRefs: toggleRef(
+                            current.fallbackOnlyModelRefs,
+                            model.ref,
+                            event.target.checked,
+                          ),
+                        }))
+                      }
+                    />{" "}
+                    Apenas como fallback
+                  </label>
+                  <button
+                    type="button"
+                    aria-pressed={preferred}
+                    onClick={() =>
+                      updatePreferences((current) => ({
+                        ...current,
+                        preferredModelRef: preferred ? null : model.ref,
+                      }))
+                    }
+                  >
+                    {preferred
+                      ? "Remover preferência"
+                      : "Definir como preferido"}
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+export function SettingsSurface({
   snapshot,
   changingMode,
   onToggleSafeMode,
+  activeAgentId,
+  onProfile,
+  onDefaultModel,
+  onWorkspace,
 }: {
   snapshot: AppSnapshot | null;
   changingMode: boolean;
   onToggleSafeMode: () => void;
+  activeAgentId: string | null;
+  onProfile: (agentId: string) => void;
+  onDefaultModel: (agentId: string) => void;
+  onWorkspace: (workspace: DesktopWorkspace) => void;
 }) {
   const [activeSection, setActiveSection] = useState("Geral");
+  const agents = snapshot?.agents ?? [];
+  const agentPhases = useSettingsAgentPhases(agents);
+  const activePhase =
+    activeAgentId === null ? undefined : agentPhases[activeAgentId];
+  const provider =
+    activePhase?.provider ?? Object.values(agentPhases)[0]?.provider ?? null;
+  const models = modelListFromPhases(agentPhases);
+  const modelsProvider = provider === null ? null : { ...provider, models };
   const sections = [
     "Geral",
     "Perfil do Owner",
@@ -10115,18 +10465,95 @@ function SettingsSurface({
             <section className="settings-card">
               <h2>Agentes</h2>
               <p className="readable-helper">
-                Edite cada perfil pelo botão Perfil no espaço do agente.
+                Gerencie acessos rápidos sem repetir o formulário completo de
+                perfil.
               </p>
+              {agents.length === 0 ? (
+                <p className="readable-helper">Nenhum agente disponível.</p>
+              ) : (
+                <div
+                  className="settings-agent-list"
+                  aria-label="Agentes locais"
+                >
+                  {agents.map((agent) => {
+                    const phase = agentPhases[agent.id];
+                    return (
+                      <article
+                        className="settings-agent-card"
+                        data-agent-id={agent.id}
+                        key={agent.id}
+                      >
+                        <div className="settings-agent-avatar">
+                          <AgentSprite
+                            agentId={agent.id}
+                            spriteKey={agent.spriteKey}
+                            name={agent.name}
+                          />
+                        </div>
+                        <div className="settings-agent-copy">
+                          <header>
+                            <div>
+                              <h3>{agent.name}</h3>
+                              <p className="readable-helper">
+                                Status: {settingsAgentStatus(snapshot, phase)}
+                              </p>
+                            </div>
+                            {agent.id === activeAgentId ? (
+                              <span className="settings-model-badge">
+                                Selecionado
+                              </span>
+                            ) : null}
+                          </header>
+                          <dl>
+                            <div>
+                              <dt>Modelo em uso</dt>
+                              <dd>
+                                {phase?.selectedModelRef ?? "Não informado"}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>Modelo padrão</dt>
+                              <dd>
+                                {phase?.defaultModelRef ?? "Não informado"}
+                              </dd>
+                            </div>
+                          </dl>
+                          <div className="settings-agent-actions">
+                            <button
+                              type="button"
+                              onClick={() => onProfile(agent.id)}
+                            >
+                              Abrir perfil
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onDefaultModel(agent.id)}
+                            >
+                              Modelo padrão
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onWorkspace("appearance")}
+                            >
+                              Aparência
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onWorkspace("state")}
+                            >
+                              Estado
+                            </button>
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
             </section>
           ) : null}
           {activeSection === "Modelos" ? (
-            <section className="settings-card">
-              <h2>Modelos</h2>
-              <p className="readable-helper">
-                O modelo padrão é configurado por agente. Cada conversa pode ter
-                uma substituição própria.
-              </p>
-            </section>
+            <SettingsModelsPanel provider={modelsProvider} models={models} />
           ) : null}
           {activeSection === "Segurança" ? (
             <section className="settings-card">
@@ -10955,6 +11382,7 @@ function App() {
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   const [changingMode, setChangingMode] = useState(false);
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
+  const [focusDefaultModel, setFocusDefaultModel] = useState(false);
   const [conversationRevision, setConversationRevision] = useState(0);
   const [conversationNavigationRevision, setConversationNavigationRevision] =
     useState(0);
@@ -11012,14 +11440,16 @@ function App() {
     setConversationDraftAgentId(null);
     await leaveTemporaryChat();
     setEditingAgentId(null);
+    setFocusDefaultModel(false);
     setWorkspace(next);
   }
 
-  async function openProfile(agentId: string) {
+  async function openProfile(agentId: string, focusDefault = false) {
     setConversationDraftAgentId(null);
     await leaveTemporaryChat();
     setWorkspace("chat");
     setEditingAgentId(agentId);
+    setFocusDefaultModel(focusDefault);
   }
 
   async function leaveTemporaryChat() {
@@ -11047,6 +11477,7 @@ function App() {
     await leaveTemporaryChat();
     setActiveAgentId(agentId);
     setEditingAgentId(null);
+    setFocusDefaultModel(false);
     setWorkspace("chat");
   }
 
@@ -11137,8 +11568,10 @@ function App() {
             )!}
             done={() => {
               setEditingAgentId(null);
+              setFocusDefaultModel(false);
               void loadSnapshot();
             }}
+            focusDefaultModel={focusDefaultModel}
           />
         ) : activeAgentId === null ? (
           <section className="conversation-empty">Carregando agentes…</section>
@@ -11148,6 +11581,10 @@ function App() {
               snapshot={snapshot}
               changingMode={changingMode}
               onToggleSafeMode={() => void toggleSafeMode()}
+              activeAgentId={activeAgentId}
+              onProfile={(agentId) => void openProfile(agentId)}
+              onDefaultModel={(agentId) => void openProfile(agentId, true)}
+              onWorkspace={(next) => void openWorkspace(next)}
             />
           </section>
         ) : workspace === "resources" ? (
