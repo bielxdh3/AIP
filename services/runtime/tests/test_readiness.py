@@ -4,10 +4,12 @@ import json
 import subprocess
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
-from aip_runtime.ollama import ProviderError
+from aip_runtime.ollama import OllamaClient, ProviderError
 from aip_runtime.readiness import OllamaRuntimeManager, _start_ollama
 
 
@@ -55,15 +57,29 @@ class FakeProcess:
         self.killed = True
 
 
+def as_ollama_client(client: FakeClient) -> OllamaClient:
+    return cast(OllamaClient, client)
+
+
+def recording_factory(
+    calls: list[Path], process: FakeProcess | None = None
+) -> Callable[[Path], FakeProcess]:
+    def create(path: Path) -> FakeProcess:
+        calls.append(path)
+        return process if process is not None else FakeProcess()
+
+    return create
+
+
 class ReadinessTests(unittest.TestCase):
     def test_healthy_existing_provider_is_reused(self) -> None:
         client = FakeClient([None], [{"ref": "ollama:test"}])
         factory_calls: list[Path] = []
         manager = OllamaRuntimeManager(
-            client,
+            as_ollama_client(client),
             environ={},
-            process_factory=lambda path: factory_calls.append(path) or FakeProcess(),
-        )  # type: ignore[arg-type]
+            process_factory=recording_factory(factory_calls),
+        )
 
         readiness = manager.ensure_ready()
         self.assertEqual(readiness.source, "existing")
@@ -79,11 +95,11 @@ class ReadinessTests(unittest.TestCase):
             factory_calls: list[Path] = []
             client = FakeClient([ProviderError("provider_unavailable"), None])
             manager = OllamaRuntimeManager(
-                client,
+                as_ollama_client(client),
                 environ={"AIP_OLLAMA_EXECUTABLE": str(executable)},
-                process_factory=lambda path: factory_calls.append(path) or process,
+                process_factory=recording_factory(factory_calls, process),
                 readiness_timeout=0,
-            )  # type: ignore[arg-type]
+            )
 
             readiness = manager.ensure_ready()
             self.assertEqual(readiness.source, "started")
@@ -102,11 +118,11 @@ class ReadinessTests(unittest.TestCase):
             client = FakeClient([ProviderError("provider_unavailable"), None])
             paths: list[Path] = []
             manager = OllamaRuntimeManager(
-                client,
+                as_ollama_client(client),
                 environ={"AIP_OLLAMA_CONFIG": str(config)},
-                process_factory=lambda path: paths.append(path) or FakeProcess(),
+                process_factory=recording_factory(paths),
                 readiness_timeout=0,
-            )  # type: ignore[arg-type]
+            )
 
             manager.ensure_ready()
             self.assertEqual(paths, [executable])
@@ -120,7 +136,9 @@ class ReadinessTests(unittest.TestCase):
             factory_called = True
             return FakeProcess()
 
-        manager = OllamaRuntimeManager(client, environ={}, process_factory=factory)  # type: ignore[arg-type]
+        manager = OllamaRuntimeManager(
+            as_ollama_client(client), environ={}, process_factory=factory
+        )
         with self.assertRaisesRegex(ProviderError, "provider_unavailable"):
             manager.ensure_ready()
         self.assertFalse(factory_called)
@@ -134,12 +152,12 @@ class ReadinessTests(unittest.TestCase):
                 [ProviderError("provider_unavailable"), ProviderError("provider_timeout")]
             )
             manager = OllamaRuntimeManager(
-                client,
+                as_ollama_client(client),
                 environ={"AIP_OLLAMA_EXECUTABLE": str(executable)},
                 process_factory=lambda _path: process,
                 monotonic=iter((0.0, 1.0)).__next__,
                 readiness_timeout=0.5,
-            )  # type: ignore[arg-type]
+            )
 
             with self.assertRaisesRegex(ProviderError, "provider_timeout"):
                 manager.ensure_ready()
@@ -149,7 +167,7 @@ class ReadinessTests(unittest.TestCase):
 
     def test_malformed_inventory_is_not_reported_as_ready(self) -> None:
         client = FakeClient([None], ProviderError("provider_malformed"))
-        manager = OllamaRuntimeManager(client, environ={})  # type: ignore[arg-type]
+        manager = OllamaRuntimeManager(as_ollama_client(client), environ={})
 
         with self.assertRaisesRegex(ProviderError, "provider_malformed"):
             manager.discover()
@@ -163,11 +181,11 @@ class ReadinessTests(unittest.TestCase):
             factory_calls: list[Path] = []
             client = FakeClient([ProviderError("provider_unavailable"), None, None])
             manager = OllamaRuntimeManager(
-                client,
+                as_ollama_client(client),
                 environ={"AIP_OLLAMA_EXECUTABLE": str(executable)},
-                process_factory=lambda path: factory_calls.append(path) or process,
+                process_factory=recording_factory(factory_calls, process),
                 readiness_timeout=0,
-            )  # type: ignore[arg-type]
+            )
 
             self.assertEqual(manager.ensure_ready().source, "started")
             self.assertEqual(manager.ensure_ready().source, "started")
@@ -184,7 +202,7 @@ class ReadinessTests(unittest.TestCase):
 
     def test_shutdown_does_not_touch_an_existing_provider_process(self) -> None:
         client = FakeClient([None])
-        manager = OllamaRuntimeManager(client, environ={})  # type: ignore[arg-type]
+        manager = OllamaRuntimeManager(as_ollama_client(client), environ={})
         manager.ensure_ready()
         manager.shutdown()
         self.assertFalse(manager.started_process)
