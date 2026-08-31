@@ -286,7 +286,9 @@ describe("conversation event reducer", () => {
     expect(blockedSendCopy("orchestration_unavailable")).toBe(
       "Servidor de IA indisponível.",
     );
-    expect(blockedSendCopy("provider_checking")).toBe("Processando agora.");
+    expect(blockedSendCopy("provider_checking")).toBe(
+      "Verificando modelos locais…",
+    );
     expect(blockedSendCopy("provider_empty")).toBe("Modelo não instalado.");
     expect(blockedSendCopy("model_unavailable")).toBe("Modelo não instalado.");
     expect(blockedSendCopy("runtime_interrupted")).toBe(

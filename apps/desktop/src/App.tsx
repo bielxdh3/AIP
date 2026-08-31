@@ -10210,9 +10210,9 @@ function SettingsModelsPanel({
     <section className="settings-card settings-models-panel">
       <h2>Modelos e roteamento</h2>
       <p className="readable-helper">
-        Modelos conhecidos pelo snapshot do provedor local. Preferências abaixo
-        só afetam a apresentação e a elegibilidade local; não instalam, removem
-        ou carregam modelos.
+        Modelos conhecidos pelo snapshot do provedor local. Preferências salvas
+        neste computador orientam o roteamento Auto, qualidade e velocidade; não
+        instalam, removem ou carregam modelos.
       </p>
       <div className="settings-model-policy">
         <AipSelect

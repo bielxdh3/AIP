@@ -196,6 +196,15 @@ describe("SettingsSurface model policy", () => {
     expect(callbacks.onWorkspace).toHaveBeenNthCalledWith(2, "state");
 
     await openSection("Modelos");
+    const helper = container?.querySelector<HTMLElement>(
+      ".settings-models-panel .readable-helper",
+    );
+    expect(helper?.textContent).toContain(
+      "Preferências salvas neste computador orientam o roteamento Auto, qualidade e velocidade",
+    );
+    expect(helper?.textContent).toContain(
+      "não instalam, removem ou carregam modelos.",
+    );
     const modelCard = container?.querySelector<HTMLElement>(
       `[data-model-ref="${model.ref}"]`,
     );

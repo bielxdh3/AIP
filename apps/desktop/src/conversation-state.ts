@@ -297,7 +297,7 @@ export function blockedSendCopy(code: string | null): string | null {
     case "runtime_interrupted":
       return "Conexão com o servidor perdida.";
     case "provider_checking":
-      return "Processando agora.";
+      return "Verificando modelos locais…";
     case "provider_empty":
     case "model_unavailable":
       return "Modelo não instalado.";
