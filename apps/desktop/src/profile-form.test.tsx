@@ -59,7 +59,9 @@ describe("ProfileForm", () => {
       root?.render(<ProfileForm agent={agent} done={vi.fn()} />),
     );
     expect(
-      container.querySelector('.profile-default-model [aria-haspopup="listbox"]'),
+      container.querySelector(
+        '.profile-default-model [aria-haspopup="listbox"]',
+      ),
     ).not.toBeNull();
     expect(container.querySelector(".profile-default-model select")).toBeNull();
 
@@ -278,19 +280,28 @@ describe("ProfileForm", () => {
     );
     if (trigger === null) throw new Error("Missing date picker trigger");
     await act(async () => trigger.click());
-    const year = container.querySelector<HTMLInputElement>('[aria-label="Ano"]');
+    const year =
+      container.querySelector<HTMLInputElement>('[aria-label="Ano"]');
     if (year === null) throw new Error("Missing year control");
     change(year, "1995");
-    const month = container.querySelector<HTMLSelectElement>(
-      '[aria-label="Mês"]',
+    expect(
+      container.querySelector('[role="grid"]')?.getAttribute("aria-label"),
+    ).toMatch(/2020/);
+    await act(async () =>
+      year.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      ),
     );
+    const month =
+      container.querySelector<HTMLSelectElement>('[aria-label="Mês"]');
     if (month === null) throw new Error("Missing month control");
     await act(async () => {
       month.value = "6";
       month.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    expect(container.querySelector('[role="grid"]')?.getAttribute("aria-label"))
-      .toMatch(/1995/);
+    expect(
+      container.querySelector('[role="grid"]')?.getAttribute("aria-label"),
+    ).toMatch(/1995/);
     expect(container.querySelectorAll('[role="gridcell"]').length).toBe(31);
   });
 
@@ -321,8 +332,10 @@ describe("ProfileForm", () => {
       .find((label) => label.textContent?.includes("Sexualidade (opcional)"))
       ?.querySelector("input") as HTMLInputElement;
     change(customPronouns, "ze/zir");
-    change(gender, "não-binário");
-    change(sexuality, "bissexual");
+    change(gender, "  não binário  ");
+    change(sexuality, "  bissexual e queer  ");
+    expect(gender.value).toBe("  não binário  ");
+    expect(sexuality.value).toBe("  bissexual e queer  ");
     const save = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent === "Salvar alterações",
     );
@@ -332,8 +345,8 @@ describe("ProfileForm", () => {
       expect.objectContaining({
         agent: expect.objectContaining({
           pronouns: "ze/zir",
-          gender: "não-binário",
-          sexuality: "bissexual",
+          gender: "não binário",
+          sexuality: "bissexual e queer",
         }),
       }),
     );

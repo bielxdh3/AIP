@@ -8,6 +8,7 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { createPortal } from "react-dom";
 import {
   parseProviderSnapshot,
   parseLocalProviders,
@@ -390,31 +391,40 @@ function DatePicker({
   }, [open, selected, selectedDate, view.month, view.year]);
 
   function shiftMonth(delta: number) {
-    const next = new Date(Date.UTC(view.year, view.month + delta, 1));
+    const year = commitYearText();
+    const next = new Date(Date.UTC(year, view.month + delta, 1));
     setView({ year: next.getUTCFullYear(), month: next.getUTCMonth() });
     setYearText(String(next.getUTCFullYear()));
   }
 
   function selectMonth(month: number) {
-    setView((current) => ({ ...current, month }));
+    const year = commitYearText();
+    setView({ year, month });
   }
 
   function selectYear(text: string) {
-    setYearText(text);
-    if (/^\d{1,4}$/.test(text)) {
-      const year = Number(text);
-      if (year >= 1 && year <= 9999)
+    if (/^\d{0,4}$/.test(text)) setYearText(text);
+  }
+
+  function commitYearText(): number {
+    if (/^\d{4}$/.test(yearText)) {
+      const year = Number(yearText);
+      if (year >= 1 && year <= 9999) {
         setView((current) => ({ ...current, year }));
+        return year;
+      }
     }
+    setYearText(String(view.year));
+    return view.year;
   }
 
   function selectDay(day: number) {
-    onChange(isoDate(view.year, view.month, day));
+    onChange(isoDate(commitYearText(), view.month, day));
     setOpen(false);
   }
 
   function moveDay(day: number, delta: number) {
-    const next = new Date(Date.UTC(view.year, view.month, day + delta));
+    const next = new Date(Date.UTC(commitYearText(), view.month, day + delta));
     const nextValue = isoDate(
       next.getUTCFullYear(),
       next.getUTCMonth(),
@@ -492,7 +502,13 @@ function DatePicker({
                   max="9999"
                   value={yearText}
                   onChange={(event) => selectYear(event.target.value)}
-                  onBlur={() => setYearText(String(view.year))}
+                  onBlur={commitYearText}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      commitYearText();
+                    }
+                  }}
                 />
               </label>
             </div>
@@ -620,7 +636,10 @@ function ConfirmDialog({
     if (event.shiftKey && document.activeElement === cancelRef.current) {
       event.preventDefault();
       confirmRef.current?.focus();
-    } else if (!event.shiftKey && document.activeElement === confirmRef.current) {
+    } else if (
+      !event.shiftKey &&
+      document.activeElement === confirmRef.current
+    ) {
       event.preventDefault();
       cancelRef.current?.focus();
     }
@@ -709,15 +728,29 @@ function modelOption(model: OllamaModel): ModelPickerOption {
     model.family,
     modelSizeLabel(model.size),
     capabilities.length > 0 ? capabilities.join(", ") : null,
-  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  ].filter(
+    (value): value is string => typeof value === "string" && value.length > 0,
+  );
   return {
     ref: model.ref,
     label: model.displayName,
     detail: metadata.join(" · "),
-    searchText: [model.displayName, model.ref, model.providerModelId, ...metadata]
+    searchText: [
+      model.displayName,
+      model.ref,
+      model.providerModelId,
+      ...metadata,
+    ]
       .join(" ")
       .toLowerCase(),
   };
+}
+
+function modelPickerOptionId(
+  listboxId: string,
+  option: ModelPickerOption,
+): string {
+  return `${listboxId}-option-${option.ref === null ? "default" : encodeURIComponent(option.ref)}`;
 }
 
 export function ModelPicker({
@@ -757,7 +790,8 @@ export function ModelPicker({
             ref: null,
             label: defaultOption.label,
             detail: defaultOption.detail,
-            searchText: `${defaultOption.label} ${defaultOption.detail}`.toLowerCase(),
+            searchText:
+              `${defaultOption.label} ${defaultOption.detail}`.toLowerCase(),
           },
         ]
       : []),
@@ -778,6 +812,14 @@ export function ModelPicker({
   const filteredOptions = normalizedQuery
     ? options.filter((option) => option.searchText.includes(normalizedQuery))
     : options;
+  const selectedIndex = filteredOptions.findIndex(
+    (option) => option.ref === value,
+  );
+  const activeOption = filteredOptions[activeIndex];
+  const activeOptionId =
+    activeOption === undefined
+      ? undefined
+      : modelPickerOptionId(listboxId, activeOption);
   const selectedOption = options.find((option) => option.ref === value);
   const stateCopy = modelPickerStateCopy[providerState];
   const triggerLabel =
@@ -789,8 +831,9 @@ export function ModelPicker({
     if (open) searchRef.current?.focus();
   }, [open]);
   useEffect(() => {
-    setActiveIndex(0);
-  }, [query, open]);
+    if (!open) return;
+    setActiveIndex(query.trim() ? 0 : selectedIndex >= 0 ? selectedIndex : 0);
+  }, [open, query, selectedIndex]);
   useEffect(() => {
     if (!open) return;
     function closeFromOutside(event: PointerEvent) {
@@ -814,6 +857,7 @@ export function ModelPicker({
   }
   function openPicker() {
     if (disabled || selecting) return;
+    setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
     setOpen(true);
   }
   async function selectOption(option: ModelPickerOption) {
@@ -856,7 +900,11 @@ export function ModelPicker({
   }
 
   return (
-    <div ref={rootRef} className="model-picker-field" data-provider-state={providerState}>
+    <div
+      ref={rootRef}
+      className="model-picker-field"
+      data-provider-state={providerState}
+    >
       <span className="model-picker-label">{label}</span>
       <div className="model-picker">
         <button
@@ -896,18 +944,27 @@ export function ModelPicker({
               type="search"
               value={query}
               aria-label={`Buscar em ${label.toLowerCase()}`}
+              aria-controls={listboxId}
+              aria-activedescendant={activeOptionId}
               placeholder="Buscar por nome, ref. ou metadados"
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={handleSearchKeyDown}
             />
-            <div id={listboxId} className="model-picker-options" role="listbox" aria-label={label}>
+            <div
+              id={listboxId}
+              className="model-picker-options"
+              role="listbox"
+              aria-label={label}
+            >
               {filteredOptions.length > 0 ? (
                 filteredOptions.map((option, index) => (
                   <div
                     key={option.ref ?? "default"}
+                    id={modelPickerOptionId(listboxId, option)}
                     role="option"
                     aria-selected={option.ref === value}
                     aria-disabled={option.unavailable}
+                    data-active={index === activeIndex}
                     className={
                       index === activeIndex
                         ? "model-picker-option active"
@@ -924,7 +981,9 @@ export function ModelPicker({
                   </div>
                 ))
               ) : (
-                <p className="model-picker-empty">Nenhum modelo corresponde à busca.</p>
+                <p className="model-picker-empty">
+                  Nenhum modelo corresponde à busca.
+                </p>
               )}
             </div>
           </div>
@@ -933,10 +992,10 @@ export function ModelPicker({
       <small className="model-picker-status">
         {providerState !== "available"
           ? `${stateCopy.label} · ${statusText ?? stateCopy.detail}`
-          : statusText ??
+          : (statusText ??
             (models.length > 0
               ? "Escolha uma opção local."
-              : stateCopy.detail)}
+              : stateCopy.detail))}
       </small>
     </div>
   );
@@ -1041,38 +1100,38 @@ function MessageItem({
               </button>
               {retryMenuOpen ? (
                 <div className="retry-menu">
-                <button type="button" onClick={() => onRegenerate(message)}>
-                  Tentar novamente
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setAdvancedRetry(!advancedRetry)}
-                >
-                  Avançado
-                </button>
-                {advancedRetry ? (
-                  <div>
-                    <ModelPicker
-                      label="Modelo para nova tentativa"
-                      ariaLabel="Modelo para nova tentativa"
-                      models={models}
-                      value={retryModel || null}
-                      providerState="available"
-                      disabled={retrying}
-                      statusText={`Modelo usado: ${message.modelRef ?? "indisponível"}`}
-                      onSelect={(modelRef) => {
-                        if (modelRef !== null) setRetryModel(modelRef);
-                      }}
-                    />
-                    <button
-                      type="button"
-                      disabled={retrying || !retryModel}
-                      onClick={() => onRegenerate(message, retryModel)}
-                    >
-                      Tentar com este modelo
-                    </button>
-                  </div>
-                ) : null}
+                  <button type="button" onClick={() => onRegenerate(message)}>
+                    Tentar novamente
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAdvancedRetry(!advancedRetry)}
+                  >
+                    Avançado
+                  </button>
+                  {advancedRetry ? (
+                    <div>
+                      <ModelPicker
+                        label="Modelo para nova tentativa"
+                        ariaLabel="Modelo para nova tentativa"
+                        models={models}
+                        value={retryModel || null}
+                        providerState="available"
+                        disabled={retrying}
+                        statusText={`Modelo usado: ${message.modelRef ?? "indisponível"}`}
+                        onSelect={(modelRef) => {
+                          if (modelRef !== null) setRetryModel(modelRef);
+                        }}
+                      />
+                      <button
+                        type="button"
+                        disabled={retrying || !retryModel}
+                        onClick={() => onRegenerate(message, retryModel)}
+                      >
+                        Tentar com este modelo
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </>
@@ -1090,7 +1149,8 @@ function MessageItem({
                 disabled={variants.findIndex((variant) => variant.active) <= 0}
                 onClick={() => {
                   const index = variants.findIndex((variant) => variant.active);
-                  if (index > 0) onSelectVariant?.(variants[index - 1]!.branchId);
+                  if (index > 0)
+                    onSelectVariant?.(variants[index - 1]!.branchId);
                 }}
               >
                 ‹
@@ -1495,7 +1555,9 @@ export function ConversationSurface({
                   await load();
                 }}
               />
-              <span>{blocked ?? "Enter envia · Shift+Enter cria uma linha"}</span>
+              <span>
+                {blocked ?? "Enter envia · Shift+Enter cria uma linha"}
+              </span>
             </div>
           </div>
           <button
@@ -1513,9 +1575,11 @@ export function ConversationSurface({
 
 export function ConversationDraftSurface({
   agentId,
+  onCreated,
   onPersisted,
 }: {
   agentId: string;
+  onCreated?: () => void;
   onPersisted: () => void;
 }) {
   const { phase, error, load } = usePhaseOne(agentId, false);
@@ -1523,6 +1587,9 @@ export function ConversationDraftSurface({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [persistedConversationId, setPersistedConversationId] = useState<
+    string | null
+  >(null);
   const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
     null,
   );
@@ -1538,7 +1605,9 @@ export function ConversationDraftSurface({
     );
   }
   if (phase === null)
-    return <section className="conversation-empty">Carregando rascunho…</section>;
+    return (
+      <section className="conversation-empty">Carregando rascunho…</section>
+    );
 
   const currentPhase: PhaseOneState = phase;
   const request = requestForAgent(currentPhase.queue, agentId);
@@ -1572,27 +1641,38 @@ export function ConversationDraftSurface({
     if (busy || (sendContent !== null && (!sendContent || !canSend))) return;
     setBusy(true);
     setErrorMessage(null);
+    let conversationId = persistedConversationId;
     try {
-      const persistedTitle = (trimmedTitle || "Nova conversa").slice(0, 160);
-      const created = await invoke<PhaseOneConversation>(
-        "create_agent_conversation",
-        { agentId, title: persistedTitle },
-      );
-      if (!created?.id) throw new Error("conversation_create_failed");
+      if (conversationId === null) {
+        const persistedTitle = (trimmedTitle || "Nova conversa").slice(0, 160);
+        const created = await invoke<PhaseOneConversation>(
+          "create_agent_conversation",
+          { agentId, title: persistedTitle },
+        );
+        if (!created?.id) throw new Error("conversation_create_failed");
+        conversationId = created.id;
+        setPersistedConversationId(conversationId);
+      }
       await invoke("set_active_agent_conversation", {
         agentId,
-        conversationId: created.id,
+        conversationId,
       });
-      onPersisted();
+      if (persistedConversationId === null) onCreated?.();
       if (sendContent !== null) {
         await invoke("send_phase_one_message", {
           agentId,
-          conversationId: created.id,
+          conversationId,
           content: sendContent,
         });
+        setDraft("");
       }
+      onPersisted();
     } catch {
-      setErrorMessage("Não foi possível salvar a conversa local.");
+      setErrorMessage(
+        sendContent !== null
+          ? "Não foi possível enviar. O rascunho foi preservado; tente novamente."
+          : "Não foi possível salvar a conversa local.",
+      );
     } finally {
       setBusy(false);
     }
@@ -1678,7 +1758,9 @@ export function ConversationDraftSurface({
           }}
         />
         <div className="composer-footer">
-          <span>{blocked ?? "Enter salva e envia · Shift+Enter cria uma linha"}</span>
+          <span>
+            {blocked ?? "Enter salva e envia · Shift+Enter cria uma linha"}
+          </span>
           <button
             type="button"
             disabled={!canSend || !draft.trim() || busy}
@@ -1688,9 +1770,18 @@ export function ConversationDraftSurface({
           </button>
         </div>
         {errorMessage ? (
-          <p className="draft-error" role="alert">
-            {errorMessage}
-          </p>
+          <div className="draft-error" role="alert">
+            <span>{errorMessage}</span>
+            {persistedConversationId !== null && draft.trim() ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void persist(draft.trim())}
+              >
+                Tentar novamente
+              </button>
+            ) : null}
+          </div>
         ) : null}
       </footer>
     </section>
@@ -1833,7 +1924,7 @@ function ProfileFields({
               onChange={(event) =>
                 onChange((current) => ({
                   ...current,
-                  gender: event.target.value.trim() || null,
+                  gender: event.target.value || null,
                 }))
               }
             />
@@ -1845,7 +1936,7 @@ function ProfileFields({
               onChange={(event) =>
                 onChange((current) => ({
                   ...current,
-                  sexuality: event.target.value.trim() || null,
+                  sexuality: event.target.value || null,
                 }))
               }
             />
@@ -2185,6 +2276,228 @@ function OnboardingForm({
   );
 }
 
+export type ConversationMenuPlacement = "above" | "below";
+
+export function conversationMenuPosition(
+  triggerRect: Pick<DOMRect, "top" | "bottom" | "right">,
+  menuWidth: number,
+  menuHeight: number,
+  viewportWidth = window.innerWidth,
+  viewportHeight = window.innerHeight,
+): { top: number; left: number; placement: ConversationMenuPlacement } {
+  const margin = 8;
+  const gap = 4;
+  const fitsBelow =
+    triggerRect.bottom + gap + menuHeight <= viewportHeight - margin;
+  return {
+    top: fitsBelow
+      ? triggerRect.bottom + gap
+      : Math.max(margin, triggerRect.top - gap - menuHeight),
+    left: Math.min(
+      Math.max(margin, triggerRect.right - menuWidth),
+      Math.max(margin, viewportWidth - menuWidth - margin),
+    ),
+    placement: fitsBelow ? "below" : "above",
+  };
+}
+
+function ConversationActionMenu({
+  item,
+  open,
+  onOpenChange,
+  onPin,
+  onRename,
+  onArchive,
+  onRemove,
+}: {
+  item: PhaseOneConversation;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onPin: () => void;
+  onRename: () => void;
+  onArchive: () => void;
+  onRemove: () => void;
+}) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<{
+    top: number;
+    left: number;
+    placement: ConversationMenuPlacement;
+  } | null>(null);
+  const menuId = useId();
+
+  const updatePosition = useCallback(() => {
+    const trigger = triggerRef.current;
+    const menu = menuRef.current;
+    if (trigger === null || menu === null) return;
+    const triggerRect = trigger.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    setPosition(
+      conversationMenuPosition(
+        triggerRect,
+        menuRect.width || 160,
+        menuRect.height || 144,
+      ),
+    );
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    updatePosition();
+    const frame = window.requestAnimationFrame(updatePosition);
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, updatePosition]);
+
+  useEffect(() => {
+    if (!open) return;
+    const focusFrame = window.requestAnimationFrame(() =>
+      menuRef.current
+        ?.querySelector<HTMLButtonElement>('[role="menuitem"]')
+        ?.focus(),
+    );
+    function closeFromOutside(event: PointerEvent) {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        !triggerRef.current?.contains(target) &&
+        !menuRef.current?.contains(target)
+      ) {
+        onOpenChange(false);
+      }
+    }
+    function reposition() {
+      updatePosition();
+    }
+    document.addEventListener("pointerdown", closeFromOutside);
+    document.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("pointerdown", closeFromOutside);
+      document.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
+    };
+  }, [onOpenChange, open, updatePosition]);
+
+  function closeMenu(restoreFocus = false) {
+    onOpenChange(false);
+    setPosition(null);
+    if (restoreFocus) triggerRef.current?.focus();
+  }
+
+  function handleMenuKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    const buttons = Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>(
+        '[role="menuitem"]',
+      ) ?? [],
+    );
+    const currentIndex = buttons.indexOf(
+      document.activeElement as HTMLButtonElement,
+    );
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMenu(true);
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (buttons.length === 0) return;
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      buttons[
+        (currentIndex + delta + buttons.length) % buttons.length
+      ]?.focus();
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      buttons[0]?.focus();
+    } else if (event.key === "End") {
+      event.preventDefault();
+      buttons.at(-1)?.focus();
+    }
+  }
+
+  return (
+    <div className="conversation-actions">
+      <button
+        ref={triggerRef}
+        type="button"
+        className="conversation-actions-trigger"
+        aria-label={`Ações de ${item.title}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        onClick={() => {
+          setPosition(null);
+          onOpenChange(!open);
+        }}
+      >
+        …
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={menuRef}
+              id={menuId}
+              className="conversation-actions-menu"
+              data-placement={position?.placement ?? "below"}
+              role="menu"
+              aria-label={`Ações de ${item.title}`}
+              style={
+                position === null
+                  ? { top: 0, left: 0, visibility: "hidden" }
+                  : { top: position.top, left: position.left }
+              }
+              onKeyDown={handleMenuKeyDown}
+            >
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  closeMenu(true);
+                  onPin();
+                }}
+              >
+                {item.isPinned ? "Desafixar" : "Fixar"}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  closeMenu(true);
+                  onRename();
+                }}
+              >
+                Renomear
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  closeMenu(true);
+                  onArchive();
+                }}
+              >
+                Arquivar
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="danger-action"
+                onClick={() => {
+                  closeMenu(true);
+                  onRemove();
+                }}
+              >
+                Excluir
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
+
 export function ConversationList({
   agentId,
   changed,
@@ -2205,18 +2518,15 @@ export function ConversationList({
   const [pendingRemoval, setPendingRemoval] =
     useState<PhaseOneConversation | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
-  const load = useCallback(
-    async () => {
-      const next = await invoke<PhaseOneConversation[]>(
-        "list_agent_conversations",
-        {
-          agentId,
-        },
-      );
-      setItems(next);
-    },
-    [agentId],
-  );
+  const load = useCallback(async () => {
+    const next = await invoke<PhaseOneConversation[]>(
+      "list_agent_conversations",
+      {
+        agentId,
+      },
+    );
+    setItems(next);
+  }, [agentId]);
   useEffect(() => {
     load();
   }, [load]);
@@ -2311,47 +2621,18 @@ export function ConversationList({
             {item.isPinned ? "★ " : ""}
             {item.title}
           </button>
-          <details
-            className="conversation-actions"
+          <ConversationActionMenu
+            item={item}
             open={openMenuId === item.id}
-            onToggle={(event) =>
-              setOpenMenuId(event.currentTarget.open ? item.id : null)
-            }
-          >
-            <summary aria-label={`Ações de ${item.title}`}>…</summary>
-            <div>
-              <button
-                type="button"
-                onClick={() => void pin(item)}
-              >
-                {item.isPinned ? "Desafixar" : "Fixar"}
-              </button>
-              <button
-                type="button"
-                onClick={(event) => {
-                  const menu = event.currentTarget.closest(
-                    "details",
-                  ) as HTMLDetailsElement | null;
-                  if (menu !== null) menu.open = false;
-                  setOpenMenuId(null);
-                  setRenamingId(item.id);
-                  setRenameValue(item.title);
-                }}
-              >
-                Renomear
-              </button>
-              <button type="button" onClick={() => void archive(item)}>
-                Arquivar
-              </button>
-              <button
-                type="button"
-                className="danger-action"
-                onClick={() => remove(item)}
-              >
-                Excluir
-              </button>
-            </div>
-          </details>
+            onOpenChange={(open) => setOpenMenuId(open ? item.id : null)}
+            onPin={() => void pin(item)}
+            onRename={() => {
+              setRenamingId(item.id);
+              setRenameValue(item.title);
+            }}
+            onArchive={() => void archive(item)}
+            onRemove={() => remove(item)}
+          />
           {renamingId === item.id ? (
             <form
               className="conversation-rename"
@@ -2434,7 +2715,8 @@ const memoryCategoryHelp: Record<string, string> = {
   fact: "Um dado estável sobre a pessoa ou o agente.",
   preference: "Uma preferência que pode orientar respostas futuras.",
   rule: "Uma regra explícita para preservar ao conversar.",
-  emotional: "Uma lembrança afetiva, sem transformar sentimento em diagnóstico.",
+  emotional:
+    "Uma lembrança afetiva, sem transformar sentimento em diagnóstico.",
   permanent: "Um registro durável que o Owner escolheu manter.",
 };
 
@@ -5156,8 +5438,9 @@ export function PixelDocumentEditor({ agentId }: { agentId: string }) {
   >("pencil");
   const [mirror, setMirror] = useState(false);
   const [selection, setSelection] = useState<PixelSelection | null>(null);
-  const [pendingLayerDeletion, setPendingLayerDeletion] =
-    useState<PixelDocument["layers"][number] | null>(null);
+  const [pendingLayerDeletion, setPendingLayerDeletion] = useState<
+    PixelDocument["layers"][number] | null
+  >(null);
   const [zoom, setZoom] = useState(4);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
@@ -5307,10 +5590,7 @@ export function PixelDocumentEditor({ agentId }: { agentId: string }) {
     const layers = document.layers.filter(
       (current) => current.id !== pendingLayerDeletion.id,
     );
-    updateLayers(
-      { ...document, layers },
-      layers[0]?.id ?? "body",
-    );
+    updateLayers({ ...document, layers }, layers[0]?.id ?? "body");
     setPendingLayerDeletion(null);
   }
   function moveSelection(dx: number, dy: number) {
@@ -10502,8 +10782,7 @@ function App() {
   const [conversationDraftAgentId, setConversationDraftAgentId] = useState<
     string | null
   >(null);
-  const [conversationDraftRevision, setConversationDraftRevision] =
-    useState(0);
+  const [conversationDraftRevision, setConversationDraftRevision] = useState(0);
   const [temporaryChat, setTemporaryChat] = useState(false);
   const [workspace, setWorkspace] = useState<
     "chat" | "memories" | "state" | "appearance" | "resources" | "settings"
@@ -10786,6 +11065,7 @@ function App() {
           <ConversationDraftSurface
             key={`${activeAgentId}-${conversationDraftRevision}`}
             agentId={activeAgentId}
+            onCreated={() => setConversationListRevision((value) => value + 1)}
             onPersisted={() => {
               setConversationDraftAgentId(null);
               setConversationRevision((value) => value + 1);

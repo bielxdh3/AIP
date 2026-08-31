@@ -1338,7 +1338,9 @@ a:focus-visible {
   background: #0b0f14;
   cursor: pointer;
   text-align: left;
-  transition: border-color 120ms ease, background-color 120ms ease;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
 }
 
 .model-picker-trigger:hover:not(:disabled),
@@ -1888,7 +1890,7 @@ a:focus-visible {
   position: relative;
 }
 
-.conversation-actions summary {
+.conversation-actions-trigger {
   width: 25px;
   min-height: 25px;
   padding: 2px 0;
@@ -1900,26 +1902,20 @@ a:focus-visible {
   text-align: center;
 }
 
-.conversation-actions summary::-webkit-details-marker {
-  display: none;
-}
-
-.conversation-actions summary:hover,
-.conversation-actions summary:focus-visible {
+.conversation-actions-trigger:hover,
+.conversation-actions-trigger:focus-visible {
   border-color: #33433f;
   color: #edf0f5;
   background: #171d24;
 }
 
-.conversation-actions[open] > div {
-  position: absolute;
+.conversation-actions-menu {
+  position: fixed;
   z-index: 2;
-  top: calc(100% + 3px);
-  right: 0;
   box-sizing: border-box;
   display: grid;
   min-width: 130px;
-  max-height: calc(100dvh - 32px);
+  max-height: calc(100dvh - 16px);
   padding: 4px;
   border: 1px solid #303742;
   border-radius: 6px;
@@ -1928,7 +1924,7 @@ a:focus-visible {
   overflow-y: auto;
 }
 
-.conversation-actions button,
+.conversation-actions-menu button,
 .conversation-rename button {
   min-height: 28px;
   padding: 5px 7px;
@@ -1940,8 +1936,8 @@ a:focus-visible {
   text-align: left;
 }
 
-.conversation-actions button:hover,
-.conversation-actions button:focus-visible,
+.conversation-actions-menu button:hover,
+.conversation-actions-menu button:focus-visible,
 .conversation-rename button:hover,
 .conversation-rename button:focus-visible {
   border-color: #33433f;
