@@ -198,6 +198,7 @@ import {
 } from "./agent-navigation";
 import { usePhaseOne } from "./use-phase-one";
 import { createListenerRegistration } from "./listener-lifecycle";
+import { ThemeControls } from "./theme";
 import {
   nextLayerId,
   floodFillLayer,
@@ -9901,6 +9902,7 @@ function SettingsSurface({
                 Este computador usa um Owner local implícito. Contas adicionais
                 ainda não estão disponíveis.
               </p>
+              <ThemeControls />
             </section>
           ) : null}
           {activeSection === "Perfil do Owner" ? (
@@ -10596,7 +10598,13 @@ export function LocalCapabilityStatusCenter({
               if (!(panel instanceof HTMLDetailsElement)) return;
               event.preventDefault();
               panel.open = true;
-              panel.scrollIntoView?.({ behavior: "smooth", block: "start" });
+              panel.scrollIntoView?.({
+                behavior:
+                  document.documentElement.dataset.motion === "reduced"
+                    ? "auto"
+                    : "smooth",
+                block: "start",
+              });
               panel.querySelector("summary")?.focus();
             }}
           >
