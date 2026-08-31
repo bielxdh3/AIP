@@ -1621,7 +1621,13 @@ export function ConversationSurface({
       <footer className="composer">
         {request !== null ? (
           <div className="queue-banner">
-            <span>
+            <span
+              className={
+                request.active && !request.cancellationRequested
+                  ? "generation-status shiny-text"
+                  : "generation-status"
+              }
+            >
               {request.active
                 ? request.cancellationRequested
                   ? "Cancelando resposta…"
@@ -1864,7 +1870,13 @@ export function ConversationDraftSurface({
       <footer className="composer">
         {request !== null ? (
           <div className="queue-banner">
-            <span>
+            <span
+              className={
+                request.active && !request.cancellationRequested
+                  ? "generation-status shiny-text"
+                  : "generation-status"
+              }
+            >
               {request.active
                 ? request.cancellationRequested
                   ? "Cancelando resposta…"
