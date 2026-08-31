@@ -12,6 +12,7 @@ mod gateway;
 mod gateway_integration_tests;
 mod gateway_transport;
 mod native_overlay_region;
+mod orchestration;
 mod overlays;
 mod protocol;
 mod runtime;
@@ -76,6 +77,7 @@ use gateway_transport::{
     HandlerResponse as GatewayHandlerResponse, SecureHandler as GatewayHandler,
     TransportHandle as GatewayTransportHandle,
 };
+use orchestration::OrchestrationManager;
 use overlays::{InteractiveRegion, OverlayInputState};
 use runtime::RuntimeController;
 use screen_vision::{
@@ -118,6 +120,7 @@ struct AppState {
     overlay_input: OverlayInputState,
     companion_transport: Arc<Mutex<CompanionTransportState>>,
     gateway_transport: Arc<Mutex<GatewayTransportState>>,
+    pub(crate) orchestration: OrchestrationManager,
 }
 
 #[derive(Default)]
@@ -3213,6 +3216,7 @@ pub fn run() {
                 overlay_input: overlay_input.clone(),
                 companion_transport: Arc::new(Mutex::new(CompanionTransportState::default())),
                 gateway_transport: Arc::new(Mutex::new(GatewayTransportState::default())),
+                orchestration: OrchestrationManager::default(),
             });
             if let Some(database) = database.as_ref() {
                 overlays::create_windows(app, database, stored_safe_mode, overlay_input.clone())?;
@@ -3448,7 +3452,7 @@ mod conversation_command_tests {
         complete_resource_job_for_state, emit_cognitive_candidate_for_state,
         reserve_heavy_generation_for_state, set_custom_voice_consent_for_state,
         start_agent_conversation_for_state, update_voice_settings_for_state, AppState,
-        CompanionTransportState, GatewayTransportState,
+        CompanionTransportState, GatewayTransportState, OrchestrationManager,
     };
     use crate::{
         companion::{
@@ -3487,6 +3491,7 @@ mod conversation_command_tests {
             overlay_input: OverlayInputState::default(),
             companion_transport: Arc::new(Mutex::new(CompanionTransportState::default())),
             gateway_transport: Arc::new(Mutex::new(GatewayTransportState::default())),
+            orchestration: OrchestrationManager::default(),
         }
     }
 
