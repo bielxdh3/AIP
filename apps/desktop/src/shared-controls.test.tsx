@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AipSelect, type AipSelectOption } from "./shared-controls";
+import { AipSelect, FilePicker, type AipSelectOption } from "./shared-controls";
 
 const options: readonly AipSelectOption[] = [
   { value: "alpha", label: "Alfa" },
@@ -157,5 +157,36 @@ describe("AipSelect", () => {
     );
     expect(button.getAttribute("aria-expanded")).toBe("false");
     outside.remove();
+  });
+
+  it("keeps select and file input interactions custom and accessible", () => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() =>
+      root?.render(
+        <>
+          <AipSelect
+            id="custom-control"
+            label="Opção"
+            value="alpha"
+            options={options}
+            onChange={vi.fn()}
+          />
+          <FilePicker id="attachment" label="Arquivo" onChange={vi.fn()} />
+        </>,
+      ),
+    );
+
+    expect(container.querySelector("select")).toBeNull();
+    const fileInput =
+      container.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(fileInput).not.toBeNull();
+    expect(fileInput?.className).toContain("visually-hidden");
+    expect(
+      container
+        .querySelector<HTMLButtonElement>(".aip-file-picker-action")
+        ?.getAttribute("aria-controls"),
+    ).toBe("attachment-input");
   });
 });

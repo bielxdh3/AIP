@@ -122,6 +122,19 @@ describe("theme foundations", () => {
     expect(document.documentElement.dataset.theme).toBe("light");
   });
 
+  it("starts with the safe Times New Roman foundation", () => {
+    render(<StateProbe />);
+    expect(document.documentElement.style.getPropertyValue("--font-ui")).toBe(
+      '"Times New Roman", Times, serif',
+    );
+    expect(document.documentElement.style.getPropertyValue("--space-7")).toBe(
+      "32px",
+    );
+    expect(
+      document.documentElement.style.getPropertyValue("--color-surface-soft"),
+    ).toBe("#292b2f");
+  });
+
   it("follows system appearance changes and keeps readable custom colors", async () => {
     systemLight = false;
     render(<ThemeControls />);
@@ -135,8 +148,8 @@ describe("theme foundations", () => {
     await act(async () => query.listeners.forEach((listener) => listener()));
     expect(document.documentElement.dataset.theme).toBe("light");
 
-    expect(readableForeground("#ffffff")).toBe("#07120f");
-    expect(readableForeground("#000000")).toBe("#ffffff");
+    expect(readableForeground("#ffffff")).toBe("#241d14");
+    expect(readableForeground("#000000")).toBe("#fffaf1");
     expect(
       contrastRatio("#ffffff", readableForeground("#ffffff")),
     ).toBeGreaterThanOrEqual(4.5);
@@ -157,10 +170,10 @@ describe("theme foundations", () => {
     ).toBe("#ffffff");
     expect(
       document.documentElement.style.getPropertyValue("--color-on-primary"),
-    ).toBe("#07120f");
+    ).toBe("#241d14");
     expect(
       document.documentElement.style.getPropertyValue("--color-on-secondary"),
-    ).toBe("#ffffff");
+    ).toBe("#fffaf1");
   });
 
   it("persists allowlisted radius and font preferences", async () => {
@@ -208,9 +221,9 @@ describe("theme foundations", () => {
         font: 'url("remote-font")',
       }),
     ).toMatchObject({
-      primaryColor: "#57d8bd",
-      secondaryColor: "#74c7b4",
-      font: "inter",
+      primaryColor: "#d0aa72",
+      secondaryColor: "#efd09b",
+      font: "times",
     });
   });
 });
