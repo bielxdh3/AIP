@@ -1193,6 +1193,7 @@ impl ChatCoordinator {
         if policy.mode == RoutingMode::Manual && selected_model.is_none() {
             return Err("model_unavailable");
         }
+        let policy = routing_policy_with_selection(policy, selected_model);
         let request = RoutingRequest {
             request_id: request_id.to_string(),
             model_ref: (policy.mode == RoutingMode::Manual)
@@ -1205,7 +1206,7 @@ impl ChatCoordinator {
             created_at_ms: now_millis() as u64,
         };
         lock(&self.inner.orchestration)
-            .reserve_with_policy(request, policy.clone(), |_| Ok(()))
+            .reserve_with_policy(request, policy, |_| Ok(()))
             .map(|reservation| reservation.model_ref)
             .map_err(orchestration_error_code)
     }
@@ -1233,31 +1234,16 @@ impl ChatCoordinator {
         suspended: bool,
         auto_candidate_available: bool,
     ) -> Option<&'static str> {
-        if self.inner.safe_mode.load(Ordering::SeqCst) {
-            Some("safe_mode_active")
-        } else if self.inner.runtime.snapshot().state != RuntimeState::Ready {
-            Some("runtime_unavailable")
-        } else if provider.state == ProviderState::Checking {
-            Some("provider_checking")
-        } else if provider.state == ProviderState::Empty {
-            Some("provider_empty")
-        } else if provider.state != ProviderState::Available {
-            Some("provider_unavailable")
-        } else if selected_model.is_none() || !selected_available {
-            if auto_candidate_available {
-                None
-            } else if selected_model.is_none() {
-                Some("no_candidate")
-            } else {
-                Some("selected_model_unavailable")
-            }
-        } else if suspended {
-            Some("agent_suspended")
-        } else if queue_length >= MAX_QUEUE_LENGTH {
-            Some("queue_full")
-        } else {
-            None
-        }
+        send_blocked_code_for_state(
+            self.inner.safe_mode.load(Ordering::SeqCst),
+            self.inner.runtime.snapshot().state,
+            provider,
+            selected_model,
+            selected_available,
+            queue_length,
+            suspended,
+            auto_candidate_available,
+        )
     }
 
     fn handle_notice(&self, notice: RuntimeNotice) {
@@ -1858,6 +1844,54 @@ fn assemble_context(
     prompt
 }
 
+fn routing_policy_with_selection(
+    policy: &RoutingPolicy,
+    selected_model: Option<&str>,
+) -> RoutingPolicy {
+    let mut policy = policy.clone();
+    if policy.mode != RoutingMode::Manual && policy.preferred_model_ref.is_none() {
+        policy.preferred_model_ref = selected_model.map(str::to_string);
+    }
+    policy
+}
+
+fn send_blocked_code_for_state(
+    safe_mode: bool,
+    runtime_state: RuntimeState,
+    provider: &ProviderSnapshot,
+    selected_model: Option<&str>,
+    selected_available: bool,
+    queue_length: usize,
+    suspended: bool,
+    auto_candidate_available: bool,
+) -> Option<&'static str> {
+    if safe_mode {
+        Some("safe_mode_active")
+    } else if suspended {
+        Some("agent_suspended")
+    } else if queue_length >= MAX_QUEUE_LENGTH {
+        Some("queue_full")
+    } else if runtime_state != RuntimeState::Ready {
+        Some("runtime_unavailable")
+    } else if provider.state == ProviderState::Checking {
+        Some("provider_checking")
+    } else if provider.state == ProviderState::Empty {
+        Some("provider_empty")
+    } else if provider.state != ProviderState::Available {
+        Some("provider_unavailable")
+    } else if selected_model.is_none() || !selected_available {
+        if auto_candidate_available {
+            None
+        } else if selected_model.is_none() {
+            Some("no_candidate")
+        } else {
+            Some("selected_model_unavailable")
+        }
+    } else {
+        None
+    }
+}
+
 fn provider_error_snapshot(code: &str) -> ProviderSnapshot {
     let state = match code {
         "provider_malformed" | "provider_payload_too_large" | "provider_model_limit" => {
@@ -1969,6 +2003,65 @@ mod tests {
             .detail_code,
             "runtime_process_exit_unexpected"
         );
+    }
+
+    fn available_provider() -> ProviderSnapshot {
+        ProviderSnapshot {
+            state: ProviderState::Available,
+            detail_code: "provider_available".into(),
+            models: Vec::new(),
+            refreshed_at: Some(1),
+        }
+    }
+
+    #[test]
+    fn auto_routing_never_bypasses_suspension_or_queue_limits() {
+        let provider = available_provider();
+        assert_eq!(
+            send_blocked_code_for_state(
+                false,
+                RuntimeState::Ready,
+                &provider,
+                None,
+                false,
+                0,
+                true,
+                true,
+            ),
+            Some("agent_suspended")
+        );
+        assert_eq!(
+            send_blocked_code_for_state(
+                false,
+                RuntimeState::Ready,
+                &provider,
+                None,
+                false,
+                MAX_QUEUE_LENGTH,
+                false,
+                true,
+            ),
+            Some("queue_full")
+        );
+    }
+
+    #[test]
+    fn auto_selection_preserves_selected_model_as_preference() {
+        let policy =
+            routing_policy_with_selection(&RoutingPolicy::default(), Some("ollama:selected"));
+        assert_eq!(
+            policy.preferred_model_ref.as_deref(),
+            Some("ollama:selected")
+        );
+
+        let manual = routing_policy_with_selection(
+            &RoutingPolicy {
+                mode: RoutingMode::Manual,
+                ..RoutingPolicy::default()
+            },
+            Some("ollama:selected"),
+        );
+        assert_eq!(manual.preferred_model_ref, None);
     }
 
     #[test]

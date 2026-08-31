@@ -998,6 +998,13 @@ mod tests {
         }
     }
 
+    fn model_for(model_ref: &str) -> ModelSpec {
+        ModelSpec {
+            model_ref: model_ref.into(),
+            ..model()
+        }
+    }
+
     fn request(id: &str) -> RoutingRequest {
         RoutingRequest {
             request_id: id.into(),
@@ -1160,6 +1167,69 @@ mod tests {
         assert_eq!(
             manager.reserve(request),
             Err(OrchestrationError::NoCompatibleCandidate)
+        );
+    }
+
+    #[test]
+    fn preferred_model_is_used_when_available_and_falls_back_when_missing() {
+        let mut provider = provider("provider", "node");
+        provider.model_refs = vec!["ollama:selected".into(), "ollama:fallback".into()];
+        let mut preferred_manager = manager(vec![node(
+            "node",
+            100,
+            healthy(),
+            QueueLoad {
+                depth: 0,
+                active: 0,
+                capacity: 4,
+            },
+        )]);
+        preferred_manager
+            .register_provider(provider.clone())
+            .unwrap();
+        preferred_manager
+            .register_model(model_for("ollama:selected"))
+            .unwrap();
+        preferred_manager
+            .register_model(model_for("ollama:fallback"))
+            .unwrap();
+        let policy = RoutingPolicy {
+            preferred_model_ref: Some("ollama:selected".into()),
+            ..RoutingPolicy::default()
+        };
+        assert_eq!(
+            preferred_manager
+                .rank_candidates_with_policy(&request("preferred"), &policy)
+                .unwrap()[0]
+                .model_ref,
+            "ollama:selected"
+        );
+
+        let mut fallback_manager = manager(vec![node(
+            "node",
+            100,
+            healthy(),
+            QueueLoad {
+                depth: 0,
+                active: 0,
+                capacity: 4,
+            },
+        )]);
+        fallback_manager
+            .register_provider(Provider {
+                model_refs: vec!["ollama:fallback".into()],
+                ..provider
+            })
+            .unwrap();
+        fallback_manager
+            .register_model(model_for("ollama:fallback"))
+            .unwrap();
+        assert_eq!(
+            fallback_manager
+                .rank_candidates_with_policy(&request("fallback"), &policy)
+                .unwrap()[0]
+                .model_ref,
+            "ollama:fallback"
         );
     }
 
