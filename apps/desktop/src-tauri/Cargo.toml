@@ -1,6 +1,6 @@
 [package]
 name = "aip-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "AIP local-first desktop shell"
 authors = ["AIP contributors"]
 edition = "2021"

@@ -108,6 +108,12 @@ The current stable baseline already includes:
 
 Linux, macOS, and iOS are not supported by the current stable release. Phase 12 provides a functional Android APK with authenticated local/private explicit-connect transport and deterministic loopback coverage; Phase 13 provides a functional authenticated local/private `aip-gateway-v1` TCP checkpoint with Rust/SQLite authority and loopback validation. Physical-device/private-LAN, manual recovery/permission, remote CI, Cloudflare/BielOS and release-signing checks remain reserved; neither phase claims a stable release.
 
+## Install
+
+[Download the current stable v0.1.0 MSI](https://github.com/bielxdh3/AIP/releases/download/v0.1.0/A.I.P._0.1.0_x64_en-US.msi)
+
+The active 0.2.0 line is unreleased development. The stable download above remains the reviewed v0.1.0 release asset.
+
 ## Quick start
 
 ### 1. Clone the repository
@@ -228,6 +234,7 @@ The evidence boundary is documented in [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LI
 
 - [Product specification](docs/PRODUCT_SPEC.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Phase H versioning and shipped behavior](docs/PHASE_H_VERSIONING_AND_SHIPPED_BEHAVIOR.md)
 - [MVP v0.1](docs/MVP_V0.1.md)
 - [Data model](docs/DATA_MODEL.md)
 - [Security and permissions](docs/SECURITY_AND_PERMISSIONS.md)
