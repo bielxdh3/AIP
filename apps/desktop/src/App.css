@@ -295,6 +295,45 @@ a:focus-visible {
   gap: 5px;
 }
 
+.sidebar-section {
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.sidebar-section > summary {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  list-style: none;
+}
+
+.sidebar-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.sidebar-section > summary::before {
+  content: "⌄";
+  color: var(--color-text-subtle);
+  font-size: 12px;
+}
+
+.sidebar-section:not([open]) > summary::before {
+  content: "›";
+}
+
+.sidebar-section > summary small {
+  color: var(--color-text-subtle);
+  font-size: 10px;
+  font-weight: 500;
+}
+
 .agent-tab {
   display: flex;
   align-items: center;
@@ -311,6 +350,23 @@ a:focus-visible {
 .agent-tab .agent-sprite {
   width: 36px;
   height: 36px;
+}
+
+.sidebar-agents .agent-tabs {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.sidebar-agents .agent-tab {
+  min-height: 40px;
+  gap: 7px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+.sidebar-agents .agent-tab .agent-sprite {
+  width: 29px;
+  height: 29px;
 }
 
 .agent-tab:hover,
@@ -341,9 +397,14 @@ a:focus-visible {
 .sidebar-secondary {
   display: grid;
   gap: 8px;
-  margin-top: 14px;
+  margin-top: 10px;
   padding-top: 14px;
   border-top: 1px solid var(--color-border);
+}
+
+.sidebar-secondary > nav {
+  display: grid;
+  gap: 4px;
 }
 
 .sidebar-secondary .sidebar-label + button {
@@ -733,7 +794,8 @@ a:focus-visible {
 
 .state-workspace .agent-state-controls > strong,
 .state-workspace .agent-state-controls > small,
-.state-workspace .agent-state-controls > p {
+.state-workspace .agent-state-controls > p,
+.state-workspace .agent-state-controls > div {
   grid-column: 1 / -1;
 }
 
@@ -746,25 +808,115 @@ a:focus-visible {
   padding: 11px 12px;
   border: 1px solid #293946;
   border-radius: var(--radius-md);
-  color: #99a5b2;
+  color: var(--color-text-muted);
   background: var(--color-surface-deep);
   font-size: 13px;
+}
+
+.state-mode-control,
+.state-metrics,
+.state-actions {
+  grid-column: 1 / -1;
+}
+
+.state-mode-control {
+  display: grid;
+  gap: 10px;
+}
+
+.state-mode-explanations {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.state-explanation,
+.state-metric,
+.state-action {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-deep);
+}
+
+.state-explanation.active {
+  border-color: var(--color-primary);
+  background: color-mix(
+    in srgb,
+    var(--color-primary) 8%,
+    var(--color-surface-deep)
+  );
+}
+
+.state-explanation strong,
+.state-metric strong {
+  color: var(--color-text-strong);
+  font-size: 12px;
+}
+
+.state-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.state-metric > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.state-metric > div > span {
+  color: var(--color-primary);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.state-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.state-action button {
+  width: 100%;
 }
 
 .state-guidance,
 .memory-guidance,
 .memory-category-help {
   margin: 0;
-  color: #99a5b2;
+  color: var(--color-text-muted);
   font-size: 12px;
   line-height: 1.55;
+}
+
+.readable-helper {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+small.readable-helper {
+  font-size: 11px;
+}
+
+.model-picker-trigger-copy small.readable-helper,
+.model-picker-option small.readable-helper,
+.model-picker-status.readable-helper,
+.bubble-title small.readable-helper,
+.bubble-muted.readable-helper {
+  color: var(--color-text-muted);
 }
 
 .state-workspace .agent-state-controls label {
   font-size: 12px;
 }
 
-.state-workspace .agent-state-controls select,
+.state-workspace .agent-state-controls .aip-select-trigger,
 .state-workspace .agent-state-controls button {
   min-height: 38px;
 }
@@ -2052,7 +2204,7 @@ a:focus-visible {
 
 .conversation-list {
   display: grid;
-  flex: 1;
+  flex: 1 1 auto;
   gap: 6px;
   min-width: 0;
   min-height: 0;
@@ -3274,9 +3426,12 @@ h3 {
   }
 
   .sidebar-secondary {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
     width: 100%;
     margin-top: 10px;
+  }
+
+  .sidebar-secondary > nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .sidebar-secondary .sidebar-label {
@@ -3308,7 +3463,10 @@ h3 {
   }
 
   .memory-filters,
-  .state-workspace .agent-state-controls {
+  .state-workspace .agent-state-controls,
+  .state-mode-explanations,
+  .state-metrics,
+  .state-actions {
     grid-template-columns: 1fr;
   }
 

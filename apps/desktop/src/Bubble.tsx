@@ -147,7 +147,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
           }}
         >
           <strong>{phase.agent.name}</strong>
-          <small>
+          <small className="readable-helper">
             {request?.active
               ? "Modelo local em uso"
               : providerStatusCopy(phase)}
@@ -195,7 +195,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
             {presentation.fullText ? (
               <p>{presentation.fullText}</p>
             ) : (
-              <p className="bubble-muted">{status}</p>
+              <p className="bubble-muted readable-helper">{status}</p>
             )}
           </div>
           {request !== null ? (

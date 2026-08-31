@@ -604,6 +604,95 @@ function AgentButton({
   );
 }
 
+export type DesktopWorkspace =
+  "chat" | "memories" | "state" | "appearance" | "resources" | "settings";
+
+export function SidebarNavigation({
+  agents,
+  activeAgentId,
+  workspace,
+  onSelectAgent,
+  onWorkspace,
+  onProfile,
+}: {
+  agents: ProvisionalAgent[];
+  activeAgentId: string | null;
+  workspace: DesktopWorkspace;
+  onSelectAgent: (agentId: string) => void;
+  onWorkspace: (workspace: DesktopWorkspace) => void;
+  onProfile: (agentId: string) => void;
+}) {
+  const activeAgent = agents.find((agent) => agent.id === activeAgentId);
+  return (
+    <>
+      <details className="sidebar-section sidebar-agents" open>
+        <summary>
+          <span>Agentes</span>
+          <small>{agents.length}</small>
+        </summary>
+        <div className="agent-tabs">
+          {agents.map((agent) => (
+            <AgentButton
+              key={agent.id}
+              agent={agent}
+              active={agent.id === activeAgentId}
+              onSelect={() => onSelectAgent(agent.id)}
+            />
+          ))}
+        </div>
+      </details>
+      {activeAgentId ? (
+        <details className="sidebar-section sidebar-secondary" open>
+          <summary>
+            <span>Navegação</span>
+            <small>{activeAgent?.name ?? "agente"}</small>
+          </summary>
+          <nav aria-label="Áreas do agente">
+            <p className="sidebar-label">Este agente</p>
+            {(
+              [
+                ["memories", "Memórias"],
+                ["state", "Estado"],
+                ["appearance", "Aparência"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                className={workspace === key ? "active" : undefined}
+                type="button"
+                aria-current={workspace === key ? "page" : undefined}
+                onClick={() => onWorkspace(key)}
+              >
+                {label}
+              </button>
+            ))}
+            <button type="button" onClick={() => onProfile(activeAgentId)}>
+              Perfil de {activeAgent?.name ?? "agente"}
+            </button>
+            <p className="sidebar-label">Aplicativo</p>
+            <button
+              className={workspace === "resources" ? "active" : undefined}
+              type="button"
+              aria-current={workspace === "resources" ? "page" : undefined}
+              onClick={() => onWorkspace("resources")}
+            >
+              Recursos locais
+            </button>
+            <button
+              className={workspace === "settings" ? "active" : undefined}
+              type="button"
+              aria-current={workspace === "settings" ? "page" : undefined}
+              onClick={() => onWorkspace("settings")}
+            >
+              Configurações
+            </button>
+          </nav>
+        </details>
+      ) : null}
+    </>
+  );
+}
+
 function ConfirmDialog({
   title,
   description,
@@ -938,7 +1027,7 @@ export function ModelPicker({
         >
           <span className="model-picker-trigger-copy">
             <strong>{triggerLabel}</strong>
-            <small>{triggerDetail}</small>
+            <small className="readable-helper">{triggerDetail}</small>
           </span>
           <span aria-hidden="true">⌄</span>
         </button>
@@ -982,7 +1071,7 @@ export function ModelPicker({
                       {option.label}
                       {option.unavailable ? " · indisponível" : ""}
                     </strong>
-                    <small>{option.detail}</small>
+                    <small className="readable-helper">{option.detail}</small>
                   </div>
                 ))
               ) : (
@@ -994,7 +1083,7 @@ export function ModelPicker({
           </div>
         ) : null}
       </div>
-      <small className="model-picker-status">
+      <small className="model-picker-status readable-helper">
         {providerState !== "available"
           ? `${stateCopy.label} · ${statusText ?? stateCopy.detail}`
           : (statusText ??
@@ -1379,7 +1468,7 @@ export function ConversationSurface({
             </button>
           ) : null}
           {temporary ? (
-            <p className="temporary-disclosure" role="status">
+            <p className="temporary-disclosure readable-helper" role="status">
               Temporária ativa: mensagens e contexto ficam apenas na memória e
               são apagados ao encerrar.
             </p>
@@ -2103,7 +2192,9 @@ export function ProfileForm({
         <div>
           <p className="eyebrow">Identidade do agente</p>
           <h1>{`Perfil de ${agent.name}`}</h1>
-          <span>Detalhes, descrição e traços que orientam este agente.</span>
+          <span className="readable-helper">
+            Detalhes, descrição e traços que orientam este agente.
+          </span>
         </div>
       </header>
       <section className="profile-section">
@@ -2119,7 +2210,9 @@ export function ProfileForm({
       </section>
       <section className="profile-section profile-default-model">
         <h2>Modelo padrão</h2>
-        <p>Novas conversas deste agente começam com este modelo.</p>
+        <p className="readable-helper">
+          Novas conversas deste agente começam com este modelo.
+        </p>
         <ModelPicker
           label={`Modelo padrão de ${agent.name}`}
           ariaLabel={`Modelo padrão de ${agent.name}`}
@@ -2784,13 +2877,15 @@ export function MemoryWorkspace({ agentId }: { agentId: string }) {
         <div>
           <p className="eyebrow">Conhecimento do agente</p>
           <h2>Memórias</h2>
-          <span>Fatos, preferências e regras ficam separados por agente.</span>
+          <span className="readable-helper">
+            Fatos, preferências e regras ficam separados por agente.
+          </span>
         </div>
-        <span className="workspace-count">
+        <span className="workspace-count readable-helper">
           {items.length} {status === "active" ? "memórias ativas" : "memórias"}
         </span>
       </header>
-      <p className="memory-guidance">
+      <p className="memory-guidance readable-helper">
         As memórias pertencem somente a este agente e podem influenciar o
         contexto das conversas. O Owner decide o que fica salvo.
       </p>
@@ -2921,7 +3016,7 @@ export function MemoryWorkspace({ agentId }: { agentId: string }) {
           </button>
         </div>
       </form>
-      <p className="memory-guidance">
+      <p className="memory-guidance readable-helper">
         “Salvar memória” grava uma memória durável. “Propor memória” cria uma
         candidata pendente para o Owner confirmar ou rejeitar.
       </p>
@@ -2956,65 +3051,132 @@ export function AgentStateControls({ agentId }: { agentId: string }) {
   }
 
   if (state === null) return null;
+  const modes = [
+    {
+      value: "normal",
+      label: "Normal",
+      description: "Texto e voz seguem as guardas locais configuradas.",
+    },
+    {
+      value: "voice_muted",
+      label: "Sem voz",
+      description: "Mantém o texto e silencia a voz sintetizada.",
+    },
+    {
+      value: "silent",
+      label: "Silencioso",
+      description:
+        "Bloqueia conversas iniciadas pelo agente e alterações de configurações de voz.",
+    },
+  ] as const;
   return (
     <section className="agent-state-controls" aria-label="Estado do agente">
       <strong>Estado</strong>
-      <p className="state-guidance">
-        Normal permite texto e voz configurada conforme as guardas do Rust e do
-        provedor; Sem voz mantém o texto e silencia a voz sintetizada;
-        Silencioso bloqueia conversas cognitivas/públicas iniciadas pelo agente
-        e alterações de configurações de voz. Texto direto continua sujeito às
-        guardas normais, inclusive suspensão. Energia, humor e sono são valores
-        fictícios simulados — não são medições de saúde.
+      <p className="state-guidance readable-helper">
+        Energia, humor e sono são valores fictícios simulados para orientar o
+        comportamento do agente; não são medições de saúde.
       </p>
-      <label>
-        Modo
-        <select
+      <div className="state-mode-control">
+        <AipSelect
+          id="state-mode"
+          label="Modo"
           value={state.mode}
-          disabled={saving}
-          onChange={(event) =>
+          options={modes.map(({ value, label }) => ({ value, label }))}
+          onChange={(mode) =>
             void update(() =>
               invoke("set_agent_simulated_mode", {
                 agentId,
-                mode: event.target.value,
+                mode,
               }),
             )
           }
+          disabled={saving}
+        />
+        <div
+          className="state-mode-explanations"
+          aria-label="Explicações dos modos"
         >
-          <option value="normal">Normal</option>
-          <option value="voice_muted">Sem voz</option>
-          <option value="silent">Silencioso</option>
-        </select>
-      </label>
-      <small>
-        Energia {state.energy}% · Humor {state.mood}% · Sono {state.sleep}%
-      </small>
-      <button
-        type="button"
-        disabled={saving}
-        onClick={() =>
-          void update(() =>
-            invoke("set_agent_suspension", {
-              agentId,
-              suspended: !state.suspended,
-            }),
-          )
-        }
-      >
-        {state.suspended ? "Retomar agente" : "Suspender agente"}
-      </button>
-      <button
-        type="button"
-        disabled={saving || !state.suspended}
-        onClick={() => void update(() => invoke("wake_agent_now", { agentId }))}
-      >
-        Acordar agora
-      </button>
-      <small>
-        Suspender pausa o avanço simulado; Retomar permite que ele continue.
-        “Acordar agora” ajusta somente o sono e a energia fictícios por um
-        período temporário, sem remover a suspensão ou acordar uma pessoa real.
-      </small>
+          {modes.map((mode) => (
+            <div
+              className={
+                mode.value === state.mode
+                  ? "state-explanation active"
+                  : "state-explanation"
+              }
+              data-state-mode={mode.value}
+              key={mode.value}
+            >
+              <strong>{mode.label}</strong>
+              <span className="readable-helper">{mode.description}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="state-metrics" aria-label="Valores simulados">
+        {(
+          [
+            [
+              "energy",
+              "Energia",
+              state.energy,
+              "Reserva fictícia para ritmo e atividade.",
+            ],
+            ["mood", "Humor", state.mood, "Tendência fictícia de interação."],
+            [
+              "sleep",
+              "Sono",
+              state.sleep,
+              "Valor fictício que pode afetar o ritmo.",
+            ],
+          ] as const
+        ).map(([key, label, value, description]) => (
+          <div className="state-metric" data-state-metric={key} key={key}>
+            <div>
+              <strong>{label}</strong>
+              <span>{value}%</span>
+            </div>
+            <small className="readable-helper">{description}</small>
+          </div>
+        ))}
+      </div>
+      <div className="state-actions">
+        <div className="state-action">
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() =>
+              void update(() =>
+                invoke("set_agent_suspension", {
+                  agentId,
+                  suspended: !state.suspended,
+                }),
+              )
+            }
+          >
+            {state.suspended ? "Retomar agente" : "Suspender agente"}
+          </button>
+          <span className="readable-helper">
+            {state.suspended
+              ? "Retomar permite que o avanço simulado continue."
+              : "Suspender pausa o avanço simulado sem apagar o estado."}
+          </span>
+        </div>
+        <div className="state-action">
+          <button
+            type="button"
+            disabled={saving || !state.suspended}
+            onClick={() =>
+              void update(() => invoke("wake_agent_now", { agentId }))
+            }
+          >
+            Acordar agora
+          </button>
+          <span className="readable-helper">
+            Ajusta temporariamente sono e energia fictícios sem remover a
+            suspensão.
+          </span>
+        </div>
+      </div>
     </section>
   );
 }
@@ -9906,7 +10068,7 @@ function SettingsSurface({
           {activeSection === "Geral" ? (
             <section className="settings-card">
               <h2>Geral</h2>
-              <p>
+              <p className="readable-helper">
                 Este computador usa um Owner local implícito. Contas adicionais
                 ainda não estão disponíveis.
               </p>
@@ -9916,7 +10078,7 @@ function SettingsSurface({
           {activeSection === "Perfil do Owner" ? (
             <section className="settings-card">
               <h2>Perfil do Owner</h2>
-              <p>
+              <p className="readable-helper">
                 Administrador local do A.I.P. A edição do nome do Owner ainda
                 não está disponível.
               </p>
@@ -9925,13 +10087,15 @@ function SettingsSurface({
           {activeSection === "Agentes" ? (
             <section className="settings-card">
               <h2>Agentes</h2>
-              <p>Edite cada perfil pelo botão Perfil no espaço do agente.</p>
+              <p className="readable-helper">
+                Edite cada perfil pelo botão Perfil no espaço do agente.
+              </p>
             </section>
           ) : null}
           {activeSection === "Modelos" ? (
             <section className="settings-card">
               <h2>Modelos</h2>
-              <p>
+              <p className="readable-helper">
                 O modelo padrão é configurado por agente. Cada conversa pode ter
                 uma substituição própria.
               </p>
@@ -9940,7 +10104,9 @@ function SettingsSurface({
           {activeSection === "Segurança" ? (
             <section className="settings-card">
               <h2>Segurança</h2>
-              <p>O modo seguro desativa runtime, gerações e overlays.</p>
+              <p className="readable-helper">
+                O modo seguro desativa runtime, gerações e overlays.
+              </p>
               <button
                 className={
                   snapshot?.safeMode ? "mode-button active" : "mode-button"
@@ -9958,7 +10124,7 @@ function SettingsSurface({
           {activeSection === "Dados e backup" ? (
             <section className="settings-card">
               <h2>Dados e backup</h2>
-              <p>
+              <p className="readable-helper">
                 Exportação e backup automático ainda não estão disponíveis nesta
                 versão.
               </p>
@@ -10573,7 +10739,7 @@ export function LocalCapabilityStatusCenter({
       <header>
         <p className="eyebrow">Diagnóstico local</p>
         <h2 id="local-status-heading">Centro de status local</h2>
-        <span>
+        <span className="readable-helper">
           Leitura segura de hardware, providers e integrações; nenhuma
           referência de executável é exibida.
         </span>
@@ -10589,7 +10755,7 @@ export function LocalCapabilityStatusCenter({
           Modo seguro: runtime e alterações de capabilities ficam bloqueados.
         </p>
       ) : null}
-      <p className="local-status-legend">
+      <p className="local-status-legend readable-helper">
         Estados possíveis: Pronto, Não configurado, Indisponível, Bloqueado pelo
         modo e Erro.
       </p>
@@ -10618,22 +10784,22 @@ export function LocalCapabilityStatusCenter({
           >
             <span>{card.label}</span>
             <strong>{card.status.state}</strong>
-            <small>{card.status.detail}</small>
+            <small className="readable-helper">{card.status.detail}</small>
           </a>
         ))}
       </div>
       <details className="local-capability-panel" id="local-capability-runtime">
         <summary>Runtime e Ollama</summary>
         <div>
-          <p>
+          <p className="readable-helper">
             <strong>Runtime:</strong> {runtimeStatus.state} —{" "}
             {runtimeStatus.detail}
           </p>
-          <p>
+          <p className="readable-helper">
             <strong>Ollama:</strong> {ollamaStatus.state} —{" "}
             {ollamaStatus.detail}
           </p>
-          <p>
+          <p className="readable-helper">
             Configuração: mantenha o Ollama local ativo e use “Atualizar” na
             conversa para reler os modelos. Sem runtime, o histórico e as
             leituras continuam acessíveis.
@@ -10661,7 +10827,7 @@ export function LocalCapabilitiesSurface({
         <div>
           <p className="eyebrow">Capacidades do Owner local</p>
           <h1>Recursos locais</h1>
-          <span>
+          <span className="readable-helper">
             Fixtures sintéticas servem para demonstração; hardware e providers
             reais dependem do Windows e da configuração local.
           </span>
@@ -10673,7 +10839,7 @@ export function LocalCapabilitiesSurface({
         safeMode={safeMode}
         temporaryChat={temporaryChat}
       />
-      <p className="local-capability-note">
+      <p className="local-capability-note readable-helper">
         Pré-requisitos: runtime para geração, referências locais para STT/TTS,
         dispositivos Windows para áudio, provedor visual para análise, raiz do
         Owner para ferramentas locais e aprovação explícita para extensões,
@@ -10771,9 +10937,7 @@ function App() {
   >(null);
   const [conversationDraftRevision, setConversationDraftRevision] = useState(0);
   const [temporaryChat, setTemporaryChat] = useState(false);
-  const [workspace, setWorkspace] = useState<
-    "chat" | "memories" | "state" | "appearance" | "resources" | "settings"
-  >("chat");
+  const [workspace, setWorkspace] = useState<DesktopWorkspace>("chat");
 
   const loadSnapshot = useCallback(async () => {
     const next = await invoke<AppSnapshot>("get_app_snapshot");
@@ -10817,10 +10981,7 @@ function App() {
     }
   }
 
-  async function openWorkspace(
-    next:
-      "chat" | "memories" | "state" | "appearance" | "resources" | "settings",
-  ) {
+  async function openWorkspace(next: DesktopWorkspace) {
     setConversationDraftAgentId(null);
     await leaveTemporaryChat();
     setEditingAgentId(null);
@@ -10886,17 +11047,14 @@ function App() {
             <small>Conversa local</small>
           </div>
         </button>
-        <p className="sidebar-label">Conversas</p>
-        <div className="agent-tabs">
-          {snapshot?.agents.map((agent) => (
-            <AgentButton
-              key={agent.id}
-              agent={agent}
-              active={agent.id === activeAgentId}
-              onSelect={() => void selectAgent(agent.id)}
-            />
-          ))}
-        </div>
+        <SidebarNavigation
+          agents={snapshot?.agents ?? []}
+          activeAgentId={activeAgentId}
+          workspace={workspace}
+          onSelectAgent={(agentId) => void selectAgent(agentId)}
+          onWorkspace={(next) => void openWorkspace(next)}
+          onProfile={(agentId) => void openProfile(agentId)}
+        />
         {activeAgentId ? (
           <ConversationList
             key={`${activeAgentId}-${conversationListRevision}`}
@@ -10912,53 +11070,6 @@ function App() {
               });
             }}
           />
-        ) : null}
-        {activeAgentId ? (
-          <nav className="sidebar-secondary" aria-label="Áreas do agente">
-            <p className="sidebar-label">Este agente</p>
-            {(
-              [
-                ["memories", "Memórias"],
-                ["state", "Estado"],
-                ["appearance", "Aparência"],
-              ] as const
-            ).map(([key, label]) => (
-              <button
-                key={key}
-                className={workspace === key ? "active" : undefined}
-                type="button"
-                aria-current={workspace === key ? "page" : undefined}
-                onClick={() => void openWorkspace(key)}
-              >
-                {label}
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={() => void openProfile(activeAgentId)}
-            >
-              Perfil de{" "}
-              {snapshot?.agents.find((agent) => agent.id === activeAgentId)
-                ?.name ?? "agente"}
-            </button>
-            <p className="sidebar-label">Aplicativo</p>
-            <button
-              className={workspace === "resources" ? "active" : undefined}
-              type="button"
-              aria-current={workspace === "resources" ? "page" : undefined}
-              onClick={() => void openWorkspace("resources")}
-            >
-              Recursos locais
-            </button>
-            <button
-              className={workspace === "settings" ? "active" : undefined}
-              type="button"
-              aria-current={workspace === "settings" ? "page" : undefined}
-              onClick={() => void openWorkspace("settings")}
-            >
-              Configurações
-            </button>
-          </nav>
         ) : null}
         <div className="sidebar-footer">
           <span className="local-dot" aria-hidden="true" />

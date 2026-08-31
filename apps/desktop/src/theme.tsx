@@ -363,7 +363,7 @@ export function ThemeControls() {
             updatePreferences({ font: font as UiFont });
         }}
       />
-      <small role="status">
+      <small className="readable-helper" role="status">
         Tema ativo: {resolvedMode === "light" ? "claro" : "escuro"}. Animações:{" "}
         {reducedMotion ? "reduzidas" : "normais"}.
       </small>
