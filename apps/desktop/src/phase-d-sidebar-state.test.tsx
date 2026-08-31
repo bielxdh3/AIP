@@ -78,6 +78,7 @@ describe("Phase D sidebar and state explanations", () => {
       ),
     );
 
+    expect(container.querySelector(".sidebar-navigation")).not.toBeNull();
     expect(container.querySelectorAll(".sidebar-section")).toHaveLength(2);
     expect(container.querySelector(".sidebar-agents")?.tagName).toBe("DETAILS");
     expect(container.querySelector(".sidebar-secondary")?.tagName).toBe(
