@@ -166,6 +166,27 @@ describe("ConversationSurface", () => {
     expect(container.querySelector(".queue-banner")?.textContent).toContain(
       "Cancelar",
     );
+    expect(
+      container.querySelector(".generation-status.shiny-text")?.textContent,
+    ).toBe("Gerando resposta…");
+
+    phase = {
+      ...loadedPhase,
+      queue: [
+        {
+          agentId: "agent",
+          requestId: "request",
+          assistantMessageId: "assistant",
+          active: true,
+          cancellationRequested: true,
+        },
+      ],
+    } as unknown as PhaseOneState;
+    renderSurface();
+    expect(container.querySelector(".generation-status.shiny-text")).toBeNull();
+    expect(container.querySelector(".generation-status")?.textContent).toBe(
+      "Cancelando resposta…",
+    );
   });
 
   it("keeps the draft editable but blocks send and Enter during generation", async () => {
