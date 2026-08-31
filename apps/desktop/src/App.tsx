@@ -203,6 +203,7 @@ import { AipSelect, FilePicker } from "./shared-controls";
 import {
   MODEL_POLICY_MODES,
   type ModelPolicyMode,
+  routingPolicyPayload,
   useModelPreferences,
 } from "./model-preferences";
 import {
@@ -1315,6 +1316,7 @@ export function ConversationSurface({
   refreshRevision?: number;
 }) {
   const { phase, error, load } = usePhaseOne(agentId, temporary);
+  const [modelPreferences] = useModelPreferences();
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [showLegacyBranchPicker] = useState(false);
@@ -1383,6 +1385,7 @@ export function ConversationSurface({
   const modelsAvailable = phase.provider.models.length > 0;
   const canSend = canSendConversationMessage(currentPhase);
   const canDraft = canDraftConversationMessage(currentPhase);
+  const routingPolicy = routingPolicyPayload(modelPreferences);
 
   async function send() {
     const content = draft.trim();
@@ -1395,11 +1398,12 @@ export function ConversationSurface({
           ? "send_temporary_phase_one_message"
           : "send_phase_one_message",
         temporary
-          ? { agentId: currentPhase.agent.id, content }
+          ? { agentId: currentPhase.agent.id, content, policy: routingPolicy }
           : {
               agentId: currentPhase.agent.id,
               conversationId: currentPhase.conversation.id,
               content,
+              policy: routingPolicy,
             },
       );
       setDraft("");
@@ -1660,13 +1664,17 @@ export function ConversationSurface({
                 providerState={phase.provider.state}
                 disabled={!modelsAvailable}
                 defaultOption={{
-                  label: `Usar padrão de ${phase.agent.name}`,
-                  detail: phase.defaultModelRef ?? "indisponível",
+                  label: "Modelo: Automático",
+                  detail: phase.defaultModelRef
+                    ? `Equilibrado · ${phase.defaultModelRef}`
+                    : "Equilibrado · seleção automática",
                 }}
                 statusText={
-                  phase.selectedModelRef
-                    ? `Em uso: ${phase.selectedModelRef}${phase.effectiveModelSource === "agent_default" ? " · padrão do agente" : " · substituição desta conversa"}`
-                    : "Nenhum modelo local disponível"
+                  phase.modelOverrideRef
+                    ? `Em uso: ${phase.selectedModelRef ?? "indisponível"} · substituição desta conversa`
+                    : phase.selectedModelRef
+                      ? `Equilibrado · ${phase.selectedModelRef}`
+                      : "Nenhum modelo local disponível"
                 }
                 onSelect={async (modelRef) => {
                   const command = temporary
@@ -1711,6 +1719,7 @@ export function ConversationDraftSurface({
   onPersisted: () => void;
 }) {
   const { phase, error, load } = usePhaseOne(agentId, false);
+  const [modelPreferences] = useModelPreferences();
   const [title, setTitle] = useState("");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1742,6 +1751,7 @@ export function ConversationDraftSurface({
   const blocked = blockedSendCopy(currentPhase.sendBlockedCode);
   const canSend = canSendConversationMessage(currentPhase);
   const canDraft = canDraftConversationMessage(currentPhase);
+  const routingPolicy = routingPolicyPayload(modelPreferences);
 
   async function cancelCurrentRequest() {
     if (
@@ -1791,6 +1801,7 @@ export function ConversationDraftSurface({
           agentId,
           conversationId,
           content: sendContent,
+          policy: routingPolicy,
         });
         setDraft("");
       }

@@ -16,12 +16,14 @@ import {
   providerStatusCopy,
 } from "./conversation-state";
 import { buildBubbleInteractiveRegions, elementBounds } from "./overlay-input";
+import { routingPolicyPayload, useModelPreferences } from "./model-preferences";
 import { usePhaseOne } from "./use-phase-one";
 import { openAgentConversations } from "./agent-navigation";
 import "./App.css";
 
 export default function Bubble({ agentId }: { agentId: string }) {
   const { phase, error, load } = usePhaseOne(agentId);
+  const [modelPreferences] = useModelPreferences();
   const [expanded, setExpanded] = useState(false);
   const [minimized, setMinimized] = useState(false);
   const [draft, setDraft] = useState("");
@@ -93,6 +95,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
   const blocked = blockedSendCopy(currentPhase.sendBlockedCode);
   const canSend = canSendConversationMessage(currentPhase);
   const canDraft = canDraftConversationMessage(currentPhase);
+  const routingPolicy = routingPolicyPayload(modelPreferences);
 
   async function send() {
     const content = draft.trim();
@@ -103,6 +106,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
         agentId,
         conversationId: currentPhase.conversation.id,
         content,
+        policy: routingPolicy,
       });
       setDraft("");
       await load();

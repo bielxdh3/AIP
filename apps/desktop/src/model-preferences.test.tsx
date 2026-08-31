@@ -7,6 +7,7 @@ import {
   MODEL_PREFERENCES_STORAGE_KEY,
   normalizeModelPreferences,
   readModelPreferences,
+  routingPolicyPayload,
   useModelPreferences,
   writeModelPreferences,
 } from "./model-preferences";
@@ -93,6 +94,24 @@ describe("model preferences", () => {
       ...DEFAULT_MODEL_PREFERENCES,
       hiddenModelRefs: ["ollama:hidden"],
       policyMode: "speed",
+    });
+  });
+
+  it("maps bounded preferences to the Rust routing policy payload", () => {
+    expect(
+      routingPolicyPayload({
+        ...DEFAULT_MODEL_PREFERENCES,
+        hiddenModelRefs: ["ollama:hidden"],
+        excludedModelRefs: ["ollama:excluded"],
+        fallbackOnlyModelRefs: ["ollama:fallback"],
+        preferredModelRef: "ollama:preferred",
+        policyMode: "quality",
+      }),
+    ).toEqual({
+      mode: "quality",
+      excludedModelRefs: ["ollama:excluded"],
+      fallbackOnlyModelRefs: ["ollama:fallback"],
+      preferredModelRef: "ollama:preferred",
     });
   });
 

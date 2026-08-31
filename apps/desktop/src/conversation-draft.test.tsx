@@ -204,6 +204,12 @@ describe("ConversationDraftSurface", () => {
       agentId: "agent",
       conversationId: "created",
       content: "primeira mensagem",
+      policy: {
+        mode: "auto",
+        excludedModelRefs: [],
+        fallbackOnlyModelRefs: [],
+        preferredModelRef: null,
+      },
     });
     expect(onPersisted).toHaveBeenCalledOnce();
   });

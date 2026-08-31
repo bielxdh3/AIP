@@ -122,6 +122,12 @@ describe("Bubble composer", () => {
       agentId: "agent",
       conversationId: "conversation",
       content: "mensagem seguinte",
+      policy: {
+        mode: "auto",
+        excludedModelRefs: [],
+        fallbackOnlyModelRefs: [],
+        preferredModelRef: null,
+      },
     });
   });
 

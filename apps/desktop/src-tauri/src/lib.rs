@@ -77,7 +77,7 @@ use gateway_transport::{
     HandlerResponse as GatewayHandlerResponse, SecureHandler as GatewayHandler,
     TransportHandle as GatewayTransportHandle,
 };
-use orchestration::OrchestrationManager;
+use orchestration::{OrchestrationManager, RoutingPolicy};
 use overlays::{InteractiveRegion, OverlayInputState};
 use runtime::RuntimeController;
 use screen_vision::{
@@ -121,6 +121,10 @@ struct AppState {
     companion_transport: Arc<Mutex<CompanionTransportState>>,
     gateway_transport: Arc<Mutex<GatewayTransportState>>,
     pub(crate) orchestration: Arc<Mutex<OrchestrationManager>>,
+}
+
+fn routing_policy_or_default(policy: Option<RoutingPolicy>) -> RoutingPolicy {
+    policy.unwrap_or_default()
 }
 
 #[derive(Default)]
@@ -2696,12 +2700,13 @@ fn send_temporary_phase_one_message(
     state: State<'_, AppState>,
     agent_id: String,
     content: String,
+    policy: Option<RoutingPolicy>,
 ) -> Result<SendMessageResult, &'static str> {
     state
         .chat
         .as_ref()
         .ok_or("operation_unavailable")?
-        .send_temporary_message(&agent_id, &content)
+        .send_temporary_message_with_policy(&agent_id, &content, routing_policy_or_default(policy))
 }
 
 #[tauri::command]
@@ -2931,12 +2936,18 @@ fn send_phase_one_message(
     agent_id: String,
     conversation_id: String,
     content: String,
+    policy: Option<RoutingPolicy>,
 ) -> Result<SendMessageResult, &'static str> {
     state
         .chat
         .as_ref()
         .ok_or("operation_unavailable")?
-        .send_message(&agent_id, &conversation_id, &content)
+        .send_message_with_policy(
+            &agent_id,
+            &conversation_id,
+            &content,
+            routing_policy_or_default(policy),
+        )
 }
 
 #[tauri::command]
@@ -3452,9 +3463,10 @@ mod conversation_command_tests {
     use super::{
         append_public_conversation_turn_for_state, companion_transport_handler,
         complete_resource_job_for_state, emit_cognitive_candidate_for_state,
-        reserve_heavy_generation_for_state, set_custom_voice_consent_for_state,
-        start_agent_conversation_for_state, update_voice_settings_for_state, AppState,
-        CompanionTransportState, GatewayTransportState, OrchestrationManager,
+        reserve_heavy_generation_for_state, routing_policy_or_default,
+        set_custom_voice_consent_for_state, start_agent_conversation_for_state,
+        update_voice_settings_for_state, AppState, CompanionTransportState, GatewayTransportState,
+        OrchestrationManager, RoutingPolicy,
     };
     use crate::{
         companion::{
@@ -3504,6 +3516,11 @@ mod conversation_command_tests {
             "unminimize-show-and-focus"
         );
         assert_eq!(super::workspace_window_action(true), "unminimize-and-focus");
+    }
+
+    #[test]
+    fn omitted_chat_routing_policy_keeps_auto_default() {
+        assert_eq!(routing_policy_or_default(None), RoutingPolicy::default());
     }
 
     #[test]

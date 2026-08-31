@@ -21,6 +21,13 @@ export type ModelPreferences = {
   policyMode: ModelPolicyMode;
 };
 
+export type RoutingPolicyPayload = {
+  mode: ModelPolicyMode;
+  excludedModelRefs: string[];
+  fallbackOnlyModelRefs: string[];
+  preferredModelRef: string | null;
+};
+
 export const DEFAULT_MODEL_PREFERENCES: ModelPreferences = {
   hiddenModelRefs: [],
   excludedModelRefs: [],
@@ -62,6 +69,18 @@ export function normalizeModelPreferences(value: unknown): ModelPreferences {
     )
       ? (candidate.policyMode as ModelPolicyMode)
       : DEFAULT_MODEL_PREFERENCES.policyMode,
+  };
+}
+
+export function routingPolicyPayload(
+  preferences: ModelPreferences,
+): RoutingPolicyPayload {
+  const normalized = normalizeModelPreferences(preferences);
+  return {
+    mode: normalized.policyMode,
+    excludedModelRefs: [...normalized.excludedModelRefs],
+    fallbackOnlyModelRefs: [...normalized.fallbackOnlyModelRefs],
+    preferredModelRef: normalized.preferredModelRef,
   };
 }
 
