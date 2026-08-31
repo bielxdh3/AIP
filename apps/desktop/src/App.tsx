@@ -199,7 +199,7 @@ import {
 import { usePhaseOne } from "./use-phase-one";
 import { createListenerRegistration } from "./listener-lifecycle";
 import { ThemeControls } from "./theme";
-import { AipSelect } from "./shared-controls";
+import { AipSelect, FilePicker } from "./shared-controls";
 import {
   nextLayerId,
   floodFillLayer,
@@ -5623,7 +5623,6 @@ export function PixelDocumentEditor({ agentId }: { agentId: string }) {
   >(null);
   const [zoom, setZoom] = useState(4);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const importRef = useRef<HTMLInputElement>(null);
   const undoRef = useRef<string[]>([]);
   const redoRef = useRef<string[]>([]);
   const strokeRef = useRef<{ x: number; y: number } | null>(null);
@@ -5867,136 +5866,152 @@ export function PixelDocumentEditor({ agentId }: { agentId: string }) {
       setError("Não foi possível importar este PNG.");
     } finally {
       URL.revokeObjectURL(url);
-      if (importRef.current !== null) importRef.current.value = "";
     }
   }
   return (
     <details className="pixel-editor" open>
       <summary>Editor de pixel art (64×64)</summary>
-      <div className="pixel-tools">
-        <input
-          type="color"
-          value={color}
-          onChange={(event) => setColor(event.target.value)}
-          aria-label="Cor"
-        />
-        <button
-          type="button"
-          className={tool === "pencil" ? "active" : ""}
-          onClick={() => setTool("pencil")}
-        >
-          Lápis
-        </button>
-        <button
-          type="button"
-          className={tool === "eraser" ? "active" : ""}
-          onClick={() => setTool("eraser")}
-        >
-          Borracha
-        </button>
-        <button
-          type="button"
-          className={tool === "fill" ? "active" : ""}
-          onClick={() => setTool("fill")}
-        >
-          Preencher
-        </button>
-        <button
-          type="button"
-          className={tool === "eyedropper" ? "active" : ""}
-          onClick={() => setTool("eyedropper")}
-        >
-          Conta-gotas
-        </button>
-        <button
-          type="button"
-          className={tool === "select" ? "active" : ""}
-          onClick={() => setTool("select")}
-        >
-          Selecionar
-        </button>
-        <label>
-          <input
-            type="checkbox"
-            checked={mirror}
-            onChange={(event) => setMirror(event.target.checked)}
-          />{" "}
-          Espelhar
-        </label>
-        <label>
-          Zoom
-          <select
-            value={zoom}
-            onChange={(event) => setZoom(Number(event.target.value))}
-          >
-            {[2, 4, 6, 8].map((value) => (
-              <option key={value} value={value}>
-                {value}×
-              </option>
+      <div className="pixel-tools" aria-label="Ferramentas do editor">
+        <div className="pixel-tool-group" data-tool-group="drawing">
+          <span className="pixel-tool-group-label">Desenho</span>
+          <div className="pixel-tool-group-controls">
+            <label className="pixel-color-control">
+              <span>Cor</span>
+              <input
+                type="color"
+                value={color}
+                onChange={(event) => setColor(event.target.value)}
+                aria-label="Cor"
+              />
+            </label>
+            {(
+              [
+                ["pencil", "Lápis"],
+                ["eraser", "Borracha"],
+                ["fill", "Preencher"],
+                ["eyedropper", "Conta-gotas"],
+                ["select", "Selecionar"],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                className={tool === value ? "active" : ""}
+                aria-pressed={tool === value}
+                onClick={() => setTool(value)}
+              >
+                {label}
+              </button>
             ))}
-          </select>
-        </label>
-        <input
-          ref={importRef}
-          type="file"
-          accept="image/png"
-          aria-label="Importar PNG"
-          onChange={(event) => void importPng(event.currentTarget.files?.[0])}
-        />
-        <button
-          type="button"
-          disabled={undoRef.current.length === 0}
-          onClick={() => {
-            const previous = undoRef.current.pop();
-            if (previous !== undefined) {
-              redoRef.current.push(source);
-              setSource(previous);
-            }
-          }}
-        >
-          Desfazer
-        </button>
-        <button
-          type="button"
-          disabled={redoRef.current.length === 0}
-          onClick={() => {
-            const next = redoRef.current.pop();
-            if (next !== undefined) {
-              undoRef.current.push(source);
-              setSource(next);
-            }
-          }}
-        >
-          Refazer
-        </button>
-        <button
-          type="button"
-          disabled={selection === null || activeLayer?.locked}
-          onClick={() => moveSelection(-1, 0)}
-        >
-          ←
-        </button>
-        <button
-          type="button"
-          disabled={selection === null || activeLayer?.locked}
-          onClick={() => moveSelection(1, 0)}
-        >
-          →
-        </button>
-        <button
-          type="button"
-          disabled={selection === null || activeLayer?.locked}
-          onClick={() => moveSelection(0, -1)}
-        >
-          ↑
-        </button>
-        <button
-          type="button"
-          disabled={selection === null || activeLayer?.locked}
-          onClick={() => moveSelection(0, 1)}
-        >
-          ↓
-        </button>
+          </div>
+        </div>
+        <div className="pixel-tool-group" data-tool-group="transform-view">
+          <span className="pixel-tool-group-label">
+            Transformar e visualizar
+          </span>
+          <div className="pixel-tool-group-controls">
+            <label className="pixel-checkbox-control">
+              <input
+                type="checkbox"
+                checked={mirror}
+                onChange={(event) => setMirror(event.target.checked)}
+              />{" "}
+              Espelhar
+            </label>
+            <AipSelect
+              id="pixel-zoom"
+              label="Zoom"
+              value={String(zoom)}
+              options={[2, 4, 6, 8].map((value) => ({
+                value: String(value),
+                label: `${value}×`,
+              }))}
+              description="Escala da grade de edição."
+              onChange={(value) => setZoom(Number(value))}
+            />
+            <div className="pixel-nudge-controls" aria-label="Mover seleção">
+              <button
+                type="button"
+                aria-label="Mover seleção para a esquerda"
+                disabled={selection === null || activeLayer?.locked}
+                onClick={() => moveSelection(-1, 0)}
+              >
+                ←
+              </button>
+              <button
+                type="button"
+                aria-label="Mover seleção para a direita"
+                disabled={selection === null || activeLayer?.locked}
+                onClick={() => moveSelection(1, 0)}
+              >
+                →
+              </button>
+              <button
+                type="button"
+                aria-label="Mover seleção para cima"
+                disabled={selection === null || activeLayer?.locked}
+                onClick={() => moveSelection(0, -1)}
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                aria-label="Mover seleção para baixo"
+                disabled={selection === null || activeLayer?.locked}
+                onClick={() => moveSelection(0, 1)}
+              >
+                ↓
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className="pixel-tool-group" data-tool-group="history">
+          <span className="pixel-tool-group-label">Histórico</span>
+          <div className="pixel-tool-group-controls">
+            <button
+              type="button"
+              disabled={undoRef.current.length === 0}
+              onClick={() => {
+                const previous = undoRef.current.pop();
+                if (previous !== undefined) {
+                  redoRef.current.push(source);
+                  setSource(previous);
+                }
+              }}
+            >
+              Desfazer
+            </button>
+            <button
+              type="button"
+              disabled={redoRef.current.length === 0}
+              onClick={() => {
+                const next = redoRef.current.pop();
+                if (next !== undefined) {
+                  undoRef.current.push(source);
+                  setSource(next);
+                }
+              }}
+            >
+              Refazer
+            </button>
+          </div>
+        </div>
+        <div className="pixel-tool-group" data-tool-group="file">
+          <span className="pixel-tool-group-label">Arquivo</span>
+          <div className="pixel-tool-group-controls">
+            <FilePicker
+              id="pixel-import"
+              label="Importar PNG"
+              accept="image/png"
+              buttonLabel="Escolher PNG"
+              description="PNG de até 1 MB."
+              onChange={(file) => void importPng(file)}
+            />
+            <button type="button" onClick={() => void save()}>
+              Salvar arte
+            </button>
+          </div>
+        </div>
       </div>
       {document ? (
         <div className="pixel-layers" aria-label="Camadas">
@@ -6147,9 +6162,6 @@ export function PixelDocumentEditor({ agentId }: { agentId: string }) {
           aria-label="Documento de pixel art"
         />
       </details>
-      <button type="button" onClick={() => void save()}>
-        Salvar arte
-      </button>
       {error ? <p role="alert">{error}</p> : null}
     </details>
   );
@@ -8320,14 +8332,17 @@ export function ScreenVisionControls({
   }
 
   return (
-    <section className="tool-controls" aria-label="Visão de tela sob demanda">
+    <section
+      className="tool-controls screen-vision-controls"
+      aria-label="Visão de tela sob demanda"
+    >
       <h3>Visão de tela sob demanda</h3>
-      <p>
+      <p className="readable-helper">
         Displays reais do Windows aparecem quando disponíveis; a captura só
         ocorre após confirmação explícita do Owner, em memória e sem upload ou
         persistência padrão. Fixtures continuam determinísticas para testes.
       </p>
-      <p>
+      <p className="readable-helper">
         Owner confirmado: <code>{OWNER_USER_ID}</code>. O Rust valida essa
         identidade, as permissões, o modo e todo o ciclo de vida.
       </p>
@@ -8339,8 +8354,8 @@ export function ScreenVisionControls({
       ) : null}
       {error ? <p role="alert">{error}</p> : null}
 
-      <section className="settings-card">
-        <div className="message-actions">
+      <section className="settings-card resource-panel">
+        <div className="resource-section-heading">
           <h4>Displays e fixtures disponíveis</h4>
           <button
             type="button"
@@ -8358,22 +8373,19 @@ export function ScreenVisionControls({
           <p>Nenhum display ou fixture disponível.</p>
         ) : (
           <>
-            <label>
-              Display ou fixture
-              <select
-                value={selectedFixtureId}
-                onChange={(event) => setSelectedFixtureId(event.target.value)}
-                disabled={busy}
-              >
-                {fixtures.map((fixture) => (
-                  <option key={fixture.fixtureId} value={fixture.fixtureId}>
-                    {fixture.displayName} — {fixture.width}×{fixture.height}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <AipSelect
+              id="screen-vision-fixture"
+              label="Display ou fixture"
+              value={selectedFixtureId}
+              options={fixtures.map((fixture) => ({
+                value: fixture.fixtureId,
+                label: `${fixture.displayName} — ${fixture.width}×${fixture.height}`,
+              }))}
+              onChange={setSelectedFixtureId}
+              disabled={busy}
+            />
             {selectedFixture ? (
-              <p>
+              <p className="readable-helper">
                 {selectedFixture.synthetic
                   ? `Fixture sintética; monitor ${selectedFixture.monitorId}; metadata-only.`
                   : `Display real; monitor ${selectedFixture.monitorId}; captura sob demanda.`}{" "}
@@ -8384,57 +8396,69 @@ export function ScreenVisionControls({
         )}
       </section>
 
-      <section className="settings-card">
+      <section className="settings-card resource-panel">
         <h4>Nova sessão autorizada</h4>
-        <fieldset disabled={busy || blocked || selectedFixture === undefined}>
-          <legend>Permissões desta sessão</legend>
-          <label>
-            <input
-              type="checkbox"
-              checked={allowCapture}
-              onChange={(event) => setAllowCapture(event.target.checked)}
-            />{" "}
-            Permitir captura do display selecionado
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={allowAnalyze}
-              onChange={(event) => setAllowAnalyze(event.target.checked)}
-            />{" "}
-            Permitir análise local limitada
-          </label>
-          <legend>Exclusão e redaction</legend>
-          <label>
-            <input
-              type="checkbox"
-              checked={excludeSensitiveContent}
-              onChange={(event) =>
-                setExcludeSensitiveContent(event.target.checked)
-              }
-            />{" "}
-            Excluir conteúdo sensível (obrigatório)
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={excludeSensitiveRegions}
-              onChange={(event) =>
-                setExcludeSensitiveRegions(event.target.checked)
-              }
-            />{" "}
-            Excluir regiões sensíveis (obrigatório)
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={excludeTextLikeRegions}
-              onChange={(event) =>
-                setExcludeTextLikeRegions(event.target.checked)
-              }
-            />{" "}
-            Excluir regiões semelhantes a texto
-          </label>
+        <div className="screen-vision-field-groups">
+          <fieldset
+            className="screen-vision-fieldset"
+            disabled={busy || blocked || selectedFixture === undefined}
+          >
+            <legend>Permissões desta sessão</legend>
+            <label className="screen-vision-checkbox">
+              <input
+                type="checkbox"
+                checked={allowCapture}
+                onChange={(event) => setAllowCapture(event.target.checked)}
+              />
+              <span>Permitir captura do display selecionado</span>
+            </label>
+            <label className="screen-vision-checkbox">
+              <input
+                type="checkbox"
+                checked={allowAnalyze}
+                onChange={(event) => setAllowAnalyze(event.target.checked)}
+              />
+              <span>Permitir análise local limitada</span>
+            </label>
+          </fieldset>
+          <fieldset
+            className="screen-vision-fieldset"
+            disabled={busy || blocked || selectedFixture === undefined}
+          >
+            <legend>Exclusão e redaction</legend>
+            <label className="screen-vision-checkbox">
+              <input
+                type="checkbox"
+                checked={excludeSensitiveContent}
+                onChange={(event) =>
+                  setExcludeSensitiveContent(event.target.checked)
+                }
+              />
+              <span>Excluir conteúdo sensível (obrigatório)</span>
+            </label>
+            <label className="screen-vision-checkbox">
+              <input
+                type="checkbox"
+                checked={excludeSensitiveRegions}
+                onChange={(event) =>
+                  setExcludeSensitiveRegions(event.target.checked)
+                }
+              />
+              <span>Excluir regiões sensíveis (obrigatório)</span>
+            </label>
+            <label className="screen-vision-checkbox">
+              <input
+                type="checkbox"
+                checked={excludeTextLikeRegions}
+                onChange={(event) =>
+                  setExcludeTextLikeRegions(event.target.checked)
+                }
+              />
+              <span>Excluir regiões semelhantes a texto</span>
+            </label>
+          </fieldset>
+        </div>
+        <div className="screen-vision-number-fields">
           <label>
             Quota de jobs por sessão (1–8)
             <input
@@ -8455,41 +8479,40 @@ export function ScreenVisionControls({
               onChange={(event) => setMaxDurationMs(event.target.value)}
             />
           </label>
-          <button
-            type="button"
-            disabled={busy || blocked || selectedFixture === undefined}
-            onClick={() => void createSession()}
-          >
-            Criar sessão limitada
-          </button>
-        </fieldset>
+        </div>
+        <button
+          type="button"
+          disabled={busy || blocked || selectedFixture === undefined}
+          onClick={() => void createSession()}
+        >
+          Criar sessão limitada
+        </button>
       </section>
 
-      <section className="settings-card">
+      <section className="settings-card resource-panel">
         <h4>Sessões e prévias</h4>
-        <label>
-          Sessão atual
-          <select
-            value={selectedSessionId}
-            onChange={(event) => setSelectedSessionId(event.target.value)}
-            disabled={busy}
-          >
-            <option value="">Nenhuma sessão</option>
-            {sessions.map((session) => (
-              <option key={session.id} value={session.id}>
-                {session.monitorId} — {screenVisionStatusLabels[session.status]}
-              </option>
-            ))}
-          </select>
-        </label>
+        <AipSelect
+          id="screen-vision-session"
+          label="Sessão atual"
+          value={selectedSessionId}
+          options={[
+            { value: "", label: "Nenhuma sessão" },
+            ...sessions.map((session) => ({
+              value: session.id,
+              label: `${session.monitorId} — ${screenVisionStatusLabels[session.status]}`,
+            })),
+          ]}
+          onChange={setSelectedSessionId}
+          disabled={busy}
+        />
         {selectedSession ? (
           <>
-            <p>
+            <p className="readable-helper">
               Permissões: {selectedSession.permissions.join(", ")}; quota:{" "}
               {selectedSession.maxJobs} jobs / {selectedSession.maxDurationMs}{" "}
               ms; redaction obrigatória ativa.
             </p>
-            <div className="message-actions">
+            <div className="message-actions resource-actions">
               <button
                 type="button"
                 disabled={
@@ -8515,36 +8538,35 @@ export function ScreenVisionControls({
         )}
       </section>
 
-      <section className="settings-card">
+      <section className="settings-card resource-panel">
         <h4>Jobs e confirmação explícita</h4>
-        <label>
-          Job atual
-          <select
-            value={selectedJobId}
-            onChange={(event) => setSelectedJobId(event.target.value)}
-            disabled={busy}
-          >
-            <option value="">Nenhum job</option>
-            {jobs.map((job) => (
-              <option key={job.id} value={job.id}>
-                {job.monitorId} — {screenVisionStatusLabels[job.status]}
-              </option>
-            ))}
-          </select>
-        </label>
+        <AipSelect
+          id="screen-vision-job"
+          label="Job atual"
+          value={selectedJobId}
+          options={[
+            { value: "", label: "Nenhum job" },
+            ...jobs.map((job) => ({
+              value: job.id,
+              label: `${job.monitorId} — ${screenVisionStatusLabels[job.status]}`,
+            })),
+          ]}
+          onChange={setSelectedJobId}
+          disabled={busy}
+        />
         {selectedJob ? (
           <>
-            <p>
+            <p className="readable-helper">
               Status: {screenVisionStatusLabels[selectedJob.status]}; modelo:{" "}
               {screenVisionLifecycleLabels[selectedJob.modelLifecycle]};
               recurso: {selectedJob.resourceStatus}; cleanup:{" "}
               {selectedJob.cleanupStatus}.
             </p>
-            <p>
+            <p className="readable-helper">
               Prévia {selectedJob.preview.width}×{selectedJob.preview.height};
               confirmação necessária; bytes persistidos: não.
             </p>
-            <div className="message-actions">
+            <div className="message-actions resource-actions">
               <button
                 type="button"
                 disabled={busy || blocked || selectedJob.status !== "previewed"}
@@ -8588,10 +8610,13 @@ export function ScreenVisionControls({
           <p>Nenhuma prévia selecionada.</p>
         )}
         {hypothesis ? (
-          <section className="settings-card" aria-label="Hipótese incerta">
+          <section
+            className="settings-card resource-panel"
+            aria-label="Hipótese incerta"
+          >
             <h4>Resultado incerto e não diagnóstico</h4>
-            <p>{hypothesis.text}</p>
-            <p>
+            <p className="readable-helper">{hypothesis.text}</p>
+            <p className="readable-helper">
               Confiança limitada: {hypothesis.confidence}%; fonte:{" "}
               {hypothesis.source}. Não é atributo sensível e não é salvo como
               memória visual.
@@ -8600,10 +8625,12 @@ export function ScreenVisionControls({
         ) : null}
       </section>
 
-      <section className="settings-card">
+      <section className="settings-card resource-panel">
         <h4>Auditoria recente</h4>
         {audit.length === 0 ? (
-          <p>Nenhum evento de visão sintética registrado para este agente.</p>
+          <p className="readable-helper">
+            Nenhum evento de visão sintética registrado para este agente.
+          </p>
         ) : (
           <ul>
             {audit.slice(0, 20).map((record) => (

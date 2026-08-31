@@ -34,6 +34,16 @@ type AipSelectProps = {
   disabled?: boolean;
 };
 
+export type FilePickerProps = {
+  id: string;
+  label: ReactNode;
+  accept?: string;
+  buttonLabel?: string;
+  description?: ReactNode;
+  disabled?: boolean;
+  onChange: (file: File | undefined) => void;
+};
+
 const VIEWPORT_PADDING = 8;
 const MENU_GAP = 4;
 const MIN_MENU_HEIGHT = 96;
@@ -319,5 +329,73 @@ export function AipSelect({
       ) : null}
       {menu}
     </label>
+  );
+}
+
+export function FilePicker({
+  id,
+  label,
+  accept,
+  buttonLabel = "Escolher arquivo",
+  description,
+  disabled = false,
+  onChange,
+}: FilePickerProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const labelId = `${id}-label`;
+  const inputId = `${id}-input`;
+  const filenameId = `${id}-filename`;
+  const descriptionId = `${id}-description`;
+  const [fileName, setFileName] = useState("");
+
+  return (
+    <div className="aip-file-picker" data-aip-file-picker={id}>
+      <span id={labelId} className="aip-file-picker-label">
+        {label}
+      </span>
+      <div className="aip-file-picker-row">
+        <button
+          type="button"
+          className="aip-file-picker-action"
+          disabled={disabled}
+          aria-controls={inputId}
+          aria-describedby={
+            description ? `${filenameId} ${descriptionId}` : filenameId
+          }
+          onClick={() => inputRef.current?.click()}
+        >
+          {buttonLabel}
+        </button>
+        <span
+          id={filenameId}
+          className="aip-file-picker-name readable-helper"
+          aria-live="polite"
+        >
+          {fileName || "Nenhum arquivo selecionado"}
+        </span>
+      </div>
+      <input
+        ref={inputRef}
+        id={inputId}
+        className="visually-hidden"
+        type="file"
+        accept={accept}
+        aria-labelledby={labelId}
+        aria-describedby={
+          description ? `${filenameId} ${descriptionId}` : filenameId
+        }
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          setFileName(file?.name ?? "");
+          onChange(file);
+          event.currentTarget.value = "";
+        }}
+      />
+      {description ? (
+        <span id={descriptionId} className="aip-file-picker-description">
+          {description}
+        </span>
+      ) : null}
+    </div>
   );
 }
