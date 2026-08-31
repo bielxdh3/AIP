@@ -195,11 +195,7 @@ def _validate_executable(value: str) -> Path:
 
 
 def _bounded_path(value: str) -> Path:
-    if (
-        not value
-        or len(value) > MAX_PATH_LENGTH
-        or any(ord(character) < 32 for character in value)
-    ):
+    if not value or len(value) > MAX_PATH_LENGTH or any(ord(character) < 32 for character in value):
         raise ProviderError("provider_config_invalid")
     path = Path(value)
     if not path.is_absolute():
