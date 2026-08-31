@@ -54,17 +54,17 @@ body {
   background: #3b8778;
 }
 
-:root[data-surface="overlay"],
-:root[data-surface="overlay"] body,
-:root[data-surface="overlay"] #root {
+html[data-surface="overlay"],
+html[data-surface="overlay"] body,
+html[data-surface="overlay"] #root {
   min-width: 0;
   background: rgba(0, 0, 0, 0) !important;
   overflow: hidden;
 }
 
-:root[data-surface="bubble"],
-:root[data-surface="bubble"] body,
-:root[data-surface="bubble"] #root {
+html[data-surface="bubble"],
+html[data-surface="bubble"] body,
+html[data-surface="bubble"] #root {
   min-width: 0;
   background: transparent !important;
   overflow: hidden;
@@ -2691,7 +2691,7 @@ h3 {
   width: 100vw;
   height: 100vh;
   place-items: center;
-  background: rgba(0, 0, 0, 0) !important;
+  background: transparent !important;
   overflow: hidden;
 }
 

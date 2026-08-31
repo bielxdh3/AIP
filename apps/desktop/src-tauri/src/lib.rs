@@ -3024,10 +3024,22 @@ fn open_agent_conversations(
     let window = app
         .get_webview_window("main")
         .ok_or("operation_unavailable")?;
-    window.show().map_err(|_| "operation_failed")?;
+    window.unminimize().map_err(|_| "operation_failed")?;
+    if !window.is_visible().map_err(|_| "operation_failed")? {
+        window.show().map_err(|_| "operation_failed")?;
+    }
     window.set_focus().map_err(|_| "operation_failed")?;
     app.emit_to("main", "open-agent-conversations", agent_id)
         .map_err(|_| "operation_failed")
+}
+
+#[cfg(test)]
+fn workspace_window_action(is_visible: bool) -> &'static str {
+    if is_visible {
+        "unminimize-and-focus"
+    } else {
+        "unminimize-show-and-focus"
+    }
 }
 
 #[tauri::command]
@@ -3449,6 +3461,15 @@ mod conversation_command_tests {
             companion_transport: Arc::new(Mutex::new(CompanionTransportState::default())),
             gateway_transport: Arc::new(Mutex::new(GatewayTransportState::default())),
         }
+    }
+
+    #[test]
+    fn workspace_navigation_only_shows_a_hidden_main_window() {
+        assert_eq!(
+            super::workspace_window_action(false),
+            "unminimize-show-and-focus"
+        );
+        assert_eq!(super::workspace_window_action(true), "unminimize-and-focus");
     }
 
     fn policy(agent_id: &str, purpose: &str, max_turns: i64) -> ConversationPolicyRequest {

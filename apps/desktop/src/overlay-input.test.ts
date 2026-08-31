@@ -64,6 +64,22 @@ describe("sprite alpha regions", () => {
     ).toEqual([]);
   });
 
+  it("derives selection regions from visible sprite pixels, not the WebView box", () => {
+    const regions = buildInteractiveRegions(
+      { width: 4, height: 4, regions: [{ x: 1, y: 1, width: 1, height: 1 }] },
+      { x: 30, y: 40, width: 128, height: 128 },
+      null,
+      null,
+    );
+    expect(regions).toEqual([{ x: 62, y: 72, width: 32, height: 32 }]);
+    expect(regions).not.toContainEqual({
+      x: 0,
+      y: 0,
+      width: 180,
+      height: 192,
+    });
+  });
+
   it("adds label and only the currently visible thought rectangle", () => {
     const label = { x: 5, y: 6, width: 20, height: 8 };
     const thought = { x: 30, y: 2, width: 16, height: 10 };

@@ -80,6 +80,10 @@ describe("Bubble composer", () => {
     document.body.append(view);
     root = createRoot(view);
     renderBubble();
+    expect(invoke).toHaveBeenCalledWith("set_overlay_interactive_regions", {
+      agentId: "agent",
+      regions: [],
+    });
     await act(async () =>
       view.querySelector<HTMLButtonElement>(".bubble-title")?.click(),
     );
