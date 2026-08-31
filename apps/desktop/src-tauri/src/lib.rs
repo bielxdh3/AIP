@@ -120,7 +120,7 @@ struct AppState {
     overlay_input: OverlayInputState,
     companion_transport: Arc<Mutex<CompanionTransportState>>,
     gateway_transport: Arc<Mutex<GatewayTransportState>>,
-    pub(crate) orchestration: OrchestrationManager,
+    pub(crate) orchestration: Arc<Mutex<OrchestrationManager>>,
 }
 
 #[derive(Default)]
@@ -3198,12 +3198,14 @@ pub fn run() {
             let runtime =
                 RuntimeController::new(runtime_source_root(app.handle()), stored_safe_mode);
             let overlay_input = OverlayInputState::default();
+            let orchestration = Arc::new(Mutex::new(OrchestrationManager::default()));
             let chat = database.as_ref().map(|database| {
                 ChatCoordinator::new(
                     app.handle().clone(),
                     database.clone(),
                     runtime.clone(),
                     Arc::clone(&safe_mode),
+                    Arc::clone(&orchestration),
                 )
             });
 
@@ -3216,7 +3218,7 @@ pub fn run() {
                 overlay_input: overlay_input.clone(),
                 companion_transport: Arc::new(Mutex::new(CompanionTransportState::default())),
                 gateway_transport: Arc::new(Mutex::new(GatewayTransportState::default())),
-                orchestration: OrchestrationManager::default(),
+                orchestration,
             });
             if let Some(database) = database.as_ref() {
                 overlays::create_windows(app, database, stored_safe_mode, overlay_input.clone())?;
@@ -3491,7 +3493,7 @@ mod conversation_command_tests {
             overlay_input: OverlayInputState::default(),
             companion_transport: Arc::new(Mutex::new(CompanionTransportState::default())),
             gateway_transport: Arc::new(Mutex::new(GatewayTransportState::default())),
-            orchestration: OrchestrationManager::default(),
+            orchestration: Arc::new(Mutex::new(OrchestrationManager::default())),
         }
     }
 

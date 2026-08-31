@@ -14,6 +14,7 @@ pub const MAX_RESERVATIONS: usize = 256;
 pub const MAX_MEMORY_MB: u64 = 2_000_000;
 pub const MAX_PERFORMANCE_SCORE: u32 = 1_000_000;
 pub const MAX_LATENCY_MS: u32 = 60_000;
+pub const MAX_ROUTING_MODEL_REFS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -263,6 +264,77 @@ impl RequestPriority {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingMode {
+    Auto,
+    Quality,
+    Speed,
+    Manual,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RoutingPolicy {
+    pub mode: RoutingMode,
+    pub excluded_model_refs: Vec<String>,
+    pub fallback_only_model_refs: Vec<String>,
+    pub preferred_model_ref: Option<String>,
+}
+
+impl Default for RoutingPolicy {
+    fn default() -> Self {
+        Self {
+            mode: RoutingMode::Auto,
+            excluded_model_refs: Vec::new(),
+            fallback_only_model_refs: Vec::new(),
+            preferred_model_ref: None,
+        }
+    }
+}
+
+impl RoutingPolicy {
+    fn validate(&self) -> Result<(), OrchestrationError> {
+        if self.excluded_model_refs.len() > MAX_ROUTING_MODEL_REFS
+            || self.fallback_only_model_refs.len() > MAX_ROUTING_MODEL_REFS
+        {
+            return Err(OrchestrationError::InvalidContract("routing_policy"));
+        }
+        for model_ref in self
+            .excluded_model_refs
+            .iter()
+            .chain(&self.fallback_only_model_refs)
+        {
+            validate_id(model_ref, "routing_model_ref")?;
+        }
+        if let Some(model_ref) = &self.preferred_model_ref {
+            validate_id(model_ref, "routing_preferred_model_ref")?;
+        }
+        Ok(())
+    }
+
+    fn accepts(&self, model_ref: &str) -> bool {
+        !self
+            .excluded_model_refs
+            .iter()
+            .any(|excluded| excluded == model_ref)
+    }
+
+    fn is_fallback_only(&self, model_ref: &str) -> bool {
+        self.fallback_only_model_refs
+            .iter()
+            .any(|fallback| fallback == model_ref)
+    }
+
+    fn preferred_bonus(&self, model_ref: &str) -> i64 {
+        if self.preferred_model_ref.as_deref() == Some(model_ref) {
+            500
+        } else {
+            0
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RoutingRequest {
@@ -362,6 +434,95 @@ pub struct OrchestrationManager {
 }
 
 impl OrchestrationManager {
+    pub fn sync_local_provider(
+        &mut self,
+        model_refs: &[String],
+        node_health: HealthSnapshot,
+        provider_health: HealthSnapshot,
+    ) -> Result<(), OrchestrationError> {
+        const NODE_ID: &str = "local-ollama";
+        const PROVIDER_ID: &str = "ollama";
+        node_health.validate()?;
+        provider_health.validate()?;
+        for model_ref in model_refs {
+            validate_id(model_ref, "model_ref")?;
+        }
+
+        if !self.nodes.contains_key(NODE_ID) {
+            self.register_node(ComputeNode {
+                id: NODE_ID.into(),
+                ram_total_mb: MAX_MEMORY_MB,
+                ram_available_mb: MAX_MEMORY_MB,
+                gpus: Vec::new(),
+                queue: QueueLoad {
+                    depth: 0,
+                    active: 0,
+                    capacity: MAX_QUEUE_CAPACITY,
+                },
+                loaded_models: Vec::new(),
+                priority: 0,
+                estimated_performance: 500,
+                estimated_latency_ms: 100,
+                health: node_health,
+            })?;
+        } else if let Some(node) = self.nodes.get_mut(NODE_ID) {
+            node.health = node_health;
+        }
+
+        self.models.retain(|_, model| {
+            model.provider_id != PROVIDER_ID || model_refs.contains(&model.model_ref)
+        });
+        if model_refs.is_empty() {
+            self.providers.remove(PROVIDER_ID);
+            return Ok(());
+        }
+
+        let provider = Provider {
+            id: PROVIDER_ID.into(),
+            node_id: NODE_ID.into(),
+            model_refs: model_refs.to_vec(),
+            priority: 0,
+            health: provider_health,
+        };
+        provider.validate()?;
+        if self.providers.contains_key(PROVIDER_ID) {
+            self.providers.insert(PROVIDER_ID.into(), provider);
+        } else {
+            self.register_provider(provider)?;
+        }
+        for model_ref in model_refs {
+            self.register_model(ModelSpec {
+                model_ref: model_ref.clone(),
+                provider_id: PROVIDER_ID.into(),
+                capabilities: vec![ModelCapability::TextGeneration],
+                vram_mb: 0,
+                ram_mb: 1,
+                estimated_performance: 500,
+                estimated_latency_ms: 100,
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn rank_candidates_with_policy(
+        &self,
+        request: &RoutingRequest,
+        policy: &RoutingPolicy,
+    ) -> Result<Vec<RouteCandidate>, OrchestrationError> {
+        policy.validate()?;
+        let mut candidates = self.rank_candidates_unfiltered(request, policy)?;
+        if candidates
+            .iter()
+            .any(|candidate| !policy.is_fallback_only(&candidate.model_ref))
+        {
+            candidates.retain(|candidate| !policy.is_fallback_only(&candidate.model_ref));
+        }
+        if candidates.is_empty() {
+            return Err(OrchestrationError::NoCompatibleCandidate);
+        }
+        Ok(candidates)
+    }
+
     pub fn register_node(&mut self, node: ComputeNode) -> Result<(), OrchestrationError> {
         node.validate()?;
         if !self.nodes.contains_key(&node.id) && self.nodes.len() >= MAX_COMPUTE_NODES {
@@ -435,6 +596,14 @@ impl OrchestrationManager {
         &self,
         request: &RoutingRequest,
     ) -> Result<Vec<RouteCandidate>, OrchestrationError> {
+        self.rank_candidates_unfiltered(request, &RoutingPolicy::default())
+    }
+
+    fn rank_candidates_unfiltered(
+        &self,
+        request: &RoutingRequest,
+        policy: &RoutingPolicy,
+    ) -> Result<Vec<RouteCandidate>, OrchestrationError> {
         request.validate()?;
         let mut compatible = false;
         let mut healthy = false;
@@ -455,6 +624,7 @@ impl OrchestrationManager {
                     .as_ref()
                     .is_some_and(|requested| requested != model_ref)
                     || !model.capabilities.contains(&request.capability)
+                    || !policy.accepts(model_ref)
                 {
                     continue;
                 }
@@ -504,7 +674,7 @@ impl OrchestrationManager {
                         model,
                         loaded_model_reuse,
                         estimated_latency_ms,
-                    ),
+                    ) + policy.preferred_bonus(model_ref),
                     queue_status,
                     queue_position: if queue_status == QueueStatus::Ready {
                         0
@@ -550,12 +720,24 @@ impl OrchestrationManager {
         &mut self,
         request: RoutingRequest,
     ) -> Result<GenerationReservation, OrchestrationError> {
-        self.reserve_with(request, |_| Ok(()))
+        self.reserve_with_policy(request, RoutingPolicy::default(), |_| Ok(()))
     }
 
     pub fn reserve_with<F>(
         &mut self,
         request: RoutingRequest,
+        mut try_reserve: F,
+    ) -> Result<GenerationReservation, OrchestrationError>
+    where
+        F: FnMut(&RouteCandidate) -> Result<(), &'static str>,
+    {
+        self.reserve_with_policy(request, RoutingPolicy::default(), try_reserve)
+    }
+
+    pub fn reserve_with_policy<F>(
+        &mut self,
+        request: RoutingRequest,
+        policy: RoutingPolicy,
         mut try_reserve: F,
     ) -> Result<GenerationReservation, OrchestrationError>
     where
@@ -568,7 +750,7 @@ impl OrchestrationManager {
         if self.reservations.len() >= MAX_RESERVATIONS {
             return Err(OrchestrationError::ReservationStoreFull);
         }
-        let candidates = self.rank_candidates(&request)?;
+        let candidates = self.rank_candidates_with_policy(&request, &policy)?;
         for candidate in candidates {
             if try_reserve(&candidate).is_err() {
                 continue;

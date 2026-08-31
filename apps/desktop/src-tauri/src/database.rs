@@ -1624,9 +1624,27 @@ impl Database {
         content: &str,
         model_ref: &str,
     ) -> Result<MessageAttempt, DatabaseError> {
+        self.create_message_attempt_with_request_id(
+            agent_id,
+            conversation_id,
+            content,
+            model_ref,
+            &Uuid::now_v7().to_string(),
+        )
+    }
+
+    pub fn create_message_attempt_with_request_id(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        content: &str,
+        model_ref: &str,
+        request_id: &str,
+    ) -> Result<MessageAttempt, DatabaseError> {
         if content.is_empty()
             || content.len() > MAX_USER_MESSAGE_BYTES
             || !valid_model_ref(model_ref)
+            || Uuid::parse_str(request_id).is_err()
         {
             return Err(DatabaseError::InvalidValue);
         }
@@ -1636,7 +1654,7 @@ impl Database {
         let branch_id = active_branch_id_tx(&transaction, agent_id, conversation_id)?;
         let now = now_millis();
         let attempt = MessageAttempt {
-            request_id: Uuid::now_v7().to_string(),
+            request_id: request_id.to_string(),
             user_message_id: Uuid::now_v7().to_string(),
             assistant_message_id: Uuid::now_v7().to_string(),
             branch_id: branch_id.clone(),
