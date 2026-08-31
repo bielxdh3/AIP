@@ -12,4 +12,13 @@ describe("agent conversation navigation", () => {
       agentId: "agt_luma_provisional",
     });
   });
+
+  it("forwards the current conversation when opening full chat", async () => {
+    invoke.mockResolvedValue(undefined);
+    await openAgentConversations("agt_luma_provisional", "conversation-luma-2");
+    expect(invoke).toHaveBeenCalledWith("open_agent_conversations", {
+      agentId: "agt_luma_provisional",
+      conversationId: "conversation-luma-2",
+    });
+  });
 });

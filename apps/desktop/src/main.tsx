@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import Bubble from "./Bubble";
 import Overlay from "./Overlay";
+import { ThemeProvider } from "./theme";
 
 class RenderErrorBoundary extends React.Component<
   React.PropsWithChildren,
@@ -41,13 +42,15 @@ document.documentElement.dataset.surface = agentId
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <RenderErrorBoundary>
     <React.StrictMode>
-      {agentId ? (
-        <Overlay agentId={agentId} />
-      ) : bubbleAgentId ? (
-        <Bubble agentId={bubbleAgentId} />
-      ) : (
-        <App />
-      )}
+      <ThemeProvider>
+        {agentId ? (
+          <Overlay agentId={agentId} />
+        ) : bubbleAgentId ? (
+          <Bubble agentId={bubbleAgentId} />
+        ) : (
+          <App />
+        )}
+      </ThemeProvider>
     </React.StrictMode>
   </RenderErrorBoundary>,
 );

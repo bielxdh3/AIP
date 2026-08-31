@@ -8,6 +8,7 @@ import {
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { createPortal } from "react-dom";
 import {
   parseProviderSnapshot,
   parseLocalProviders,
@@ -191,9 +192,20 @@ import {
   isNearConversationBottom,
   shouldScrollConversationToBottom,
 } from "./conversation-scroll";
-import { OPEN_AGENT_CONVERSATIONS_EVENT } from "./agent-navigation";
+import {
+  OPEN_AGENT_CONVERSATIONS_EVENT,
+  type OpenAgentConversationsPayload,
+} from "./agent-navigation";
 import { usePhaseOne } from "./use-phase-one";
 import { createListenerRegistration } from "./listener-lifecycle";
+import { ThemeControls } from "./theme";
+import { AipSelect, FilePicker } from "./shared-controls";
+import {
+  MODEL_POLICY_MODES,
+  type ModelPolicyMode,
+  routingPolicyPayload,
+  useModelPreferences,
+} from "./model-preferences";
 import {
   nextLayerId,
   floodFillLayer,
@@ -390,31 +402,40 @@ function DatePicker({
   }, [open, selected, selectedDate, view.month, view.year]);
 
   function shiftMonth(delta: number) {
-    const next = new Date(Date.UTC(view.year, view.month + delta, 1));
+    const year = commitYearText();
+    const next = new Date(Date.UTC(year, view.month + delta, 1));
     setView({ year: next.getUTCFullYear(), month: next.getUTCMonth() });
     setYearText(String(next.getUTCFullYear()));
   }
 
   function selectMonth(month: number) {
-    setView((current) => ({ ...current, month }));
+    const year = commitYearText();
+    setView({ year, month });
   }
 
   function selectYear(text: string) {
-    setYearText(text);
-    if (/^\d{1,4}$/.test(text)) {
-      const year = Number(text);
-      if (year >= 1 && year <= 9999)
+    if (/^\d{0,4}$/.test(text)) setYearText(text);
+  }
+
+  function commitYearText(): number {
+    if (/^\d{4}$/.test(yearText)) {
+      const year = Number(yearText);
+      if (year >= 1 && year <= 9999) {
         setView((current) => ({ ...current, year }));
+        return year;
+      }
     }
+    setYearText(String(view.year));
+    return view.year;
   }
 
   function selectDay(day: number) {
-    onChange(isoDate(view.year, view.month, day));
+    onChange(isoDate(commitYearText(), view.month, day));
     setOpen(false);
   }
 
   function moveDay(day: number, delta: number) {
-    const next = new Date(Date.UTC(view.year, view.month, day + delta));
+    const next = new Date(Date.UTC(commitYearText(), view.month, day + delta));
     const nextValue = isoDate(
       next.getUTCFullYear(),
       next.getUTCMonth(),
@@ -492,7 +513,13 @@ function DatePicker({
                   max="9999"
                   value={yearText}
                   onChange={(event) => selectYear(event.target.value)}
-                  onBlur={() => setYearText(String(view.year))}
+                  onBlur={commitYearText}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      commitYearText();
+                    }
+                  }}
                 />
               </label>
             </div>
@@ -583,6 +610,95 @@ function AgentButton({
   );
 }
 
+export type DesktopWorkspace =
+  "chat" | "memories" | "state" | "appearance" | "resources" | "settings";
+
+export function SidebarNavigation({
+  agents,
+  activeAgentId,
+  workspace,
+  onSelectAgent,
+  onWorkspace,
+  onProfile,
+}: {
+  agents: ProvisionalAgent[];
+  activeAgentId: string | null;
+  workspace: DesktopWorkspace;
+  onSelectAgent: (agentId: string) => void;
+  onWorkspace: (workspace: DesktopWorkspace) => void;
+  onProfile: (agentId: string) => void;
+}) {
+  const activeAgent = agents.find((agent) => agent.id === activeAgentId);
+  return (
+    <>
+      <details className="sidebar-section sidebar-agents" open>
+        <summary>
+          <span>Agentes</span>
+          <small>{agents.length}</small>
+        </summary>
+        <div className="agent-tabs">
+          {agents.map((agent) => (
+            <AgentButton
+              key={agent.id}
+              agent={agent}
+              active={agent.id === activeAgentId}
+              onSelect={() => onSelectAgent(agent.id)}
+            />
+          ))}
+        </div>
+      </details>
+      {activeAgentId ? (
+        <details className="sidebar-section sidebar-secondary" open>
+          <summary>
+            <span>Navegação</span>
+            <small>{activeAgent?.name ?? "agente"}</small>
+          </summary>
+          <nav aria-label="Áreas do agente">
+            <p className="sidebar-label">Este agente</p>
+            {(
+              [
+                ["memories", "Memórias"],
+                ["state", "Estado"],
+                ["appearance", "Aparência"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                className={workspace === key ? "active" : undefined}
+                type="button"
+                aria-current={workspace === key ? "page" : undefined}
+                onClick={() => onWorkspace(key)}
+              >
+                {label}
+              </button>
+            ))}
+            <button type="button" onClick={() => onProfile(activeAgentId)}>
+              Perfil de {activeAgent?.name ?? "agente"}
+            </button>
+            <p className="sidebar-label">Aplicativo</p>
+            <button
+              className={workspace === "resources" ? "active" : undefined}
+              type="button"
+              aria-current={workspace === "resources" ? "page" : undefined}
+              onClick={() => onWorkspace("resources")}
+            >
+              Recursos locais
+            </button>
+            <button
+              className={workspace === "settings" ? "active" : undefined}
+              type="button"
+              aria-current={workspace === "settings" ? "page" : undefined}
+              onClick={() => onWorkspace("settings")}
+            >
+              Configurações
+            </button>
+          </nav>
+        </details>
+      ) : null}
+    </>
+  );
+}
+
 function ConfirmDialog({
   title,
   description,
@@ -620,7 +736,10 @@ function ConfirmDialog({
     if (event.shiftKey && document.activeElement === cancelRef.current) {
       event.preventDefault();
       confirmRef.current?.focus();
-    } else if (!event.shiftKey && document.activeElement === confirmRef.current) {
+    } else if (
+      !event.shiftKey &&
+      document.activeElement === confirmRef.current
+    ) {
       event.preventDefault();
       cancelRef.current?.focus();
     }
@@ -700,7 +819,10 @@ function modelSizeLabel(size: number): string | null {
   return `${gigabytes >= 1 ? gigabytes.toFixed(1) : (size / 1_000_000).toFixed(0)} ${gigabytes >= 1 ? "GB" : "MB"}`;
 }
 
-function modelOption(model: OllamaModel): ModelPickerOption {
+function modelOption(
+  model: OllamaModel,
+  unavailable = false,
+): ModelPickerOption {
   const capabilities = model.capabilities ?? [];
   const metadata = [
     "Ollama",
@@ -709,15 +831,30 @@ function modelOption(model: OllamaModel): ModelPickerOption {
     model.family,
     modelSizeLabel(model.size),
     capabilities.length > 0 ? capabilities.join(", ") : null,
-  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+  ].filter(
+    (value): value is string => typeof value === "string" && value.length > 0,
+  );
   return {
     ref: model.ref,
     label: model.displayName,
     detail: metadata.join(" · "),
-    searchText: [model.displayName, model.ref, model.providerModelId, ...metadata]
+    unavailable,
+    searchText: [
+      model.displayName,
+      model.ref,
+      model.providerModelId,
+      ...metadata,
+    ]
       .join(" ")
       .toLowerCase(),
   };
+}
+
+function modelPickerOptionId(
+  listboxId: string,
+  option: ModelPickerOption,
+): string {
+  return `${listboxId}-option-${option.ref === null ? "default" : encodeURIComponent(option.ref)}`;
 }
 
 export function ModelPicker({
@@ -749,6 +886,23 @@ export function ModelPicker({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const listboxId = useId();
+  const [modelPreferences] = useModelPreferences();
+
+  const visibleModels = models.filter(
+    (model) => !modelPreferences.hiddenModelRefs.includes(model.ref),
+  );
+  const hiddenSelectedModel =
+    value === null
+      ? undefined
+      : models.find(
+          (model) =>
+            model.ref === value &&
+            modelPreferences.hiddenModelRefs.includes(model.ref),
+        );
+  const pickerModels =
+    hiddenSelectedModel === undefined
+      ? visibleModels
+      : [...visibleModels, hiddenSelectedModel];
 
   const options: ModelPickerOption[] = [
     ...(defaultOption
@@ -757,12 +911,15 @@ export function ModelPicker({
             ref: null,
             label: defaultOption.label,
             detail: defaultOption.detail,
-            searchText: `${defaultOption.label} ${defaultOption.detail}`.toLowerCase(),
+            searchText:
+              `${defaultOption.label} ${defaultOption.detail}`.toLowerCase(),
           },
         ]
       : []),
-    ...models.map(modelOption),
-    ...(value !== null && !models.some((model) => model.ref === value)
+    ...pickerModels.map((model) =>
+      modelOption(model, modelPreferences.hiddenModelRefs.includes(model.ref)),
+    ),
+    ...(value !== null && !pickerModels.some((model) => model.ref === value)
       ? [
           {
             ref: value,
@@ -778,6 +935,14 @@ export function ModelPicker({
   const filteredOptions = normalizedQuery
     ? options.filter((option) => option.searchText.includes(normalizedQuery))
     : options;
+  const selectedIndex = filteredOptions.findIndex(
+    (option) => option.ref === value,
+  );
+  const activeOption = filteredOptions[activeIndex];
+  const activeOptionId =
+    activeOption === undefined
+      ? undefined
+      : modelPickerOptionId(listboxId, activeOption);
   const selectedOption = options.find((option) => option.ref === value);
   const stateCopy = modelPickerStateCopy[providerState];
   const triggerLabel =
@@ -789,8 +954,9 @@ export function ModelPicker({
     if (open) searchRef.current?.focus();
   }, [open]);
   useEffect(() => {
-    setActiveIndex(0);
-  }, [query, open]);
+    if (!open) return;
+    setActiveIndex(query.trim() ? 0 : selectedIndex >= 0 ? selectedIndex : 0);
+  }, [open, query, selectedIndex]);
   useEffect(() => {
     if (!open) return;
     function closeFromOutside(event: PointerEvent) {
@@ -814,6 +980,7 @@ export function ModelPicker({
   }
   function openPicker() {
     if (disabled || selecting) return;
+    setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
     setOpen(true);
   }
   async function selectOption(option: ModelPickerOption) {
@@ -856,7 +1023,11 @@ export function ModelPicker({
   }
 
   return (
-    <div ref={rootRef} className="model-picker-field" data-provider-state={providerState}>
+    <div
+      ref={rootRef}
+      className="model-picker-field"
+      data-provider-state={providerState}
+    >
       <span className="model-picker-label">{label}</span>
       <div className="model-picker">
         <button
@@ -885,7 +1056,7 @@ export function ModelPicker({
         >
           <span className="model-picker-trigger-copy">
             <strong>{triggerLabel}</strong>
-            <small>{triggerDetail}</small>
+            <small className="readable-helper">{triggerDetail}</small>
           </span>
           <span aria-hidden="true">⌄</span>
         </button>
@@ -896,18 +1067,27 @@ export function ModelPicker({
               type="search"
               value={query}
               aria-label={`Buscar em ${label.toLowerCase()}`}
+              aria-controls={listboxId}
+              aria-activedescendant={activeOptionId}
               placeholder="Buscar por nome, ref. ou metadados"
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={handleSearchKeyDown}
             />
-            <div id={listboxId} className="model-picker-options" role="listbox" aria-label={label}>
+            <div
+              id={listboxId}
+              className="model-picker-options"
+              role="listbox"
+              aria-label={label}
+            >
               {filteredOptions.length > 0 ? (
                 filteredOptions.map((option, index) => (
                   <div
                     key={option.ref ?? "default"}
+                    id={modelPickerOptionId(listboxId, option)}
                     role="option"
                     aria-selected={option.ref === value}
                     aria-disabled={option.unavailable}
+                    data-active={index === activeIndex}
                     className={
                       index === activeIndex
                         ? "model-picker-option active"
@@ -920,23 +1100,25 @@ export function ModelPicker({
                       {option.label}
                       {option.unavailable ? " · indisponível" : ""}
                     </strong>
-                    <small>{option.detail}</small>
+                    <small className="readable-helper">{option.detail}</small>
                   </div>
                 ))
               ) : (
-                <p className="model-picker-empty">Nenhum modelo corresponde à busca.</p>
+                <p className="model-picker-empty">
+                  Nenhum modelo corresponde à busca.
+                </p>
               )}
             </div>
           </div>
         ) : null}
       </div>
-      <small className="model-picker-status">
+      <small className="model-picker-status readable-helper">
         {providerState !== "available"
           ? `${stateCopy.label} · ${statusText ?? stateCopy.detail}`
-          : statusText ??
+          : (statusText ??
             (models.length > 0
               ? "Escolha uma opção local."
-              : stateCopy.detail)}
+              : stateCopy.detail))}
       </small>
     </div>
   );
@@ -1041,38 +1223,38 @@ function MessageItem({
               </button>
               {retryMenuOpen ? (
                 <div className="retry-menu">
-                <button type="button" onClick={() => onRegenerate(message)}>
-                  Tentar novamente
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setAdvancedRetry(!advancedRetry)}
-                >
-                  Avançado
-                </button>
-                {advancedRetry ? (
-                  <div>
-                    <ModelPicker
-                      label="Modelo para nova tentativa"
-                      ariaLabel="Modelo para nova tentativa"
-                      models={models}
-                      value={retryModel || null}
-                      providerState="available"
-                      disabled={retrying}
-                      statusText={`Modelo usado: ${message.modelRef ?? "indisponível"}`}
-                      onSelect={(modelRef) => {
-                        if (modelRef !== null) setRetryModel(modelRef);
-                      }}
-                    />
-                    <button
-                      type="button"
-                      disabled={retrying || !retryModel}
-                      onClick={() => onRegenerate(message, retryModel)}
-                    >
-                      Tentar com este modelo
-                    </button>
-                  </div>
-                ) : null}
+                  <button type="button" onClick={() => onRegenerate(message)}>
+                    Tentar novamente
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAdvancedRetry(!advancedRetry)}
+                  >
+                    Avançado
+                  </button>
+                  {advancedRetry ? (
+                    <div>
+                      <ModelPicker
+                        label="Modelo para nova tentativa"
+                        ariaLabel="Modelo para nova tentativa"
+                        models={models}
+                        value={retryModel || null}
+                        providerState="available"
+                        disabled={retrying}
+                        statusText={`Modelo usado: ${message.modelRef ?? "indisponível"}`}
+                        onSelect={(modelRef) => {
+                          if (modelRef !== null) setRetryModel(modelRef);
+                        }}
+                      />
+                      <button
+                        type="button"
+                        disabled={retrying || !retryModel}
+                        onClick={() => onRegenerate(message, retryModel)}
+                      >
+                        Tentar com este modelo
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </>
@@ -1090,7 +1272,8 @@ function MessageItem({
                 disabled={variants.findIndex((variant) => variant.active) <= 0}
                 onClick={() => {
                   const index = variants.findIndex((variant) => variant.active);
-                  if (index > 0) onSelectVariant?.(variants[index - 1]!.branchId);
+                  if (index > 0)
+                    onSelectVariant?.(variants[index - 1]!.branchId);
                 }}
               >
                 ‹
@@ -1125,12 +1308,15 @@ export function ConversationSurface({
   agentId,
   temporary,
   onToggleTemporary,
+  refreshRevision = 0,
 }: {
   agentId: string;
   temporary: boolean;
   onToggleTemporary?: () => void;
+  refreshRevision?: number;
 }) {
   const { phase, error, load } = usePhaseOne(agentId, temporary);
+  const [modelPreferences] = useModelPreferences();
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [showLegacyBranchPicker] = useState(false);
@@ -1143,6 +1329,10 @@ export function ConversationSurface({
   const historyRef = useRef<HTMLDivElement>(null);
   const conversationIdRef = useRef<string | null>(null);
   const followsBottomRef = useRef(true);
+
+  useEffect(() => {
+    if (refreshRevision > 0) void load();
+  }, [load, refreshRevision]);
 
   useLayoutEffect(() => {
     const history = historyRef.current;
@@ -1195,6 +1385,7 @@ export function ConversationSurface({
   const modelsAvailable = phase.provider.models.length > 0;
   const canSend = canSendConversationMessage(currentPhase);
   const canDraft = canDraftConversationMessage(currentPhase);
+  const routingPolicy = routingPolicyPayload(modelPreferences);
 
   async function send() {
     const content = draft.trim();
@@ -1207,11 +1398,12 @@ export function ConversationSurface({
           ? "send_temporary_phase_one_message"
           : "send_phase_one_message",
         temporary
-          ? { agentId: currentPhase.agent.id, content }
+          ? { agentId: currentPhase.agent.id, content, policy: routingPolicy }
           : {
               agentId: currentPhase.agent.id,
               conversationId: currentPhase.conversation.id,
               content,
+              policy: routingPolicy,
             },
       );
       setDraft("");
@@ -1308,7 +1500,7 @@ export function ConversationSurface({
             </button>
           ) : null}
           {temporary ? (
-            <p className="temporary-disclosure" role="status">
+            <p className="temporary-disclosure readable-helper" role="status">
               Temporária ativa: mensagens e contexto ficam apenas na memória e
               são apagados ao encerrar.
             </p>
@@ -1472,13 +1664,17 @@ export function ConversationSurface({
                 providerState={phase.provider.state}
                 disabled={!modelsAvailable}
                 defaultOption={{
-                  label: `Usar padrão de ${phase.agent.name}`,
-                  detail: phase.defaultModelRef ?? "indisponível",
+                  label: "Modelo: Automático",
+                  detail: phase.defaultModelRef
+                    ? `Equilibrado · ${phase.defaultModelRef}`
+                    : "Equilibrado · seleção automática",
                 }}
                 statusText={
-                  phase.selectedModelRef
-                    ? `Em uso: ${phase.selectedModelRef}${phase.effectiveModelSource === "agent_default" ? " · padrão do agente" : " · substituição desta conversa"}`
-                    : "Nenhum modelo local disponível"
+                  phase.modelOverrideRef
+                    ? `Em uso: ${phase.selectedModelRef ?? "indisponível"} · substituição desta conversa`
+                    : phase.selectedModelRef
+                      ? `Equilibrado · ${phase.selectedModelRef}`
+                      : "Nenhum modelo local disponível"
                 }
                 onSelect={async (modelRef) => {
                   const command = temporary
@@ -1495,7 +1691,9 @@ export function ConversationSurface({
                   await load();
                 }}
               />
-              <span>{blocked ?? "Enter envia · Shift+Enter cria uma linha"}</span>
+              <span>
+                {blocked ?? "Enter envia · Shift+Enter cria uma linha"}
+              </span>
             </div>
           </div>
           <button
@@ -1513,16 +1711,22 @@ export function ConversationSurface({
 
 export function ConversationDraftSurface({
   agentId,
+  onCreated,
   onPersisted,
 }: {
   agentId: string;
+  onCreated?: () => void;
   onPersisted: () => void;
 }) {
   const { phase, error, load } = usePhaseOne(agentId, false);
+  const [modelPreferences] = useModelPreferences();
   const [title, setTitle] = useState("");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [persistedConversationId, setPersistedConversationId] = useState<
+    string | null
+  >(null);
   const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
     null,
   );
@@ -1538,13 +1742,16 @@ export function ConversationDraftSurface({
     );
   }
   if (phase === null)
-    return <section className="conversation-empty">Carregando rascunho…</section>;
+    return (
+      <section className="conversation-empty">Carregando rascunho…</section>
+    );
 
   const currentPhase: PhaseOneState = phase;
   const request = requestForAgent(currentPhase.queue, agentId);
   const blocked = blockedSendCopy(currentPhase.sendBlockedCode);
   const canSend = canSendConversationMessage(currentPhase);
   const canDraft = canDraftConversationMessage(currentPhase);
+  const routingPolicy = routingPolicyPayload(modelPreferences);
 
   async function cancelCurrentRequest() {
     if (
@@ -1572,27 +1779,39 @@ export function ConversationDraftSurface({
     if (busy || (sendContent !== null && (!sendContent || !canSend))) return;
     setBusy(true);
     setErrorMessage(null);
+    let conversationId = persistedConversationId;
     try {
-      const persistedTitle = (trimmedTitle || "Nova conversa").slice(0, 160);
-      const created = await invoke<PhaseOneConversation>(
-        "create_agent_conversation",
-        { agentId, title: persistedTitle },
-      );
-      if (!created?.id) throw new Error("conversation_create_failed");
+      if (conversationId === null) {
+        const persistedTitle = (trimmedTitle || "Nova conversa").slice(0, 160);
+        const created = await invoke<PhaseOneConversation>(
+          "create_agent_conversation",
+          { agentId, title: persistedTitle },
+        );
+        if (!created?.id) throw new Error("conversation_create_failed");
+        conversationId = created.id;
+        setPersistedConversationId(conversationId);
+      }
       await invoke("set_active_agent_conversation", {
         agentId,
-        conversationId: created.id,
+        conversationId,
       });
-      onPersisted();
+      if (persistedConversationId === null) onCreated?.();
       if (sendContent !== null) {
         await invoke("send_phase_one_message", {
           agentId,
-          conversationId: created.id,
+          conversationId,
           content: sendContent,
+          policy: routingPolicy,
         });
+        setDraft("");
       }
+      onPersisted();
     } catch {
-      setErrorMessage("Não foi possível salvar a conversa local.");
+      setErrorMessage(
+        sendContent !== null
+          ? "Não foi possível enviar. O rascunho foi preservado; tente novamente."
+          : "Não foi possível salvar a conversa local.",
+      );
     } finally {
       setBusy(false);
     }
@@ -1678,7 +1897,9 @@ export function ConversationDraftSurface({
           }}
         />
         <div className="composer-footer">
-          <span>{blocked ?? "Enter salva e envia · Shift+Enter cria uma linha"}</span>
+          <span>
+            {blocked ?? "Enter salva e envia · Shift+Enter cria uma linha"}
+          </span>
           <button
             type="button"
             disabled={!canSend || !draft.trim() || busy}
@@ -1688,9 +1909,18 @@ export function ConversationDraftSurface({
           </button>
         </div>
         {errorMessage ? (
-          <p className="draft-error" role="alert">
-            {errorMessage}
-          </p>
+          <div className="draft-error" role="alert">
+            <span>{errorMessage}</span>
+            {persistedConversationId !== null && draft.trim() ? (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void persist(draft.trim())}
+              >
+                Tentar novamente
+              </button>
+            ) : null}
+          </div>
         ) : null}
       </footer>
     </section>
@@ -1709,22 +1939,27 @@ function ProfileCanonicalSelect({
   onChange: (value: string) => void;
 }) {
   const current = localizedCanonicalValue(field, value);
-  const options = profileCanonicalOptions[field];
+  const options = profileCanonicalOptions[field].some(
+    (option) => option.value === value,
+  )
+    ? profileCanonicalOptions[field]
+    : [{ value, primary: current.primary }, ...profileCanonicalOptions[field]];
   return (
-    <label>
-      <span>{label}</span>
-      <select value={value} onChange={(event) => onChange(event.target.value)}>
-        {!options.some((option) => option.value === value) ? (
-          <option value={value}>{current.primary}</option>
-        ) : null}
-        {options.map((option) => (
-          <option value={option.value} key={option.value}>
+    <AipSelect
+      id={`profile-${field}`}
+      label={label}
+      value={value}
+      options={options.map((option) => ({
+        value: option.value,
+        label: (
+          <>
             {option.primary}
             {option.secondary ? ` (${option.secondary})` : ""}
-          </option>
-        ))}
-      </select>
-    </label>
+          </>
+        ),
+      }))}
+      onChange={onChange}
+    />
   );
 }
 
@@ -1833,7 +2068,7 @@ function ProfileFields({
               onChange={(event) =>
                 onChange((current) => ({
                   ...current,
-                  gender: event.target.value.trim() || null,
+                  gender: event.target.value || null,
                 }))
               }
             />
@@ -1845,7 +2080,7 @@ function ProfileFields({
               onChange={(event) =>
                 onChange((current) => ({
                   ...current,
-                  sexuality: event.target.value.trim() || null,
+                  sexuality: event.target.value || null,
                 }))
               }
             />
@@ -1908,9 +2143,11 @@ function ProfileFields({
 export function ProfileForm({
   agent,
   done,
+  focusDefaultModel = false,
 }: {
   agent: ProvisionalAgent;
   done: () => void;
+  focusDefaultModel?: boolean;
 }) {
   const [draft, setDraft] = useState(agent);
   const [persisted, setPersisted] = useState(agent);
@@ -1920,6 +2157,7 @@ export function ProfileForm({
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const { phase, load: loadPhase } = usePhaseOne(agent.id);
+  const defaultModelSectionRef = useRef<HTMLElement>(null);
   const draftRef = useRef(draft);
   const persistedRef = useRef(persisted);
   const fictiveAgeTextRef = useRef(fictiveAgeText);
@@ -1944,6 +2182,12 @@ export function ProfileForm({
     }
   }, [agent]);
   const isDirty = profileDraftIsDirty(draft, persisted, fictiveAgeText);
+  useEffect(() => {
+    if (!focusDefaultModel) return;
+    const section = defaultModelSectionRef.current;
+    section?.scrollIntoView({ block: "start" });
+    section?.focus({ preventScroll: true });
+  }, [focusDefaultModel]);
   async function save() {
     const fictiveAge = Number(fictiveAgeText);
     if (
@@ -1996,7 +2240,9 @@ export function ProfileForm({
         <div>
           <p className="eyebrow">Identidade do agente</p>
           <h1>{`Perfil de ${agent.name}`}</h1>
-          <span>Detalhes, descrição e traços que orientam este agente.</span>
+          <span className="readable-helper">
+            Detalhes, descrição e traços que orientam este agente.
+          </span>
         </div>
       </header>
       <section className="profile-section">
@@ -2010,9 +2256,17 @@ export function ProfileForm({
           />
         </div>
       </section>
-      <section className="profile-section profile-default-model">
-        <h2>Modelo padrão</h2>
-        <p>Novas conversas deste agente começam com este modelo.</p>
+      <section
+        ref={defaultModelSectionRef}
+        className="profile-section profile-default-model"
+        id="profile-default-model"
+        tabIndex={-1}
+        aria-labelledby="profile-default-model-heading"
+      >
+        <h2 id="profile-default-model-heading">Modelo padrão</h2>
+        <p className="readable-helper">
+          Novas conversas deste agente começam com este modelo.
+        </p>
         <ModelPicker
           label={`Modelo padrão de ${agent.name}`}
           ariaLabel={`Modelo padrão de ${agent.name}`}
@@ -2185,6 +2439,228 @@ function OnboardingForm({
   );
 }
 
+export type ConversationMenuPlacement = "above" | "below";
+
+export function conversationMenuPosition(
+  triggerRect: Pick<DOMRect, "top" | "bottom" | "right">,
+  menuWidth: number,
+  menuHeight: number,
+  viewportWidth = window.innerWidth,
+  viewportHeight = window.innerHeight,
+): { top: number; left: number; placement: ConversationMenuPlacement } {
+  const margin = 8;
+  const gap = 4;
+  const fitsBelow =
+    triggerRect.bottom + gap + menuHeight <= viewportHeight - margin;
+  return {
+    top: fitsBelow
+      ? triggerRect.bottom + gap
+      : Math.max(margin, triggerRect.top - gap - menuHeight),
+    left: Math.min(
+      Math.max(margin, triggerRect.right - menuWidth),
+      Math.max(margin, viewportWidth - menuWidth - margin),
+    ),
+    placement: fitsBelow ? "below" : "above",
+  };
+}
+
+function ConversationActionMenu({
+  item,
+  open,
+  onOpenChange,
+  onPin,
+  onRename,
+  onArchive,
+  onRemove,
+}: {
+  item: PhaseOneConversation;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onPin: () => void;
+  onRename: () => void;
+  onArchive: () => void;
+  onRemove: () => void;
+}) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState<{
+    top: number;
+    left: number;
+    placement: ConversationMenuPlacement;
+  } | null>(null);
+  const menuId = useId();
+
+  const updatePosition = useCallback(() => {
+    const trigger = triggerRef.current;
+    const menu = menuRef.current;
+    if (trigger === null || menu === null) return;
+    const triggerRect = trigger.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    setPosition(
+      conversationMenuPosition(
+        triggerRect,
+        menuRect.width || 160,
+        menuRect.height || 144,
+      ),
+    );
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    updatePosition();
+    const frame = window.requestAnimationFrame(updatePosition);
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, updatePosition]);
+
+  useEffect(() => {
+    if (!open) return;
+    const focusFrame = window.requestAnimationFrame(() =>
+      menuRef.current
+        ?.querySelector<HTMLButtonElement>('[role="menuitem"]')
+        ?.focus(),
+    );
+    function closeFromOutside(event: PointerEvent) {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        !triggerRef.current?.contains(target) &&
+        !menuRef.current?.contains(target)
+      ) {
+        onOpenChange(false);
+      }
+    }
+    function reposition() {
+      updatePosition();
+    }
+    document.addEventListener("pointerdown", closeFromOutside);
+    document.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("pointerdown", closeFromOutside);
+      document.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
+    };
+  }, [onOpenChange, open, updatePosition]);
+
+  function closeMenu(restoreFocus = false) {
+    onOpenChange(false);
+    setPosition(null);
+    if (restoreFocus) triggerRef.current?.focus();
+  }
+
+  function handleMenuKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    const buttons = Array.from(
+      menuRef.current?.querySelectorAll<HTMLButtonElement>(
+        '[role="menuitem"]',
+      ) ?? [],
+    );
+    const currentIndex = buttons.indexOf(
+      document.activeElement as HTMLButtonElement,
+    );
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMenu(true);
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (buttons.length === 0) return;
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      buttons[
+        (currentIndex + delta + buttons.length) % buttons.length
+      ]?.focus();
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      buttons[0]?.focus();
+    } else if (event.key === "End") {
+      event.preventDefault();
+      buttons.at(-1)?.focus();
+    }
+  }
+
+  return (
+    <div className="conversation-actions">
+      <button
+        ref={triggerRef}
+        type="button"
+        className="conversation-actions-trigger"
+        aria-label={`Ações de ${item.title}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        onClick={() => {
+          setPosition(null);
+          onOpenChange(!open);
+        }}
+      >
+        …
+      </button>
+      {open
+        ? createPortal(
+            <div
+              ref={menuRef}
+              id={menuId}
+              className="conversation-actions-menu"
+              data-placement={position?.placement ?? "below"}
+              role="menu"
+              aria-label={`Ações de ${item.title}`}
+              style={
+                position === null
+                  ? { top: 0, left: 0, visibility: "hidden" }
+                  : { top: position.top, left: position.left }
+              }
+              onKeyDown={handleMenuKeyDown}
+            >
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  closeMenu(true);
+                  onPin();
+                }}
+              >
+                {item.isPinned ? "Desafixar" : "Fixar"}
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  closeMenu(true);
+                  onRename();
+                }}
+              >
+                Renomear
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  closeMenu(true);
+                  onArchive();
+                }}
+              >
+                Arquivar
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="danger-action"
+                onClick={() => {
+                  closeMenu(true);
+                  onRemove();
+                }}
+              >
+                Excluir
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
+
 export function ConversationList({
   agentId,
   changed,
@@ -2205,18 +2681,15 @@ export function ConversationList({
   const [pendingRemoval, setPendingRemoval] =
     useState<PhaseOneConversation | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
-  const load = useCallback(
-    async () => {
-      const next = await invoke<PhaseOneConversation[]>(
-        "list_agent_conversations",
-        {
-          agentId,
-        },
-      );
-      setItems(next);
-    },
-    [agentId],
-  );
+  const load = useCallback(async () => {
+    const next = await invoke<PhaseOneConversation[]>(
+      "list_agent_conversations",
+      {
+        agentId,
+      },
+    );
+    setItems(next);
+  }, [agentId]);
   useEffect(() => {
     load();
   }, [load]);
@@ -2311,47 +2784,18 @@ export function ConversationList({
             {item.isPinned ? "★ " : ""}
             {item.title}
           </button>
-          <details
-            className="conversation-actions"
+          <ConversationActionMenu
+            item={item}
             open={openMenuId === item.id}
-            onToggle={(event) =>
-              setOpenMenuId(event.currentTarget.open ? item.id : null)
-            }
-          >
-            <summary aria-label={`Ações de ${item.title}`}>…</summary>
-            <div>
-              <button
-                type="button"
-                onClick={() => void pin(item)}
-              >
-                {item.isPinned ? "Desafixar" : "Fixar"}
-              </button>
-              <button
-                type="button"
-                onClick={(event) => {
-                  const menu = event.currentTarget.closest(
-                    "details",
-                  ) as HTMLDetailsElement | null;
-                  if (menu !== null) menu.open = false;
-                  setOpenMenuId(null);
-                  setRenamingId(item.id);
-                  setRenameValue(item.title);
-                }}
-              >
-                Renomear
-              </button>
-              <button type="button" onClick={() => void archive(item)}>
-                Arquivar
-              </button>
-              <button
-                type="button"
-                className="danger-action"
-                onClick={() => remove(item)}
-              >
-                Excluir
-              </button>
-            </div>
-          </details>
+            onOpenChange={(open) => setOpenMenuId(open ? item.id : null)}
+            onPin={() => void pin(item)}
+            onRename={() => {
+              setRenamingId(item.id);
+              setRenameValue(item.title);
+            }}
+            onArchive={() => void archive(item)}
+            onRemove={() => remove(item)}
+          />
           {renamingId === item.id ? (
             <form
               className="conversation-rename"
@@ -2434,7 +2878,8 @@ const memoryCategoryHelp: Record<string, string> = {
   fact: "Um dado estável sobre a pessoa ou o agente.",
   preference: "Uma preferência que pode orientar respostas futuras.",
   rule: "Uma regra explícita para preservar ao conversar.",
-  emotional: "Uma lembrança afetiva, sem transformar sentimento em diagnóstico.",
+  emotional:
+    "Uma lembrança afetiva, sem transformar sentimento em diagnóstico.",
   permanent: "Um registro durável que o Owner escolheu manter.",
 };
 
@@ -2486,13 +2931,15 @@ export function MemoryWorkspace({ agentId }: { agentId: string }) {
         <div>
           <p className="eyebrow">Conhecimento do agente</p>
           <h2>Memórias</h2>
-          <span>Fatos, preferências e regras ficam separados por agente.</span>
+          <span className="readable-helper">
+            Fatos, preferências e regras ficam separados por agente.
+          </span>
         </div>
-        <span className="workspace-count">
+        <span className="workspace-count readable-helper">
           {items.length} {status === "active" ? "memórias ativas" : "memórias"}
         </span>
       </header>
-      <p className="memory-guidance">
+      <p className="memory-guidance readable-helper">
         As memórias pertencem somente a este agente e podem influenciar o
         contexto das conversas. O Owner decide o que fica salvo.
       </p>
@@ -2505,19 +2952,19 @@ export function MemoryWorkspace({ agentId }: { agentId: string }) {
             placeholder="Buscar memórias"
           />
         </label>
-        <label>
-          Mostrar
-          <select
-            value={status}
-            onChange={(event) => setStatus(event.target.value)}
-          >
-            <option value="active">Ativas</option>
-            <option value="archived">Arquivadas</option>
-            <option value="trashed">Lixeira</option>
-            <option value="candidate_rejected">Rejeitadas</option>
-            <option value="all">Todas</option>
-          </select>
-        </label>
+        <AipSelect
+          id="memory-status"
+          label="Mostrar"
+          value={status}
+          options={[
+            { value: "active", label: "Ativas" },
+            { value: "archived", label: "Arquivadas" },
+            { value: "trashed", label: "Lixeira" },
+            { value: "candidate_rejected", label: "Rejeitadas" },
+            { value: "all", label: "Todas" },
+          ]}
+          onChange={setStatus}
+        />
       </div>
       <div className="memory-records">
         {items.map((item) => (
@@ -2583,22 +3030,24 @@ export function MemoryWorkspace({ agentId }: { agentId: string }) {
           <p className="eyebrow">Adicionar</p>
           <h3>Nova memória</h3>
         </div>
-        <label>
-          Categoria
-          <select
-            value={category}
-            onChange={(event) => setCategory(event.target.value)}
-          >
-            <option value="fact">Fato</option>
-            <option value="preference">Preferência</option>
-            <option value="rule">Regra</option>
-            <option value="emotional">Lembrança afetiva</option>
-            <option value="permanent">Permanente</option>
-          </select>
-          <small className="memory-category-help">
-            {memoryCategoryHelp[category]}
-          </small>
-        </label>
+        <AipSelect
+          id="memory-category"
+          label="Categoria"
+          value={category}
+          options={[
+            { value: "fact", label: "Fato" },
+            { value: "preference", label: "Preferência" },
+            { value: "rule", label: "Regra" },
+            { value: "emotional", label: "Lembrança afetiva" },
+            { value: "permanent", label: "Permanente" },
+          ]}
+          onChange={setCategory}
+          description={
+            <small className="memory-category-help">
+              {memoryCategoryHelp[category]}
+            </small>
+          }
+        />
         <label className="memory-content-field">
           Conteúdo
           <textarea
@@ -2621,7 +3070,7 @@ export function MemoryWorkspace({ agentId }: { agentId: string }) {
           </button>
         </div>
       </form>
-      <p className="memory-guidance">
+      <p className="memory-guidance readable-helper">
         “Salvar memória” grava uma memória durável. “Propor memória” cria uma
         candidata pendente para o Owner confirmar ou rejeitar.
       </p>
@@ -2656,65 +3105,132 @@ export function AgentStateControls({ agentId }: { agentId: string }) {
   }
 
   if (state === null) return null;
+  const modes = [
+    {
+      value: "normal",
+      label: "Normal",
+      description: "Texto e voz seguem as guardas locais configuradas.",
+    },
+    {
+      value: "voice_muted",
+      label: "Sem voz",
+      description: "Mantém o texto e silencia a voz sintetizada.",
+    },
+    {
+      value: "silent",
+      label: "Silencioso",
+      description:
+        "Bloqueia conversas iniciadas pelo agente e alterações de configurações de voz.",
+    },
+  ] as const;
   return (
     <section className="agent-state-controls" aria-label="Estado do agente">
       <strong>Estado</strong>
-      <p className="state-guidance">
-        Normal permite texto e voz configurada conforme as guardas do Rust e do
-        provedor; Sem voz mantém o texto e silencia a voz sintetizada;
-        Silencioso bloqueia conversas cognitivas/públicas iniciadas pelo agente
-        e alterações de configurações de voz. Texto direto continua sujeito às
-        guardas normais, inclusive suspensão. Energia, humor e sono são valores
-        fictícios simulados — não são medições de saúde.
+      <p className="state-guidance readable-helper">
+        Energia, humor e sono são valores fictícios simulados para orientar o
+        comportamento do agente; não são medições de saúde.
       </p>
-      <label>
-        Modo
-        <select
+      <div className="state-mode-control">
+        <AipSelect
+          id="state-mode"
+          label="Modo"
           value={state.mode}
-          disabled={saving}
-          onChange={(event) =>
+          options={modes.map(({ value, label }) => ({ value, label }))}
+          onChange={(mode) =>
             void update(() =>
               invoke("set_agent_simulated_mode", {
                 agentId,
-                mode: event.target.value,
+                mode,
               }),
             )
           }
+          disabled={saving}
+        />
+        <div
+          className="state-mode-explanations"
+          aria-label="Explicações dos modos"
         >
-          <option value="normal">Normal</option>
-          <option value="voice_muted">Sem voz</option>
-          <option value="silent">Silencioso</option>
-        </select>
-      </label>
-      <small>
-        Energia {state.energy}% · Humor {state.mood}% · Sono {state.sleep}%
-      </small>
-      <button
-        type="button"
-        disabled={saving}
-        onClick={() =>
-          void update(() =>
-            invoke("set_agent_suspension", {
-              agentId,
-              suspended: !state.suspended,
-            }),
-          )
-        }
-      >
-        {state.suspended ? "Retomar agente" : "Suspender agente"}
-      </button>
-      <button
-        type="button"
-        disabled={saving || !state.suspended}
-        onClick={() => void update(() => invoke("wake_agent_now", { agentId }))}
-      >
-        Acordar agora
-      </button>
-      <small>
-        Suspender pausa o avanço simulado; Retomar permite que ele continue.
-        “Acordar agora” ajusta somente o sono e a energia fictícios por um
-        período temporário, sem remover a suspensão ou acordar uma pessoa real.
-      </small>
+          {modes.map((mode) => (
+            <div
+              className={
+                mode.value === state.mode
+                  ? "state-explanation active"
+                  : "state-explanation"
+              }
+              data-state-mode={mode.value}
+              key={mode.value}
+            >
+              <strong>{mode.label}</strong>
+              <span className="readable-helper">{mode.description}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="state-metrics" aria-label="Valores simulados">
+        {(
+          [
+            [
+              "energy",
+              "Energia",
+              state.energy,
+              "Reserva fictícia para ritmo e atividade.",
+            ],
+            ["mood", "Humor", state.mood, "Tendência fictícia de interação."],
+            [
+              "sleep",
+              "Sono",
+              state.sleep,
+              "Valor fictício que pode afetar o ritmo.",
+            ],
+          ] as const
+        ).map(([key, label, value, description]) => (
+          <div className="state-metric" data-state-metric={key} key={key}>
+            <div>
+              <strong>{label}</strong>
+              <span>{value}%</span>
+            </div>
+            <small className="readable-helper">{description}</small>
+          </div>
+        ))}
+      </div>
+      <div className="state-actions">
+        <div className="state-action">
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() =>
+              void update(() =>
+                invoke("set_agent_suspension", {
+                  agentId,
+                  suspended: !state.suspended,
+                }),
+              )
+            }
+          >
+            {state.suspended ? "Retomar agente" : "Suspender agente"}
+          </button>
+          <span className="readable-helper">
+            {state.suspended
+              ? "Retomar permite que o avanço simulado continue."
+              : "Suspender pausa o avanço simulado sem apagar o estado."}
+          </span>
+        </div>
+        <div className="state-action">
+          <button
+            type="button"
+            disabled={saving || !state.suspended}
+            onClick={() =>
+              void update(() => invoke("wake_agent_now", { agentId }))
+            }
+          >
+            Acordar agora
+          </button>
+          <span className="readable-helper">
+            Ajusta temporariamente sono e energia fictícios sem remover a
+            suspensão.
+          </span>
+        </div>
+      </div>
     </section>
   );
 }
@@ -5156,11 +5672,11 @@ export function PixelDocumentEditor({ agentId }: { agentId: string }) {
   >("pencil");
   const [mirror, setMirror] = useState(false);
   const [selection, setSelection] = useState<PixelSelection | null>(null);
-  const [pendingLayerDeletion, setPendingLayerDeletion] =
-    useState<PixelDocument["layers"][number] | null>(null);
+  const [pendingLayerDeletion, setPendingLayerDeletion] = useState<
+    PixelDocument["layers"][number] | null
+  >(null);
   const [zoom, setZoom] = useState(4);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const importRef = useRef<HTMLInputElement>(null);
   const undoRef = useRef<string[]>([]);
   const redoRef = useRef<string[]>([]);
   const strokeRef = useRef<{ x: number; y: number } | null>(null);
@@ -5307,10 +5823,7 @@ export function PixelDocumentEditor({ agentId }: { agentId: string }) {
     const layers = document.layers.filter(
       (current) => current.id !== pendingLayerDeletion.id,
     );
-    updateLayers(
-      { ...document, layers },
-      layers[0]?.id ?? "body",
-    );
+    updateLayers({ ...document, layers }, layers[0]?.id ?? "body");
     setPendingLayerDeletion(null);
   }
   function moveSelection(dx: number, dy: number) {
@@ -5407,147 +5920,152 @@ export function PixelDocumentEditor({ agentId }: { agentId: string }) {
       setError("Não foi possível importar este PNG.");
     } finally {
       URL.revokeObjectURL(url);
-      if (importRef.current !== null) importRef.current.value = "";
     }
-  }
-  function updateBubbleAttachment(axis: "x" | "y", value: number) {
-    if (document === null) return;
-    const current = document.attachmentPoints.bubble ?? { x: 32, y: 8 };
-    updateLayers({
-      ...document,
-      attachmentPoints: {
-        ...document.attachmentPoints,
-        bubble: { ...current, [axis]: Math.max(0, Math.min(63, value || 0)) },
-      },
-    });
   }
   return (
     <details className="pixel-editor" open>
       <summary>Editor de pixel art (64×64)</summary>
-      <div className="pixel-tools">
-        <input
-          type="color"
-          value={color}
-          onChange={(event) => setColor(event.target.value)}
-          aria-label="Cor"
-        />
-        <button
-          type="button"
-          className={tool === "pencil" ? "active" : ""}
-          onClick={() => setTool("pencil")}
-        >
-          Lápis
-        </button>
-        <button
-          type="button"
-          className={tool === "eraser" ? "active" : ""}
-          onClick={() => setTool("eraser")}
-        >
-          Borracha
-        </button>
-        <button
-          type="button"
-          className={tool === "fill" ? "active" : ""}
-          onClick={() => setTool("fill")}
-        >
-          Preencher
-        </button>
-        <button
-          type="button"
-          className={tool === "eyedropper" ? "active" : ""}
-          onClick={() => setTool("eyedropper")}
-        >
-          Conta-gotas
-        </button>
-        <button
-          type="button"
-          className={tool === "select" ? "active" : ""}
-          onClick={() => setTool("select")}
-        >
-          Selecionar
-        </button>
-        <label>
-          <input
-            type="checkbox"
-            checked={mirror}
-            onChange={(event) => setMirror(event.target.checked)}
-          />{" "}
-          Espelhar
-        </label>
-        <label>
-          Zoom
-          <select
-            value={zoom}
-            onChange={(event) => setZoom(Number(event.target.value))}
-          >
-            {[2, 4, 6, 8].map((value) => (
-              <option key={value} value={value}>
-                {value}×
-              </option>
+      <div className="pixel-tools" aria-label="Ferramentas do editor">
+        <div className="pixel-tool-group" data-tool-group="drawing">
+          <span className="pixel-tool-group-label">Desenho</span>
+          <div className="pixel-tool-group-controls">
+            <label className="pixel-color-control">
+              <span>Cor</span>
+              <input
+                type="color"
+                value={color}
+                onChange={(event) => setColor(event.target.value)}
+                aria-label="Cor"
+              />
+            </label>
+            {(
+              [
+                ["pencil", "Lápis"],
+                ["eraser", "Borracha"],
+                ["fill", "Preencher"],
+                ["eyedropper", "Conta-gotas"],
+                ["select", "Selecionar"],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                className={tool === value ? "active" : ""}
+                aria-pressed={tool === value}
+                onClick={() => setTool(value)}
+              >
+                {label}
+              </button>
             ))}
-          </select>
-        </label>
-        <input
-          ref={importRef}
-          type="file"
-          accept="image/png"
-          aria-label="Importar PNG"
-          onChange={(event) => void importPng(event.currentTarget.files?.[0])}
-        />
-        <button
-          type="button"
-          disabled={undoRef.current.length === 0}
-          onClick={() => {
-            const previous = undoRef.current.pop();
-            if (previous !== undefined) {
-              redoRef.current.push(source);
-              setSource(previous);
-            }
-          }}
-        >
-          Desfazer
-        </button>
-        <button
-          type="button"
-          disabled={redoRef.current.length === 0}
-          onClick={() => {
-            const next = redoRef.current.pop();
-            if (next !== undefined) {
-              undoRef.current.push(source);
-              setSource(next);
-            }
-          }}
-        >
-          Refazer
-        </button>
-        <button
-          type="button"
-          disabled={selection === null || activeLayer?.locked}
-          onClick={() => moveSelection(-1, 0)}
-        >
-          ←
-        </button>
-        <button
-          type="button"
-          disabled={selection === null || activeLayer?.locked}
-          onClick={() => moveSelection(1, 0)}
-        >
-          →
-        </button>
-        <button
-          type="button"
-          disabled={selection === null || activeLayer?.locked}
-          onClick={() => moveSelection(0, -1)}
-        >
-          ↑
-        </button>
-        <button
-          type="button"
-          disabled={selection === null || activeLayer?.locked}
-          onClick={() => moveSelection(0, 1)}
-        >
-          ↓
-        </button>
+          </div>
+        </div>
+        <div className="pixel-tool-group" data-tool-group="transform-view">
+          <span className="pixel-tool-group-label">
+            Transformar e visualizar
+          </span>
+          <div className="pixel-tool-group-controls">
+            <label className="pixel-checkbox-control">
+              <input
+                type="checkbox"
+                checked={mirror}
+                onChange={(event) => setMirror(event.target.checked)}
+              />{" "}
+              Espelhar
+            </label>
+            <AipSelect
+              id="pixel-zoom"
+              label="Zoom"
+              value={String(zoom)}
+              options={[2, 4, 6, 8].map((value) => ({
+                value: String(value),
+                label: `${value}×`,
+              }))}
+              description="Escala da grade de edição."
+              onChange={(value) => setZoom(Number(value))}
+            />
+            <div className="pixel-nudge-controls" aria-label="Mover seleção">
+              <button
+                type="button"
+                aria-label="Mover seleção para a esquerda"
+                disabled={selection === null || activeLayer?.locked}
+                onClick={() => moveSelection(-1, 0)}
+              >
+                ←
+              </button>
+              <button
+                type="button"
+                aria-label="Mover seleção para a direita"
+                disabled={selection === null || activeLayer?.locked}
+                onClick={() => moveSelection(1, 0)}
+              >
+                →
+              </button>
+              <button
+                type="button"
+                aria-label="Mover seleção para cima"
+                disabled={selection === null || activeLayer?.locked}
+                onClick={() => moveSelection(0, -1)}
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                aria-label="Mover seleção para baixo"
+                disabled={selection === null || activeLayer?.locked}
+                onClick={() => moveSelection(0, 1)}
+              >
+                ↓
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className="pixel-tool-group" data-tool-group="history">
+          <span className="pixel-tool-group-label">Histórico</span>
+          <div className="pixel-tool-group-controls">
+            <button
+              type="button"
+              disabled={undoRef.current.length === 0}
+              onClick={() => {
+                const previous = undoRef.current.pop();
+                if (previous !== undefined) {
+                  redoRef.current.push(source);
+                  setSource(previous);
+                }
+              }}
+            >
+              Desfazer
+            </button>
+            <button
+              type="button"
+              disabled={redoRef.current.length === 0}
+              onClick={() => {
+                const next = redoRef.current.pop();
+                if (next !== undefined) {
+                  undoRef.current.push(source);
+                  setSource(next);
+                }
+              }}
+            >
+              Refazer
+            </button>
+          </div>
+        </div>
+        <div className="pixel-tool-group" data-tool-group="file">
+          <span className="pixel-tool-group-label">Arquivo</span>
+          <div className="pixel-tool-group-controls">
+            <FilePicker
+              id="pixel-import"
+              label="Importar PNG"
+              accept="image/png"
+              buttonLabel="Escolher PNG"
+              description="PNG de até 1 MB."
+              onChange={(file) => void importPng(file)}
+            />
+            <button type="button" onClick={() => void save()}>
+              Salvar arte
+            </button>
+          </div>
+        </div>
       </div>
       {document ? (
         <div className="pixel-layers" aria-label="Camadas">
@@ -5664,35 +6182,6 @@ export function PixelDocumentEditor({ agentId }: { agentId: string }) {
           onConfirm={confirmLayerDeletion}
         />
       ) : null}
-      {document ? (
-        <div className="pixel-attachment">
-          <strong>Encaixe do balão</strong>
-          <label>
-            X{" "}
-            <input
-              type="number"
-              min="0"
-              max="63"
-              value={document.attachmentPoints.bubble?.x ?? 32}
-              onChange={(event) =>
-                updateBubbleAttachment("x", Number(event.target.value))
-              }
-            />
-          </label>
-          <label>
-            Y{" "}
-            <input
-              type="number"
-              min="0"
-              max="63"
-              value={document.attachmentPoints.bubble?.y ?? 8}
-              onChange={(event) =>
-                updateBubbleAttachment("y", Number(event.target.value))
-              }
-            />
-          </label>
-        </div>
-      ) : null}
       <canvas
         ref={canvasRef}
         width="256"
@@ -5727,9 +6216,6 @@ export function PixelDocumentEditor({ agentId }: { agentId: string }) {
           aria-label="Documento de pixel art"
         />
       </details>
-      <button type="button" onClick={() => void save()}>
-        Salvar arte
-      </button>
       {error ? <p role="alert">{error}</p> : null}
     </details>
   );
@@ -7900,14 +8386,17 @@ export function ScreenVisionControls({
   }
 
   return (
-    <section className="tool-controls" aria-label="Visão de tela sob demanda">
+    <section
+      className="tool-controls screen-vision-controls"
+      aria-label="Visão de tela sob demanda"
+    >
       <h3>Visão de tela sob demanda</h3>
-      <p>
+      <p className="readable-helper">
         Displays reais do Windows aparecem quando disponíveis; a captura só
         ocorre após confirmação explícita do Owner, em memória e sem upload ou
         persistência padrão. Fixtures continuam determinísticas para testes.
       </p>
-      <p>
+      <p className="readable-helper">
         Owner confirmado: <code>{OWNER_USER_ID}</code>. O Rust valida essa
         identidade, as permissões, o modo e todo o ciclo de vida.
       </p>
@@ -7919,8 +8408,8 @@ export function ScreenVisionControls({
       ) : null}
       {error ? <p role="alert">{error}</p> : null}
 
-      <section className="settings-card">
-        <div className="message-actions">
+      <section className="settings-card resource-panel">
+        <div className="resource-section-heading">
           <h4>Displays e fixtures disponíveis</h4>
           <button
             type="button"
@@ -7938,22 +8427,19 @@ export function ScreenVisionControls({
           <p>Nenhum display ou fixture disponível.</p>
         ) : (
           <>
-            <label>
-              Display ou fixture
-              <select
-                value={selectedFixtureId}
-                onChange={(event) => setSelectedFixtureId(event.target.value)}
-                disabled={busy}
-              >
-                {fixtures.map((fixture) => (
-                  <option key={fixture.fixtureId} value={fixture.fixtureId}>
-                    {fixture.displayName} — {fixture.width}×{fixture.height}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <AipSelect
+              id="screen-vision-fixture"
+              label="Display ou fixture"
+              value={selectedFixtureId}
+              options={fixtures.map((fixture) => ({
+                value: fixture.fixtureId,
+                label: `${fixture.displayName} — ${fixture.width}×${fixture.height}`,
+              }))}
+              onChange={setSelectedFixtureId}
+              disabled={busy}
+            />
             {selectedFixture ? (
-              <p>
+              <p className="readable-helper">
                 {selectedFixture.synthetic
                   ? `Fixture sintética; monitor ${selectedFixture.monitorId}; metadata-only.`
                   : `Display real; monitor ${selectedFixture.monitorId}; captura sob demanda.`}{" "}
@@ -7964,57 +8450,69 @@ export function ScreenVisionControls({
         )}
       </section>
 
-      <section className="settings-card">
+      <section className="settings-card resource-panel">
         <h4>Nova sessão autorizada</h4>
-        <fieldset disabled={busy || blocked || selectedFixture === undefined}>
-          <legend>Permissões desta sessão</legend>
-          <label>
-            <input
-              type="checkbox"
-              checked={allowCapture}
-              onChange={(event) => setAllowCapture(event.target.checked)}
-            />{" "}
-            Permitir captura do display selecionado
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={allowAnalyze}
-              onChange={(event) => setAllowAnalyze(event.target.checked)}
-            />{" "}
-            Permitir análise local limitada
-          </label>
-          <legend>Exclusão e redaction</legend>
-          <label>
-            <input
-              type="checkbox"
-              checked={excludeSensitiveContent}
-              onChange={(event) =>
-                setExcludeSensitiveContent(event.target.checked)
-              }
-            />{" "}
-            Excluir conteúdo sensível (obrigatório)
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={excludeSensitiveRegions}
-              onChange={(event) =>
-                setExcludeSensitiveRegions(event.target.checked)
-              }
-            />{" "}
-            Excluir regiões sensíveis (obrigatório)
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={excludeTextLikeRegions}
-              onChange={(event) =>
-                setExcludeTextLikeRegions(event.target.checked)
-              }
-            />{" "}
-            Excluir regiões semelhantes a texto
-          </label>
+        <div className="screen-vision-field-groups">
+          <fieldset
+            className="screen-vision-fieldset"
+            disabled={busy || blocked || selectedFixture === undefined}
+          >
+            <legend>Permissões desta sessão</legend>
+            <label className="screen-vision-checkbox">
+              <input
+                type="checkbox"
+                checked={allowCapture}
+                onChange={(event) => setAllowCapture(event.target.checked)}
+              />
+              <span>Permitir captura do display selecionado</span>
+            </label>
+            <label className="screen-vision-checkbox">
+              <input
+                type="checkbox"
+                checked={allowAnalyze}
+                onChange={(event) => setAllowAnalyze(event.target.checked)}
+              />
+              <span>Permitir análise local limitada</span>
+            </label>
+          </fieldset>
+          <fieldset
+            className="screen-vision-fieldset"
+            disabled={busy || blocked || selectedFixture === undefined}
+          >
+            <legend>Exclusão e redaction</legend>
+            <label className="screen-vision-checkbox">
+              <input
+                type="checkbox"
+                checked={excludeSensitiveContent}
+                onChange={(event) =>
+                  setExcludeSensitiveContent(event.target.checked)
+                }
+              />
+              <span>Excluir conteúdo sensível (obrigatório)</span>
+            </label>
+            <label className="screen-vision-checkbox">
+              <input
+                type="checkbox"
+                checked={excludeSensitiveRegions}
+                onChange={(event) =>
+                  setExcludeSensitiveRegions(event.target.checked)
+                }
+              />
+              <span>Excluir regiões sensíveis (obrigatório)</span>
+            </label>
+            <label className="screen-vision-checkbox">
+              <input
+                type="checkbox"
+                checked={excludeTextLikeRegions}
+                onChange={(event) =>
+                  setExcludeTextLikeRegions(event.target.checked)
+                }
+              />
+              <span>Excluir regiões semelhantes a texto</span>
+            </label>
+          </fieldset>
+        </div>
+        <div className="screen-vision-number-fields">
           <label>
             Quota de jobs por sessão (1–8)
             <input
@@ -8035,41 +8533,40 @@ export function ScreenVisionControls({
               onChange={(event) => setMaxDurationMs(event.target.value)}
             />
           </label>
-          <button
-            type="button"
-            disabled={busy || blocked || selectedFixture === undefined}
-            onClick={() => void createSession()}
-          >
-            Criar sessão limitada
-          </button>
-        </fieldset>
+        </div>
+        <button
+          type="button"
+          disabled={busy || blocked || selectedFixture === undefined}
+          onClick={() => void createSession()}
+        >
+          Criar sessão limitada
+        </button>
       </section>
 
-      <section className="settings-card">
+      <section className="settings-card resource-panel">
         <h4>Sessões e prévias</h4>
-        <label>
-          Sessão atual
-          <select
-            value={selectedSessionId}
-            onChange={(event) => setSelectedSessionId(event.target.value)}
-            disabled={busy}
-          >
-            <option value="">Nenhuma sessão</option>
-            {sessions.map((session) => (
-              <option key={session.id} value={session.id}>
-                {session.monitorId} — {screenVisionStatusLabels[session.status]}
-              </option>
-            ))}
-          </select>
-        </label>
+        <AipSelect
+          id="screen-vision-session"
+          label="Sessão atual"
+          value={selectedSessionId}
+          options={[
+            { value: "", label: "Nenhuma sessão" },
+            ...sessions.map((session) => ({
+              value: session.id,
+              label: `${session.monitorId} — ${screenVisionStatusLabels[session.status]}`,
+            })),
+          ]}
+          onChange={setSelectedSessionId}
+          disabled={busy}
+        />
         {selectedSession ? (
           <>
-            <p>
+            <p className="readable-helper">
               Permissões: {selectedSession.permissions.join(", ")}; quota:{" "}
               {selectedSession.maxJobs} jobs / {selectedSession.maxDurationMs}{" "}
               ms; redaction obrigatória ativa.
             </p>
-            <div className="message-actions">
+            <div className="message-actions resource-actions">
               <button
                 type="button"
                 disabled={
@@ -8095,36 +8592,35 @@ export function ScreenVisionControls({
         )}
       </section>
 
-      <section className="settings-card">
+      <section className="settings-card resource-panel">
         <h4>Jobs e confirmação explícita</h4>
-        <label>
-          Job atual
-          <select
-            value={selectedJobId}
-            onChange={(event) => setSelectedJobId(event.target.value)}
-            disabled={busy}
-          >
-            <option value="">Nenhum job</option>
-            {jobs.map((job) => (
-              <option key={job.id} value={job.id}>
-                {job.monitorId} — {screenVisionStatusLabels[job.status]}
-              </option>
-            ))}
-          </select>
-        </label>
+        <AipSelect
+          id="screen-vision-job"
+          label="Job atual"
+          value={selectedJobId}
+          options={[
+            { value: "", label: "Nenhum job" },
+            ...jobs.map((job) => ({
+              value: job.id,
+              label: `${job.monitorId} — ${screenVisionStatusLabels[job.status]}`,
+            })),
+          ]}
+          onChange={setSelectedJobId}
+          disabled={busy}
+        />
         {selectedJob ? (
           <>
-            <p>
+            <p className="readable-helper">
               Status: {screenVisionStatusLabels[selectedJob.status]}; modelo:{" "}
               {screenVisionLifecycleLabels[selectedJob.modelLifecycle]};
               recurso: {selectedJob.resourceStatus}; cleanup:{" "}
               {selectedJob.cleanupStatus}.
             </p>
-            <p>
+            <p className="readable-helper">
               Prévia {selectedJob.preview.width}×{selectedJob.preview.height};
               confirmação necessária; bytes persistidos: não.
             </p>
-            <div className="message-actions">
+            <div className="message-actions resource-actions">
               <button
                 type="button"
                 disabled={busy || blocked || selectedJob.status !== "previewed"}
@@ -8168,10 +8664,13 @@ export function ScreenVisionControls({
           <p>Nenhuma prévia selecionada.</p>
         )}
         {hypothesis ? (
-          <section className="settings-card" aria-label="Hipótese incerta">
+          <section
+            className="settings-card resource-panel"
+            aria-label="Hipótese incerta"
+          >
             <h4>Resultado incerto e não diagnóstico</h4>
-            <p>{hypothesis.text}</p>
-            <p>
+            <p className="readable-helper">{hypothesis.text}</p>
+            <p className="readable-helper">
               Confiança limitada: {hypothesis.confidence}%; fonte:{" "}
               {hypothesis.source}. Não é atributo sensível e não é salvo como
               memória visual.
@@ -8180,10 +8679,12 @@ export function ScreenVisionControls({
         ) : null}
       </section>
 
-      <section className="settings-card">
+      <section className="settings-card resource-panel">
         <h4>Auditoria recente</h4>
         {audit.length === 0 ? (
-          <p>Nenhum evento de visão sintética registrado para este agente.</p>
+          <p className="readable-helper">
+            Nenhum evento de visão sintética registrado para este agente.
+          </p>
         ) : (
           <ul>
             {audit.slice(0, 20).map((record) => (
@@ -9603,16 +10104,323 @@ export function GatewayControls({
   );
 }
 
-function SettingsSurface({
+const modelPolicyLabels: Record<ModelPolicyMode, string> = {
+  auto: "Auto/Equilibrado",
+  quality: "Priorizar qualidade",
+  speed: "Priorizar velocidade",
+  manual: "Manual/Avançado",
+};
+
+const providerStateLabels: Record<ProviderSnapshot["state"], string> = {
+  checking: "Verificando disponibilidade",
+  available: "Provedor disponível",
+  empty: "Nenhum modelo disponível",
+  unavailable: "Provedor indisponível",
+  malformed: "Resposta do provedor inválida",
+  timeout: "Provedor não respondeu a tempo",
+};
+
+function useSettingsAgentPhases(agents: ProvisionalAgent[]) {
+  const agentIds = agents.map((agent) => agent.id).join("\0");
+  const [phases, setPhases] = useState<Record<string, PhaseOneState>>({});
+  useEffect(() => {
+    let active = true;
+    const ids = agentIds === "" ? [] : agentIds.split("\0");
+    setPhases({});
+    void Promise.all(
+      ids.map(async (agentId) => {
+        try {
+          return [
+            agentId,
+            await invoke<PhaseOneState>("get_phase_one_state", { agentId }),
+          ] as const;
+        } catch {
+          return null;
+        }
+      }),
+    ).then((results) => {
+      if (!active) return;
+      const next: Record<string, PhaseOneState> = {};
+      for (const result of results) {
+        if (result !== null) next[result[0]] = result[1];
+      }
+      setPhases(next);
+    });
+    return () => {
+      active = false;
+    };
+  }, [agentIds]);
+  return phases;
+}
+
+function settingsAgentStatus(
+  snapshot: AppSnapshot | null,
+  phase: PhaseOneState | undefined,
+): string {
+  if (snapshot === null) return "Verificando aplicativo";
+  if (snapshot.safeMode || snapshot.runtime.state === "safe_mode") {
+    return "Bloqueado pelo modo seguro";
+  }
+  if (
+    snapshot.runtime.state === "unavailable" ||
+    snapshot.runtime.state === "crashed"
+  ) {
+    return "Runtime indisponível";
+  }
+  if (snapshot.runtime.state !== "ready")
+    return runtimeLabels[snapshot.runtime.state];
+  return phase === undefined ? "Dados do agente indisponíveis" : "Disponível";
+}
+
+function modelListFromPhases(phases: Record<string, PhaseOneState>) {
+  const models = new Map<string, OllamaModel>();
+  for (const phase of Object.values(phases)) {
+    for (const model of phase.provider.models) models.set(model.ref, model);
+  }
+  return [...models.values()];
+}
+
+function SettingsModelsPanel({
+  provider,
+  models,
+}: {
+  provider: ProviderSnapshot | null;
+  models: OllamaModel[];
+}) {
+  const [preferences, updatePreferences] = useModelPreferences();
+  const policyOptions = MODEL_POLICY_MODES.map((value) => ({
+    value,
+    label: modelPolicyLabels[value],
+  }));
+  const providerState = provider?.state ?? "checking";
+
+  function toggleRef(
+    refs: string[],
+    modelRef: string,
+    included: boolean,
+  ): string[] {
+    return included
+      ? refs.includes(modelRef)
+        ? refs
+        : [...refs, modelRef]
+      : refs.filter((ref) => ref !== modelRef);
+  }
+
+  return (
+    <section className="settings-card settings-models-panel">
+      <h2>Modelos e roteamento</h2>
+      <p className="readable-helper">
+        Modelos conhecidos pelo snapshot do provedor local. Preferências salvas
+        neste computador orientam o roteamento Auto, qualidade e velocidade; não
+        instalam, removem ou carregam modelos.
+      </p>
+      <div className="settings-model-policy">
+        <AipSelect
+          id="settings-model-policy"
+          label="Política de seleção"
+          value={preferences.policyMode}
+          options={policyOptions}
+          description="A política fica salva apenas neste computador."
+          onChange={(value) => {
+            if (!MODEL_POLICY_MODES.includes(value as ModelPolicyMode)) return;
+            updatePreferences((current) => ({
+              ...current,
+              policyMode: value as ModelPolicyMode,
+            }));
+          }}
+        />
+        <p className="readable-helper" role="status">
+          Estado do provedor: {providerStateLabels[providerState]}.
+          {provider?.detailCode ? ` Código: ${provider.detailCode}.` : ""}
+        </p>
+      </div>
+      {models.length === 0 ? (
+        <p className="readable-helper">
+          Nenhum modelo conhecido no momento. Atualize os modelos na conversa
+          quando o provedor local estiver disponível.
+        </p>
+      ) : (
+        <div className="settings-model-list" aria-label="Modelos conhecidos">
+          {models.map((model) => {
+            const hidden = preferences.hiddenModelRefs.includes(model.ref);
+            const excluded = preferences.excludedModelRefs.includes(model.ref);
+            const fallbackOnly = preferences.fallbackOnlyModelRefs.includes(
+              model.ref,
+            );
+            const preferred = preferences.preferredModelRef === model.ref;
+            return (
+              <article
+                className={
+                  hidden ? "settings-model-card hidden" : "settings-model-card"
+                }
+                data-model-ref={model.ref}
+                key={model.ref}
+              >
+                <header>
+                  <div>
+                    <h3>{model.displayName}</h3>
+                    <p className="readable-helper">Provedor: Ollama</p>
+                  </div>
+                  <div className="settings-model-badges">
+                    {preferred ? (
+                      <span className="settings-model-badge">Preferido</span>
+                    ) : null}
+                    {hidden ? (
+                      <span className="settings-model-badge">Oculto</span>
+                    ) : null}
+                  </div>
+                </header>
+                <dl>
+                  <div>
+                    <dt>Ref. do modelo</dt>
+                    <dd>{model.ref}</dd>
+                  </div>
+                  <div>
+                    <dt>Ref. no provedor</dt>
+                    <dd>{model.providerModelId}</dd>
+                  </div>
+                  <div>
+                    <dt>Disponibilidade</dt>
+                    <dd>{providerStateLabels[providerState]}</dd>
+                  </div>
+                  <div>
+                    <dt>Carga</dt>
+                    <dd>Não informada pelo snapshot do provedor</dd>
+                  </div>
+                  {model.family ? (
+                    <div>
+                      <dt>Família</dt>
+                      <dd>{model.family}</dd>
+                    </div>
+                  ) : null}
+                  {model.parameterSize ? (
+                    <div>
+                      <dt>Parâmetros</dt>
+                      <dd>{model.parameterSize}</dd>
+                    </div>
+                  ) : null}
+                  {model.quantization ? (
+                    <div>
+                      <dt>Quantização</dt>
+                      <dd>{model.quantization}</dd>
+                    </div>
+                  ) : null}
+                  {model.size > 0 ? (
+                    <div>
+                      <dt>Tamanho</dt>
+                      <dd>{modelSizeLabel(model.size)}</dd>
+                    </div>
+                  ) : null}
+                </dl>
+                <div className="settings-model-actions">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={!hidden}
+                      aria-label={`Mostrar ${model.displayName} nos seletores`}
+                      onChange={(event) =>
+                        updatePreferences((current) => ({
+                          ...current,
+                          hiddenModelRefs: toggleRef(
+                            current.hiddenModelRefs,
+                            model.ref,
+                            !event.target.checked,
+                          ),
+                          preferredModelRef:
+                            !event.target.checked && preferred
+                              ? null
+                              : current.preferredModelRef,
+                        }))
+                      }
+                    />{" "}
+                    Mostrar nos seletores
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={!excluded}
+                      aria-label={`Elegível no Auto: ${model.displayName}`}
+                      onChange={(event) =>
+                        updatePreferences((current) => ({
+                          ...current,
+                          excludedModelRefs: toggleRef(
+                            current.excludedModelRefs,
+                            model.ref,
+                            !event.target.checked,
+                          ),
+                        }))
+                      }
+                    />{" "}
+                    Elegível no Auto
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={fallbackOnly}
+                      aria-label={`Usar ${model.displayName} apenas como fallback`}
+                      onChange={(event) =>
+                        updatePreferences((current) => ({
+                          ...current,
+                          fallbackOnlyModelRefs: toggleRef(
+                            current.fallbackOnlyModelRefs,
+                            model.ref,
+                            event.target.checked,
+                          ),
+                        }))
+                      }
+                    />{" "}
+                    Apenas como fallback
+                  </label>
+                  <button
+                    type="button"
+                    aria-pressed={preferred}
+                    onClick={() =>
+                      updatePreferences((current) => ({
+                        ...current,
+                        preferredModelRef: preferred ? null : model.ref,
+                      }))
+                    }
+                  >
+                    {preferred
+                      ? "Remover preferência"
+                      : "Definir como preferido"}
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+export function SettingsSurface({
   snapshot,
   changingMode,
   onToggleSafeMode,
+  activeAgentId,
+  onProfile,
+  onDefaultModel,
+  onWorkspace,
 }: {
   snapshot: AppSnapshot | null;
   changingMode: boolean;
   onToggleSafeMode: () => void;
+  activeAgentId: string | null;
+  onProfile: (agentId: string) => void;
+  onDefaultModel: (agentId: string) => void;
+  onWorkspace: (workspace: DesktopWorkspace) => void;
 }) {
   const [activeSection, setActiveSection] = useState("Geral");
+  const agents = snapshot?.agents ?? [];
+  const agentPhases = useSettingsAgentPhases(agents);
+  const activePhase =
+    activeAgentId === null ? undefined : agentPhases[activeAgentId];
+  const provider =
+    activePhase?.provider ?? Object.values(agentPhases)[0]?.provider ?? null;
+  const models = modelListFromPhases(agentPhases);
+  const modelsProvider = provider === null ? null : { ...provider, models };
   const sections = [
     "Geral",
     "Perfil do Owner",
@@ -9648,16 +10456,17 @@ function SettingsSurface({
           {activeSection === "Geral" ? (
             <section className="settings-card">
               <h2>Geral</h2>
-              <p>
+              <p className="readable-helper">
                 Este computador usa um Owner local implícito. Contas adicionais
                 ainda não estão disponíveis.
               </p>
+              <ThemeControls />
             </section>
           ) : null}
           {activeSection === "Perfil do Owner" ? (
             <section className="settings-card">
               <h2>Perfil do Owner</h2>
-              <p>
+              <p className="readable-helper">
                 Administrador local do A.I.P. A edição do nome do Owner ainda
                 não está disponível.
               </p>
@@ -9666,22 +10475,103 @@ function SettingsSurface({
           {activeSection === "Agentes" ? (
             <section className="settings-card">
               <h2>Agentes</h2>
-              <p>Edite cada perfil pelo botão Perfil no espaço do agente.</p>
+              <p className="readable-helper">
+                Gerencie acessos rápidos sem repetir o formulário completo de
+                perfil.
+              </p>
+              {agents.length === 0 ? (
+                <p className="readable-helper">Nenhum agente disponível.</p>
+              ) : (
+                <div
+                  className="settings-agent-list"
+                  aria-label="Agentes locais"
+                >
+                  {agents.map((agent) => {
+                    const phase = agentPhases[agent.id];
+                    return (
+                      <article
+                        className="settings-agent-card"
+                        data-agent-id={agent.id}
+                        key={agent.id}
+                      >
+                        <div className="settings-agent-avatar">
+                          <AgentSprite
+                            agentId={agent.id}
+                            spriteKey={agent.spriteKey}
+                            name={agent.name}
+                          />
+                        </div>
+                        <div className="settings-agent-copy">
+                          <header>
+                            <div>
+                              <h3>{agent.name}</h3>
+                              <p className="readable-helper">
+                                Status: {settingsAgentStatus(snapshot, phase)}
+                              </p>
+                            </div>
+                            {agent.id === activeAgentId ? (
+                              <span className="settings-model-badge">
+                                Selecionado
+                              </span>
+                            ) : null}
+                          </header>
+                          <dl>
+                            <div>
+                              <dt>Modelo em uso</dt>
+                              <dd>
+                                {phase?.selectedModelRef ?? "Não informado"}
+                              </dd>
+                            </div>
+                            <div>
+                              <dt>Modelo padrão</dt>
+                              <dd>
+                                {phase?.defaultModelRef ?? "Não informado"}
+                              </dd>
+                            </div>
+                          </dl>
+                          <div className="settings-agent-actions">
+                            <button
+                              type="button"
+                              onClick={() => onProfile(agent.id)}
+                            >
+                              Abrir perfil
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onDefaultModel(agent.id)}
+                            >
+                              Modelo padrão
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onWorkspace("appearance")}
+                            >
+                              Aparência
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onWorkspace("state")}
+                            >
+                              Estado
+                            </button>
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
             </section>
           ) : null}
           {activeSection === "Modelos" ? (
-            <section className="settings-card">
-              <h2>Modelos</h2>
-              <p>
-                O modelo padrão é configurado por agente. Cada conversa pode ter
-                uma substituição própria.
-              </p>
-            </section>
+            <SettingsModelsPanel provider={modelsProvider} models={models} />
           ) : null}
           {activeSection === "Segurança" ? (
             <section className="settings-card">
               <h2>Segurança</h2>
-              <p>O modo seguro desativa runtime, gerações e overlays.</p>
+              <p className="readable-helper">
+                O modo seguro desativa runtime, gerações e overlays.
+              </p>
               <button
                 className={
                   snapshot?.safeMode ? "mode-button active" : "mode-button"
@@ -9699,7 +10589,7 @@ function SettingsSurface({
           {activeSection === "Dados e backup" ? (
             <section className="settings-card">
               <h2>Dados e backup</h2>
-              <p>
+              <p className="readable-helper">
                 Exportação e backup automático ainda não estão disponíveis nesta
                 versão.
               </p>
@@ -10314,7 +11204,7 @@ export function LocalCapabilityStatusCenter({
       <header>
         <p className="eyebrow">Diagnóstico local</p>
         <h2 id="local-status-heading">Centro de status local</h2>
-        <span>
+        <span className="readable-helper">
           Leitura segura de hardware, providers e integrações; nenhuma
           referência de executável é exibida.
         </span>
@@ -10330,7 +11220,7 @@ export function LocalCapabilityStatusCenter({
           Modo seguro: runtime e alterações de capabilities ficam bloqueados.
         </p>
       ) : null}
-      <p className="local-status-legend">
+      <p className="local-status-legend readable-helper">
         Estados possíveis: Pronto, Não configurado, Indisponível, Bloqueado pelo
         modo e Erro.
       </p>
@@ -10347,28 +11237,34 @@ export function LocalCapabilityStatusCenter({
               if (!(panel instanceof HTMLDetailsElement)) return;
               event.preventDefault();
               panel.open = true;
-              panel.scrollIntoView?.({ behavior: "smooth", block: "start" });
+              panel.scrollIntoView?.({
+                behavior:
+                  document.documentElement.dataset.motion === "reduced"
+                    ? "auto"
+                    : "smooth",
+                block: "start",
+              });
               panel.querySelector("summary")?.focus();
             }}
           >
             <span>{card.label}</span>
             <strong>{card.status.state}</strong>
-            <small>{card.status.detail}</small>
+            <small className="readable-helper">{card.status.detail}</small>
           </a>
         ))}
       </div>
       <details className="local-capability-panel" id="local-capability-runtime">
         <summary>Runtime e Ollama</summary>
         <div>
-          <p>
+          <p className="readable-helper">
             <strong>Runtime:</strong> {runtimeStatus.state} —{" "}
             {runtimeStatus.detail}
           </p>
-          <p>
+          <p className="readable-helper">
             <strong>Ollama:</strong> {ollamaStatus.state} —{" "}
             {ollamaStatus.detail}
           </p>
-          <p>
+          <p className="readable-helper">
             Configuração: mantenha o Ollama local ativo e use “Atualizar” na
             conversa para reler os modelos. Sem runtime, o histórico e as
             leituras continuam acessíveis.
@@ -10396,7 +11292,7 @@ export function LocalCapabilitiesSurface({
         <div>
           <p className="eyebrow">Capacidades do Owner local</p>
           <h1>Recursos locais</h1>
-          <span>
+          <span className="readable-helper">
             Fixtures sintéticas servem para demonstração; hardware e providers
             reais dependem do Windows e da configuração local.
           </span>
@@ -10408,7 +11304,7 @@ export function LocalCapabilitiesSurface({
         safeMode={safeMode}
         temporaryChat={temporaryChat}
       />
-      <p className="local-capability-note">
+      <p className="local-capability-note readable-helper">
         Pré-requisitos: runtime para geração, referências locais para STT/TTS,
         dispositivos Windows para áudio, provedor visual para análise, raiz do
         Owner para ferramentas locais e aprovação explícita para extensões,
@@ -10497,17 +11393,17 @@ function App() {
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   const [changingMode, setChangingMode] = useState(false);
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
+  const [focusDefaultModel, setFocusDefaultModel] = useState(false);
   const [conversationRevision, setConversationRevision] = useState(0);
+  const [conversationNavigationRevision, setConversationNavigationRevision] =
+    useState(0);
   const [conversationListRevision, setConversationListRevision] = useState(0);
   const [conversationDraftAgentId, setConversationDraftAgentId] = useState<
     string | null
   >(null);
-  const [conversationDraftRevision, setConversationDraftRevision] =
-    useState(0);
+  const [conversationDraftRevision, setConversationDraftRevision] = useState(0);
   const [temporaryChat, setTemporaryChat] = useState(false);
-  const [workspace, setWorkspace] = useState<
-    "chat" | "memories" | "state" | "appearance" | "resources" | "settings"
-  >("chat");
+  const [workspace, setWorkspace] = useState<DesktopWorkspace>("chat");
 
   const loadSnapshot = useCallback(async () => {
     const next = await invoke<AppSnapshot>("get_app_snapshot");
@@ -10523,12 +11419,17 @@ function App() {
 
   useEffect(() => {
     const registration = createListenerRegistration();
-    void listen<string>(OPEN_AGENT_CONVERSATIONS_EVENT, (event) => {
-      setConversationDraftAgentId(null);
-      setActiveAgentId(event.payload);
-      setEditingAgentId(null);
-      setWorkspace("chat");
-    }).then(registration.register);
+    void listen<OpenAgentConversationsPayload>(
+      OPEN_AGENT_CONVERSATIONS_EVENT,
+      (event) => {
+        const { agentId } = event.payload;
+        setConversationDraftAgentId(null);
+        setActiveAgentId(agentId);
+        setEditingAgentId(null);
+        setWorkspace("chat");
+        setConversationNavigationRevision((value) => value + 1);
+      },
+    ).then(registration.register);
     return registration.dispose;
   }, []);
 
@@ -10546,21 +11447,20 @@ function App() {
     }
   }
 
-  async function openWorkspace(
-    next:
-      "chat" | "memories" | "state" | "appearance" | "resources" | "settings",
-  ) {
+  async function openWorkspace(next: DesktopWorkspace) {
     setConversationDraftAgentId(null);
     await leaveTemporaryChat();
     setEditingAgentId(null);
+    setFocusDefaultModel(false);
     setWorkspace(next);
   }
 
-  async function openProfile(agentId: string) {
+  async function openProfile(agentId: string, focusDefault = false) {
     setConversationDraftAgentId(null);
     await leaveTemporaryChat();
     setWorkspace("chat");
     setEditingAgentId(agentId);
+    setFocusDefaultModel(focusDefault);
   }
 
   async function leaveTemporaryChat() {
@@ -10588,6 +11488,7 @@ function App() {
     await leaveTemporaryChat();
     setActiveAgentId(agentId);
     setEditingAgentId(null);
+    setFocusDefaultModel(false);
     setWorkspace("chat");
   }
 
@@ -10615,17 +11516,14 @@ function App() {
             <small>Conversa local</small>
           </div>
         </button>
-        <p className="sidebar-label">Conversas</p>
-        <div className="agent-tabs">
-          {snapshot?.agents.map((agent) => (
-            <AgentButton
-              key={agent.id}
-              agent={agent}
-              active={agent.id === activeAgentId}
-              onSelect={() => void selectAgent(agent.id)}
-            />
-          ))}
-        </div>
+        <SidebarNavigation
+          agents={snapshot?.agents ?? []}
+          activeAgentId={activeAgentId}
+          workspace={workspace}
+          onSelectAgent={(agentId) => void selectAgent(agentId)}
+          onWorkspace={(next) => void openWorkspace(next)}
+          onProfile={(agentId) => void openProfile(agentId)}
+        />
         {activeAgentId ? (
           <ConversationList
             key={`${activeAgentId}-${conversationListRevision}`}
@@ -10641,53 +11539,6 @@ function App() {
               });
             }}
           />
-        ) : null}
-        {activeAgentId ? (
-          <nav className="sidebar-secondary" aria-label="Áreas do agente">
-            <p className="sidebar-label">Este agente</p>
-            {(
-              [
-                ["memories", "Memórias"],
-                ["state", "Estado"],
-                ["appearance", "Aparência"],
-              ] as const
-            ).map(([key, label]) => (
-              <button
-                key={key}
-                className={workspace === key ? "active" : undefined}
-                type="button"
-                aria-current={workspace === key ? "page" : undefined}
-                onClick={() => void openWorkspace(key)}
-              >
-                {label}
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={() => void openProfile(activeAgentId)}
-            >
-              Perfil de{" "}
-              {snapshot?.agents.find((agent) => agent.id === activeAgentId)
-                ?.name ?? "agente"}
-            </button>
-            <p className="sidebar-label">Aplicativo</p>
-            <button
-              className={workspace === "resources" ? "active" : undefined}
-              type="button"
-              aria-current={workspace === "resources" ? "page" : undefined}
-              onClick={() => void openWorkspace("resources")}
-            >
-              Recursos locais
-            </button>
-            <button
-              className={workspace === "settings" ? "active" : undefined}
-              type="button"
-              aria-current={workspace === "settings" ? "page" : undefined}
-              onClick={() => void openWorkspace("settings")}
-            >
-              Configurações
-            </button>
-          </nav>
         ) : null}
         <div className="sidebar-footer">
           <span className="local-dot" aria-hidden="true" />
@@ -10728,8 +11579,10 @@ function App() {
             )!}
             done={() => {
               setEditingAgentId(null);
+              setFocusDefaultModel(false);
               void loadSnapshot();
             }}
+            focusDefaultModel={focusDefaultModel}
           />
         ) : activeAgentId === null ? (
           <section className="conversation-empty">Carregando agentes…</section>
@@ -10739,6 +11592,10 @@ function App() {
               snapshot={snapshot}
               changingMode={changingMode}
               onToggleSafeMode={() => void toggleSafeMode()}
+              activeAgentId={activeAgentId}
+              onProfile={(agentId) => void openProfile(agentId)}
+              onDefaultModel={(agentId) => void openProfile(agentId, true)}
+              onWorkspace={(next) => void openWorkspace(next)}
             />
           </section>
         ) : workspace === "resources" ? (
@@ -10786,6 +11643,7 @@ function App() {
           <ConversationDraftSurface
             key={`${activeAgentId}-${conversationDraftRevision}`}
             agentId={activeAgentId}
+            onCreated={() => setConversationListRevision((value) => value + 1)}
             onPersisted={() => {
               setConversationDraftAgentId(null);
               setConversationRevision((value) => value + 1);
@@ -10798,6 +11656,7 @@ function App() {
             key={`${activeAgentId}-${conversationRevision}-${temporaryChat}`}
             agentId={activeAgentId}
             temporary={temporaryChat}
+            refreshRevision={conversationNavigationRevision}
             onToggleTemporary={() => void toggleTemporaryChat()}
           />
         )}

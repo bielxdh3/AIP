@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ConversationList } from "./App";
+import { conversationMenuPosition, ConversationList } from "./App";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
@@ -40,8 +40,15 @@ describe("ConversationList regressions", () => {
       await Promise.resolve();
     });
 
+    const actionTrigger = container.querySelector<HTMLButtonElement>(
+      ".conversation-actions-trigger",
+    );
+    if (actionTrigger === null) throw new Error("Missing action trigger");
+    await act(async () => actionTrigger.click());
     const deleteButton = Array.from(
-      container.querySelectorAll<HTMLButtonElement>(".conversation-actions button"),
+      document.querySelectorAll<HTMLButtonElement>(
+        ".conversation-actions-menu button",
+      ),
     ).find((button) => button.textContent === "Excluir");
     if (deleteButton === undefined) throw new Error("Missing delete button");
     await act(async () => deleteButton.click());
@@ -61,7 +68,15 @@ describe("ConversationList regressions", () => {
     );
     expect(container.querySelector('[role="dialog"]')).toBeNull();
 
-    await act(async () => deleteButton.click());
+    await act(async () => actionTrigger.click());
+    const confirmMenuDelete = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(
+        ".conversation-actions-menu button",
+      ),
+    ).find((button) => button.textContent === "Excluir");
+    if (confirmMenuDelete === undefined)
+      throw new Error("Missing delete button");
+    await act(async () => confirmMenuDelete.click());
     const confirm = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent === "Excluir conversa",
     );
@@ -201,17 +216,21 @@ describe("ConversationList regressions", () => {
       await Promise.resolve();
     });
 
-    const menu = container.querySelector(
-      ".conversation-actions",
-    ) as HTMLDetailsElement;
-    await act(async () => menu.querySelector("summary")?.click());
-    expect(menu.open).toBe(true);
+    const trigger = container.querySelector<HTMLButtonElement>(
+      ".conversation-actions-trigger",
+    );
+    if (trigger === null) throw new Error("Missing action trigger");
+    await act(async () => trigger.click());
+    const menu = document.querySelector<HTMLElement>(
+      ".conversation-actions-menu",
+    );
+    if (menu === null) throw new Error("Missing action menu");
     await act(async () =>
       Array.from(menu.querySelectorAll("button"))
         .find((button) => button.textContent === "Renomear")
         ?.click(),
     );
-    expect(menu.open).toBe(false);
+    expect(document.querySelector(".conversation-actions-menu")).toBeNull();
     expect(container.querySelector(".conversation-rename")).not.toBeNull();
     expect(
       container.querySelector(".conversation-rename-actions"),
@@ -219,5 +238,18 @@ describe("ConversationList regressions", () => {
     expect(document.activeElement).toBe(
       container.querySelector(".conversation-rename input"),
     );
+  });
+
+  it("keeps the action menu outside the clipped list and flips it above", () => {
+    const position = conversationMenuPosition(
+      { top: 540, bottom: 565, right: 220 },
+      160,
+      180,
+      800,
+      600,
+    );
+    expect(position.placement).toBe("above");
+    expect(position.top).toBe(356);
+    expect(position.left).toBe(60);
   });
 });

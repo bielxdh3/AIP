@@ -39,6 +39,17 @@ function change(
   element.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+async function chooseOption(container: HTMLElement, id: string, value: string) {
+  const trigger = container.querySelector<HTMLButtonElement>(`#${id}-trigger`);
+  if (trigger === null) throw new Error(`Missing ${id} trigger`);
+  await act(async () => trigger.click());
+  const option = document.body.querySelector<HTMLElement>(
+    `.aip-select-option[data-value="${value}"]`,
+  );
+  if (option === null) throw new Error(`Missing ${value} option`);
+  await act(async () => option.click());
+}
+
 describe("ProfileForm", () => {
   let root: Root | undefined;
   let container: HTMLDivElement | undefined;
@@ -59,7 +70,9 @@ describe("ProfileForm", () => {
       root?.render(<ProfileForm agent={agent} done={vi.fn()} />),
     );
     expect(
-      container.querySelector('.profile-default-model [aria-haspopup="listbox"]'),
+      container.querySelector(
+        '.profile-default-model [aria-haspopup="listbox"]',
+      ),
     ).not.toBeNull();
     expect(container.querySelector(".profile-default-model select")).toBeNull();
 
@@ -166,18 +179,10 @@ describe("ProfileForm", () => {
         container!.querySelector(".trait-grid input") as HTMLInputElement,
         "73",
       );
-      for (const [index, value] of [
-        [3, "child"],
-        [4, "human"],
-        [5, "ela/dela"],
-      ] as const) {
-        const select = fields[index]?.querySelector(
-          "select",
-        ) as HTMLSelectElement;
-        select.value = value;
-        select.dispatchEvent(new Event("change", { bubbles: true }));
-      }
     });
+    await chooseOption(container!, "profile-ageCategory", "child");
+    await chooseOption(container!, "profile-species", "human");
+    await chooseOption(container!, "profile-pronouns", "ela/dela");
     const save = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent === "Salvar alterações",
     );
@@ -197,14 +202,8 @@ describe("ProfileForm", () => {
       }),
     );
     expect(
-      (container.querySelector(".profile-fields select") as HTMLSelectElement)
-        .options.length,
-    ).toBeGreaterThan(1);
-    expect(
-      Array.from(container.querySelectorAll(".profile-fields select")).every(
-        (select) => (select as HTMLSelectElement).options.length > 1,
-      ),
-    ).toBe(true);
+      container.querySelectorAll(".profile-fields .aip-select-trigger"),
+    ).toHaveLength(3);
 
     const savedAgent = invoke.mock.calls.find(
       ([command]) => command === "update_agent_profile",
@@ -223,7 +222,9 @@ describe("ProfileForm", () => {
       "42",
     );
     expect(
-      (fields[3]?.querySelector("select") as HTMLSelectElement).value,
+      container
+        .querySelector<HTMLButtonElement>("#profile-ageCategory-trigger")
+        ?.getAttribute("data-value"),
     ).toBe("child");
   });
 
@@ -278,19 +279,28 @@ describe("ProfileForm", () => {
     );
     if (trigger === null) throw new Error("Missing date picker trigger");
     await act(async () => trigger.click());
-    const year = container.querySelector<HTMLInputElement>('[aria-label="Ano"]');
+    const year =
+      container.querySelector<HTMLInputElement>('[aria-label="Ano"]');
     if (year === null) throw new Error("Missing year control");
     change(year, "1995");
-    const month = container.querySelector<HTMLSelectElement>(
-      '[aria-label="Mês"]',
+    expect(
+      container.querySelector('[role="grid"]')?.getAttribute("aria-label"),
+    ).toMatch(/2020/);
+    await act(async () =>
+      year.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      ),
     );
+    const month =
+      container.querySelector<HTMLSelectElement>('[aria-label="Mês"]');
     if (month === null) throw new Error("Missing month control");
     await act(async () => {
       month.value = "6";
       month.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    expect(container.querySelector('[role="grid"]')?.getAttribute("aria-label"))
-      .toMatch(/1995/);
+    expect(
+      container.querySelector('[role="grid"]')?.getAttribute("aria-label"),
+    ).toMatch(/1995/);
     expect(container.querySelectorAll('[role="gridcell"]').length).toBe(31);
   });
 
@@ -304,13 +314,7 @@ describe("ProfileForm", () => {
         <ProfileForm agent={{ ...agent, species: "human" }} done={vi.fn()} />,
       ),
     );
-    const selects = container.querySelectorAll<HTMLSelectElement>(
-      ".profile-fields select",
-    );
-    await act(async () => {
-      selects[2]!.value = "custom";
-      selects[2]!.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    await chooseOption(container, "profile-pronouns", "custom");
     const customPronouns = Array.from(container.querySelectorAll("label"))
       .find((label) => label.textContent?.includes("Pronomes personalizados"))
       ?.querySelector("input") as HTMLInputElement;
@@ -321,8 +325,10 @@ describe("ProfileForm", () => {
       .find((label) => label.textContent?.includes("Sexualidade (opcional)"))
       ?.querySelector("input") as HTMLInputElement;
     change(customPronouns, "ze/zir");
-    change(gender, "não-binário");
-    change(sexuality, "bissexual");
+    change(gender, "  não binário  ");
+    change(sexuality, "  bissexual e queer  ");
+    expect(gender.value).toBe("  não binário  ");
+    expect(sexuality.value).toBe("  bissexual e queer  ");
     const save = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent === "Salvar alterações",
     );
@@ -332,8 +338,8 @@ describe("ProfileForm", () => {
       expect.objectContaining({
         agent: expect.objectContaining({
           pronouns: "ze/zir",
-          gender: "não-binário",
-          sexuality: "bissexual",
+          gender: "não binário",
+          sexuality: "bissexual e queer",
         }),
       }),
     );

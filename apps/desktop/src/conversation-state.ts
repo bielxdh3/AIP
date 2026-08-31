@@ -206,6 +206,16 @@ export function messageStatusCopy(message: ConversationMessage): string {
 
 export function messageFailureCopy(errorCode: string | null): string {
   if (
+    errorCode === "runtime_unavailable" ||
+    errorCode === "provider_unavailable" ||
+    errorCode === "orchestration_unavailable"
+  ) {
+    return "Servidor de IA indisponível.";
+  }
+  if (errorCode === "runtime_interrupted") {
+    return "Conexão com o servidor perdida.";
+  }
+  if (
     errorCode === "provider_model_unavailable" ||
     errorCode === "model_unavailable"
   ) {
@@ -281,17 +291,24 @@ export function blockedSendCopy(code: string | null): string | null {
     case "agent_suspended":
       return "Retome este agente para conversar.";
     case "runtime_unavailable":
-      return "Runtime indisponível.";
+    case "provider_unavailable":
+    case "orchestration_unavailable":
+      return "Servidor de IA indisponível.";
+    case "runtime_interrupted":
+      return "Conexão com o servidor perdida.";
     case "provider_checking":
       return "Verificando modelos locais…";
     case "provider_empty":
-      return "Nenhum modelo instalado.";
+    case "model_unavailable":
+      return "Modelo não instalado.";
     case "model_not_selected":
       return "Selecione um modelo local.";
     case "selected_model_unavailable":
       return "Modelo selecionado indisponível.";
+    case "no_candidate":
+      return "Nenhum dispositivo disponível para este modelo.";
     case "queue_full":
-      return "A fila local está cheia.";
+      return "Servidor ocupado. Sua solicitação está na fila.";
     default:
       return "Não foi possível iniciar a conversa.";
   }

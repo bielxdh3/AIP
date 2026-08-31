@@ -12,6 +12,7 @@ mod gateway;
 mod gateway_integration_tests;
 mod gateway_transport;
 mod native_overlay_region;
+mod orchestration;
 mod overlays;
 mod protocol;
 mod runtime;
@@ -76,6 +77,7 @@ use gateway_transport::{
     HandlerResponse as GatewayHandlerResponse, SecureHandler as GatewayHandler,
     TransportHandle as GatewayTransportHandle,
 };
+use orchestration::{OrchestrationManager, RoutingPolicy};
 use overlays::{InteractiveRegion, OverlayInputState};
 use runtime::RuntimeController;
 use screen_vision::{
@@ -118,6 +120,10 @@ struct AppState {
     overlay_input: OverlayInputState,
     companion_transport: Arc<Mutex<CompanionTransportState>>,
     gateway_transport: Arc<Mutex<GatewayTransportState>>,
+}
+
+fn routing_policy_or_default(policy: Option<RoutingPolicy>) -> RoutingPolicy {
+    policy.unwrap_or_default()
 }
 
 #[derive(Default)]
@@ -2693,12 +2699,13 @@ fn send_temporary_phase_one_message(
     state: State<'_, AppState>,
     agent_id: String,
     content: String,
+    policy: Option<RoutingPolicy>,
 ) -> Result<SendMessageResult, &'static str> {
     state
         .chat
         .as_ref()
         .ok_or("operation_unavailable")?
-        .send_temporary_message(&agent_id, &content)
+        .send_temporary_message_with_policy(&agent_id, &content, routing_policy_or_default(policy))
 }
 
 #[tauri::command]
@@ -2928,12 +2935,18 @@ fn send_phase_one_message(
     agent_id: String,
     conversation_id: String,
     content: String,
+    policy: Option<RoutingPolicy>,
 ) -> Result<SendMessageResult, &'static str> {
     state
         .chat
         .as_ref()
         .ok_or("operation_unavailable")?
-        .send_message(&agent_id, &conversation_id, &content)
+        .send_message_with_policy(
+            &agent_id,
+            &conversation_id,
+            &content,
+            routing_policy_or_default(policy),
+        )
 }
 
 #[tauri::command]
@@ -3014,20 +3027,59 @@ fn open_agent_conversations(
     app: AppHandle,
     state: State<'_, AppState>,
     agent_id: String,
+    conversation_id: Option<String>,
 ) -> Result<(), &'static str> {
-    state
-        .database
-        .as_ref()
-        .ok_or("operation_unavailable")?
+    let database = state.database.as_ref().ok_or("operation_unavailable")?;
+    database
         .agent(&agent_id)
         .map_err(|_| "operation_unavailable")?;
+    let conversation_id = match conversation_id {
+        Some(conversation_id) => {
+            database
+                .set_active_conversation(&agent_id, &conversation_id)
+                .map_err(|_| "operation_unavailable")?;
+            conversation_id
+        }
+        None => {
+            database
+                .active_conversation(&agent_id)
+                .map_err(|_| "operation_unavailable")?
+                .id
+        }
+    };
     let window = app
         .get_webview_window("main")
         .ok_or("operation_unavailable")?;
-    window.show().map_err(|_| "operation_failed")?;
+    window.unminimize().map_err(|_| "operation_failed")?;
+    if !window.is_visible().map_err(|_| "operation_failed")? {
+        window.show().map_err(|_| "operation_failed")?;
+    }
     window.set_focus().map_err(|_| "operation_failed")?;
-    app.emit_to("main", "open-agent-conversations", agent_id)
-        .map_err(|_| "operation_failed")
+    app.emit_to(
+        "main",
+        "open-agent-conversations",
+        OpenAgentConversationsEvent {
+            agent_id,
+            conversation_id,
+        },
+    )
+    .map_err(|_| "operation_failed")
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenAgentConversationsEvent {
+    agent_id: String,
+    conversation_id: String,
+}
+
+#[cfg(test)]
+fn workspace_window_action(is_visible: bool) -> &'static str {
+    if is_visible {
+        "unminimize-and-focus"
+    } else {
+        "unminimize-show-and-focus"
+    }
 }
 
 #[tauri::command]
@@ -3156,12 +3208,14 @@ pub fn run() {
             let runtime =
                 RuntimeController::new(runtime_source_root(app.handle()), stored_safe_mode);
             let overlay_input = OverlayInputState::default();
+            let orchestration = Arc::new(Mutex::new(OrchestrationManager::default()));
             let chat = database.as_ref().map(|database| {
                 ChatCoordinator::new(
                     app.handle().clone(),
                     database.clone(),
                     runtime.clone(),
                     Arc::clone(&safe_mode),
+                    Arc::clone(&orchestration),
                 )
             });
 
@@ -3407,9 +3461,10 @@ mod conversation_command_tests {
     use super::{
         append_public_conversation_turn_for_state, companion_transport_handler,
         complete_resource_job_for_state, emit_cognitive_candidate_for_state,
-        reserve_heavy_generation_for_state, set_custom_voice_consent_for_state,
-        start_agent_conversation_for_state, update_voice_settings_for_state, AppState,
-        CompanionTransportState, GatewayTransportState,
+        reserve_heavy_generation_for_state, routing_policy_or_default,
+        set_custom_voice_consent_for_state, start_agent_conversation_for_state,
+        update_voice_settings_for_state, AppState, CompanionTransportState, GatewayTransportState,
+        RoutingPolicy,
     };
     use crate::{
         companion::{
@@ -3449,6 +3504,36 @@ mod conversation_command_tests {
             companion_transport: Arc::new(Mutex::new(CompanionTransportState::default())),
             gateway_transport: Arc::new(Mutex::new(GatewayTransportState::default())),
         }
+    }
+
+    #[test]
+    fn workspace_navigation_only_shows_a_hidden_main_window() {
+        assert_eq!(
+            super::workspace_window_action(false),
+            "unminimize-show-and-focus"
+        );
+        assert_eq!(super::workspace_window_action(true), "unminimize-and-focus");
+    }
+
+    #[test]
+    fn omitted_chat_routing_policy_keeps_auto_default() {
+        assert_eq!(routing_policy_or_default(None), RoutingPolicy::default());
+    }
+
+    #[test]
+    fn workspace_navigation_event_preserves_agent_and_conversation() {
+        let payload = serde_json::to_value(super::OpenAgentConversationsEvent {
+            agent_id: "agt_luma_provisional".into(),
+            conversation_id: "conversation-luma-2".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "agentId": "agt_luma_provisional",
+                "conversationId": "conversation-luma-2"
+            })
+        );
     }
 
     fn policy(agent_id: &str, purpose: &str, max_turns: i64) -> ConversationPolicyRequest {

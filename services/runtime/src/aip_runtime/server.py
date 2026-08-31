@@ -22,6 +22,7 @@ from .protocol import (
     parse_request,
     result_response,
 )
+from .readiness import OllamaRuntimeManager
 
 
 @dataclass
@@ -41,9 +42,11 @@ class RuntimeServer:
         output: IO[str],
         client: OllamaClient | None = None,
         diagnostic: Callable[[object], None] = emit_diagnostic,
+        provider_manager: OllamaRuntimeManager | None = None,
     ) -> None:
         self._output = output
         self._client = client or OllamaClient()
+        self._provider_manager = provider_manager or OllamaRuntimeManager(client=self._client)
         self._diagnostic = diagnostic
         self._write_lock = threading.Lock()
         self._active_lock = threading.Lock()
@@ -115,6 +118,7 @@ class RuntimeServer:
         return 0
 
     def shutdown(self) -> None:
+        self._provider_manager.shutdown()
         connection: ConnectionLike | None = None
         with self._active_lock:
             active = self._active
@@ -136,7 +140,7 @@ class RuntimeServer:
         def run() -> None:
             try:
                 if operation == "discover":
-                    models = self._client.discover()
+                    models = self._provider_manager.discover()
                     self._write(
                         result_response(
                             request_id,

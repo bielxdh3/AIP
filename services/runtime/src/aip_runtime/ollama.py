@@ -155,6 +155,36 @@ class OllamaClient:
         models.sort(key=lambda model: str(model["displayName"]).casefold())
         return models
 
+    def health(self) -> None:
+        try:
+            connection = self._request_connection_factory()
+        except TimeoutError as error:
+            raise ProviderError("provider_timeout") from error
+        except (OSError, http.client.HTTPException) as error:
+            raise ProviderError("provider_unavailable") from error
+        try:
+            connection.request("GET", "/")
+            response = connection.getresponse()
+            if response.status != 200:
+                raise ProviderError("provider_http_error")
+            raw = response.read(4_096 + 1)
+            if len(raw) > 4_096:
+                raise ProviderError("provider_payload_too_large")
+            if not raw.strip():
+                raise ProviderError("provider_malformed")
+            raw.decode("utf-8", errors="strict")
+        except ProviderError:
+            raise
+        except TimeoutError as error:
+            raise ProviderError("provider_timeout") from error
+        except UnicodeDecodeError as error:
+            raise ProviderError("provider_malformed") from error
+        except (OSError, http.client.HTTPException) as error:
+            raise ProviderError("provider_unavailable") from error
+        finally:
+            with suppress(Exception):
+                connection.close()
+
     def show(self, model_id: str) -> dict[str, object]:
         model_id = _model_id(model_id)
         payload = self._json_request("POST", "/api/show", {"model": model_id, "verbose": False})
