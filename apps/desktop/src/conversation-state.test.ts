@@ -270,6 +270,31 @@ describe("conversation event reducer", () => {
     expect(compactPreview("um\ndois\ntrês\nquatro")).toBe("um\ndois\ntrês…");
   });
 
+  it("maps infrastructure blocking codes to short Portuguese statuses", () => {
+    expect(blockedSendCopy("no_candidate")).toBe(
+      "Nenhum dispositivo disponível para este modelo.",
+    );
+    expect(blockedSendCopy("queue_full")).toBe(
+      "Servidor ocupado. Sua solicitação está na fila.",
+    );
+    expect(blockedSendCopy("runtime_unavailable")).toBe(
+      "Servidor de IA indisponível.",
+    );
+    expect(blockedSendCopy("provider_unavailable")).toBe(
+      "Servidor de IA indisponível.",
+    );
+    expect(blockedSendCopy("orchestration_unavailable")).toBe(
+      "Servidor de IA indisponível.",
+    );
+    expect(blockedSendCopy("provider_checking")).toBe("Processando agora.");
+    expect(blockedSendCopy("provider_empty")).toBe("Modelo não instalado.");
+    expect(blockedSendCopy("model_unavailable")).toBe("Modelo não instalado.");
+    expect(blockedSendCopy("runtime_interrupted")).toBe(
+      "Conexão com o servidor perdida.",
+    );
+    expect(blockedSendCopy("ECONNREFUSED")).not.toContain("ECONNREFUSED");
+  });
+
   it("reports unavailable persisted selection without switching it", () => {
     const current = phase();
     current.selectedModelAvailable = false;
@@ -323,6 +348,9 @@ describe("conversation event reducer", () => {
     expect(messageFailureCopy("persistence_failed")).toContain("salva");
     expect(messageFailureCopy("protocol_decode_failed")).toContain(
       "comunicação",
+    );
+    expect(messageFailureCopy("runtime_interrupted")).toBe(
+      "Conexão com o servidor perdida.",
     );
   });
 
