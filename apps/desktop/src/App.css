@@ -356,13 +356,13 @@ a:focus-visible {
   height: 100dvh;
   min-height: 100vh;
   min-height: 100dvh;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: 248px minmax(0, 1fr);
   background: var(--color-background);
   overflow: auto;
 }
 
 .conversation-layout {
-  grid-template-columns: 232px minmax(0, 1fr);
+  grid-template-columns: 248px minmax(0, 1fr);
 }
 
 .conversation-main {
@@ -391,7 +391,6 @@ a:focus-visible {
 
 .sidebar-section {
   min-width: 0;
-  flex: 0 0 auto;
 }
 
 .sidebar-section > summary {
@@ -519,9 +518,19 @@ a:focus-visible {
 .sidebar-secondary button:hover,
 .sidebar-secondary button.active,
 .sidebar-secondary button:focus-visible {
-  border-color: #303a45;
+  border-color: var(--color-accent);
   color: var(--color-text-strong);
   background: var(--color-surface-raised);
+}
+
+.sidebar-navigation {
+  display: grid;
+  max-height: min(240px, 34vh);
+  min-width: 0;
+  gap: 10px;
+  align-content: start;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .workspace-panel {
@@ -2370,24 +2379,25 @@ small.readable-helper {
 .sidebar {
   position: sticky;
   top: 0;
-  display: flex;
+  display: grid;
   height: 100vh;
   height: 100dvh;
   min-height: 0;
-  flex-direction: column;
-  padding: 22px 14px 16px;
-  border-right: 1px solid #22262f;
-  background: #0e1116;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 14px;
+  padding: 18px;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-surface);
   overflow: hidden;
 }
 
 .conversation-list {
   display: grid;
-  flex: 1 1 auto;
-  gap: 6px;
+  gap: 8px;
   min-width: 0;
   min-height: 0;
-  margin: 0 -4px;
+  margin: 0;
+  padding: 0 2px 4px;
   align-content: start;
   overflow-y: auto;
   overflow-x: hidden;
@@ -2400,9 +2410,10 @@ small.readable-helper {
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
-  padding: 0 4px 3px;
-  color: var(--color-text);
-  font-size: 12px;
+  padding: 0 2px;
+  color: var(--color-text-strong);
+  font-size: var(--type-label);
+  font-weight: 700;
 }
 
 .conversation-list-heading small {
@@ -2414,19 +2425,52 @@ small.readable-helper {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 4px;
+  gap: 6px;
   align-items: center;
   min-width: 0;
+  min-height: 44px;
+  padding: 2px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  transition:
+    border-color var(--motion-state) ease,
+    background-color var(--motion-state) ease;
+}
+
+.conversation-list-item:hover,
+.conversation-list-item:focus-within {
+  border-color: var(--color-border);
+  background: var(--color-surface-raised);
+}
+
+.conversation-list-item.active,
+.conversation-list-item[data-active="true"] {
+  border-color: color-mix(
+    in srgb,
+    var(--color-accent) 60%,
+    var(--color-border)
+  );
+  background: var(--color-surface-soft);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.conversation-list-item[data-menu-open="true"] {
+  border-color: var(--color-accent);
+  background: var(--color-surface-soft);
+}
+
+.conversation-list-item[data-active="true"] .conversation-list-select {
+  color: var(--color-text-strong);
 }
 
 .conversation-list-select,
 .conversation-list-action,
 .conversation-list-create {
   min-width: 0;
-  min-height: 30px;
-  padding: 6px 8px;
+  min-height: 40px;
+  padding: 8px 10px;
   border: 1px solid transparent;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-xs);
   color: var(--color-text-muted);
   background: transparent;
   cursor: pointer;
@@ -2437,12 +2481,16 @@ small.readable-helper {
 }
 
 .conversation-actions-trigger {
-  width: 25px;
-  min-height: 25px;
-  padding: 2px 0;
-  border: 1px solid transparent;
+  display: inline-grid;
+  width: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
-  color: var(--color-text-subtle);
+  color: var(--color-text-muted);
+  background: var(--color-surface-muted);
   cursor: pointer;
   list-style: none;
   text-align: center;
@@ -2450,33 +2498,39 @@ small.readable-helper {
 
 .conversation-actions-trigger:hover,
 .conversation-actions-trigger:focus-visible {
-  border-color: #33433f;
+  border-color: var(--color-accent);
   color: var(--color-text-strong);
-  background: var(--color-surface-raised);
+  background: var(--color-surface-soft);
+}
+
+.conversation-actions-trigger[data-menu-open="true"] {
+  border-color: var(--color-accent);
+  color: var(--color-accent-strong);
+  background: var(--color-surface-soft);
 }
 
 .conversation-actions-menu {
   position: fixed;
-  z-index: 2;
+  z-index: 100;
   box-sizing: border-box;
   display: grid;
-  min-width: 130px;
+  min-width: 160px;
   max-height: calc(100dvh - 16px);
   padding: 4px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-surface);
-  box-shadow: 0 8px 20px #0008;
+  box-shadow: var(--shadow-menu);
   overflow-y: auto;
 }
 
 .conversation-actions-menu button,
 .conversation-rename button {
-  min-height: 28px;
-  padding: 5px 7px;
+  min-height: 36px;
+  padding: 7px 9px;
   border: 1px solid transparent;
   border-radius: var(--radius-xs);
-  color: #cbd2dc;
+  color: var(--color-text-muted);
   background: transparent;
   cursor: pointer;
   text-align: left;
@@ -2486,7 +2540,7 @@ small.readable-helper {
 .conversation-actions-menu button:focus-visible,
 .conversation-rename button:hover,
 .conversation-rename button:focus-visible {
-  border-color: #33433f;
+  border-color: var(--color-border);
   color: var(--color-text-strong);
   background: var(--color-surface-raised);
 }
@@ -2569,7 +2623,7 @@ small.readable-helper {
 .conversation-list-select:focus-visible,
 .conversation-list-action:focus-visible,
 .conversation-list-create:focus-visible {
-  border-color: #33433f;
+  border-color: var(--color-accent);
   color: var(--color-text-strong);
   background: var(--color-surface-raised);
 }
@@ -2643,7 +2697,17 @@ small.readable-helper {
 
 .conversation-list-create {
   width: 100%;
+  border-color: var(--color-accent);
+  color: var(--color-accent-ink);
+  background: var(--color-accent);
+  font-weight: 700;
   text-align: center;
+}
+
+.conversation-list-create:hover:not(:disabled) {
+  border-color: var(--color-accent-strong);
+  color: var(--color-accent-ink);
+  background: var(--color-accent-strong);
 }
 
 .brand-mark {
@@ -3807,6 +3871,18 @@ h3 {
 
   .brand-mark {
     padding: 0;
+  }
+
+  .sidebar-navigation {
+    display: flex;
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 10px;
+    overflow: visible;
+  }
+
+  .sidebar-navigation .sidebar-section {
+    flex-basis: 100%;
   }
 
   .sidebar-label,

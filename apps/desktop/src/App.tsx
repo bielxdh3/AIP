@@ -630,7 +630,7 @@ export function SidebarNavigation({
 }) {
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
   return (
-    <>
+    <div className="sidebar-navigation">
       <details className="sidebar-section sidebar-agents" open>
         <summary>
           <span>Agentes</span>
@@ -695,7 +695,7 @@ export function SidebarNavigation({
           </nav>
         </details>
       ) : null}
-    </>
+    </div>
   );
 }
 
@@ -2585,6 +2585,7 @@ function ConversationActionMenu({
         ref={triggerRef}
         type="button"
         className="conversation-actions-trigger"
+        data-menu-open={open}
         aria-label={`Ações de ${item.title}`}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -2666,11 +2667,13 @@ export function ConversationList({
   changed,
   onNewDraft,
   onSelectExisting,
+  activeConversationId,
 }: {
   agentId: string;
   changed: () => void;
   onNewDraft?: () => void;
-  onSelectExisting?: () => void;
+  onSelectExisting?: (conversationId: string) => void;
+  activeConversationId?: string | null;
 }) {
   const [items, setItems] = useState<PhaseOneConversation[]>([]);
   const [archived, setArchived] = useState<PhaseOneConversation[]>([]);
@@ -2697,7 +2700,7 @@ export function ConversationList({
     if (renamingId !== null) renameInputRef.current?.focus();
   }, [renamingId]);
   async function select(conversationId: string) {
-    onSelectExisting?.();
+    onSelectExisting?.(conversationId);
     await invoke("set_active_agent_conversation", { agentId, conversationId });
     changed();
   }
@@ -2770,15 +2773,29 @@ export function ConversationList({
         <span>Conversas recentes</span>
         <small>Fixadas primeiro</small>
       </div>
+      <button
+        type="button"
+        className="conversation-list-create"
+        onClick={() => onNewDraft?.()}
+      >
+        Nova conversa
+      </button>
       {items.map((item) => (
         <div
           key={item.id}
-          className="conversation-list-item"
+          className={
+            activeConversationId === item.id
+              ? "conversation-list-item active"
+              : "conversation-list-item"
+          }
+          data-active={activeConversationId === item.id || undefined}
+          data-menu-open={openMenuId === item.id || undefined}
           data-pinned={item.isPinned}
         >
           <button
             type="button"
             className="conversation-list-select"
+            aria-current={activeConversationId === item.id ? "page" : undefined}
             onClick={() => void select(item.id)}
           >
             {item.isPinned ? "★ " : ""}
@@ -2854,13 +2871,6 @@ export function ConversationList({
           ))}
         </div>
       ) : null}
-      <button
-        type="button"
-        className="conversation-list-create"
-        onClick={() => onNewDraft?.()}
-      >
-        Nova conversa
-      </button>
       {pendingRemoval ? (
         <ConfirmDialog
           title="Excluir conversa?"
@@ -11398,6 +11408,9 @@ function App() {
   const [conversationNavigationRevision, setConversationNavigationRevision] =
     useState(0);
   const [conversationListRevision, setConversationListRevision] = useState(0);
+  const [activeConversationId, setActiveConversationId] = useState<
+    string | null
+  >(null);
   const [conversationDraftAgentId, setConversationDraftAgentId] = useState<
     string | null
   >(null);
@@ -11425,6 +11438,7 @@ function App() {
         const { agentId } = event.payload;
         setConversationDraftAgentId(null);
         setActiveAgentId(agentId);
+        setActiveConversationId(null);
         setEditingAgentId(null);
         setWorkspace("chat");
         setConversationNavigationRevision((value) => value + 1);
@@ -11487,6 +11501,7 @@ function App() {
     setConversationDraftAgentId(null);
     await leaveTemporaryChat();
     setActiveAgentId(agentId);
+    setActiveConversationId(null);
     setEditingAgentId(null);
     setFocusDefaultModel(false);
     setWorkspace("chat");
@@ -11495,6 +11510,7 @@ function App() {
   function openConversationDraft() {
     if (activeAgentId === null) return;
     setConversationDraftAgentId(activeAgentId);
+    setActiveConversationId(null);
     setConversationDraftRevision((value) => value + 1);
     setEditingAgentId(null);
     setWorkspace("chat");
@@ -11528,8 +11544,12 @@ function App() {
           <ConversationList
             key={`${activeAgentId}-${conversationListRevision}`}
             agentId={activeAgentId}
+            activeConversationId={activeConversationId}
             onNewDraft={openConversationDraft}
-            onSelectExisting={() => setConversationDraftAgentId(null)}
+            onSelectExisting={(conversationId) => {
+              setActiveConversationId(conversationId);
+              setConversationDraftAgentId(null);
+            }}
             changed={() => {
               void leaveTemporaryChat().then(() => {
                 setConversationDraftAgentId(null);
