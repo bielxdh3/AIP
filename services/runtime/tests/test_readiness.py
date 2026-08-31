@@ -103,7 +103,8 @@ class ReadinessTests(unittest.TestCase):
 
             readiness = manager.ensure_ready()
             self.assertEqual(readiness.source, "started")
-            self.assertEqual(factory_calls, [executable])
+            self.assertEqual(len(factory_calls), 1)
+            self.assertTrue(factory_calls[0].samefile(executable))
             self.assertTrue(manager.started_process)
             manager.shutdown()
             self.assertTrue(process.terminated)
@@ -125,7 +126,8 @@ class ReadinessTests(unittest.TestCase):
             )
 
             manager.ensure_ready()
-            self.assertEqual(paths, [executable])
+            self.assertEqual(len(paths), 1)
+            self.assertTrue(paths[0].samefile(executable))
 
     def test_no_config_does_not_start_after_unavailable_health(self) -> None:
         client = FakeClient([ProviderError("provider_unavailable")])
@@ -189,7 +191,8 @@ class ReadinessTests(unittest.TestCase):
 
             self.assertEqual(manager.ensure_ready().source, "started")
             self.assertEqual(manager.ensure_ready().source, "started")
-            self.assertEqual(factory_calls, [executable])
+            self.assertEqual(len(factory_calls), 1)
+            self.assertTrue(factory_calls[0].samefile(executable))
 
     def test_autostart_uses_serve_without_shell(self) -> None:
         executable = Path("C:/Program Files/Ollama/ollama.exe")
