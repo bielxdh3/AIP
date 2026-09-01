@@ -3037,7 +3037,6 @@ small.readable-helper {
 :root[data-theme="light"] .sidebar,
 :root[data-theme="light"] .conversation-main,
 :root[data-theme="light"] .workspace-panel,
-:root[data-theme="light"] .conversation-surface,
 :root[data-theme="light"] .settings-card,
 :root[data-theme="light"] .agent-card,
 :root[data-theme="light"] .main-panel {
@@ -4256,10 +4255,6 @@ input[type="radio"] {
 }
 
 /* Canonical conversation and workspace surfaces. */
-.conversation-surface {
-  background: var(--color-background);
-}
-
 .conversation-header {
   padding: var(--space-7) clamp(var(--space-6), 4vw, var(--space-9))
     var(--space-6);
