@@ -933,7 +933,7 @@ a:focus-visible {
 .memory-composer-actions button:hover,
 .pixel-editor button:hover:not(:disabled) {
   border-color: var(--color-primary);
-  color: var(--color-on-primary);
+  color: var(--color-text-strong);
 }
 
 .memory-composer {
@@ -3121,7 +3121,7 @@ small.readable-helper {
 .aip-modal-actions button:hover,
 .aip-modal-actions button:focus-visible {
   border-color: var(--color-primary);
-  color: var(--color-on-primary);
+  color: var(--color-text-strong);
   background: var(--color-surface-soft);
 }
 
