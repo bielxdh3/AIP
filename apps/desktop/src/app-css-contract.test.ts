@@ -11,6 +11,12 @@ function rulesContaining(selector: string) {
   return rules.filter((rule) => rule.selector.includes(selector));
 }
 
+function rulesForSelector(selector: string) {
+  return rules.filter((rule) =>
+    rule.selector.split(",").some((candidate) => candidate.trim() === selector),
+  );
+}
+
 describe("App.css semantic foreground contract", () => {
   it("keeps neutral hover states readable and primary fills intentional", () => {
     const neutralSelectors = [
@@ -53,6 +59,24 @@ describe("App.css semantic foreground contract", () => {
       expect(filledRule?.body).toMatch(
         /color:\s*var\(--color-(?:on-primary|accent-ink)\)/,
       );
+    }
+  });
+
+  it("keeps the outer conversation surface unraised", () => {
+    const conversationSurfaceRules = rulesForSelector(".conversation-surface");
+    expect(conversationSurfaceRules.length).toBeGreaterThan(0);
+
+    for (const rule of conversationSurfaceRules) {
+      expect(rule.body).not.toMatch(/(?:background|border|box-shadow)\s*:/);
+    }
+
+    for (const selector of [".composer", ".chat-message"]) {
+      expect(
+        rulesForSelector(selector).some((rule) =>
+          /background\s*:\s*var\(--color-surface(?:-raised)?\)/.test(rule.body),
+        ),
+        selector,
+      ).toBe(true);
     }
   });
 });
