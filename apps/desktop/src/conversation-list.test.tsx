@@ -110,6 +110,7 @@ describe("ConversationList regressions", () => {
           agentId="agent"
           changed={vi.fn()}
           onNewDraft={onNewDraft}
+          activeConversationId="main"
         />,
       );
       await Promise.resolve();
@@ -131,6 +132,24 @@ describe("ConversationList regressions", () => {
       container.querySelector(".conversation-archive-management"),
     ).not.toBeNull();
     expect(container.querySelectorAll(".conversation-actions")).toHaveLength(2);
+    const activeRow = container.querySelector<HTMLElement>(
+      '.conversation-list-item[data-active="true"]',
+    );
+    expect(activeRow).not.toBeNull();
+    expect(activeRow?.classList.contains("active")).toBe(true);
+    expect(
+      activeRow
+        ?.querySelector(".conversation-list-select")
+        ?.getAttribute("aria-current"),
+    ).toBe("page");
+    const actionTrigger = activeRow?.querySelector<HTMLButtonElement>(
+      ".conversation-actions-trigger",
+    );
+    expect(actionTrigger?.textContent).toBe("…");
+    expect(actionTrigger?.getAttribute("aria-label")).toBe(
+      "Ações de Conversa inicial",
+    );
+    expect(actionTrigger?.dataset.menuOpen).toBe("false");
 
     if (create === null) throw new Error("Missing create button");
     await act(async () => create.click());
@@ -139,6 +158,15 @@ describe("ConversationList regressions", () => {
       "create_agent_conversation",
       expect.anything(),
     );
+    if (actionTrigger === null || actionTrigger === undefined)
+      throw new Error("Missing action trigger");
+    await act(async () => actionTrigger.click());
+    expect(actionTrigger.dataset.menuOpen).toBe("true");
+    expect(activeRow?.dataset.menuOpen).toBe("true");
+    expect(document.querySelector(".conversation-actions-menu")).not.toBeNull();
+    expect(
+      document.querySelector(".conversation-actions-menu")?.parentElement,
+    ).toBe(document.body);
   });
 
   it("opens archived management only on request", async () => {
@@ -169,7 +197,7 @@ describe("ConversationList regressions", () => {
     expect(container.textContent).toContain("Conversa arquivada");
   });
 
-  it("notifies the parent before selecting an existing conversation", async () => {
+  it("notifies the parent only after selecting an existing conversation", async () => {
     invoke.mockImplementation((command: string) =>
       command === "list_agent_conversations"
         ? Promise.resolve(current)
@@ -200,6 +228,47 @@ describe("ConversationList regressions", () => {
       agentId: "agent",
       conversationId: "main",
     });
+  });
+
+  it("keeps the current selection when activation fails", async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === "list_agent_conversations")
+        return Promise.resolve(current);
+      if (command === "set_active_agent_conversation")
+        return Promise.reject(new Error("activation_failed"));
+      return Promise.resolve(undefined);
+    });
+    const onSelectExisting = vi.fn();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        <ConversationList
+          agentId="agent"
+          changed={vi.fn()}
+          onSelectExisting={onSelectExisting}
+          activeConversationId="main"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () =>
+      container
+        ?.querySelector<HTMLButtonElement>(".conversation-list-select")
+        ?.click(),
+    );
+
+    expect(onSelectExisting).not.toHaveBeenCalled();
+    expect(
+      container
+        .querySelector<HTMLElement>(
+          '.conversation-list-item[data-active="true"]',
+        )
+        ?.querySelector(".conversation-list-select")
+        ?.getAttribute("aria-current"),
+    ).toBe("page");
   });
 
   it("closes the action menu before focusing the rename editor", async () => {

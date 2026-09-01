@@ -18,20 +18,24 @@ export type ThemeMode = (typeof THEME_MODES)[number];
 export const RADIUS_PRESETS = {
   compact: {
     label: "Compacto",
-    values: { xs: "2px", sm: "4px", md: "6px", lg: "8px", xl: "10px" },
+    values: { xs: "4px", sm: "4px", md: "4px", lg: "8px", xl: "12px" },
   },
   standard: {
     label: "Padrão",
-    values: { xs: "3px", sm: "5px", md: "7px", lg: "9px", xl: "14px" },
+    values: { xs: "4px", sm: "8px", md: "8px", lg: "12px", xl: "16px" },
   },
   soft: {
     label: "Suave",
-    values: { xs: "5px", sm: "8px", md: "12px", lg: "16px", xl: "20px" },
+    values: { xs: "4px", sm: "8px", md: "12px", lg: "16px", xl: "24px" },
   },
 } as const;
 export type RadiusPreset = keyof typeof RADIUS_PRESETS;
 
 export const UI_FONTS = {
+  times: {
+    label: "Times New Roman",
+    stack: '"Times New Roman", Times, serif',
+  },
   system: {
     label: "Sistema",
     stack:
@@ -60,14 +64,14 @@ export type ThemePreferences = {
 
 export const DEFAULT_THEME_PREFERENCES: ThemePreferences = {
   mode: "dark",
-  primaryColor: "#57d8bd",
-  secondaryColor: "#74c7b4",
+  primaryColor: "#d0aa72",
+  secondaryColor: "#efd09b",
   radius: "standard",
-  font: "inter",
+  font: "times",
 };
 
-const LIGHT_TEXT = "#ffffff";
-const DARK_TEXT = "#07120f";
+const LIGHT_TEXT = "#fffaf1";
+const DARK_TEXT = "#241d14";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -172,12 +176,67 @@ export function themeCssVariables(
   reducedMotion: boolean,
 ): Record<string, string> {
   const radius = RADIUS_PRESETS[preferences.radius].values;
+  const primary = normalizeHexColor(
+    preferences.primaryColor,
+    DEFAULT_THEME_PREFERENCES.primaryColor,
+  );
+  const secondary = normalizeHexColor(
+    preferences.secondaryColor,
+    DEFAULT_THEME_PREFERENCES.secondaryColor,
+  );
+  const palette =
+    resolvedMode === "light"
+      ? {
+          canvas: "#f3f0ea",
+          surface: "#fffdf8",
+          raised: "#f8f4ed",
+          soft: "#eee9df",
+          mutedSurface: "#f5f0e7",
+          border: "#d0c8bd",
+          strongBorder: "#aa9f92",
+          text: "#2c2925",
+          mutedText: "#5f5951",
+          subtleText: "#766f67",
+          success: "#2f7650",
+          warning: "#8a5a00",
+          danger: "#a44f48",
+        }
+      : {
+          canvas: "#121314",
+          surface: "#1a1b1d",
+          raised: "#222427",
+          soft: "#292b2f",
+          mutedSurface: "#202226",
+          border: "#383b40",
+          strongBorder: "#555a61",
+          text: "#f3f1ec",
+          mutedText: "#c1bdb5",
+          subtleText: "#918d86",
+          success: "#9ac6a4",
+          warning: "#ddbd76",
+          danger: "#e0a09a",
+        };
   return {
     "--font-ui": UI_FONTS[preferences.font].stack,
     "--font-mono": 'Consolas, "Cascadia Code", monospace',
     "--font-size-body": "16px",
     "--line-height-body": "1.5",
-    "--readability-measure": "70ch",
+    "--readability-measure": "68ch",
+    "--type-meta": "12px",
+    "--type-label": "14px",
+    "--type-body": "16px",
+    "--type-section": "18px",
+    "--type-page": "22px",
+    "--type-display": "28px",
+    "--space-1": "4px",
+    "--space-2": "8px",
+    "--space-3": "12px",
+    "--space-4": "16px",
+    "--space-5": "20px",
+    "--space-6": "24px",
+    "--space-7": "32px",
+    "--space-8": "40px",
+    "--space-9": "48px",
     "--radius-xs": radius.xs,
     "--radius-sm": radius.sm,
     "--radius-md": radius.md,
@@ -186,30 +245,43 @@ export function themeCssVariables(
     "--motion-fast": reducedMotion ? "0ms" : "120ms",
     "--motion-standard": reducedMotion ? "0ms" : "180ms",
     "--motion-idle": reducedMotion ? "0ms" : "2.4s",
-    "--color-primary": normalizeHexColor(
-      preferences.primaryColor,
-      DEFAULT_THEME_PREFERENCES.primaryColor,
-    ),
-    "--color-on-primary": readableForeground(preferences.primaryColor),
-    "--color-secondary": normalizeHexColor(
-      preferences.secondaryColor,
-      DEFAULT_THEME_PREFERENCES.secondaryColor,
-    ),
-    "--color-on-secondary": readableForeground(preferences.secondaryColor),
-    "--color-background": resolvedMode === "light" ? "#f4f7f8" : "#0b0d11",
-    "--color-surface": resolvedMode === "light" ? "#ffffff" : "#11161c",
-    "--color-surface-raised": resolvedMode === "light" ? "#eef3f5" : "#171d24",
-    "--color-surface-deep": resolvedMode === "light" ? "#e7edef" : "#0b0f14",
-    "--color-text": resolvedMode === "light" ? "#16232b" : "#e7eaf0",
-    "--color-text-strong": resolvedMode === "light" ? "#0c171d" : "#edf0f5",
-    "--color-text-muted": resolvedMode === "light" ? "#42525a" : "#aeb6c2",
-    "--color-text-subtle": resolvedMode === "light" ? "#5a6a72" : "#68717e",
-    "--color-border": resolvedMode === "light" ? "#c8d5d9" : "#2c3442",
-    "--color-border-strong": resolvedMode === "light" ? "#9fb1b8" : "#46515f",
-    "--color-success": resolvedMode === "light" ? "#087f68" : "#74c7b4",
-    "--color-warning": resolvedMode === "light" ? "#8a5a00" : "#d7c18f",
-    "--color-danger": resolvedMode === "light" ? "#b42318" : "#ef8e7e",
-    "--color-focus": resolvedMode === "light" ? "#075e54" : "#57d8bd",
+    "--motion-in": reducedMotion ? "0ms" : "180ms",
+    "--motion-out": reducedMotion ? "0ms" : "120ms",
+    "--motion-state": reducedMotion ? "0ms" : "160ms",
+    "--control-height": "40px",
+    "--control-height-comfortable": "48px",
+    "--focus-ring": `0 0 0 3px ${resolvedMode === "light" ? "#fffdf8" : "#121314"}, 0 0 0 5px ${primary}`,
+    "--color-primary": primary,
+    "--color-on-primary": readableForeground(primary),
+    "--color-secondary": secondary,
+    "--color-on-secondary": readableForeground(secondary),
+    "--color-accent": primary,
+    "--color-accent-strong": secondary,
+    "--color-accent-ink": readableForeground(primary),
+    "--color-background": palette.canvas,
+    "--color-surface": palette.surface,
+    "--color-surface-raised": palette.raised,
+    "--color-surface-soft": palette.soft,
+    "--color-surface-muted": palette.mutedSurface,
+    "--color-surface-deep": palette.canvas,
+    "--color-text": palette.text,
+    "--color-text-strong": palette.text,
+    "--color-text-muted": palette.mutedText,
+    "--color-text-subtle": palette.subtleText,
+    "--color-border": palette.border,
+    "--color-border-strong": palette.strongBorder,
+    "--color-success": palette.success,
+    "--color-warning": palette.warning,
+    "--color-danger": palette.danger,
+    "--color-focus": primary,
+    "--shadow-menu":
+      resolvedMode === "light"
+        ? "0 14px 32px rgba(44, 41, 37, 0.18)"
+        : "0 14px 32px rgba(0, 0, 0, 0.42)",
+    "--shadow-dialog":
+      resolvedMode === "light"
+        ? "0 24px 64px rgba(44, 41, 37, 0.24)"
+        : "0 24px 64px rgba(0, 0, 0, 0.58)",
   };
 }
 
