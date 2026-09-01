@@ -197,7 +197,7 @@ describe("ConversationList regressions", () => {
     expect(container.textContent).toContain("Conversa arquivada");
   });
 
-  it("notifies the parent before selecting an existing conversation", async () => {
+  it("notifies the parent only after selecting an existing conversation", async () => {
     invoke.mockImplementation((command: string) =>
       command === "list_agent_conversations"
         ? Promise.resolve(current)
@@ -228,6 +228,47 @@ describe("ConversationList regressions", () => {
       agentId: "agent",
       conversationId: "main",
     });
+  });
+
+  it("keeps the current selection when activation fails", async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === "list_agent_conversations")
+        return Promise.resolve(current);
+      if (command === "set_active_agent_conversation")
+        return Promise.reject(new Error("activation_failed"));
+      return Promise.resolve(undefined);
+    });
+    const onSelectExisting = vi.fn();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        <ConversationList
+          agentId="agent"
+          changed={vi.fn()}
+          onSelectExisting={onSelectExisting}
+          activeConversationId="main"
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () =>
+      container
+        ?.querySelector<HTMLButtonElement>(".conversation-list-select")
+        ?.click(),
+    );
+
+    expect(onSelectExisting).not.toHaveBeenCalled();
+    expect(
+      container
+        .querySelector<HTMLElement>(
+          '.conversation-list-item[data-active="true"]',
+        )
+        ?.querySelector(".conversation-list-select")
+        ?.getAttribute("aria-current"),
+    ).toBe("page");
   });
 
   it("closes the action menu before focusing the rename editor", async () => {
