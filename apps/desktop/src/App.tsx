@@ -1309,11 +1309,13 @@ export function ConversationSurface({
   temporary,
   onToggleTemporary,
   refreshRevision = 0,
+  onActiveConversationChange,
 }: {
   agentId: string;
   temporary: boolean;
   onToggleTemporary?: () => void;
   refreshRevision?: number;
+  onActiveConversationChange?: (conversationId: string) => void;
 }) {
   const { phase, error, load } = usePhaseOne(agentId, temporary);
   const [modelPreferences] = useModelPreferences();
@@ -1329,10 +1331,17 @@ export function ConversationSurface({
   const historyRef = useRef<HTMLDivElement>(null);
   const conversationIdRef = useRef<string | null>(null);
   const followsBottomRef = useRef(true);
+  const phaseConversationId = phase?.conversation.id;
 
   useEffect(() => {
     if (refreshRevision > 0) void load();
   }, [load, refreshRevision]);
+
+  useEffect(() => {
+    if (!temporary && phaseConversationId !== undefined) {
+      onActiveConversationChange?.(phaseConversationId);
+    }
+  }, [onActiveConversationChange, phaseConversationId, temporary]);
 
   useLayoutEffect(() => {
     const history = historyRef.current;
@@ -2712,8 +2721,15 @@ export function ConversationList({
     if (renamingId !== null) renameInputRef.current?.focus();
   }, [renamingId]);
   async function select(conversationId: string) {
+    try {
+      await invoke("set_active_agent_conversation", {
+        agentId,
+        conversationId,
+      });
+    } catch {
+      return;
+    }
     onSelectExisting?.(conversationId);
-    await invoke("set_active_agent_conversation", { agentId, conversationId });
     changed();
   }
   async function loadArchived() {
@@ -11435,6 +11451,9 @@ function App() {
     setSnapshot(next);
     setActiveAgentId((current) => current ?? next.agents[0]?.id ?? null);
   }, []);
+  const syncActiveConversation = useCallback((conversationId: string) => {
+    setActiveConversationId(conversationId);
+  }, []);
 
   useEffect(() => {
     void loadSnapshot();
@@ -11447,10 +11466,10 @@ function App() {
     void listen<OpenAgentConversationsPayload>(
       OPEN_AGENT_CONVERSATIONS_EVENT,
       (event) => {
-        const { agentId } = event.payload;
+        const { agentId, conversationId } = event.payload;
         setConversationDraftAgentId(null);
         setActiveAgentId(agentId);
-        setActiveConversationId(null);
+        setActiveConversationId(conversationId);
         setEditingAgentId(null);
         setWorkspace("chat");
         setConversationNavigationRevision((value) => value + 1);
@@ -11689,6 +11708,7 @@ function App() {
             agentId={activeAgentId}
             temporary={temporaryChat}
             refreshRevision={conversationNavigationRevision}
+            onActiveConversationChange={syncActiveConversation}
             onToggleTemporary={() => void toggleTemporaryChat()}
           />
         )}

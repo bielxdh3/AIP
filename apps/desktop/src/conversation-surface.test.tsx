@@ -62,6 +62,7 @@ const loadedPhase = {
 describe("ConversationSurface", () => {
   let root: Root;
   let container: HTMLDivElement;
+  const onActiveConversationChange = vi.fn();
 
   afterEach(() => {
     act(() => root?.unmount());
@@ -73,7 +74,11 @@ describe("ConversationSurface", () => {
   function renderSurface(temporary = false) {
     act(() => {
       root.render(
-        <ConversationSurface agentId="agent" temporary={temporary} />,
+        <ConversationSurface
+          agentId="agent"
+          temporary={temporary}
+          onActiveConversationChange={onActiveConversationChange}
+        />,
       );
     });
   }
@@ -100,7 +105,13 @@ describe("ConversationSurface", () => {
 
     expect(() =>
       act(() =>
-        root.render(<ConversationSurface agentId="agent" temporary={false} />),
+        root.render(
+          <ConversationSurface
+            agentId="agent"
+            temporary={false}
+            onActiveConversationChange={onActiveConversationChange}
+          />,
+        ),
       ),
     ).not.toThrow();
     expect(container.textContent).toContain("Carregando conversa");
@@ -108,10 +119,17 @@ describe("ConversationSurface", () => {
     phase = loadedPhase;
     expect(() =>
       act(() =>
-        root.render(<ConversationSurface agentId="agent" temporary={false} />),
+        root.render(
+          <ConversationSurface
+            agentId="agent"
+            temporary={false}
+            onActiveConversationChange={onActiveConversationChange}
+          />,
+        ),
       ),
     ).not.toThrow();
     expect(container.textContent).toContain("Resposta elegível");
+    expect(onActiveConversationChange).toHaveBeenCalledWith("conversation");
     expect(container.textContent).toContain("Tentar novamente");
     expect(
       container.querySelector(
@@ -282,6 +300,7 @@ describe("ConversationSurface", () => {
     document.body.append(container);
     root = createRoot(container);
     renderSurface(true);
+    expect(onActiveConversationChange).not.toHaveBeenCalled();
 
     const textarea =
       container.querySelector<HTMLTextAreaElement>(".composer textarea")!;
