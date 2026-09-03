@@ -24,6 +24,7 @@ new claims about the packaged result or blockers for the post-v0.1 roadmap.
 - Keep the UI functional when AI components are missing.
 - Avoid implementing later features merely because an abstraction could support them.
 - Stabilize contracts before Android or remote access.
+- Treat [the context and memory architecture](CONTEXT_MEMORY_ARCHITECTURE.md) as the canonical target for context/memory evolution while preserving historical implementation evidence and hard security/privacy/Rust-authority invariants.
 
 ## Phase 0: repository bootstrap and visual shell `[DONE]`
 
@@ -356,13 +357,94 @@ public relay or tunnel, or use Cloudflare credentials. Private-LAN/hardware
 manual validation, recovery UX, release signing, remote CI, external ownership
 exchange, and remote/mobile delivery remain separately authorized future scope.
 
+## Post-v0.1 Phase 14: bounded context and long-term memory architecture `[ROADMAP — NORMATIVE TARGET]`
+
+Goal: replace the initial memory/context pipeline with the bounded semantic knowledge system defined in [CONTEXT_MEMORY_ARCHITECTURE.md](CONTEXT_MEMORY_ARCHITECTURE.md), without rewriting the historical behavior of earlier releases.
+
+This phase is intentionally broader than the v0.1 memory checkpoint. The current memory implementation and its validation remain historical/current-state evidence until Phase 14 is actually implemented and validated.
+
+### Phase 14A — memory model and lifecycle
+
+- separate User Profile, Agent Profile, atomic memory, history, temporary context, conversation summaries, and runtime context;
+- explicit user/agent namespaces and ownership boundaries;
+- durability classes: ephemeral, short-lived, medium-term, durable, historical, disposable;
+- compression levels from discard through important-event representation;
+- future-utility, confidence, importance, status, and provenance as independent metadata;
+- supersession, conflict, historical state, and explicit Owner correction;
+- pinned-memory protection and deterministic garbage-collection outcomes;
+- no raw hidden reasoning or full assembled prompts as durable memory.
+
+### Phase 14B — semantic compaction and profile projection
+
+- candidate extraction from eligible normal conversations;
+- semantic compaction before durable persistence;
+- semantic deduplication and update-instead-of-duplicate behavior;
+- minimum-sufficient-memory policy;
+- current vs historical state projection;
+- derived User Profile and Agent Profile rebuilt from authoritative memories rather than duplicated manually;
+- invalidation/rebuild of affected summaries and projections after authoritative updates.
+
+### Phase 14C — temporary context and recursive conversation compaction
+
+- first-class temporary working state with TTL and completion/abandonment conditions;
+- final-result extraction before temporary detail expiration;
+- topic segmentation for long conversations;
+- bounded chunk, conversation, topic/period, and projection summaries;
+- provenance links from summaries to original messages so recursive summarization never becomes factual authority;
+- temporary chat remains non-persistent and cannot leak into durable knowledge.
+
+### Phase 14D — memory tree, graph, and entity index
+
+- semantic hierarchy for navigability;
+- graph edges for relationships such as replacement, ownership, event linkage, and project linkage;
+- entity aliases and entity-to-memory/conversation/event links;
+- retrieval that can raise historical branches only when the active request makes them relevant.
+
+### Phase 14E — Context Compiler and model-aware token budgeting
+
+- intent/entity analysis before context retrieval;
+- bounded retrieval from recent conversation, working state, profiles, memories, projects, relationships, goals, opinions, and relevant history;
+- dynamic model-specific context-window profiles;
+- output reservation and safety margin before input assembly;
+- priority-based context dropping under pressure;
+- context-pressure states and preflight token estimation;
+- prevent oversized-context requests before they reach the provider;
+- permit indefinitely long visible conversations while active model context stays bounded.
+
+### Phase 14F — explainability, diagnostics, and graceful degradation
+
+- context-assembly diagnostics for model window, input budget, output reserve, pressure, and source-class token usage;
+- memory diagnostics explaining creation, compaction, retrieval, omission, supersession, provenance, and policy version;
+- retrieval failure degrades to reduced context;
+- compaction failure uses deterministic fallback;
+- unavailable summaries fall back to bounded recent messages;
+- token-estimation failure uses a conservative budget.
+
+### Phase 14 acceptance invariants
+
+- complete history is never automatically injected into every prompt;
+- long-term memory is semantic and compact, not transcript-shaped;
+- temporary state never automatically becomes durable memory;
+- obsolete facts are superseded rather than staying equally current;
+- historical low-value information can survive in aggressively compressed form;
+- context is compiled per request by relevance;
+- output capacity is reserved before input assembly;
+- memory and context remain bounded;
+- profiles, memory, history, summaries, and runtime context remain distinct;
+- LLM output is interpretive candidate data while Rust/SQLite own persistence and policy;
+- important durable memories retain provenance;
+- summaries are aids, never factual authority;
+- context exhaustion is treated as a preventable runtime condition.
+
+Expected implementation sequencing should keep 14A–14F independently reviewable while preserving the complete architectural invariants across the final integrated phase.
+
 ## Deferred research
 
 Research without implementation commitment:
 
 - model routing and automatic downgrade;
 - alternate local runtimes;
-- advanced embeddings and retrieval;
+- advanced embeddings and retrieval beyond the required Phase 14 bounded retrieval baseline;
 - secure full agent package export/import;
 - physically bundled models in exports;
 - derived-agent lineage;
