@@ -15,6 +15,12 @@ Route other work as follows:
 
 If a required skill cannot be loaded, report that before implementing. Do not invent a skill unless explicitly requested.
 
+## Context and memory authority
+
+For any work involving context assembly, long-term memory, temporary context, summaries, retrieval, profile projection, token budgeting, memory lifecycle, conflict handling, supersession, or memory diagnostics, `docs/CONTEXT_MEMORY_ARCHITECTURE.md` is the canonical architecture target and has precedence over older aspirational context/memory descriptions.
+
+Do not rewrite historical validation or current implementation evidence to pretend the target is already implemented. If the target conflicts with a hard security, privacy, ownership, data-integrity, deterministic-authority, or shipped-behavior invariant, preserve the hard invariant and surface the conflict explicitly instead of silently substituting behavior.
+
 ## Architecture and scope
 
 - Keep AIP standalone; do not import BielOS runtime code or modify BielOS.
@@ -30,7 +36,7 @@ If a required skill cannot be loaded, report that before implementing. Do not in
 ## Security, privacy, language
 
 - Never expose or commit `.env` contents, credentials, private keys, databases, histories, memories, models, exports, backups, personal data, private paths, BielOS operational details, or media containing personal data.
-- Use placeholders in examples. Temporary chat content, summaries, memories, and learning records remain in memory only.
+- Use placeholders in examples. Anything derived from a temporary chat, including summaries, memory candidates, learning records, or profile updates, must remain non-persistent and must not cross into durable knowledge.
 - User-facing UI text is Portuguese; source, identifiers, comments, and documentation are English.
 - Preserve security, privacy, data-integrity, accessibility, and true-validation safeguards. Never claim a validation passed unless it actually completed.
 
