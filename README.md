@@ -86,6 +86,8 @@ The current stable baseline already includes:
 > [!NOTE]
 > AIP is functional software under active development, not a finished consumer product. Packaging, visual polish, model management, and platform validation are still evolving.
 
+The long-term context and memory target is defined in [docs/CONTEXT_MEMORY_ARCHITECTURE.md](docs/CONTEXT_MEMORY_ARCHITECTURE.md). It specifies semantic compaction, supersession, temporary-context lifecycles, profile projections, graph-assisted retrieval, and dynamic token-budgeted context compilation. It is a normative roadmap target, not a claim that the stable release already implements that full architecture.
+
 ## Technology
 
 | Layer | Responsibility | Technology |
@@ -226,6 +228,7 @@ The evidence boundary is documented in [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LI
 - [ ] Add voice input and per-agent voice output
 - [ ] Add supervised screen understanding and external tools
 - [ ] Extend the cognitive core without breaking deterministic boundaries
+- [ ] Implement the bounded semantic context and long-term memory compiler defined in `docs/CONTEXT_MEMORY_ARCHITECTURE.md`
 - [ ] Build the Android companion experience
 - [ ] Define an approved BielOS integration boundary
 - [ ] Produce signed, reproducible Windows installers
@@ -234,6 +237,7 @@ The evidence boundary is documented in [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LI
 
 - [Product specification](docs/PRODUCT_SPEC.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Context and memory architecture](docs/CONTEXT_MEMORY_ARCHITECTURE.md)
 - [Phase H versioning and shipped behavior](docs/PHASE_H_VERSIONING_AND_SHIPPED_BEHAVIOR.md)
 - [MVP v0.1](docs/MVP_V0.1.md)
 - [Data model](docs/DATA_MODEL.md)
