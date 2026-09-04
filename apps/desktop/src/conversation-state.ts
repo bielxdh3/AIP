@@ -246,14 +246,13 @@ export function messageFailureCopy(errorCode: string | null): string {
 }
 
 export function providerStatusCopy(state: PhaseOneState): string {
-  if (!state.selectedModelAvailable && state.selectedModelRef !== null) {
-    return "Modelo selecionado indisponível";
-  }
   switch (state.provider.state) {
     case "checking":
       return "Verificando Ollama…";
     case "available":
-      return "Ollama disponível";
+      return !state.selectedModelAvailable && state.selectedModelRef !== null
+        ? "Modelo selecionado indisponível"
+        : "Ollama disponível";
     case "empty":
       return "Nenhum modelo instalado";
     case "malformed":

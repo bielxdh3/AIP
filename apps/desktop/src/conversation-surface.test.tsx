@@ -71,12 +71,13 @@ describe("ConversationSurface", () => {
     vi.clearAllMocks();
   });
 
-  function renderSurface(temporary = false) {
+  function renderSurface(temporary = false, onToggleTemporary?: () => void) {
     act(() => {
       root.render(
         <ConversationSurface
           agentId="agent"
           temporary={temporary}
+          onToggleTemporary={onToggleTemporary}
           onActiveConversationChange={onActiveConversationChange}
         />,
       );
@@ -321,5 +322,41 @@ describe("ConversationSurface", () => {
         preferredModelRef: null,
       },
     });
+  });
+
+  it("keeps provider recovery and temporary controls inside the composer", () => {
+    phase = {
+      ...loadedPhase,
+      provider: { ...loadedPhase.provider, state: "unavailable" },
+      selectedModelAvailable: false,
+      canSend: false,
+      sendBlockedCode: "provider_unavailable",
+    } as unknown as PhaseOneState;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const onToggleTemporary = vi.fn();
+    renderSurface(false, onToggleTemporary);
+
+    expect(
+      container.querySelector(".conversation-header .provider-state"),
+    ).toBeNull();
+    expect(
+      container.querySelector(".composer .provider-state")?.textContent,
+    ).toContain("Ollama indisponível");
+    expect(
+      container.querySelector(".provider-recovery")?.textContent,
+    ).toContain("Abra o Ollama");
+    const temporaryControl = container.querySelector<HTMLButtonElement>(
+      ".composer-actions .temporary-control",
+    );
+    expect(temporaryControl?.getAttribute("aria-label")).toBe(
+      "Iniciar conversa temporária",
+    );
+    expect(temporaryControl?.title).toBe("Iniciar conversa temporária");
+    expect(
+      container.querySelector<HTMLButtonElement>(".composer-footer > button")
+        ?.disabled,
+    ).toBe(true);
   });
 });

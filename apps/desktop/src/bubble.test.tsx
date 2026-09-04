@@ -180,6 +180,44 @@ describe("Bubble composer", () => {
     ).toBe("rascunho preservado");
   });
 
+  it("reopens as a compact bubble after repeated close and restore cycles", async () => {
+    vi.stubGlobal("ResizeObserver", TestResizeObserver);
+    invoke.mockImplementation((command: string) =>
+      command === "get_app_snapshot"
+        ? Promise.resolve({ safeMode: false })
+        : Promise.resolve(undefined),
+    );
+    phase = loadedPhase;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    renderBubble();
+
+    await act(async () =>
+      container?.querySelector<HTMLButtonElement>(".bubble-title")?.click(),
+    );
+    await act(async () =>
+      container?.querySelector<HTMLButtonElement>(".bubble-minimize")?.click(),
+    );
+    await act(async () =>
+      container?.querySelector<HTMLButtonElement>(".bubble-close")?.click(),
+    );
+    expect(container.querySelector(".agent-bubble")?.className).toContain(
+      "compact",
+    );
+    expect(invoke).toHaveBeenCalledWith("set_overlay_bubble_visible", {
+      agentId: "agent",
+      visible: false,
+    });
+
+    await act(async () =>
+      container?.querySelector<HTMLButtonElement>(".bubble-title")?.click(),
+    );
+    expect(container.querySelector(".agent-bubble")?.className).toContain(
+      "expanded",
+    );
+  });
+
   it("opens the same agent conversation in the full workspace", async () => {
     vi.stubGlobal("ResizeObserver", TestResizeObserver);
     invoke.mockImplementation((command: string) =>

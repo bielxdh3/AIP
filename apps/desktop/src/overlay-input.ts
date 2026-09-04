@@ -195,6 +195,18 @@ export function buildBubbleInteractiveRegions(
   return normalized === null ? [] : [normalized];
 }
 
+export function bubbleWindowSize(
+  bounds: RectLike | null,
+): { width: number; height: number } | null {
+  const normalized = normalizeBounds(bounds);
+  if (normalized === null) return null;
+  const width = Math.ceil(normalized.x + normalized.width + 8);
+  const height = Math.ceil(normalized.y + normalized.height + 8);
+  return width > 0 && height > 0 && width <= 4096 && height <= 4096
+    ? { width, height }
+    : null;
+}
+
 function normalizeBounds(
   bounds: RectLike | null,
 ): OverlayInteractiveRegion | null {

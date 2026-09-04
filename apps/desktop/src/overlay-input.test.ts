@@ -3,6 +3,7 @@ import {
   alphaPixelsToRegions,
   buildBubbleInteractiveRegions,
   buildInteractiveRegions,
+  bubbleWindowSize,
 } from "./overlay-input";
 
 function rgbaMask(rows: string[]): Uint8ClampedArray {
@@ -129,5 +130,16 @@ describe("sprite alpha regions", () => {
     expect(buildBubbleInteractiveRegions(true, bounds)).toEqual([bounds]);
     expect(buildBubbleInteractiveRegions(false, bounds)).toEqual([]);
     expect(buildBubbleInteractiveRegions(true, null)).toEqual([]);
+  });
+
+  it("keeps native bubble geometry tied to the visible DOM bounds", () => {
+    expect(bubbleWindowSize({ x: 8, y: 8, width: 344, height: 92 })).toEqual({
+      width: 360,
+      height: 108,
+    });
+    expect(bubbleWindowSize({ x: 8, y: 8, width: 0, height: 92 })).toBeNull();
+    expect(
+      bubbleWindowSize({ x: 8, y: 8, width: 5000, height: 92 }),
+    ).toBeNull();
   });
 });

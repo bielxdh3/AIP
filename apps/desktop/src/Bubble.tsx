@@ -13,9 +13,12 @@ import {
   canDraftConversationMessage,
   canSendConversationMessage,
   canRequestCancellation,
-  providerStatusCopy,
 } from "./conversation-state";
-import { buildBubbleInteractiveRegions, elementBounds } from "./overlay-input";
+import {
+  buildBubbleInteractiveRegions,
+  bubbleWindowSize,
+  elementBounds,
+} from "./overlay-input";
 import { routingPolicyPayload, useModelPreferences } from "./model-preferences";
 import { usePhaseOne } from "./use-phase-one";
 import { openAgentConversations } from "./agent-navigation";
@@ -33,15 +36,32 @@ export default function Bubble({ agentId }: { agentId: string }) {
   );
   const [sending, setSending] = useState(false);
   const bubbleRef = useRef<HTMLElement>(null);
+  const geometryRevision = useRef(0);
 
   const reportRegion = useCallback(() => {
-    void invoke("set_overlay_interactive_regions", {
+    const bounds = elementBounds(bubbleRef.current);
+    const regions = buildBubbleInteractiveRegions(!safeMode, bounds);
+    const geometry = bubbleWindowSize(bounds);
+    const revision = geometryRevision.current + 1;
+    geometryRevision.current = revision;
+    const installRegions = () => {
+      if (geometryRevision.current !== revision) return;
+      void invoke("set_overlay_interactive_regions", {
+        agentId,
+        regions,
+      }).catch(() => null);
+    };
+    if (geometry === null) {
+      installRegions();
+      return;
+    }
+    void invoke("set_overlay_bubble_geometry", {
       agentId,
-      regions: buildBubbleInteractiveRegions(
-        !safeMode,
-        elementBounds(bubbleRef.current),
-      ),
-    }).catch(() => null);
+      width: geometry.width,
+      height: geometry.height,
+    })
+      .then(installRegions)
+      .catch(installRegions);
   }, [agentId, safeMode]);
 
   useEffect(() => {
@@ -60,8 +80,16 @@ export default function Bubble({ agentId }: { agentId: string }) {
     const observer = new ResizeObserver(reportRegion);
     observer.observe(element);
     reportRegion();
-    return () => observer.disconnect();
+    window.addEventListener("resize", reportRegion);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", reportRegion);
+    };
   }, [reportRegion]);
+
+  useLayoutEffect(() => {
+    reportRegion();
+  }, [expanded, minimized, reportRegion]);
 
   useEffect(
     () => () => {
@@ -82,7 +110,13 @@ export default function Bubble({ agentId }: { agentId: string }) {
           <strong>
             {error ? "Runtime indisponível" : "Carregando conversa…"}
           </strong>
-          <CloseBubble agentId={agentId} onClose={() => setExpanded(false)} />
+          <CloseBubble
+            agentId={agentId}
+            onClose={() => {
+              setExpanded(false);
+              setMinimized(false);
+            }}
+          />
         </div>
       </main>
     );
@@ -152,9 +186,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
         >
           <strong>{phase.agent.name}</strong>
           <small className="readable-helper">
-            {request?.active
-              ? "Modelo local em uso"
-              : providerStatusCopy(phase)}
+            {phase.conversation.title ?? "Conversa"}
           </small>
         </button>
         <div className="bubble-heading-actions">
@@ -179,7 +211,13 @@ export default function Bubble({ agentId }: { agentId: string }) {
               −
             </button>
           ) : null}
-          <CloseBubble agentId={agentId} onClose={() => setExpanded(false)} />
+          <CloseBubble
+            agentId={agentId}
+            onClose={() => {
+              setExpanded(false);
+              setMinimized(false);
+            }}
+          />
         </div>
       </div>
 
