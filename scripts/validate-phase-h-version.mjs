@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const ACTIVE_DEVELOPMENT_VERSION = "0.2.1";
+const ACTIVE_DEVELOPMENT_VERSION = "0.2.2";
 const SEMVER = /^\d+\.\d+\.\d+$/;
 
 function jsonVersion(path, readFile) {

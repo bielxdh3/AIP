@@ -6,8 +6,8 @@ use std::{
 
 use serde::Deserialize;
 use tauri::{
-    window::Color, App, AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
-    WindowEvent,
+    window::Color, App, AppHandle, LogicalSize, Manager, Size, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder, WindowEvent,
 };
 use thiserror::Error;
 
@@ -24,7 +24,9 @@ const SPRITE_OFFSET_X: f64 = 26.0;
 const SPRITE_OFFSET_Y: f64 = 38.0;
 const BUBBLE_GAP: f64 = 8.0;
 const BUBBLE_WIDTH: f64 = 380.0;
-const BUBBLE_HEIGHT: f64 = 360.0;
+const BUBBLE_INITIAL_HEIGHT: f64 = 128.0;
+const BUBBLE_MIN_WIDTH: f64 = 160.0;
+const BUBBLE_MIN_HEIGHT: f64 = 72.0;
 const MAX_INTERACTIVE_REGIONS: usize = 256;
 const MAX_REGION_COORDINATE: f64 = 4096.0;
 const AGENT_IDS: [&str; 2] = ["agt_astra_provisional", "agt_luma_provisional"];
@@ -106,6 +108,8 @@ pub enum OverlayInputError {
     TooManyRegions,
     #[error("invalid interactive region")]
     InvalidRegion,
+    #[error("invalid bubble geometry")]
+    InvalidGeometry,
     #[error("native overlay region failed")]
     NativeRegionFailed,
 }
@@ -141,7 +145,6 @@ impl OverlayInputState {
             .insert(label.to_string(), regions);
     }
 
-    #[cfg(test)]
     fn regions(&self, label: &str) -> Vec<InteractiveRegion> {
         self.regions
             .read()
@@ -160,6 +163,10 @@ impl OverlayInputState {
         {
             regions.clear();
         }
+        self.visible_bubbles
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     fn set_bubble_visible(&self, agent_id: &str, visible: bool) {
@@ -186,6 +193,9 @@ impl OverlayInputState {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(label);
+        if let Some(ownership) = ownership_for_window_label(label) {
+            self.set_bubble_visible(ownership.agent_id, false);
+        }
     }
 }
 
@@ -278,8 +288,8 @@ pub fn create_windows(
         let bubble_label = ownership.bubble_label;
         let bubble_url = WebviewUrl::App(format!("index.html?bubble={}", agent.id).into());
         let bubble = WebviewWindowBuilder::new(app, bubble_label, bubble_url)
-            .title(format!("A.I.P. â€” conversa com {}", agent.name))
-            .inner_size(BUBBLE_WIDTH, BUBBLE_HEIGHT)
+            .title(format!("A.I.P. — conversa com {}", agent.name))
+            .inner_size(BUBBLE_WIDTH, BUBBLE_INITIAL_HEIGHT)
             .transparent(surface.transparent)
             .background_color(Color(
                 surface.background[0],
@@ -298,10 +308,29 @@ pub fn create_windows(
         install_regions(&bubble, bubble_label, &input_state, Vec::new())?;
         let bubble_state = input_state.clone();
         let bubble_agent_id = ownership.agent_id;
+        let bubble_for_close = bubble.clone();
+        let bubble_for_lifecycle = bubble.clone();
+        let bubble_app = app.handle().clone();
         bubble.on_window_event(move |event| {
-            if matches!(event, WindowEvent::Destroyed) {
-                bubble_state.remove_window(bubble_label);
-                bubble_state.set_bubble_visible(bubble_agent_id, false);
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    bubble_state.set_bubble_visible(bubble_agent_id, false);
+                    bubble_state.replace(bubble_label, Vec::new());
+                    let _ = bubble_for_close.hide();
+                }
+                WindowEvent::Destroyed => {
+                    bubble_state.remove_window(bubble_label);
+                    bubble_state.set_bubble_visible(bubble_agent_id, false);
+                }
+                WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                    let regions = bubble_state.regions(bubble_label);
+                    let _ = apply_native_regions(&bubble_for_lifecycle, &regions);
+                    if bubble_state.bubble_visible(bubble_agent_id) {
+                        let _ = position_bubble(&bubble_app, bubble_agent_id);
+                    }
+                }
+                _ => {}
             }
         });
     }
@@ -327,6 +356,7 @@ pub fn set_visible(app: &AppHandle, input_state: &OverlayInputState, visible: bo
                 if visible && input_state.bubble_visible(agent_id) {
                     let _ = window.unminimize();
                     let _ = window.show();
+                    let _ = position_bubble(app, agent_id);
                 } else {
                     let _ = window.hide();
                 }
@@ -347,7 +377,8 @@ pub fn set_bubble_visible(
         .get_webview_window(bubble_label)
         .ok_or(OverlayInputError::UnknownWindow)?;
     if visible {
-        install_regions(
+        input_state.set_bubble_visible(agent_id, true);
+        if let Err(error) = install_regions(
             &bubble,
             bubble_label,
             input_state,
@@ -355,17 +386,22 @@ pub fn set_bubble_visible(
                 x: 8.0,
                 y: 8.0,
                 width: BUBBLE_WIDTH - 16.0,
-                height: 108.0,
+                height: BUBBLE_INITIAL_HEIGHT - 16.0,
             }],
-        )?;
+        ) {
+            input_state.set_bubble_visible(agent_id, false);
+            return Err(error);
+        }
         if let Err(error) = position_bubble(app, agent_id) {
+            input_state.set_bubble_visible(agent_id, false);
             let _ = install_regions(&bubble, bubble_label, input_state, Vec::new());
             return Err(error);
         }
-        input_state.set_bubble_visible(agent_id, true);
-        bubble
-            .unminimize()
-            .map_err(|_| OverlayInputError::NativeRegionFailed)?;
+        if bubble.unminimize().is_err() {
+            input_state.set_bubble_visible(agent_id, false);
+            let _ = install_regions(&bubble, bubble_label, input_state, Vec::new());
+            return Err(OverlayInputError::NativeRegionFailed);
+        }
         if bubble.show().is_err() {
             input_state.set_bubble_visible(agent_id, false);
             let _ = install_regions(&bubble, bubble_label, input_state, Vec::new());
@@ -443,6 +479,56 @@ fn apply_native_regions(
         .map_err(|_| OverlayInputError::NativeRegionFailed)
 }
 
+fn normalize_bubble_geometry(
+    width: f64,
+    height: f64,
+) -> Result<(f64, f64), OverlayInputError> {
+    if !width.is_finite()
+        || !height.is_finite()
+        || width < BUBBLE_MIN_WIDTH
+        || height < BUBBLE_MIN_HEIGHT
+        || width > MAX_REGION_COORDINATE
+        || height > MAX_REGION_COORDINATE
+    {
+        return Err(OverlayInputError::InvalidGeometry);
+    }
+    Ok((width.ceil(), height.ceil()))
+}
+
+pub fn set_bubble_geometry(
+    app: &AppHandle,
+    agent_id: &str,
+    width: f64,
+    height: f64,
+) -> Result<(), OverlayInputError> {
+    let ownership = ownership_for_agent(agent_id).ok_or(OverlayInputError::UnknownWindow)?;
+    let bubble = app
+        .get_webview_window(ownership.bubble_label)
+        .ok_or(OverlayInputError::UnknownWindow)?;
+    let (width, height) = normalize_bubble_geometry(width, height)?;
+    bubble
+        .set_size(Size::Logical(LogicalSize::new(width, height)))
+        .map_err(|_| OverlayInputError::NativeRegionFailed)?;
+    let agent = app
+        .get_webview_window(ownership.agent_label)
+        .ok_or(OverlayInputError::UnknownWindow)?;
+    let scale = agent
+        .scale_factor()
+        .map_err(|_| OverlayInputError::NativeRegionFailed)?;
+    let bubble_scale = bubble
+        .scale_factor()
+        .map_err(|_| OverlayInputError::NativeRegionFailed)?;
+    position_bubble_with_size(
+        app,
+        agent_id,
+        Some((
+            (width * bubble_scale).round() as i32,
+            (height * bubble_scale).round() as i32,
+        )),
+        scale,
+    )
+}
+
 fn physical_regions(
     regions: &[InteractiveRegion],
     scale: f64,
@@ -479,6 +565,13 @@ fn track_lifecycle(
                 let _ = position_bubble(&app, &agent_id);
             }
         }
+        WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+            let regions = input_state.regions(label);
+            let _ = apply_native_regions(&tracked_window, &regions);
+            if input_state.bubble_visible(&agent_id) {
+                let _ = position_bubble(&app, &agent_id);
+            }
+        }
         WindowEvent::Destroyed => input_state.remove_window(label),
         _ => {}
     });
@@ -494,18 +587,54 @@ fn position_bubble(app: &AppHandle, agent_id: &str) -> Result<(), OverlayInputEr
     let bubble = app
         .get_webview_window(bubble_label)
         .ok_or(OverlayInputError::UnknownWindow)?;
-    let agent_position = agent
-        .outer_position()
-        .map_err(|_| OverlayInputError::NativeRegionFailed)?;
     let scale = agent
         .scale_factor()
+        .map_err(|_| OverlayInputError::NativeRegionFailed)?;
+    let bubble_size = bubble
+        .inner_size()
+        .map_err(|_| OverlayInputError::NativeRegionFailed)?;
+    position_bubble_with_size(
+        app,
+        agent_id,
+        Some((
+            bubble_size.width.min(i32::MAX as u32) as i32,
+            bubble_size.height.min(i32::MAX as u32) as i32,
+        )),
+        scale,
+    )
+}
+
+fn position_bubble_with_size(
+    app: &AppHandle,
+    agent_id: &str,
+    bubble_size: Option<(i32, i32)>,
+    scale: f64,
+) -> Result<(), OverlayInputError> {
+    let ownership = ownership_for_agent(agent_id).ok_or(OverlayInputError::UnknownWindow)?;
+    let agent = app
+        .get_webview_window(ownership.agent_label)
+        .ok_or(OverlayInputError::UnknownWindow)?;
+    let bubble = app
+        .get_webview_window(ownership.bubble_label)
+        .ok_or(OverlayInputError::UnknownWindow)?;
+    let agent_position = agent
+        .outer_position()
         .map_err(|_| OverlayInputError::NativeRegionFailed)?;
     let monitor = agent
         .current_monitor()
         .map_err(|_| OverlayInputError::NativeRegionFailed)?
         .ok_or(OverlayInputError::NativeRegionFailed)?;
-    let bubble_width = (BUBBLE_WIDTH * scale).round() as i32;
-    let bubble_height = (BUBBLE_HEIGHT * scale).round() as i32;
+    let (bubble_width, bubble_height) = bubble_size.unwrap_or_else(|| {
+        bubble
+            .inner_size()
+            .map(|size| {
+                (
+                    size.width.min(i32::MAX as u32) as i32,
+                    size.height.min(i32::MAX as u32) as i32,
+                )
+            })
+            .unwrap_or((BUBBLE_WIDTH as i32, BUBBLE_INITIAL_HEIGHT as i32))
+    });
     let work_area = monitor.work_area();
     let position = bubble_position(
         agent_position,
@@ -631,6 +760,26 @@ mod tests {
     }
 
     #[test]
+    fn bubble_geometry_is_bounded_before_reaching_the_native_window() {
+        assert_eq!(
+            normalize_bubble_geometry(320.2, 319.1),
+            Ok((321.0, 320.0))
+        );
+        for invalid in [
+            (BUBBLE_MIN_WIDTH - 1.0, BUBBLE_MIN_HEIGHT),
+            (BUBBLE_MIN_WIDTH, BUBBLE_MIN_HEIGHT - 1.0),
+            (f64::NAN, BUBBLE_MIN_HEIGHT),
+            (BUBBLE_MIN_WIDTH, f64::INFINITY),
+            (MAX_REGION_COORDINATE + 1.0, BUBBLE_MIN_HEIGHT),
+        ] {
+            assert_eq!(
+                normalize_bubble_geometry(invalid.0, invalid.1),
+                Err(OverlayInputError::InvalidGeometry)
+            );
+        }
+    }
+
+    #[test]
     fn physical_conversion_applies_scale_once_with_outward_rounding() {
         let logical = [region(1.2, 2.2, 3.2, 4.2)];
         for (scale, expected) in [
@@ -689,9 +838,11 @@ mod tests {
         state.replace("agent-astra", vec![region(1.0, 1.0, 2.0, 2.0)]);
         state.replace("agent-luma", vec![region(20.0, 20.0, 2.0, 2.0)]);
         assert_ne!(state.regions("agent-astra"), state.regions("agent-luma"));
+        state.set_bubble_visible("agt_astra_provisional", true);
         state.clear_all();
         assert!(state.regions("agent-astra").is_empty());
         assert!(state.regions("agent-luma").is_empty());
+        assert!(!state.bubble_visible("agt_astra_provisional"));
         state.remove_window("agent-astra");
         assert!(state.regions("agent-astra").is_empty());
     }

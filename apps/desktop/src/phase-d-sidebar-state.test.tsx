@@ -117,7 +117,12 @@ describe("Phase D sidebar and state explanations", () => {
     expect(
       container.querySelectorAll(".readable-helper").length,
     ).toBeGreaterThanOrEqual(9);
-    expect(container.querySelector("#state-mode-trigger")).not.toBeNull();
+    expect(container.querySelector(".state-mode-options")).not.toBeNull();
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        '.state-mode-button[aria-pressed="true"]',
+      ),
+    ).not.toBeNull();
     expect(container.textContent).toContain("sem remover a suspensão");
   });
 });

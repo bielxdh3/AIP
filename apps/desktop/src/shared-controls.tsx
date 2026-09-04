@@ -47,6 +47,7 @@ export type FilePickerProps = {
 const VIEWPORT_PADDING = 8;
 const MENU_GAP = 4;
 const MIN_MENU_HEIGHT = 96;
+const MIN_VISIBLE_MENU_HEIGHT = 40;
 
 function stableIdPart(value: string): string {
   return value.replace(/[^a-z0-9_-]+/gi, "-").replace(/^-|-$/g, "") || "value";
@@ -137,7 +138,10 @@ export function AipSelect({
     const placement =
       menuHeight > spaceBelow && spaceAbove > spaceBelow ? "above" : "below";
     const availableHeight = placement === "above" ? spaceAbove : spaceBelow;
-    const maxHeight = Math.max(MIN_MENU_HEIGHT, availableHeight);
+    const maxHeight = Math.max(
+      MIN_VISIBLE_MENU_HEIGHT,
+      Math.min(menuHeight, availableHeight),
+    );
     const left = Math.min(
       Math.max(VIEWPORT_PADDING, rect.left),
       Math.max(
@@ -145,13 +149,20 @@ export function AipSelect({
         window.innerWidth - rect.width - VIEWPORT_PADDING,
       ),
     );
-    const top =
+    const requestedTop =
       placement === "above"
         ? Math.max(
             VIEWPORT_PADDING,
             rect.top - Math.min(menuHeight, maxHeight) - MENU_GAP,
           )
         : rect.bottom + MENU_GAP;
+    const top = Math.min(
+      Math.max(VIEWPORT_PADDING, requestedTop),
+      Math.max(
+        VIEWPORT_PADDING,
+        window.innerHeight - maxHeight - VIEWPORT_PADDING,
+      ),
+    );
     setPosition({
       top,
       left,
@@ -181,10 +192,12 @@ export function AipSelect({
   useLayoutEffect(() => {
     if (!open) return;
     updatePosition();
+    const frame = window.requestAnimationFrame(updatePosition);
     const onViewportChange = () => updatePosition();
     window.addEventListener("resize", onViewportChange);
     window.addEventListener("scroll", onViewportChange, true);
     return () => {
+      window.cancelAnimationFrame(frame);
       window.removeEventListener("resize", onViewportChange);
       window.removeEventListener("scroll", onViewportChange, true);
     };

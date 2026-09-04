@@ -61,7 +61,7 @@ const phase = {
 let currentPhase = phase;
 
 const snapshot = {
-  appVersion: "0.2.1",
+  appVersion: "0.2.2",
   buildSha: "test",
   buildTimestamp: "test",
   runtimePackagingMode: "managed",
@@ -229,6 +229,8 @@ describe("App conversation navigation integration", () => {
       throw new Error("Missing draft control");
     await act(async () => create.click());
     expect(activeRow()).toBeNull();
-    expect(container?.textContent).toContain("Rascunho local");
+    expect(container?.textContent).toContain(
+      "Ainda não foi salvo no histórico",
+    );
   });
 });
