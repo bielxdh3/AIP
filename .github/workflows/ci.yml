@@ -53,6 +53,9 @@ jobs:
       - name: Install workspace
         run: pnpm install --frozen-lockfile
 
+      - name: Validate Phase H versions
+        run: pnpm phase-h:check
+
       - name: Install Python checks
         run: python -m pip install --disable-pip-version-check pyinstaller -e ".\services\runtime[dev]"
 
