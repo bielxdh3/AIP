@@ -61,7 +61,7 @@ const phase = {
 let currentPhase = phase;
 
 const snapshot = {
-  appVersion: "0.2.0",
+  appVersion: "0.2.1",
   buildSha: "test",
   buildTimestamp: "test",
   runtimePackagingMode: "managed",
