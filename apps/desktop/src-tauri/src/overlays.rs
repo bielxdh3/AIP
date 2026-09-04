@@ -311,27 +311,25 @@ pub fn create_windows(
         let bubble_for_close = bubble.clone();
         let bubble_for_lifecycle = bubble.clone();
         let bubble_app = app.handle().clone();
-        bubble.on_window_event(move |event| {
-            match event {
-                WindowEvent::CloseRequested { api, .. } => {
-                    api.prevent_close();
-                    bubble_state.set_bubble_visible(bubble_agent_id, false);
-                    bubble_state.replace(bubble_label, Vec::new());
-                    let _ = bubble_for_close.hide();
-                }
-                WindowEvent::Destroyed => {
-                    bubble_state.remove_window(bubble_label);
-                    bubble_state.set_bubble_visible(bubble_agent_id, false);
-                }
-                WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                    let regions = bubble_state.regions(bubble_label);
-                    let _ = apply_native_regions(&bubble_for_lifecycle, &regions);
-                    if bubble_state.bubble_visible(bubble_agent_id) {
-                        let _ = position_bubble(&bubble_app, bubble_agent_id);
-                    }
-                }
-                _ => {}
+        bubble.on_window_event(move |event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
+                api.prevent_close();
+                bubble_state.set_bubble_visible(bubble_agent_id, false);
+                bubble_state.replace(bubble_label, Vec::new());
+                let _ = bubble_for_close.hide();
             }
+            WindowEvent::Destroyed => {
+                bubble_state.remove_window(bubble_label);
+                bubble_state.set_bubble_visible(bubble_agent_id, false);
+            }
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                let regions = bubble_state.regions(bubble_label);
+                let _ = apply_native_regions(&bubble_for_lifecycle, &regions);
+                if bubble_state.bubble_visible(bubble_agent_id) {
+                    let _ = position_bubble(&bubble_app, bubble_agent_id);
+                }
+            }
+            _ => {}
         });
     }
     Ok(())
@@ -479,10 +477,7 @@ fn apply_native_regions(
         .map_err(|_| OverlayInputError::NativeRegionFailed)
 }
 
-fn normalize_bubble_geometry(
-    width: f64,
-    height: f64,
-) -> Result<(f64, f64), OverlayInputError> {
+fn normalize_bubble_geometry(width: f64, height: f64) -> Result<(f64, f64), OverlayInputError> {
     if !width.is_finite()
         || !height.is_finite()
         || width < BUBBLE_MIN_WIDTH
@@ -761,10 +756,7 @@ mod tests {
 
     #[test]
     fn bubble_geometry_is_bounded_before_reaching_the_native_window() {
-        assert_eq!(
-            normalize_bubble_geometry(320.2, 319.1),
-            Ok((321.0, 320.0))
-        );
+        assert_eq!(normalize_bubble_geometry(320.2, 319.1), Ok((321.0, 320.0)));
         for invalid in [
             (BUBBLE_MIN_WIDTH - 1.0, BUBBLE_MIN_HEIGHT),
             (BUBBLE_MIN_WIDTH, BUBBLE_MIN_HEIGHT - 1.0),

@@ -3146,13 +3146,11 @@ fn set_overlay_bubble_geometry(
     if state.safe_mode.load(Ordering::SeqCst) {
         return Err("operation_unavailable");
     }
-    let bubble_label = overlays::bubble_window_label(&agent_id)
-        .ok_or("operation_unavailable")?;
+    let bubble_label = overlays::bubble_window_label(&agent_id).ok_or("operation_unavailable")?;
     if bubble_label != window.label() {
         return Err("operation_unavailable");
     }
-    overlays::set_bubble_geometry(&app, &agent_id, width, height)
-        .map_err(|_| "operation_failed")
+    overlays::set_bubble_geometry(&app, &agent_id, width, height).map_err(|_| "operation_failed")
 }
 
 fn snapshot(state: &AppState) -> Result<AppSnapshot, &'static str> {
