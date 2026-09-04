@@ -36,3 +36,15 @@ test("rejects drift in an authoritative manifest", () => {
     /apps\/desktop\/package\.json=0\.2\.0/,
   );
 });
+
+test("rejects changing the active development version", () => {
+  const changedFiles = {
+    ...files,
+    "package.json": JSON.stringify({ version: "0.2.0" }),
+  };
+
+  assert.throws(
+    () => validateManifestVersions((path) => changedFiles[path]),
+    /active development version must remain 0\.2\.1/,
+  );
+});
