@@ -14,6 +14,7 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "format:check": "prettier --check \"apps/**/*.{ts,tsx,css,json,html}\" \"packages/**/*.{ts,json}\" \"scripts/**/*.mjs\" \".github/**/*.{yaml,yml}\" \"*.{json,yaml,yml,mjs}\"",
+    "phase-h:check": "node --test scripts/validate-phase-h-version.test.mjs && node scripts/validate-phase-h-version.mjs",
     "secrets:scan": "node scripts/secrets-scan.mjs",
     "python:format": "python -m ruff format --check services/runtime",
     "python:lint": "python -m ruff check services/runtime",

@@ -16,6 +16,13 @@ The v0.1.0 tag, release asset, release notes, and validation records are
 historical evidence and remain unchanged. Fixture snapshots and contract test
 versions are historical test data, not active package metadata.
 
+Phase H version validation reads the active workspace, desktop, contract,
+runtime, and Tauri manifests, using the root `package.json` version as the
+canonical value. With pnpm 11.9.0 and lockfile v9, `pnpm-lock.yaml` does not
+encode the workspace package's own version under `importers: .`; it remains a
+dependency lock and is checked through `pnpm install --frozen-lockfile` rather
+than a fabricated root-importer version field.
+
 ## Theme and shared controls
 
 The desktop theme is local UI state. `ThemeControls` supports dark, light, and
