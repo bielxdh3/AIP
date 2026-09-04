@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const ACTIVE_DEVELOPMENT_VERSION = "0.2.1";
 const SEMVER = /^\d+\.\d+\.\d+$/;
 
 function jsonVersion(path, readFile) {
@@ -66,6 +67,11 @@ export function validateManifestVersions(readFile) {
   if (!SEMVER.test(canonicalVersion)) {
     throw new Error(
       `package.json version is not valid SemVer: ${canonicalVersion}`,
+    );
+  }
+  if (canonicalVersion !== ACTIVE_DEVELOPMENT_VERSION) {
+    throw new Error(
+      `Phase H active development version must remain ${ACTIVE_DEVELOPMENT_VERSION}; package.json=${canonicalVersion}`,
     );
   }
 
