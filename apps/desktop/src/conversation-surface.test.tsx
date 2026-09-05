@@ -359,6 +359,10 @@ describe("ConversationSurface", () => {
       temporaryControl?.querySelector(".temporary-control-icon"),
     ).not.toBeNull();
     expect(
+      temporaryControl?.querySelectorAll(".temporary-control-icon path"),
+    ).toHaveLength(2);
+    expect(temporaryControl?.textContent).not.toContain("◌");
+    expect(
       container.querySelector<HTMLButtonElement>(".composer-footer > button")
         ?.disabled,
     ).toBe(true);

@@ -200,7 +200,7 @@ import {
 import { usePhaseOne } from "./use-phase-one";
 import { createListenerRegistration } from "./listener-lifecycle";
 import { ThemeControls } from "./theme";
-import { AipSelect, FilePicker } from "./shared-controls";
+import { AipSelect, FilePicker, naturalMenuHeight } from "./shared-controls";
 import {
   MODEL_POLICY_MODES,
   type ModelPolicyMode,
@@ -632,7 +632,7 @@ export function SidebarNavigation({
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
   return (
     <div className="sidebar-navigation">
-      <details className="sidebar-section sidebar-agents" open>
+      <details className="sidebar-section sidebar-agents">
         <summary>
           <span>Agentes</span>
           <small>{agents.length}</small>
@@ -649,7 +649,7 @@ export function SidebarNavigation({
         </div>
       </details>
       {activeAgentId ? (
-        <details className="sidebar-section sidebar-secondary" open>
+        <details className="sidebar-section sidebar-secondary">
           <summary>
             <span>Navegação</span>
             <small>{activeAgent?.name ?? "agente"}</small>
@@ -961,9 +961,13 @@ export function ModelPicker({
     const popover = popoverRef.current;
     if (trigger === null || popover === null) return;
     const rect = trigger.getBoundingClientRect();
-    const menuHeight =
-      popover.getBoundingClientRect().height ||
-      Math.min(filteredOptions.length * 48 + 48, 360);
+    const menuHeight = Math.max(
+      MODEL_PICKER_MIN_HEIGHT,
+      naturalMenuHeight(
+        popover,
+        Math.min(filteredOptions.length * 48 + 48, 360),
+      ),
+    );
     const viewportWidth = Math.max(window.innerWidth, 1);
     const viewportHeight = Math.max(window.innerHeight, 1);
     const spaceBelow = Math.max(
@@ -974,10 +978,7 @@ export function ModelPicker({
     const placement =
       menuHeight > spaceBelow && spaceAbove > spaceBelow ? "above" : "below";
     const availableHeight = placement === "above" ? spaceAbove : spaceBelow;
-    const maxHeight = Math.max(
-      MODEL_PICKER_MIN_HEIGHT,
-      Math.min(menuHeight, availableHeight),
-    );
+    const maxHeight = Math.min(menuHeight, Math.max(1, availableHeight));
     const maxWidth = Math.max(
       160,
       viewportWidth - MODEL_PICKER_VIEWPORT_PADDING * 2,
@@ -1745,9 +1746,8 @@ export function ConversationSurface({
                   aria-hidden="true"
                   focusable="false"
                 >
-                  <path d="M6.5 4.5a7 7 0 1 0 7 0" />
-                  <path d="M6.5 1.5v3h3" />
-                  <path d="M13.5 18.5v-3h-3" />
+                  <path d="M4.25 4.5h8.5a3 3 0 0 1 3 3v2.5a3 3 0 0 1-3 3H8l-3.75 2.25.65-2.25h-.65a3 3 0 0 1-3-3V7.5a3 3 0 0 1 3-3Z" />
+                  <path d="M9.5 4.75v8.1" />
                 </svg>
               </button>
             ) : null}

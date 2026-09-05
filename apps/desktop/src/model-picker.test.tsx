@@ -249,6 +249,12 @@ describe("ModelPicker", () => {
     expect(portal.parentElement).toBe(document.body);
     expect(portal.style.visibility).toBe("visible");
     expect(portal.style.left).toBe("700px");
+    Object.defineProperty(portal, "scrollHeight", {
+      configurable: true,
+      value: 420,
+    });
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    expect(Number.parseFloat(portal.style.maxHeight)).toBe(420);
 
     trigger.getBoundingClientRect = () =>
       ({

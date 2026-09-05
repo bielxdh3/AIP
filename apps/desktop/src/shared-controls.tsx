@@ -49,6 +49,17 @@ const MENU_GAP = 4;
 const MIN_MENU_HEIGHT = 96;
 const MIN_VISIBLE_MENU_HEIGHT = 40;
 
+export function naturalMenuHeight(
+  element: HTMLElement,
+  fallback: number,
+): number {
+  const contentHeight = element.scrollHeight;
+  if (Number.isFinite(contentHeight) && contentHeight > 0) {
+    return contentHeight;
+  }
+  return Number.isFinite(fallback) && fallback > 0 ? fallback : MIN_MENU_HEIGHT;
+}
+
 function stableIdPart(value: string): string {
   return value.replace(/[^a-z0-9_-]+/gi, "-").replace(/^-|-$/g, "") || "value";
 }
@@ -126,10 +137,13 @@ export function AipSelect({
     const menu = menuRef.current;
     if (trigger === null || menu === null) return;
     const rect = trigger.getBoundingClientRect();
-    const menuHeight =
-      menu.getBoundingClientRect().height ||
-      menu.offsetHeight ||
-      Math.min(options.length * 38, 320);
+    const menuHeight = Math.max(
+      MIN_VISIBLE_MENU_HEIGHT,
+      naturalMenuHeight(
+        menu,
+        Math.min(Math.max(MIN_MENU_HEIGHT, options.length * 38), 480),
+      ),
+    );
     const spaceBelow = Math.max(
       0,
       window.innerHeight - rect.bottom - VIEWPORT_PADDING,
@@ -138,10 +152,7 @@ export function AipSelect({
     const placement =
       menuHeight > spaceBelow && spaceAbove > spaceBelow ? "above" : "below";
     const availableHeight = placement === "above" ? spaceAbove : spaceBelow;
-    const maxHeight = Math.max(
-      MIN_VISIBLE_MENU_HEIGHT,
-      Math.min(menuHeight, availableHeight),
-    );
+    const maxHeight = Math.min(menuHeight, Math.max(1, availableHeight));
     const left = Math.min(
       Math.max(VIEWPORT_PADDING, rect.left),
       Math.max(

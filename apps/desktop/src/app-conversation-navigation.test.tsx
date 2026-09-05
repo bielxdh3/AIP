@@ -121,6 +121,7 @@ describe("App conversation navigation integration", () => {
         return Promise.resolve(conversations);
       if (command === "get_phase_one_state") return Promise.resolve(phase);
       if (command === "load_pixel_document") return Promise.resolve("{}");
+      if (command.startsWith("list_")) return Promise.resolve([]);
       return Promise.resolve(undefined);
     });
     currentPhase = phase;
@@ -178,6 +179,34 @@ describe("App conversation navigation integration", () => {
     expect(
       container?.querySelector(".sidebar-secondary")?.textContent,
     ).not.toContain("Configurações");
+  });
+
+  it("keeps global resources reachable from the settings surface", async () => {
+    await renderApp();
+    const brand = container?.querySelector<HTMLButtonElement>(".brand-mark");
+    if (brand === null || brand === undefined)
+      throw new Error("Missing brand button");
+    await act(async () => {
+      brand.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const resources = Array.from(
+      container?.querySelectorAll<HTMLButtonElement>(".settings-nav button") ??
+        [],
+    ).find((button) => button.textContent === "Recursos locais");
+    if (resources === undefined) throw new Error("Missing resources setting");
+    await act(async () => resources.click());
+    const openResources = Array.from(
+      container?.querySelectorAll<HTMLButtonElement>(".settings-card button") ??
+        [],
+    ).find((button) => button.textContent === "Abrir recursos locais");
+    if (openResources === undefined)
+      throw new Error("Missing resources destination");
+    await act(async () => openResources.click());
+    expect(
+      container?.querySelector(".local-capabilities-surface"),
+    ).not.toBeNull();
   });
 
   it("moves selection only after successful activation and preserves it on failure", async () => {

@@ -23,6 +23,7 @@ import {
 import {
   BUBBLE_NATIVE_CLOSE_EVENT,
   BUBBLE_NATIVE_OPEN_EVENT,
+  type BubbleNativeLifecyclePayload,
 } from "./overlay-events";
 import { createListenerRegistration } from "./listener-lifecycle";
 import { routingPolicyPayload, useModelPreferences } from "./model-preferences";
@@ -82,21 +83,29 @@ export default function Bubble({ agentId }: { agentId: string }) {
   useEffect(() => {
     const closeRegistration = createListenerRegistration();
     const openRegistration = createListenerRegistration();
-    void listen(BUBBLE_NATIVE_CLOSE_EVENT, () => {
-      setNativeVisible(false);
-      setExpanded(false);
-      setMinimized(false);
-      geometryRevision.current += 1;
-    }).then(closeRegistration.register);
-    void listen(BUBBLE_NATIVE_OPEN_EVENT, () => {
-      setNativeVisible(true);
-      geometryRevision.current += 1;
-    }).then(openRegistration.register);
+    void listen<BubbleNativeLifecyclePayload>(
+      BUBBLE_NATIVE_CLOSE_EVENT,
+      (event) => {
+        if (event.payload?.agentId !== agentId) return;
+        setNativeVisible(false);
+        setExpanded(false);
+        setMinimized(false);
+        geometryRevision.current += 1;
+      },
+    ).then(closeRegistration.register);
+    void listen<BubbleNativeLifecyclePayload>(
+      BUBBLE_NATIVE_OPEN_EVENT,
+      (event) => {
+        if (event.payload?.agentId !== agentId) return;
+        setNativeVisible(true);
+        geometryRevision.current += 1;
+      },
+    ).then(openRegistration.register);
     return () => {
       closeRegistration.dispose();
       openRegistration.dispose();
     };
-  }, []);
+  }, [agentId]);
 
   useEffect(() => {
     const refresh = () =>
