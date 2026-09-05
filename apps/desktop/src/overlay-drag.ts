@@ -3,6 +3,15 @@ export type PointerPoint = {
   y: number;
 };
 
+export type ScreenPointerSample = {
+  screenX: number;
+  screenY: number;
+};
+
+export function screenPoint(sample: ScreenPointerSample): PointerPoint {
+  return { x: sample.screenX, y: sample.screenY };
+}
+
 export function pointerDelta(
   previous: PointerPoint | null,
   current: PointerPoint,

@@ -10,16 +10,16 @@ import {
 } from "./overlay-events";
 
 let phase: PhaseOneState | null = null;
-const { invoke, listen } = vi.hoisted(() => ({
+const phasesByAgent = new Map<string, PhaseOneState>();
+const { invoke, listen, usePhaseOne } = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
+  usePhaseOne: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen }));
-vi.mock("./use-phase-one", () => ({
-  usePhaseOne: () => ({ phase, error: false, load: vi.fn() }),
-}));
+vi.mock("./use-phase-one", () => ({ usePhaseOne }));
 
 class TestResizeObserver {
   observe() {}
@@ -49,10 +49,26 @@ const queuedPhase = {
   ],
 } as unknown as PhaseOneState;
 
+const astraPhase = {
+  ...loadedPhase,
+  agent: { id: "astra", name: "Astra" },
+  conversation: { id: "astra-conversation" },
+} as unknown as PhaseOneState;
+
+const lumaPhase = {
+  ...loadedPhase,
+  agent: { id: "luma", name: "Luma" },
+  conversation: { id: "luma-conversation" },
+} as unknown as PhaseOneState;
+
+type LifecycleEventCallback = (event: {
+  payload: { agentId: string };
+}) => void;
+
 describe("Bubble composer", () => {
   let root: Root | undefined;
   let container: HTMLDivElement | undefined;
-  const listeners = new Map<string, () => void>();
+  const listeners = new Map<string, LifecycleEventCallback[]>();
 
   afterEach(() => {
     if (root !== undefined) act(() => root?.unmount());
@@ -60,16 +76,56 @@ describe("Bubble composer", () => {
     root = undefined;
     container = undefined;
     phase = null;
+    phasesByAgent.clear();
     listeners.clear();
     vi.clearAllMocks();
   });
 
+  function renderBubbles(agentIds: readonly string[] = ["agent"]) {
+    usePhaseOne.mockImplementation((agentId: string) => ({
+      phase: phasesByAgent.get(agentId) ?? phase,
+      error: false,
+      load: vi.fn(),
+    }));
+    listen.mockImplementation(
+      (event: string, callback: LifecycleEventCallback) => {
+        const callbacks = listeners.get(event) ?? [];
+        callbacks.push(callback);
+        listeners.set(event, callbacks);
+        return Promise.resolve(() => {
+          const remaining = (listeners.get(event) ?? []).filter(
+            (candidate) => candidate !== callback,
+          );
+          if (remaining.length > 0) listeners.set(event, remaining);
+          else listeners.delete(event);
+        });
+      },
+    );
+    act(() =>
+      root?.render(
+        <>
+          {agentIds.map((agentId) => (
+            <Bubble key={agentId} agentId={agentId} />
+          ))}
+        </>,
+      ),
+    );
+  }
+
   function renderBubble() {
-    listen.mockImplementation((event: string, callback: () => void) => {
-      listeners.set(event, callback);
-      return Promise.resolve(() => listeners.delete(event));
+    renderBubbles();
+  }
+
+  function emitLifecycle(event: string, agentId: string) {
+    for (const callback of listeners.get(event) ?? []) {
+      callback({ payload: { agentId } });
+    }
+  }
+
+  async function flushListenerRegistration() {
+    await act(async () => {
+      await Promise.resolve();
     });
-    act(() => root?.render(<Bubble agentId="agent" />));
   }
 
   function change(element: HTMLTextAreaElement, value: string) {
@@ -237,7 +293,7 @@ describe("Bubble composer", () => {
       visible: false,
     });
 
-    await act(async () => listeners.get(BUBBLE_NATIVE_OPEN_EVENT)?.());
+    await act(async () => emitLifecycle(BUBBLE_NATIVE_OPEN_EVENT, "agent"));
     expect(container.querySelector(".agent-bubble")?.className).toContain(
       "compact",
     );
@@ -293,7 +349,7 @@ describe("Bubble composer", () => {
     expect(container.querySelector(".agent-bubble")?.className).toContain(
       "expanded",
     );
-    await act(async () => listeners.get(BUBBLE_NATIVE_CLOSE_EVENT)?.());
+    await act(async () => emitLifecycle(BUBBLE_NATIVE_CLOSE_EVENT, "agent"));
     expect(container.querySelector(".agent-bubble")?.className).toContain(
       "compact",
     );
@@ -302,7 +358,7 @@ describe("Bubble composer", () => {
       regions: [],
     });
 
-    await act(async () => listeners.get(BUBBLE_NATIVE_OPEN_EVENT)?.());
+    await act(async () => emitLifecycle(BUBBLE_NATIVE_OPEN_EVENT, "agent"));
     expect(container.querySelector(".agent-bubble")?.className).toContain(
       "compact",
     );
@@ -311,5 +367,84 @@ describe("Bubble composer", () => {
       width: 380,
       height: 128,
     });
+  });
+
+  it("isolates native close and open lifecycle events between Astra and Luma", async () => {
+    vi.stubGlobal("ResizeObserver", TestResizeObserver);
+    invoke.mockImplementation((command: string) =>
+      command === "get_app_snapshot"
+        ? Promise.resolve({ safeMode: false })
+        : Promise.resolve(undefined),
+    );
+    phasesByAgent.set("astra", astraPhase);
+    phasesByAgent.set("luma", lumaPhase);
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    renderBubbles(["astra", "luma"]);
+    await flushListenerRegistration();
+
+    const bubbles = Array.from(
+      container.querySelectorAll<HTMLElement>(".agent-bubble"),
+    );
+    expect(bubbles).toHaveLength(2);
+    bubbles.forEach((bubble) => {
+      bubble.getBoundingClientRect = () =>
+        ({
+          x: 8,
+          y: 8,
+          top: 8,
+          right: 372,
+          bottom: 120,
+          left: 8,
+          width: 364,
+          height: 112,
+          toJSON: () => ({}),
+        }) as DOMRect;
+    });
+
+    await act(async () => {
+      bubbles[0]?.querySelector<HTMLButtonElement>(".bubble-title")?.click();
+      bubbles[1]?.querySelector<HTMLButtonElement>(".bubble-title")?.click();
+    });
+    expect(bubbles[0]?.className).toContain("expanded");
+    expect(bubbles[1]?.className).toContain("expanded");
+
+    await act(async () => emitLifecycle(BUBBLE_NATIVE_CLOSE_EVENT, "astra"));
+    expect(bubbles[0]?.className).toContain("compact");
+    expect(bubbles[1]?.className).toContain("expanded");
+    expect(invoke).toHaveBeenCalledWith("set_overlay_interactive_regions", {
+      agentId: "luma",
+      regions: [expect.any(Object)],
+    });
+
+    await act(async () => emitLifecycle(BUBBLE_NATIVE_OPEN_EVENT, "astra"));
+    expect(bubbles[0]?.className).toContain("compact");
+    expect(
+      [...invoke.mock.calls].reverse().find(
+        ([command, args]) =>
+          command === "set_overlay_bubble_geometry" &&
+          (args as { agentId?: string } | undefined)?.agentId === "astra",
+      )?.[1],
+    ).toMatchObject({ agentId: "astra", width: 380, height: 128 });
+
+    await act(async () =>
+      bubbles[0]?.querySelector<HTMLButtonElement>(".bubble-title")?.click(),
+    );
+    expect(bubbles[0]?.className).toContain("expanded");
+
+    await act(async () => emitLifecycle(BUBBLE_NATIVE_CLOSE_EVENT, "luma"));
+    expect(bubbles[0]?.className).toContain("expanded");
+    expect(bubbles[1]?.className).toContain("compact");
+
+    await act(async () => emitLifecycle(BUBBLE_NATIVE_OPEN_EVENT, "luma"));
+    expect(bubbles[1]?.className).toContain("compact");
+    expect(
+      [...invoke.mock.calls].reverse().find(
+        ([command, args]) =>
+          command === "set_overlay_bubble_geometry" &&
+          (args as { agentId?: string } | undefined)?.agentId === "luma",
+      )?.[1],
+    ).toMatchObject({ agentId: "luma", width: 380, height: 128 });
   });
 });

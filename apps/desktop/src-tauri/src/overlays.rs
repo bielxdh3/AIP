@@ -5,6 +5,7 @@ use std::{
 };
 
 use serde::Deserialize;
+use serde_json::json;
 use tauri::{
     window::Color, App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Size,
     WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
@@ -337,7 +338,10 @@ pub fn create_windows(
                 api.prevent_close();
                 bubble_state.set_bubble_visible(bubble_agent_id, false);
                 bubble_state.replace(bubble_label, Vec::new());
-                let _ = bubble_for_close.emit("bubble-native-close", ());
+                let _ = bubble_for_close.emit(
+                    "bubble-native-close",
+                    json!({ "agentId": bubble_agent_id }),
+                );
                 let _ = bubble_for_close.hide();
             }
             WindowEvent::Destroyed => {
@@ -428,7 +432,7 @@ pub fn set_bubble_visible(
             return Err(OverlayInputError::NativeRegionFailed);
         }
         let _ = bubble.set_focus();
-        let _ = bubble.emit("bubble-native-open", ());
+        let _ = bubble.emit("bubble-native-open", json!({ "agentId": agent_id }));
     } else {
         input_state.set_bubble_visible(agent_id, false);
         install_regions(&bubble, bubble_label, input_state, Vec::new())?;

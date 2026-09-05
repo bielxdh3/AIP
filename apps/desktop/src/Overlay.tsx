@@ -16,7 +16,7 @@ import {
   initialOverlayGestureState,
   moveGesture,
 } from "./overlay-gesture";
-import { pointerDelta, type PointerPoint } from "./overlay-drag";
+import { pointerDelta, screenPoint, type PointerPoint } from "./overlay-drag";
 import {
   buildInteractiveRegions,
   elementBounds,
@@ -120,28 +120,30 @@ export default function Overlay({ agentId }: { agentId: string }) {
   function handlePointerDown(event: React.PointerEvent<HTMLButtonElement>) {
     if (event.button !== 0) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    lastDragPointRef.current = { x: event.clientX, y: event.clientY };
+    const point = screenPoint(event);
+    lastDragPointRef.current = point;
     gestureRef.current = beginGesture(
       gestureRef.current,
       event.pointerId,
-      event.clientX,
-      event.clientY,
+      point.x,
+      point.y,
     );
   }
 
   function handlePointerMove(event: React.PointerEvent<HTMLButtonElement>) {
+    const point = screenPoint(event);
     const result = moveGesture(
       gestureRef.current,
       event.pointerId,
-      event.clientX,
-      event.clientY,
+      point.x,
+      point.y,
     );
     gestureRef.current = result.state;
     if (result.action === "start_drag") setDragging(true);
     if (!result.state.dragging || result.state.pointerId !== event.pointerId) {
       return;
     }
-    const current = { x: event.clientX, y: event.clientY };
+    const current = point;
     const delta = pointerDelta(lastDragPointRef.current, current);
     lastDragPointRef.current = current;
     if (delta === null || (delta.x === 0 && delta.y === 0)) return;

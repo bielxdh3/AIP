@@ -101,11 +101,16 @@ describe("Phase D sidebar and state explanations", () => {
     const agentsSection =
       container.querySelector<HTMLDetailsElement>(".sidebar-agents");
     if (agentsSection === null) throw new Error("Missing agents section");
-    expect(agentsSection.open).toBe(true);
-    act(() => agentsSection.querySelector<HTMLElement>("summary")?.click());
     expect(agentsSection.open).toBe(false);
     act(() => agentsSection.querySelector<HTMLElement>("summary")?.click());
     expect(agentsSection.open).toBe(true);
+
+    const secondarySection =
+      container.querySelector<HTMLDetailsElement>(".sidebar-secondary");
+    if (secondarySection === null) throw new Error("Missing secondary section");
+    expect(secondarySection.open).toBe(false);
+    act(() => secondarySection.querySelector<HTMLElement>("summary")?.click());
+    expect(secondarySection.open).toBe(true);
 
     const stateButton = Array.from(
       container.querySelectorAll<HTMLButtonElement>(
@@ -137,6 +142,10 @@ describe("Phase D sidebar and state explanations", () => {
         />,
       ),
     );
+    const agentsSection =
+      container.querySelector<HTMLDetailsElement>(".sidebar-agents");
+    if (agentsSection === null) throw new Error("Missing agents section");
+    act(() => agentsSection.querySelector<HTMLElement>("summary")?.click());
     const luma = Array.from(
       container.querySelectorAll<HTMLButtonElement>(".agent-tab"),
     ).find((button) => button.textContent?.includes("Luma"));
