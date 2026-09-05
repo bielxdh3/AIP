@@ -179,6 +179,7 @@ import {
   canRequestCancellation,
   conversationOverrideArguments,
   messageStatusCopy,
+  modelSelectionStatusCopy,
   providerRecoveryCopy,
   providerStatusCopy,
   requestForAgent,
@@ -675,23 +676,6 @@ export function SidebarNavigation({
             <button type="button" onClick={() => onProfile(activeAgentId)}>
               Perfil de {activeAgent?.name ?? "agente"}
             </button>
-            <p className="sidebar-label">Aplicativo</p>
-            <button
-              className={workspace === "resources" ? "active" : undefined}
-              type="button"
-              aria-current={workspace === "resources" ? "page" : undefined}
-              onClick={() => onWorkspace("resources")}
-            >
-              Recursos locais
-            </button>
-            <button
-              className={workspace === "settings" ? "active" : undefined}
-              type="button"
-              aria-current={workspace === "settings" ? "page" : undefined}
-              onClick={() => onWorkspace("settings")}
-            >
-              Configurações
-            </button>
           </nav>
         </details>
       ) : null}
@@ -1038,6 +1022,7 @@ export function ModelPicker({
       ) {
         setOpen(false);
         setQuery("");
+        triggerRef.current?.focus();
       }
     }
     document.addEventListener("pointerdown", closeFromOutside);
@@ -1149,69 +1134,75 @@ export function ModelPicker({
           </span>
           <span aria-hidden="true">⌄</span>
         </button>
-        {open ? (
-          <div
-            ref={popoverRef}
-            className="model-picker-popover"
-            data-placement={position.placement}
-            style={{
-              top: position.top,
-              left: position.left,
-              right: "auto",
-              width: position.width,
-              maxHeight: position.maxHeight,
-              visibility: position.ready ? "visible" : "hidden",
-            }}
-          >
-            <input
-              ref={searchRef}
-              type="search"
-              value={query}
-              aria-label={`Buscar em ${label.toLowerCase()}`}
-              aria-controls={listboxId}
-              aria-activedescendant={activeOptionId}
-              placeholder="Buscar por nome, ref. ou metadados"
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={handleSearchKeyDown}
-            />
-            <div
-              id={listboxId}
-              className="model-picker-options"
-              role="listbox"
-              aria-label={label}
-            >
-              {filteredOptions.length > 0 ? (
-                filteredOptions.map((option, index) => (
-                  <div
-                    key={option.ref ?? "default"}
-                    id={modelPickerOptionId(listboxId, option)}
-                    role="option"
-                    aria-selected={option.ref === value}
-                    aria-disabled={option.unavailable}
-                    data-active={index === activeIndex}
-                    className={
-                      index === activeIndex
-                        ? "model-picker-option active"
-                        : "model-picker-option"
-                    }
-                    onMouseEnter={() => setActiveIndex(index)}
-                    onClick={() => void selectOption(option)}
-                  >
-                    <strong>
-                      {option.label}
-                      {option.unavailable ? " · indisponível" : ""}
-                    </strong>
-                    <small className="readable-helper">{option.detail}</small>
-                  </div>
-                ))
-              ) : (
-                <p className="model-picker-empty">
-                  Nenhum modelo corresponde à busca.
-                </p>
-              )}
-            </div>
-          </div>
-        ) : null}
+        {open
+          ? createPortal(
+              <div
+                ref={popoverRef}
+                className="model-picker-popover"
+                data-model-picker-portal="true"
+                data-placement={position.placement}
+                style={{
+                  top: position.top,
+                  left: position.left,
+                  right: "auto",
+                  width: position.width,
+                  maxHeight: position.maxHeight,
+                  visibility: position.ready ? "visible" : "hidden",
+                }}
+              >
+                <input
+                  ref={searchRef}
+                  type="search"
+                  value={query}
+                  aria-label={`Buscar em ${label.toLowerCase()}`}
+                  aria-controls={listboxId}
+                  aria-activedescendant={activeOptionId}
+                  placeholder="Buscar por nome, ref. ou metadados"
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={handleSearchKeyDown}
+                />
+                <div
+                  id={listboxId}
+                  className="model-picker-options"
+                  role="listbox"
+                  aria-label={label}
+                >
+                  {filteredOptions.length > 0 ? (
+                    filteredOptions.map((option, index) => (
+                      <div
+                        key={option.ref ?? "default"}
+                        id={modelPickerOptionId(listboxId, option)}
+                        role="option"
+                        aria-selected={option.ref === value}
+                        aria-disabled={option.unavailable}
+                        data-active={index === activeIndex}
+                        className={
+                          index === activeIndex
+                            ? "model-picker-option active"
+                            : "model-picker-option"
+                        }
+                        onMouseEnter={() => setActiveIndex(index)}
+                        onClick={() => void selectOption(option)}
+                      >
+                        <strong>
+                          {option.label}
+                          {option.unavailable ? " · indisponível" : ""}
+                        </strong>
+                        <small className="readable-helper">
+                          {option.detail}
+                        </small>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="model-picker-empty">
+                      Nenhum modelo corresponde à busca.
+                    </p>
+                  )}
+                </div>
+              </div>,
+              document.body,
+            )
+          : null}
       </div>
       <small className="model-picker-status readable-helper">
         {providerState !== "available"
@@ -1748,7 +1739,16 @@ export function ConversationSurface({
                 }
                 onClick={onToggleTemporary}
               >
-                <span aria-hidden="true">◌</span>
+                <svg
+                  className="temporary-control-icon"
+                  viewBox="0 0 20 20"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <path d="M6.5 4.5a7 7 0 1 0 7 0" />
+                  <path d="M6.5 1.5v3h3" />
+                  <path d="M13.5 18.5v-3h-3" />
+                </svg>
               </button>
             ) : null}
             <div className="conversation-model-selector">
@@ -1765,13 +1765,7 @@ export function ConversationSurface({
                     ? `Equilibrado · ${phase.defaultModelRef}`
                     : "Equilibrado · seleção automática",
                 }}
-                statusText={
-                  phase.modelOverrideRef
-                    ? `Conversa · ${phase.selectedModelRef ?? "indisponível"}`
-                    : phase.selectedModelRef
-                      ? `${phase.effectiveModelSource === "temporary_override" ? "Temporária" : "Agente"} · ${phase.selectedModelRef}`
-                      : "Nenhum modelo local disponível"
-                }
+                statusText={modelSelectionStatusCopy(phase)}
                 onSelect={async (modelRef) => {
                   const command = temporary
                     ? "set_temporary_phase_one_model"
@@ -1791,33 +1785,13 @@ export function ConversationSurface({
                 {blocked ?? "Enter envia · Shift+Enter cria uma linha"}
               </span>
             </div>
-            <details className="model-advanced-controls">
-              <summary>Mais opções</summary>
-              <div>
-                <button type="button" onClick={() => void refreshModels()}>
-                  Atualizar modelos
-                </button>
-                <label>
-                  <span>Manter modelo carregado</span>
-                  <select
-                    value={phase.keepAliveMinutes}
-                    onChange={(event) =>
-                      void invoke("update_keep_alive", {
-                        agentId: currentPhase.agent.id,
-                        minutes: Number(event.target.value),
-                      }).then(load)
-                    }
-                  >
-                    <option value={0}>Descarregar imediatamente</option>
-                    <option value={5}>5 minutos</option>
-                    <option value={15}>15 minutos</option>
-                    <option value={30}>30 minutos</option>
-                    <option value={60}>60 minutos</option>
-                    <option value={120}>120 minutos</option>
-                  </select>
-                </label>
-              </div>
-            </details>
+            <button
+              className="model-refresh"
+              type="button"
+              onClick={() => void refreshModels()}
+            >
+              Atualizar modelos
+            </button>
           </div>
           <button
             type="button"
@@ -2421,6 +2395,30 @@ export function ProfileForm({
             await loadPhase();
           }}
         />
+        <label className="profile-keep-alive">
+          <span>Manter modelo carregado neste agente</span>
+          <small className="readable-helper">
+            Esta preferência é persistente e também vale para novas conversas.
+          </small>
+          <select
+            aria-label={`Permanência do modelo de ${agent.name}`}
+            value={phase?.keepAliveMinutes ?? 0}
+            disabled={phase === null}
+            onChange={(event) =>
+              void invoke("update_keep_alive", {
+                agentId: agent.id,
+                minutes: Number(event.target.value),
+              }).then(loadPhase)
+            }
+          >
+            <option value={0}>Descarregar imediatamente</option>
+            <option value={5}>5 minutos</option>
+            <option value={15}>15 minutos</option>
+            <option value={30}>30 minutos</option>
+            <option value={60}>60 minutos</option>
+            <option value={120}>120 minutos</option>
+          </select>
+        </label>
       </section>
       {error ? <p role="alert">{error}</p> : null}
       {saved ? <p role="status">Perfil salvo.</p> : null}
@@ -10589,6 +10587,7 @@ export function SettingsSurface({
   const modelsProvider = provider === null ? null : { ...provider, models };
   const sections = [
     "Geral",
+    "Recursos locais",
     "Perfil do Owner",
     "Agentes",
     "Modelos",
@@ -10636,6 +10635,22 @@ export function SettingsSurface({
                 Administrador local do A.I.P. A edição do nome do Owner ainda
                 não está disponível.
               </p>
+            </section>
+          ) : null}
+          {activeSection === "Recursos locais" ? (
+            <section className="settings-card">
+              <h2>Recursos locais</h2>
+              <p className="readable-helper">
+                Acesse as capacidades locais e seus estados sem ocupar a
+                navegação persistente de cada agente.
+              </p>
+              <button
+                type="button"
+                disabled={activeAgentId === null}
+                onClick={() => onWorkspace("resources")}
+              >
+                Abrir recursos locais
+              </button>
             </section>
           ) : null}
           {activeSection === "Agentes" ? (

@@ -3083,10 +3083,12 @@ fn workspace_window_action(is_visible: bool) -> &'static str {
 }
 
 #[tauri::command]
-fn start_overlay_drag(
+fn move_overlay(
     app: AppHandle,
     state: State<'_, AppState>,
     agent_id: String,
+    delta_x: f64,
+    delta_y: f64,
 ) -> Result<(), &'static str> {
     if state.safe_mode.load(Ordering::SeqCst) {
         return Err("operation_unavailable");
@@ -3095,7 +3097,15 @@ fn start_overlay_drag(
     let window = app
         .get_webview_window(label)
         .ok_or("operation_unavailable")?;
-    window.start_dragging().map_err(|_| "operation_failed")
+    let position = window
+        .outer_position()
+        .map_err(|_| "operation_failed")?;
+    let scale = window.scale_factor().map_err(|_| "operation_failed")?;
+    let next = overlays::offset_overlay_position(position, scale, delta_x, delta_y)
+        .ok_or("operation_unavailable")?;
+    window
+        .set_position(tauri::Position::Logical(next))
+        .map_err(|_| "operation_failed")
 }
 
 #[tauri::command]
@@ -3428,7 +3438,7 @@ pub fn run() {
             cancel_phase_one_generation,
             retry_phase_one_runtime,
             open_agent_conversations,
-            start_overlay_drag,
+            move_overlay,
             set_overlay_bubble_visible,
             set_overlay_bubble_geometry,
             set_overlay_interactive_regions

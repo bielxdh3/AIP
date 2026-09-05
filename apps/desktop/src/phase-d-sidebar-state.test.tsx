@@ -55,7 +55,7 @@ describe("Phase D sidebar and state explanations", () => {
     vi.clearAllMocks();
   });
 
-  it("keeps agents and app navigation in compact collapsible sidebar sections", () => {
+  it("keeps agent navigation compact and leaves global settings behind the brand", () => {
     invoke.mockResolvedValue("");
     listen.mockResolvedValue(vi.fn());
     container = document.createElement("div");
@@ -88,6 +88,24 @@ describe("Phase D sidebar and state explanations", () => {
       container.querySelectorAll(".sidebar-agents .agent-tab"),
     ).toHaveLength(2);
     expect(container.querySelector(".sidebar-secondary > nav")).not.toBeNull();
+    expect(
+      container.querySelector(".sidebar-secondary")?.textContent,
+    ).not.toContain("Aplicativo");
+    expect(
+      container.querySelector(".sidebar-secondary")?.textContent,
+    ).not.toContain("Recursos locais");
+    expect(
+      container.querySelector(".sidebar-secondary")?.textContent,
+    ).not.toContain("Configurações");
+
+    const agentsSection =
+      container.querySelector<HTMLDetailsElement>(".sidebar-agents");
+    if (agentsSection === null) throw new Error("Missing agents section");
+    expect(agentsSection.open).toBe(true);
+    act(() => agentsSection.querySelector<HTMLElement>("summary")?.click());
+    expect(agentsSection.open).toBe(false);
+    act(() => agentsSection.querySelector<HTMLElement>("summary")?.click());
+    expect(agentsSection.open).toBe(true);
 
     const stateButton = Array.from(
       container.querySelectorAll<HTMLButtonElement>(
@@ -97,6 +115,34 @@ describe("Phase D sidebar and state explanations", () => {
     if (stateButton === undefined) throw new Error("Missing state navigation");
     act(() => stateButton.click());
     expect(onWorkspace).toHaveBeenCalledWith("state");
+  });
+
+  it("routes an agent selection to the selected agent context", () => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const onSelectAgent = vi.fn();
+    act(() =>
+      root?.render(
+        <SidebarNavigation
+          agents={[
+            agent("astra", "Astra", "astra"),
+            agent("luma", "Luma", "luma"),
+          ]}
+          activeAgentId="astra"
+          workspace="chat"
+          onSelectAgent={onSelectAgent}
+          onWorkspace={vi.fn()}
+          onProfile={vi.fn()}
+        />,
+      ),
+    );
+    const luma = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".agent-tab"),
+    ).find((button) => button.textContent?.includes("Luma"));
+    if (luma === undefined) throw new Error("Missing Luma agent tab");
+    act(() => luma.click());
+    expect(onSelectAgent).toHaveBeenCalledWith("luma");
   });
 
   it("gives every simulated state value and action a readable nearby helper", async () => {

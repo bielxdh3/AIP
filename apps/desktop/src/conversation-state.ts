@@ -18,6 +18,26 @@ export function conversationOverrideArguments(
   return { agentId, conversationId, modelRef: modelRef || null };
 }
 
+export function modelSourceCopy(
+  source: PhaseOneState["effectiveModelSource"],
+): string {
+  switch (source) {
+    case "conversation_override":
+      return "Conversa";
+    case "temporary_override":
+      return "Temporária";
+    case "agent_default":
+      return "Agente";
+  }
+}
+
+export function modelSelectionStatusCopy(
+  state: Pick<PhaseOneState, "selectedModelRef" | "effectiveModelSource">,
+): string {
+  if (state.selectedModelRef === null) return "Nenhum modelo local disponível";
+  return `${modelSourceCopy(state.effectiveModelSource)} · ${state.selectedModelRef}`;
+}
+
 const terminalStatuses = new Set(["complete", "failed", "cancelled"]);
 
 export type RequestTerminalState =
