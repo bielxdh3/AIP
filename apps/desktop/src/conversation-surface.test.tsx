@@ -133,18 +133,12 @@ describe("ConversationSurface", () => {
     expect(onActiveConversationChange).toHaveBeenCalledWith("conversation");
     expect(container.textContent).toContain("Tentar novamente");
     expect(
-      container.querySelector(
-        '.conversation-model-selector [aria-haspopup="listbox"]',
-      ),
+      container.querySelector('.composer-footer [aria-haspopup="listbox"]'),
     ).not.toBeNull();
     expect(
-      container.querySelector(
-        '.conversation-model-selector [aria-haspopup="listbox"]',
-      )?.textContent,
-    ).toContain("Modelo: Automático");
-    expect(
-      container.querySelector(".conversation-model-selector")?.textContent,
-    ).toContain("Equilibrado");
+      container.querySelector('.composer-footer [aria-haspopup="listbox"]')
+        ?.textContent,
+    ).toContain("Automático");
     expect(
       container.querySelector(".conversation-model-selector select"),
     ).toBeNull();
@@ -183,12 +177,14 @@ describe("ConversationSurface", () => {
     expect(
       container.querySelector(".chat-message .message-actions"),
     ).toBeNull();
-    expect(container.querySelector(".queue-banner")?.textContent).toContain(
-      "Cancelar",
+    expect(container.querySelector(".generation-status")?.textContent).toBe(
+      "Gerando resposta…",
     );
     expect(
-      container.querySelector(".generation-status.shiny-text")?.textContent,
-    ).toBe("Gerando resposta…");
+      container
+        .querySelector<HTMLButtonElement>(".composer-submit")
+        ?.getAttribute("aria-label"),
+    ).toBe("Parar geração");
 
     phase = {
       ...loadedPhase,
@@ -203,10 +199,31 @@ describe("ConversationSurface", () => {
       ],
     } as unknown as PhaseOneState;
     renderSurface();
-    expect(container.querySelector(".generation-status.shiny-text")).toBeNull();
     expect(container.querySelector(".generation-status")?.textContent).toBe(
       "Cancelando resposta…",
     );
+  });
+
+  it("keeps retry details collapsed until the user asks for model controls", () => {
+    phase = loadedPhase;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    renderSurface();
+
+    expect(container.querySelector(".message-advanced")).toBeNull();
+    const advanced = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Abrir avançado"]',
+    );
+    expect(advanced).not.toBeNull();
+    act(() => advanced?.click());
+    expect(container.querySelector(".message-advanced")?.textContent).toContain(
+      "Modelo usado: ollama:test",
+    );
+    expect(
+      container.querySelector('[aria-label="Modelo para nova tentativa"]'),
+    ).not.toBeNull();
+    expect(container.textContent).toContain("Tentar com este modelo");
   });
 
   it("keeps the draft editable but blocks send and Enter during generation", async () => {
@@ -229,11 +246,10 @@ describe("ConversationSurface", () => {
 
     const textarea =
       container.querySelector<HTMLTextAreaElement>(".composer textarea")!;
-    const send = container.querySelector<HTMLButtonElement>(
-      ".composer-footer > button",
-    )!;
+    const send =
+      container.querySelector<HTMLButtonElement>(".composer-submit")!;
     expect(textarea.disabled).toBe(false);
-    expect(send.disabled).toBe(true);
+    expect(send.disabled).toBe(false);
     await act(async () => {
       change(textarea, "rascunho para depois");
       textarea.dispatchEvent(
@@ -265,9 +281,7 @@ describe("ConversationSurface", () => {
     root = createRoot(container);
     renderSurface();
     await act(async () =>
-      container
-        .querySelector<HTMLButtonElement>(".queue-banner button")
-        ?.click(),
+      container.querySelector<HTMLButtonElement>(".composer-submit")?.click(),
     );
     expect(invoke).toHaveBeenCalledWith("cancel_phase_one_generation", {
       requestId: "request",
@@ -279,9 +293,7 @@ describe("ConversationSurface", () => {
       container.querySelector<HTMLTextAreaElement>(".composer textarea")!;
     change(textarea, "próxima mensagem");
     await act(async () =>
-      container
-        .querySelector<HTMLButtonElement>(".composer-footer > button")
-        ?.click(),
+      container.querySelector<HTMLButtonElement>(".composer-submit")?.click(),
     );
     expect(invoke).toHaveBeenCalledWith("send_phase_one_message", {
       agentId: "agent",
@@ -308,9 +320,7 @@ describe("ConversationSurface", () => {
       container.querySelector<HTMLTextAreaElement>(".composer textarea")!;
     change(textarea, "mensagem temporária");
     await act(async () =>
-      container
-        .querySelector<HTMLButtonElement>(".composer-footer > button")
-        ?.click(),
+      container.querySelector<HTMLButtonElement>(".composer-submit")?.click(),
     );
 
     expect(invoke).toHaveBeenCalledWith("send_temporary_phase_one_message", {
@@ -325,9 +335,10 @@ describe("ConversationSurface", () => {
     });
   });
 
-  it("keeps provider recovery and temporary controls inside the composer", () => {
+  it("keeps provider recovery and temporary controls compact", () => {
     phase = {
       ...loadedPhase,
+      messages: [],
       provider: { ...loadedPhase.provider, state: "unavailable" },
       selectedModelAvailable: false,
       canSend: false,
@@ -340,6 +351,11 @@ describe("ConversationSurface", () => {
     renderSurface(false, onToggleTemporary);
 
     expect(
+      container.querySelector<HTMLButtonElement>(
+        '.conversation-header-action[aria-label="Atualizar modelos"]',
+      ),
+    ).not.toBeNull();
+    expect(
       container.querySelector(".conversation-header .provider-state"),
     ).toBeNull();
     expect(
@@ -349,22 +365,14 @@ describe("ConversationSurface", () => {
       container.querySelector(".provider-recovery")?.textContent,
     ).toContain("Abra o Ollama");
     const temporaryControl = container.querySelector<HTMLButtonElement>(
-      ".composer-actions .temporary-control",
+      '.conversation-header-action[aria-label="Iniciar conversa temporária"]',
     );
     expect(temporaryControl?.getAttribute("aria-label")).toBe(
       "Iniciar conversa temporária",
     );
     expect(temporaryControl?.title).toBe("Iniciar conversa temporária");
     expect(
-      temporaryControl?.querySelector(".temporary-control-icon"),
-    ).not.toBeNull();
-    expect(
-      temporaryControl?.querySelectorAll(".temporary-control-icon path"),
-    ).toHaveLength(2);
-    expect(temporaryControl?.textContent).not.toContain("◌");
-    expect(
-      container.querySelector<HTMLButtonElement>(".composer-footer > button")
-        ?.disabled,
+      container.querySelector<HTMLButtonElement>(".composer-submit")?.disabled,
     ).toBe(true);
   });
 

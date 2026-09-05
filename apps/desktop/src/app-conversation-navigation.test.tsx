@@ -281,8 +281,6 @@ describe("App conversation navigation integration", () => {
       throw new Error("Missing draft control");
     await act(async () => create.click());
     expect(activeRow()).toBeNull();
-    expect(container?.textContent).toContain(
-      "Ainda não foi salvo no histórico",
-    );
+    expect(container?.textContent).toContain("Rascunho ainda não persistido");
   });
 });

@@ -1108,6 +1108,37 @@ impl ChatCoordinator {
         Ok(())
     }
 
+    pub fn persist_temporary(
+        &self,
+        agent_id: &str,
+    ) -> Result<crate::domain::PhaseOneConversation, &'static str> {
+        let conversation_id = lock(&self.inner.temporary_chats)
+            .conversations
+            .get(agent_id)
+            .map(|chat| chat.conversation.id.clone())
+            .ok_or("operation_unavailable")?;
+        if lock(&self.inner.queue)
+            .snapshots()
+            .iter()
+            .any(|entry| entry.agent_id == agent_id && entry.conversation_id == conversation_id)
+        {
+            return Err("generation_active");
+        }
+        let messages = lock(&self.inner.temporary_chats)
+            .conversations
+            .get(agent_id)
+            .map(|chat| chat.messages.clone())
+            .ok_or("operation_unavailable")?;
+        let conversation = self
+            .inner
+            .database
+            .persist_temporary_conversation(agent_id, &messages)
+            .map_err(|error| error.code())?;
+        clear_temporary_chat(&mut lock(&self.inner.temporary_chats), agent_id);
+        self.emit_refresh(Some(agent_id));
+        Ok(conversation)
+    }
+
     pub fn retry_runtime(&self) {
         if !self.inner.safe_mode.load(Ordering::SeqCst) {
             lock(&self.inner.discovery_requests).clear();
@@ -2730,6 +2761,45 @@ mod tests {
         assert_eq!(messages.last().unwrap()["role"], "user");
         drop(database);
         let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn different_current_prompts_produce_different_runtime_payloads() {
+        let agent = crate::domain::ProvisionalAgent {
+            id: "agent".into(),
+            name: "Astra".into(),
+            profile_key: "owner".into(),
+            sprite_key: "astra".into(),
+            position: crate::domain::AgentPosition { x: 0.0, y: 0.0 },
+            birthday: "2000-01-01".into(),
+            fictive_age: 18,
+            age_category: "adult".into(),
+            species: "agent".into(),
+            pronouns: "they/them".into(),
+            personality_summary: String::new(),
+            traits_json: "{}".into(),
+            gender: None,
+            sexuality: None,
+            appearance_preset: "astra".into(),
+        };
+        let first = assemble_context(
+            &agent,
+            vec![ContextMessage {
+                author: MessageAuthor::User,
+                content: "Planeje uma viagem".into(),
+            }],
+        );
+        let second = assemble_context(
+            &agent,
+            vec![ContextMessage {
+                author: MessageAuthor::User,
+                content: "Explique este erro".into(),
+            }],
+        );
+        assert_ne!(
+            first.last().map(|message| message.content.as_str()),
+            second.last().map(|message| message.content.as_str())
+        );
     }
 
     #[test]
