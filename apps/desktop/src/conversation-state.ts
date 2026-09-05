@@ -268,11 +268,11 @@ export function messageFailureCopy(errorCode: string | null): string {
 export function providerStatusCopy(state: PhaseOneState): string {
   switch (state.provider.state) {
     case "checking":
-      return "Verificando Ollama…";
+      return "Atualizando modelos…";
     case "available":
       return !state.selectedModelAvailable && state.selectedModelRef !== null
         ? "Modelo selecionado indisponível"
-        : "Ollama disponível";
+        : "";
     case "empty":
       return "Nenhum modelo instalado";
     case "malformed":
@@ -287,13 +287,13 @@ export function providerStatusCopy(state: PhaseOneState): string {
 export function providerRecoveryCopy(state: PhaseOneState): string | null {
   switch (state.provider.state) {
     case "checking":
-      return "Procurando os modelos instalados no Ollama…";
+      return null;
     case "unavailable":
-      return "O Ollama não está ativo. Abra o Ollama e tente atualizar os modelos.";
+      return "Ollama indisponível. Abra o Ollama e atualize os modelos.";
     case "empty":
       return "O Ollama está ativo, mas ainda não há um modelo instalado.";
     case "timeout":
-      return "O Ollama demorou para responder. Tente atualizar novamente.";
+      return "Ollama demorou para responder. Tente atualizar novamente.";
     case "malformed":
       return "O Ollama respondeu em um formato que o A.I.P. não reconheceu.";
     case "available":

@@ -221,6 +221,35 @@ class OllamaStreamingTests(unittest.TestCase):
         self.assertEqual(connection.requests[0][0:2], ("POST", "/api/chat"))
         self.assertEqual(body["model"], "llama3.2:1b")
 
+    def test_current_prompt_and_model_are_forwarded_without_canned_content(self) -> None:
+        bodies: list[dict[str, Any]] = []
+        for prompt, model in [
+            ("Planeje uma viagem", "llama3.2:1b"),
+            ("Explique este erro", "qwen2.5:7b"),
+        ]:
+            client, connection = client_for(
+                FakeResponse(
+                    [b'{"message":{"content":"resposta real"},"done":false}\n', b'{"done":true}\n']
+                )
+            )
+            client.stream_chat(
+                model_id=model,
+                messages=[
+                    {"role": "system", "content": "Responda em português"},
+                    {"role": "user", "content": prompt},
+                ],
+                keep_alive_minutes=15,
+                cancel_event=threading.Event(),
+                observe_connection=lambda _connection: None,
+                emit_chunk=lambda _sequence, _content: None,
+            )
+            bodies.append(json.loads(cast(bytes, connection.requests[0][2]).decode("utf-8")))
+        self.assertNotEqual(
+            bodies[0]["messages"][-1]["content"], bodies[1]["messages"][-1]["content"]
+        )
+        self.assertNotEqual(bodies[0]["model"], bodies[1]["model"])
+        self.assertNotIn("Oi", bodies[0]["messages"][-1]["content"])
+
     def test_chat_body_is_utf8_bytes_before_http_dispatch(self) -> None:
         client, connection = client_for(
             FakeResponse([b'{"message":{"content":"OK"},"done":false}\n', b'{"done":true}\n'])
