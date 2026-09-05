@@ -148,6 +148,7 @@ describe("ConversationSurface", () => {
     expect(
       container.querySelector(".conversation-model-selector select"),
     ).toBeNull();
+    expect(container.querySelector(".model-advanced-controls")).toBeNull();
     expect(consoleError).not.toHaveBeenCalledWith(
       expect.stringContaining("Rendered more hooks"),
     );
@@ -355,8 +356,25 @@ describe("ConversationSurface", () => {
     );
     expect(temporaryControl?.title).toBe("Iniciar conversa temporária");
     expect(
+      temporaryControl?.querySelector(".temporary-control-icon"),
+    ).not.toBeNull();
+    expect(
       container.querySelector<HTMLButtonElement>(".composer-footer > button")
         ?.disabled,
     ).toBe(true);
+  });
+
+  it("keeps the model residency policy at agent level instead of each conversation", () => {
+    phase = loadedPhase;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    renderSurface(false, vi.fn());
+    expect(container.textContent).not.toContain("Manter modelo carregado");
+    expect(container.querySelector(".model-advanced-controls")).toBeNull();
+
+    renderSurface(true, vi.fn());
+    expect(container.textContent).not.toContain("Manter modelo carregado");
+    expect(container.querySelector(".model-advanced-controls")).toBeNull();
   });
 });

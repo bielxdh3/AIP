@@ -4,11 +4,19 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PhaseOneState } from "@aip/contracts";
 import Bubble from "./Bubble";
+import {
+  BUBBLE_NATIVE_CLOSE_EVENT,
+  BUBBLE_NATIVE_OPEN_EVENT,
+} from "./overlay-events";
 
 let phase: PhaseOneState | null = null;
-const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
+const { invoke, listen } = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  listen: vi.fn(),
+}));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
+vi.mock("@tauri-apps/api/event", () => ({ listen }));
 vi.mock("./use-phase-one", () => ({
   usePhaseOne: () => ({ phase, error: false, load: vi.fn() }),
 }));
@@ -44,6 +52,7 @@ const queuedPhase = {
 describe("Bubble composer", () => {
   let root: Root | undefined;
   let container: HTMLDivElement | undefined;
+  const listeners = new Map<string, () => void>();
 
   afterEach(() => {
     if (root !== undefined) act(() => root?.unmount());
@@ -51,10 +60,15 @@ describe("Bubble composer", () => {
     root = undefined;
     container = undefined;
     phase = null;
+    listeners.clear();
     vi.clearAllMocks();
   });
 
   function renderBubble() {
+    listen.mockImplementation((event: string, callback: () => void) => {
+      listeners.set(event, callback);
+      return Promise.resolve(() => listeners.delete(event));
+    });
     act(() => root?.render(<Bubble agentId="agent" />));
   }
 
@@ -65,6 +79,13 @@ describe("Bubble composer", () => {
     )?.set;
     setter?.call(element, value);
     element.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  function latestGeometry() {
+    return [...invoke.mock.calls]
+      .reverse()
+      .find(([command]) => command === "set_overlay_bubble_geometry")?.[1] as
+      { width: number; height: number } | undefined;
   }
 
   it("keeps drafting available, blocks send during a request, then sends after cancellation", async () => {
@@ -80,6 +101,9 @@ describe("Bubble composer", () => {
     document.body.append(view);
     root = createRoot(view);
     renderBubble();
+    await act(async () => {
+      await Promise.resolve();
+    });
     expect(invoke).toHaveBeenCalledWith("set_overlay_interactive_regions", {
       agentId: "agent",
       regions: [],
@@ -150,6 +174,7 @@ describe("Bubble composer", () => {
     expect(container?.querySelector(".agent-bubble")?.className).toContain(
       "expanded",
     );
+    expect(latestGeometry()).toMatchObject({ width: 380 });
 
     const textarea = container?.querySelector<HTMLTextAreaElement>(
       ".bubble-composer textarea",
@@ -163,6 +188,7 @@ describe("Bubble composer", () => {
     expect(container?.querySelector(".agent-bubble")?.className).toContain(
       "minimized",
     );
+    expect(latestGeometry()).toMatchObject({ width: 196 });
     expect(
       container?.querySelector(".bubble-minimized-preview"),
     ).not.toBeNull();
@@ -174,6 +200,7 @@ describe("Bubble composer", () => {
     expect(container?.querySelector(".agent-bubble")?.className).toContain(
       "expanded",
     );
+    expect(latestGeometry()).toMatchObject({ width: 380 });
     expect(
       container?.querySelector<HTMLTextAreaElement>(".bubble-composer textarea")
         ?.value,
@@ -210,6 +237,11 @@ describe("Bubble composer", () => {
       visible: false,
     });
 
+    await act(async () => listeners.get(BUBBLE_NATIVE_OPEN_EVENT)?.());
+    expect(container.querySelector(".agent-bubble")?.className).toContain(
+      "compact",
+    );
+    expect(latestGeometry()).toMatchObject({ width: 380 });
     await act(async () =>
       container?.querySelector<HTMLButtonElement>(".bubble-title")?.click(),
     );
@@ -239,6 +271,45 @@ describe("Bubble composer", () => {
     expect(invoke).toHaveBeenCalledWith("open_agent_conversations", {
       agentId: "agent",
       conversationId: "conversation",
+    });
+  });
+
+  it("returns to compact presentation and clears regions after native close", async () => {
+    vi.stubGlobal("ResizeObserver", TestResizeObserver);
+    invoke.mockImplementation((command: string) =>
+      command === "get_app_snapshot"
+        ? Promise.resolve({ safeMode: false })
+        : Promise.resolve(undefined),
+    );
+    phase = loadedPhase;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    renderBubble();
+
+    await act(async () =>
+      container?.querySelector<HTMLButtonElement>(".bubble-title")?.click(),
+    );
+    expect(container.querySelector(".agent-bubble")?.className).toContain(
+      "expanded",
+    );
+    await act(async () => listeners.get(BUBBLE_NATIVE_CLOSE_EVENT)?.());
+    expect(container.querySelector(".agent-bubble")?.className).toContain(
+      "compact",
+    );
+    expect(invoke).toHaveBeenCalledWith("set_overlay_interactive_regions", {
+      agentId: "agent",
+      regions: [],
+    });
+
+    await act(async () => listeners.get(BUBBLE_NATIVE_OPEN_EVENT)?.());
+    expect(container.querySelector(".agent-bubble")?.className).toContain(
+      "compact",
+    );
+    expect(invoke).toHaveBeenCalledWith("set_overlay_bubble_geometry", {
+      agentId: "agent",
+      width: 380,
+      height: 128,
     });
   });
 });

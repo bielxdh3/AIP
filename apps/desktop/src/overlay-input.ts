@@ -207,6 +207,26 @@ export function bubbleWindowSize(
     : null;
 }
 
+export const BUBBLE_TARGET_GEOMETRY = {
+  compact: { width: 380, height: 128 },
+  minimized: { width: 196, height: 92 },
+  expanded: { width: 380, height: 336 },
+} as const;
+
+export type BubblePresentation = keyof typeof BUBBLE_TARGET_GEOMETRY;
+
+export function bubbleTargetGeometry(
+  presentation: BubblePresentation,
+  bounds: RectLike | null,
+): { width: number; height: number } {
+  const target = BUBBLE_TARGET_GEOMETRY[presentation];
+  const measured = bubbleWindowSize(bounds);
+  return {
+    width: target.width,
+    height: Math.max(target.height, measured?.height ?? 0),
+  };
+}
+
 function normalizeBounds(
   bounds: RectLike | null,
 ): OverlayInteractiveRegion | null {

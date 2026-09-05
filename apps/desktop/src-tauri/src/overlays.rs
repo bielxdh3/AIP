@@ -6,8 +6,8 @@ use std::{
 
 use serde::Deserialize;
 use tauri::{
-    window::Color, App, AppHandle, LogicalSize, Manager, Size, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder, WindowEvent,
+    window::Color, App, AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Size,
+    WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 use thiserror::Error;
 
@@ -29,6 +29,7 @@ const BUBBLE_MIN_WIDTH: f64 = 160.0;
 const BUBBLE_MIN_HEIGHT: f64 = 72.0;
 const MAX_INTERACTIVE_REGIONS: usize = 256;
 const MAX_REGION_COORDINATE: f64 = 4096.0;
+const MAX_OVERLAY_DRAG_DELTA: f64 = 4096.0;
 const AGENT_IDS: [&str; 2] = ["agt_astra_provisional", "agt_luma_provisional"];
 const OVERLAY_LABELS: [&str; 4] = [
     "agent-astra",
@@ -238,6 +239,26 @@ pub fn bubble_window_label(agent_id: &str) -> Option<&'static str> {
     ownership_for_agent(agent_id).map(|ownership| ownership.bubble_label)
 }
 
+pub fn offset_overlay_position(
+    current: tauri::PhysicalPosition<i32>,
+    scale: f64,
+    delta_x: f64,
+    delta_y: f64,
+) -> Option<LogicalPosition<f64>> {
+    if !scale.is_finite()
+        || scale <= 0.0
+        || !delta_x.is_finite()
+        || !delta_y.is_finite()
+        || delta_x.abs() > MAX_OVERLAY_DRAG_DELTA
+        || delta_y.abs() > MAX_OVERLAY_DRAG_DELTA
+    {
+        return None;
+    }
+    let x = f64::from(current.x) / scale + delta_x;
+    let y = f64::from(current.y) / scale + delta_y;
+    (x.is_finite() && y.is_finite()).then_some(LogicalPosition::new(x, y))
+}
+
 pub fn create_windows(
     app: &App,
     database: &Database,
@@ -316,6 +337,7 @@ pub fn create_windows(
                 api.prevent_close();
                 bubble_state.set_bubble_visible(bubble_agent_id, false);
                 bubble_state.replace(bubble_label, Vec::new());
+                let _ = bubble_for_close.emit("bubble-native-close", ());
                 let _ = bubble_for_close.hide();
             }
             WindowEvent::Destroyed => {
@@ -406,6 +428,7 @@ pub fn set_bubble_visible(
             return Err(OverlayInputError::NativeRegionFailed);
         }
         let _ = bubble.set_focus();
+        let _ = bubble.emit("bubble-native-open", ());
     } else {
         input_state.set_bubble_visible(agent_id, false);
         install_regions(&bubble, bubble_label, input_state, Vec::new())?;
@@ -904,6 +927,34 @@ mod tests {
         assert_eq!(astra.bubble_label, "agent-astra-bubble");
         assert_eq!(luma.agent_id, "agt_luma_provisional");
         assert_eq!(ownership_for_agent("unknown"), None);
+    }
+
+    #[test]
+    fn controlled_overlay_drag_converts_physical_position_to_logical_delta() {
+        let next = offset_overlay_position(
+            tauri::PhysicalPosition::new(150, -75),
+            1.5,
+            10.0,
+            -20.0,
+        )
+        .expect("valid drag delta");
+        assert_eq!(next, tauri::LogicalPosition::new(110.0, -70.0));
+        for invalid in [
+            (0.0, 1.0, 1.0),
+            (1.0, f64::NAN, 1.0),
+            (1.0, 1.0, f64::INFINITY),
+            (1.0, MAX_OVERLAY_DRAG_DELTA + 1.0, 0.0),
+        ] {
+            assert_eq!(
+                offset_overlay_position(
+                    tauri::PhysicalPosition::new(0, 0),
+                    invalid.0,
+                    invalid.1,
+                    invalid.2,
+                ),
+                None
+            );
+        }
     }
 
     #[test]

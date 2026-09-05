@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PhaseOneState } from "@aip/contracts";
 import { OPEN_AGENT_CONVERSATIONS_EVENT } from "./agent-navigation";
 import App from "./App";
+import { ThemeProvider } from "./theme";
 
 type EventCallback = (event: { payload: unknown }) => void;
 
@@ -118,6 +119,7 @@ describe("App conversation navigation integration", () => {
       if (command === "get_app_snapshot") return Promise.resolve(snapshot);
       if (command === "list_agent_conversations")
         return Promise.resolve(conversations);
+      if (command === "get_phase_one_state") return Promise.resolve(phase);
       if (command === "load_pixel_document") return Promise.resolve("{}");
       return Promise.resolve(undefined);
     });
@@ -131,7 +133,11 @@ describe("App conversation navigation integration", () => {
     document.body.append(container);
     root = createRoot(container);
     await act(async () => {
-      root?.render(<App />);
+      root?.render(
+        <ThemeProvider>
+          <App />
+        </ThemeProvider>,
+      );
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -155,6 +161,23 @@ describe("App conversation navigation integration", () => {
         ?.querySelector(".conversation-list-select")
         ?.getAttribute("aria-current"),
     ).toBe("page");
+  });
+
+  it("opens global settings from the brand while conversations stay in the sidebar", async () => {
+    await renderApp();
+    const brand = container?.querySelector<HTMLButtonElement>(".brand-mark");
+    if (brand === null || brand === undefined)
+      throw new Error("Missing brand button");
+    await act(async () => {
+      brand.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container?.querySelector(".settings-surface")).not.toBeNull();
+    expect(container?.querySelector(".conversation-list")).not.toBeNull();
+    expect(
+      container?.querySelector(".sidebar-secondary")?.textContent,
+    ).not.toContain("Configurações");
   });
 
   it("moves selection only after successful activation and preserves it on failure", async () => {

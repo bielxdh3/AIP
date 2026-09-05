@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { AppSnapshot } from "@aip/contracts";
 import {
   blockedSendCopy,
@@ -16,9 +17,14 @@ import {
 } from "./conversation-state";
 import {
   buildBubbleInteractiveRegions,
-  bubbleWindowSize,
+  bubbleTargetGeometry,
   elementBounds,
 } from "./overlay-input";
+import {
+  BUBBLE_NATIVE_CLOSE_EVENT,
+  BUBBLE_NATIVE_OPEN_EVENT,
+} from "./overlay-events";
+import { createListenerRegistration } from "./listener-lifecycle";
 import { routingPolicyPayload, useModelPreferences } from "./model-preferences";
 import { usePhaseOne } from "./use-phase-one";
 import { openAgentConversations } from "./agent-navigation";
@@ -29,6 +35,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
   const [modelPreferences] = useModelPreferences();
   const [expanded, setExpanded] = useState(false);
   const [minimized, setMinimized] = useState(false);
+  const [nativeVisible, setNativeVisible] = useState(true);
   const [draft, setDraft] = useState("");
   const [safeMode, setSafeMode] = useState(false);
   const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
@@ -40,8 +47,10 @@ export default function Bubble({ agentId }: { agentId: string }) {
 
   const reportRegion = useCallback(() => {
     const bounds = elementBounds(bubbleRef.current);
-    const regions = buildBubbleInteractiveRegions(!safeMode, bounds);
-    const geometry = bubbleWindowSize(bounds);
+    const regions = buildBubbleInteractiveRegions(
+      nativeVisible && !safeMode,
+      bounds,
+    );
     const revision = geometryRevision.current + 1;
     geometryRevision.current = revision;
     const installRegions = () => {
@@ -51,10 +60,16 @@ export default function Bubble({ agentId }: { agentId: string }) {
         regions,
       }).catch(() => null);
     };
-    if (geometry === null) {
+    if (!nativeVisible) {
       installRegions();
       return;
     }
+    const presentation = minimized
+      ? "minimized"
+      : expanded
+        ? "expanded"
+        : "compact";
+    const geometry = bubbleTargetGeometry(presentation, bounds);
     void invoke("set_overlay_bubble_geometry", {
       agentId,
       width: geometry.width,
@@ -62,7 +77,26 @@ export default function Bubble({ agentId }: { agentId: string }) {
     })
       .then(installRegions)
       .catch(installRegions);
-  }, [agentId, safeMode]);
+  }, [agentId, expanded, minimized, nativeVisible, safeMode]);
+
+  useEffect(() => {
+    const closeRegistration = createListenerRegistration();
+    const openRegistration = createListenerRegistration();
+    void listen(BUBBLE_NATIVE_CLOSE_EVENT, () => {
+      setNativeVisible(false);
+      setExpanded(false);
+      setMinimized(false);
+      geometryRevision.current += 1;
+    }).then(closeRegistration.register);
+    void listen(BUBBLE_NATIVE_OPEN_EVENT, () => {
+      setNativeVisible(true);
+      geometryRevision.current += 1;
+    }).then(openRegistration.register);
+    return () => {
+      closeRegistration.dispose();
+      openRegistration.dispose();
+    };
+  }, []);
 
   useEffect(() => {
     const refresh = () =>
@@ -113,6 +147,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
           <CloseBubble
             agentId={agentId}
             onClose={() => {
+              setNativeVisible(false);
               setExpanded(false);
               setMinimized(false);
             }}
@@ -214,6 +249,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
           <CloseBubble
             agentId={agentId}
             onClose={() => {
+              setNativeVisible(false);
               setExpanded(false);
               setMinimized(false);
             }}

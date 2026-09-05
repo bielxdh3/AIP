@@ -16,6 +16,7 @@ import {
   initialOverlayGestureState,
   moveGesture,
 } from "./overlay-gesture";
+import { pointerDelta, type PointerPoint } from "./overlay-drag";
 import {
   buildInteractiveRegions,
   elementBounds,
@@ -37,6 +38,8 @@ export default function Overlay({ agentId }: { agentId: string }) {
   const labelRef = useRef<HTMLSpanElement>(null);
   const thoughtRef = useRef<HTMLSpanElement>(null);
   const gestureRef = useRef(initialOverlayGestureState);
+  const lastDragPointRef = useRef<PointerPoint | null>(null);
+  const dragCommandRef = useRef<Promise<unknown>>(Promise.resolve());
   const agent = useMemo(
     () =>
       snapshot?.agents.find((candidate) => candidate.id === agentId) ?? null,
@@ -114,21 +117,10 @@ export default function Overlay({ agentId }: { agentId: string }) {
     [agentId],
   );
 
-  async function startDrag(button: HTMLButtonElement, pointerId: number) {
-    if (button.hasPointerCapture(pointerId))
-      button.releasePointerCapture(pointerId);
-    setDragging(true);
-    try {
-      await invoke("start_overlay_drag", { agentId });
-    } finally {
-      gestureRef.current = cancelGesture(gestureRef.current);
-      setDragging(false);
-    }
-  }
-
   function handlePointerDown(event: React.PointerEvent<HTMLButtonElement>) {
     if (event.button !== 0) return;
     event.currentTarget.setPointerCapture(event.pointerId);
+    lastDragPointRef.current = { x: event.clientX, y: event.clientY };
     gestureRef.current = beginGesture(
       gestureRef.current,
       event.pointerId,
@@ -145,11 +137,28 @@ export default function Overlay({ agentId }: { agentId: string }) {
       event.clientY,
     );
     gestureRef.current = result.state;
-    if (result.action === "start_drag")
-      void startDrag(event.currentTarget, event.pointerId);
+    if (result.action === "start_drag") setDragging(true);
+    if (!result.state.dragging || result.state.pointerId !== event.pointerId) {
+      return;
+    }
+    const current = { x: event.clientX, y: event.clientY };
+    const delta = pointerDelta(lastDragPointRef.current, current);
+    lastDragPointRef.current = current;
+    if (delta === null || (delta.x === 0 && delta.y === 0)) return;
+    dragCommandRef.current = dragCommandRef.current
+      .catch(() => undefined)
+      .then(() =>
+        invoke("move_overlay", {
+          agentId,
+          deltaX: delta.x,
+          deltaY: delta.y,
+        }),
+      )
+      .catch(() => null);
   }
 
   function handlePointerUp(event: React.PointerEvent<HTMLButtonElement>) {
+    const ownsPointer = gestureRef.current.pointerId === event.pointerId;
     const result = endGesture(
       gestureRef.current,
       event.pointerId,
@@ -159,6 +168,10 @@ export default function Overlay({ agentId }: { agentId: string }) {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    if (ownsPointer) {
+      lastDragPointRef.current = null;
+      setDragging(false);
+    }
     if (result.action === "click") {
       void invoke("set_overlay_bubble_visible", { agentId, visible: true });
     } else if (result.action === "double_click") {
@@ -167,9 +180,14 @@ export default function Overlay({ agentId }: { agentId: string }) {
   }
 
   function handlePointerCancel(event: React.PointerEvent<HTMLButtonElement>) {
+    const ownsPointer = gestureRef.current.pointerId === event.pointerId;
     gestureRef.current = cancelGesture(gestureRef.current);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (ownsPointer) {
+      lastDragPointRef.current = null;
+      setDragging(false);
     }
   }
 
