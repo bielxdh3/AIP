@@ -18,6 +18,26 @@ export function conversationOverrideArguments(
   return { agentId, conversationId, modelRef: modelRef || null };
 }
 
+export function modelSourceCopy(
+  source: PhaseOneState["effectiveModelSource"],
+): string {
+  switch (source) {
+    case "conversation_override":
+      return "Conversa";
+    case "temporary_override":
+      return "Temporária";
+    case "agent_default":
+      return "Agente";
+  }
+}
+
+export function modelSelectionStatusCopy(
+  state: Pick<PhaseOneState, "selectedModelRef" | "effectiveModelSource">,
+): string {
+  if (state.selectedModelRef === null) return "Nenhum modelo local disponível";
+  return `${modelSourceCopy(state.effectiveModelSource)} · ${state.selectedModelRef}`;
+}
+
 const terminalStatuses = new Set(["complete", "failed", "cancelled"]);
 
 export type RequestTerminalState =
@@ -246,14 +266,13 @@ export function messageFailureCopy(errorCode: string | null): string {
 }
 
 export function providerStatusCopy(state: PhaseOneState): string {
-  if (!state.selectedModelAvailable && state.selectedModelRef !== null) {
-    return "Modelo selecionado indisponível";
-  }
   switch (state.provider.state) {
     case "checking":
       return "Verificando Ollama…";
     case "available":
-      return "Ollama disponível";
+      return !state.selectedModelAvailable && state.selectedModelRef !== null
+        ? "Modelo selecionado indisponível"
+        : "Ollama disponível";
     case "empty":
       return "Nenhum modelo instalado";
     case "malformed":

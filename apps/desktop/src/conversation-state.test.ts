@@ -12,6 +12,8 @@ import {
   createConversationViewState,
   messageFailureCopy,
   messageStatusCopy,
+  modelSelectionStatusCopy,
+  modelSourceCopy,
   providerRecoveryCopy,
   providerStatusCopy,
   requestTerminalState,
@@ -108,6 +110,36 @@ function event(
 }
 
 describe("conversation event reducer", () => {
+  it("labels model provenance from the authoritative effective source", () => {
+    expect(modelSourceCopy("agent_default")).toBe("Agente");
+    expect(modelSourceCopy("conversation_override")).toBe("Conversa");
+    expect(modelSourceCopy("temporary_override")).toBe("Temporária");
+    expect(
+      modelSelectionStatusCopy({
+        selectedModelRef: "ollama:temporary",
+        effectiveModelSource: "temporary_override",
+      }),
+    ).toBe("Temporária · ollama:temporary");
+    expect(
+      modelSelectionStatusCopy({
+        selectedModelRef: "ollama:conversation",
+        effectiveModelSource: "conversation_override",
+      }),
+    ).toBe("Conversa · ollama:conversation");
+    expect(
+      modelSelectionStatusCopy({
+        selectedModelRef: "ollama:default",
+        effectiveModelSource: "agent_default",
+      }),
+    ).toBe("Agente · ollama:default");
+    expect(
+      modelSelectionStatusCopy({
+        selectedModelRef: null,
+        effectiveModelSource: "agent_default",
+      }),
+    ).toBe("Nenhum modelo local disponível");
+  });
+
   it("keeps drafting available but blocks send for the current agent queue", () => {
     const current = phase();
     expect(canDraftConversationMessage(current)).toBe(true);

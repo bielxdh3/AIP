@@ -6,6 +6,7 @@ import {
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { AppSnapshot } from "@aip/contracts";
 import {
   blockedSendCopy,
@@ -13,9 +14,18 @@ import {
   canDraftConversationMessage,
   canSendConversationMessage,
   canRequestCancellation,
-  providerStatusCopy,
 } from "./conversation-state";
-import { buildBubbleInteractiveRegions, elementBounds } from "./overlay-input";
+import {
+  buildBubbleInteractiveRegions,
+  bubbleTargetGeometry,
+  elementBounds,
+} from "./overlay-input";
+import {
+  BUBBLE_NATIVE_CLOSE_EVENT,
+  BUBBLE_NATIVE_OPEN_EVENT,
+  type BubbleNativeLifecyclePayload,
+} from "./overlay-events";
+import { createListenerRegistration } from "./listener-lifecycle";
 import { routingPolicyPayload, useModelPreferences } from "./model-preferences";
 import { usePhaseOne } from "./use-phase-one";
 import { openAgentConversations } from "./agent-navigation";
@@ -26,6 +36,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
   const [modelPreferences] = useModelPreferences();
   const [expanded, setExpanded] = useState(false);
   const [minimized, setMinimized] = useState(false);
+  const [nativeVisible, setNativeVisible] = useState(true);
   const [draft, setDraft] = useState("");
   const [safeMode, setSafeMode] = useState(false);
   const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
@@ -33,16 +44,68 @@ export default function Bubble({ agentId }: { agentId: string }) {
   );
   const [sending, setSending] = useState(false);
   const bubbleRef = useRef<HTMLElement>(null);
+  const geometryRevision = useRef(0);
 
   const reportRegion = useCallback(() => {
-    void invoke("set_overlay_interactive_regions", {
+    const bounds = elementBounds(bubbleRef.current);
+    const regions = buildBubbleInteractiveRegions(
+      nativeVisible && !safeMode,
+      bounds,
+    );
+    const revision = geometryRevision.current + 1;
+    geometryRevision.current = revision;
+    const installRegions = () => {
+      if (geometryRevision.current !== revision) return;
+      void invoke("set_overlay_interactive_regions", {
+        agentId,
+        regions,
+      }).catch(() => null);
+    };
+    if (!nativeVisible) {
+      installRegions();
+      return;
+    }
+    const presentation = minimized
+      ? "minimized"
+      : expanded
+        ? "expanded"
+        : "compact";
+    const geometry = bubbleTargetGeometry(presentation, bounds);
+    void invoke("set_overlay_bubble_geometry", {
       agentId,
-      regions: buildBubbleInteractiveRegions(
-        !safeMode,
-        elementBounds(bubbleRef.current),
-      ),
-    }).catch(() => null);
-  }, [agentId, safeMode]);
+      width: geometry.width,
+      height: geometry.height,
+    })
+      .then(installRegions)
+      .catch(installRegions);
+  }, [agentId, expanded, minimized, nativeVisible, safeMode]);
+
+  useEffect(() => {
+    const closeRegistration = createListenerRegistration();
+    const openRegistration = createListenerRegistration();
+    void listen<BubbleNativeLifecyclePayload>(
+      BUBBLE_NATIVE_CLOSE_EVENT,
+      (event) => {
+        if (event.payload?.agentId !== agentId) return;
+        setNativeVisible(false);
+        setExpanded(false);
+        setMinimized(false);
+        geometryRevision.current += 1;
+      },
+    ).then(closeRegistration.register);
+    void listen<BubbleNativeLifecyclePayload>(
+      BUBBLE_NATIVE_OPEN_EVENT,
+      (event) => {
+        if (event.payload?.agentId !== agentId) return;
+        setNativeVisible(true);
+        geometryRevision.current += 1;
+      },
+    ).then(openRegistration.register);
+    return () => {
+      closeRegistration.dispose();
+      openRegistration.dispose();
+    };
+  }, [agentId]);
 
   useEffect(() => {
     const refresh = () =>
@@ -60,8 +123,16 @@ export default function Bubble({ agentId }: { agentId: string }) {
     const observer = new ResizeObserver(reportRegion);
     observer.observe(element);
     reportRegion();
-    return () => observer.disconnect();
+    window.addEventListener("resize", reportRegion);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", reportRegion);
+    };
   }, [reportRegion]);
+
+  useLayoutEffect(() => {
+    reportRegion();
+  }, [expanded, minimized, reportRegion]);
 
   useEffect(
     () => () => {
@@ -82,7 +153,14 @@ export default function Bubble({ agentId }: { agentId: string }) {
           <strong>
             {error ? "Runtime indisponível" : "Carregando conversa…"}
           </strong>
-          <CloseBubble agentId={agentId} onClose={() => setExpanded(false)} />
+          <CloseBubble
+            agentId={agentId}
+            onClose={() => {
+              setNativeVisible(false);
+              setExpanded(false);
+              setMinimized(false);
+            }}
+          />
         </div>
       </main>
     );
@@ -152,9 +230,7 @@ export default function Bubble({ agentId }: { agentId: string }) {
         >
           <strong>{phase.agent.name}</strong>
           <small className="readable-helper">
-            {request?.active
-              ? "Modelo local em uso"
-              : providerStatusCopy(phase)}
+            {phase.conversation.title ?? "Conversa"}
           </small>
         </button>
         <div className="bubble-heading-actions">
@@ -179,7 +255,14 @@ export default function Bubble({ agentId }: { agentId: string }) {
               −
             </button>
           ) : null}
-          <CloseBubble agentId={agentId} onClose={() => setExpanded(false)} />
+          <CloseBubble
+            agentId={agentId}
+            onClose={() => {
+              setNativeVisible(false);
+              setExpanded(false);
+              setMinimized(false);
+            }}
+          />
         </div>
       </div>
 

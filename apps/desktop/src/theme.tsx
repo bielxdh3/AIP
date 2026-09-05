@@ -12,17 +12,13 @@ import { AipSelect } from "./shared-controls";
 
 export const THEME_STORAGE_KEY = "aip.ui.theme";
 
-export const THEME_MODES = ["dark", "light", "system"] as const;
+export const THEME_MODES = ["dark", "paper"] as const;
 export type ThemeMode = (typeof THEME_MODES)[number];
 
 export const RADIUS_PRESETS = {
   compact: {
     label: "Compacto",
     values: { xs: "4px", sm: "4px", md: "4px", lg: "8px", xl: "12px" },
-  },
-  standard: {
-    label: "Padrão",
-    values: { xs: "4px", sm: "8px", md: "8px", lg: "12px", xl: "16px" },
   },
   soft: {
     label: "Suave",
@@ -35,11 +31,6 @@ export const UI_FONTS = {
   times: {
     label: "Times New Roman",
     stack: '"Times New Roman", Times, serif',
-  },
-  system: {
-    label: "Sistema",
-    stack:
-      'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
   },
   inter: {
     label: "Inter",
@@ -66,7 +57,7 @@ export const DEFAULT_THEME_PREFERENCES: ThemePreferences = {
   mode: "dark",
   primaryColor: "#d0aa72",
   secondaryColor: "#efd09b",
-  radius: "standard",
+  radius: "compact",
   font: "times",
 };
 
@@ -126,18 +117,27 @@ export function readableForeground(background: string): string {
 
 export function normalizeThemePreferences(value: unknown): ThemePreferences {
   if (!isRecord(value)) return DEFAULT_THEME_PREFERENCES;
-  const mode = THEME_MODES.includes(value.mode as ThemeMode)
-    ? (value.mode as ThemeMode)
-    : DEFAULT_THEME_PREFERENCES.mode;
+  const mode =
+    value.mode === "system"
+      ? "dark"
+      : value.mode === "light"
+        ? "paper"
+        : THEME_MODES.includes(value.mode as ThemeMode)
+          ? (value.mode as ThemeMode)
+          : DEFAULT_THEME_PREFERENCES.mode;
   const radius =
-    typeof value.radius === "string" &&
-    Object.hasOwn(RADIUS_PRESETS, value.radius)
-      ? (value.radius as RadiusPreset)
-      : DEFAULT_THEME_PREFERENCES.radius;
+    value.radius === "standard"
+      ? "compact"
+      : typeof value.radius === "string" &&
+          Object.hasOwn(RADIUS_PRESETS, value.radius)
+        ? (value.radius as RadiusPreset)
+        : DEFAULT_THEME_PREFERENCES.radius;
   const font =
-    typeof value.font === "string" && Object.hasOwn(UI_FONTS, value.font)
-      ? (value.font as UiFont)
-      : DEFAULT_THEME_PREFERENCES.font;
+    value.font === "system"
+      ? "times"
+      : typeof value.font === "string" && Object.hasOwn(UI_FONTS, value.font)
+        ? (value.font as UiFont)
+        : DEFAULT_THEME_PREFERENCES.font;
   return {
     mode,
     primaryColor: normalizeHexColor(
@@ -164,15 +164,9 @@ function readStoredPreferences(): ThemePreferences {
   }
 }
 
-function systemTheme(): Exclude<ThemeMode, "system"> {
-  return window.matchMedia?.("(prefers-color-scheme: light)").matches
-    ? "light"
-    : "dark";
-}
-
 export function themeCssVariables(
   preferences: ThemePreferences,
-  resolvedMode: Exclude<ThemeMode, "system">,
+  resolvedMode: ThemeMode,
   reducedMotion: boolean,
 ): Record<string, string> {
   const radius = RADIUS_PRESETS[preferences.radius].values;
@@ -185,18 +179,18 @@ export function themeCssVariables(
     DEFAULT_THEME_PREFERENCES.secondaryColor,
   );
   const palette =
-    resolvedMode === "light"
+    resolvedMode === "paper"
       ? {
-          canvas: "#f3f0ea",
-          surface: "#fffdf8",
-          raised: "#f8f4ed",
-          soft: "#eee9df",
-          mutedSurface: "#f5f0e7",
-          border: "#d0c8bd",
-          strongBorder: "#aa9f92",
-          text: "#2c2925",
-          mutedText: "#5f5951",
-          subtleText: "#766f67",
+          canvas: "#e7dfd3",
+          surface: "#f2ebe0",
+          raised: "#eadfce",
+          soft: "#dfd1bf",
+          mutedSurface: "#ede4d8",
+          border: "#b8a895",
+          strongBorder: "#8e7d69",
+          text: "#302820",
+          mutedText: "#5d5042",
+          subtleText: "#706152",
           success: "#2f7650",
           warning: "#8a5a00",
           danger: "#a44f48",
@@ -250,7 +244,7 @@ export function themeCssVariables(
     "--motion-state": reducedMotion ? "0ms" : "160ms",
     "--control-height": "40px",
     "--control-height-comfortable": "48px",
-    "--focus-ring": `0 0 0 3px ${resolvedMode === "light" ? "#fffdf8" : "#121314"}, 0 0 0 5px ${primary}`,
+    "--focus-ring": `0 0 0 3px ${resolvedMode === "paper" ? "#f2ebe0" : "#121314"}, 0 0 0 5px ${primary}`,
     "--color-primary": primary,
     "--color-on-primary": readableForeground(primary),
     "--color-secondary": secondary,
@@ -275,11 +269,11 @@ export function themeCssVariables(
     "--color-danger": palette.danger,
     "--color-focus": primary,
     "--shadow-menu":
-      resolvedMode === "light"
+      resolvedMode === "paper"
         ? "0 14px 32px rgba(44, 41, 37, 0.18)"
         : "0 14px 32px rgba(0, 0, 0, 0.42)",
     "--shadow-dialog":
-      resolvedMode === "light"
+      resolvedMode === "paper"
         ? "0 24px 64px rgba(44, 41, 37, 0.24)"
         : "0 24px 64px rgba(0, 0, 0, 0.58)",
   };
@@ -287,7 +281,7 @@ export function themeCssVariables(
 
 type ThemeContextValue = {
   preferences: ThemePreferences;
-  resolvedMode: Exclude<ThemeMode, "system">;
+  resolvedMode: ThemeMode;
   reducedMotion: boolean;
   updatePreferences: (patch: Partial<ThemePreferences>) => void;
 };
@@ -298,22 +292,11 @@ const useIsomorphicLayoutEffect =
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [preferences, setPreferences] = useState(readStoredPreferences);
-  const [systemMode, setSystemMode] = useState(systemTheme);
   const [reducedMotion, setReducedMotion] = useState(
     () =>
       window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false,
   );
-  const resolvedMode =
-    preferences.mode === "system" ? systemMode : preferences.mode;
-
-  useEffect(() => {
-    const query = window.matchMedia?.("(prefers-color-scheme: light)");
-    if (query === undefined) return;
-    const update = () => setSystemMode(query.matches ? "light" : "dark");
-    update();
-    query.addEventListener?.("change", update);
-    return () => query.removeEventListener?.("change", update);
-  }, []);
+  const resolvedMode = preferences.mode;
 
   useEffect(() => {
     const query = window.matchMedia?.("(prefers-reduced-motion: reduce)");
@@ -329,7 +312,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     root.dataset.theme = resolvedMode;
     root.dataset.themeMode = preferences.mode;
     root.dataset.motion = reducedMotion ? "reduced" : "full";
-    root.style.colorScheme = resolvedMode;
+    root.style.colorScheme = resolvedMode === "paper" ? "light" : "dark";
     for (const [name, value] of Object.entries(
       themeCssVariables(preferences, resolvedMode, reducedMotion),
     )) {
@@ -379,8 +362,7 @@ export function ThemeControls() {
         value={preferences.mode}
         options={[
           { value: "dark", label: "Escuro" },
-          { value: "light", label: "Claro" },
-          { value: "system", label: "Sistema" },
+          { value: "paper", label: "Papel quente" },
         ]}
         onChange={(mode) => {
           if (THEME_MODES.includes(mode as ThemeMode))
@@ -436,8 +418,8 @@ export function ThemeControls() {
         }}
       />
       <small className="readable-helper" role="status">
-        Tema ativo: {resolvedMode === "light" ? "claro" : "escuro"}. Animações:{" "}
-        {reducedMotion ? "reduzidas" : "normais"}.
+        Tema ativo: {resolvedMode === "paper" ? "papel quente" : "escuro"}.
+        Animações: {reducedMotion ? "reduzidas" : "normais"}.
       </small>
     </fieldset>
   );

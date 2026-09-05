@@ -10,6 +10,14 @@ const options: readonly AipSelectOption[] = [
   { value: "charlie", label: "Charlie" },
 ];
 
+const manyOptions: readonly AipSelectOption[] = Array.from(
+  { length: 12 },
+  (_, index) => ({
+    value: `option-${index}`,
+    label: `Opção ${index + 1}`,
+  }),
+);
+
 describe("AipSelect", () => {
   let root: Root | undefined;
   let container: HTMLDivElement | undefined;
@@ -32,7 +40,11 @@ describe("AipSelect", () => {
     vi.restoreAllMocks();
   });
 
-  function render(value = "bravo", onChange = vi.fn()) {
+  function render(
+    value = "bravo",
+    onChange = vi.fn(),
+    selectOptions: readonly AipSelectOption[] = options,
+  ) {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -42,7 +54,7 @@ describe("AipSelect", () => {
           id="language"
           label="Idioma"
           value={value}
-          options={options}
+          options={selectOptions}
           onChange={onChange}
         />,
       ),
@@ -141,7 +153,7 @@ describe("AipSelect", () => {
     await act(async () => button.click());
     const menu = document.querySelector<HTMLElement>("#language-listbox");
     if (menu === null) throw new Error("Missing listbox");
-    Object.defineProperty(menu, "offsetHeight", {
+    Object.defineProperty(menu, "scrollHeight", {
       configurable: true,
       value: 180,
     });
@@ -157,6 +169,76 @@ describe("AipSelect", () => {
     );
     expect(button.getAttribute("aria-expanded")).toBe("false");
     outside.remove();
+  });
+
+  it("uses unconstrained content height before applying the viewport clamp", async () => {
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 800,
+    });
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    render("option-2", vi.fn(), manyOptions);
+    const button = trigger();
+    vi.spyOn(button, "getBoundingClientRect").mockReturnValue({
+      top: 120,
+      bottom: 156,
+      left: 80,
+      right: 260,
+      width: 180,
+      height: 36,
+      x: 80,
+      y: 120,
+      toJSON: () => ({}),
+    });
+    await act(async () => button.click());
+    const menu = document.querySelector<HTMLElement>("#language-listbox");
+    if (menu === null) throw new Error("Missing listbox");
+    Object.defineProperty(menu, "scrollHeight", {
+      configurable: true,
+      value: 420,
+    });
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    expect(Number.parseFloat(menu.style.maxHeight)).toBe(420);
+    expect(Number.parseFloat(menu.style.maxHeight)).toBeGreaterThan(96);
+  });
+
+  it("flips and clamps the natural menu height near a viewport edge", async () => {
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 240,
+    });
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 600,
+    });
+    render("option-2", vi.fn(), manyOptions);
+    const button = trigger();
+    vi.spyOn(button, "getBoundingClientRect").mockReturnValue({
+      top: 160,
+      bottom: 196,
+      left: 80,
+      right: 260,
+      width: 180,
+      height: 36,
+      x: 80,
+      y: 160,
+      toJSON: () => ({}),
+    });
+    await act(async () => button.click());
+    const menu = document.querySelector<HTMLElement>("#language-listbox");
+    if (menu === null) throw new Error("Missing listbox");
+    Object.defineProperty(menu, "scrollHeight", {
+      configurable: true,
+      value: 420,
+    });
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    expect(menu.dataset.placement).toBe("above");
+    expect(Number.parseFloat(menu.style.maxHeight)).toBe(152);
+    expect(Number.parseFloat(menu.style.maxHeight)).toBeLessThan(420);
+    expect(Number.parseFloat(menu.style.top)).toBe(8);
   });
 
   it("keeps select and file input interactions custom and accessible", () => {

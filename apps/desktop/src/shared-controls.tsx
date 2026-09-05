@@ -47,6 +47,18 @@ export type FilePickerProps = {
 const VIEWPORT_PADDING = 8;
 const MENU_GAP = 4;
 const MIN_MENU_HEIGHT = 96;
+const MIN_VISIBLE_MENU_HEIGHT = 40;
+
+export function naturalMenuHeight(
+  element: HTMLElement,
+  fallback: number,
+): number {
+  const contentHeight = element.scrollHeight;
+  if (Number.isFinite(contentHeight) && contentHeight > 0) {
+    return contentHeight;
+  }
+  return Number.isFinite(fallback) && fallback > 0 ? fallback : MIN_MENU_HEIGHT;
+}
 
 function stableIdPart(value: string): string {
   return value.replace(/[^a-z0-9_-]+/gi, "-").replace(/^-|-$/g, "") || "value";
@@ -125,10 +137,13 @@ export function AipSelect({
     const menu = menuRef.current;
     if (trigger === null || menu === null) return;
     const rect = trigger.getBoundingClientRect();
-    const menuHeight =
-      menu.getBoundingClientRect().height ||
-      menu.offsetHeight ||
-      Math.min(options.length * 38, 320);
+    const menuHeight = Math.max(
+      MIN_VISIBLE_MENU_HEIGHT,
+      naturalMenuHeight(
+        menu,
+        Math.min(Math.max(MIN_MENU_HEIGHT, options.length * 38), 480),
+      ),
+    );
     const spaceBelow = Math.max(
       0,
       window.innerHeight - rect.bottom - VIEWPORT_PADDING,
@@ -137,7 +152,7 @@ export function AipSelect({
     const placement =
       menuHeight > spaceBelow && spaceAbove > spaceBelow ? "above" : "below";
     const availableHeight = placement === "above" ? spaceAbove : spaceBelow;
-    const maxHeight = Math.max(MIN_MENU_HEIGHT, availableHeight);
+    const maxHeight = Math.min(menuHeight, Math.max(1, availableHeight));
     const left = Math.min(
       Math.max(VIEWPORT_PADDING, rect.left),
       Math.max(
@@ -145,13 +160,20 @@ export function AipSelect({
         window.innerWidth - rect.width - VIEWPORT_PADDING,
       ),
     );
-    const top =
+    const requestedTop =
       placement === "above"
         ? Math.max(
             VIEWPORT_PADDING,
             rect.top - Math.min(menuHeight, maxHeight) - MENU_GAP,
           )
         : rect.bottom + MENU_GAP;
+    const top = Math.min(
+      Math.max(VIEWPORT_PADDING, requestedTop),
+      Math.max(
+        VIEWPORT_PADDING,
+        window.innerHeight - maxHeight - VIEWPORT_PADDING,
+      ),
+    );
     setPosition({
       top,
       left,
@@ -181,10 +203,12 @@ export function AipSelect({
   useLayoutEffect(() => {
     if (!open) return;
     updatePosition();
+    const frame = window.requestAnimationFrame(updatePosition);
     const onViewportChange = () => updatePosition();
     window.addEventListener("resize", onViewportChange);
     window.addEventListener("scroll", onViewportChange, true);
     return () => {
+      window.cancelAnimationFrame(frame);
       window.removeEventListener("resize", onViewportChange);
       window.removeEventListener("scroll", onViewportChange, true);
     };

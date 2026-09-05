@@ -101,7 +101,7 @@ describe("theme foundations", () => {
     act(() => root?.render(<ThemeProvider>{children}</ThemeProvider>));
   }
 
-  it("supports dark, light, and system modes", async () => {
+  it("supports concrete dark and warm paper modes", async () => {
     render(
       <>
         <ThemeControls />
@@ -110,16 +110,14 @@ describe("theme foundations", () => {
     );
     expect(document.documentElement.dataset.theme).toBe("dark");
     if (container === undefined) throw new Error("Missing theme container");
-    await chooseOption(container, "theme-mode", "light");
-    expect(document.documentElement.dataset.theme).toBe("light");
+    await chooseOption(container, "theme-mode", "paper");
+    expect(document.documentElement.dataset.theme).toBe("paper");
+    expect(
+      document.documentElement.style.getPropertyValue("--color-surface"),
+    ).toBe("#f2ebe0");
+    expect(contrastRatio("#f2ebe0", "#302820")).toBeGreaterThanOrEqual(4.5);
     await chooseOption(container, "theme-mode", "dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
-    systemLight = true;
-    await chooseOption(container, "theme-mode", "system");
-    const query = queries.get("(prefers-color-scheme: light)")!;
-    query.matches = true;
-    await act(async () => query.listeners.forEach((listener) => listener()));
-    expect(document.documentElement.dataset.theme).toBe("light");
   });
 
   it("starts with the safe Times New Roman foundation", () => {
@@ -135,18 +133,28 @@ describe("theme foundations", () => {
     ).toBe("#292b2f");
   });
 
-  it("follows system appearance changes and keeps readable custom colors", async () => {
-    systemLight = false;
+  it("migrates legacy appearance values and keeps readable custom colors", async () => {
+    window.localStorage.setItem(
+      THEME_STORAGE_KEY,
+      JSON.stringify({ mode: "system", radius: "standard", font: "system" }),
+    );
     render(<ThemeControls />);
     if (container === undefined) throw new Error("Missing theme container");
-    await chooseOption(container, "theme-mode", "system");
     expect(document.documentElement.dataset.theme).toBe("dark");
-
-    systemLight = true;
-    const query = queries.get("(prefers-color-scheme: light)")!;
-    query.matches = true;
-    await act(async () => query.listeners.forEach((listener) => listener()));
-    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(
+      container.querySelector("#theme-mode-trigger")?.textContent,
+    ).toContain("Escuro");
+    expect(container.textContent).not.toContain("Sistema");
+    expect(container.textContent).not.toContain("Padrão");
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toContain(
+      '"mode":"dark"',
+    );
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toContain(
+      '"radius":"compact"',
+    );
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toContain(
+      '"font":"times"',
+    );
 
     expect(readableForeground("#ffffff")).toBe("#241d14");
     expect(readableForeground("#000000")).toBe("#fffaf1");

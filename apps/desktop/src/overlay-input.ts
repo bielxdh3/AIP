@@ -195,6 +195,38 @@ export function buildBubbleInteractiveRegions(
   return normalized === null ? [] : [normalized];
 }
 
+export function bubbleWindowSize(
+  bounds: RectLike | null,
+): { width: number; height: number } | null {
+  const normalized = normalizeBounds(bounds);
+  if (normalized === null) return null;
+  const width = Math.ceil(normalized.x + normalized.width + 8);
+  const height = Math.ceil(normalized.y + normalized.height + 8);
+  return width > 0 && height > 0 && width <= 4096 && height <= 4096
+    ? { width, height }
+    : null;
+}
+
+export const BUBBLE_TARGET_GEOMETRY = {
+  compact: { width: 380, height: 128 },
+  minimized: { width: 196, height: 92 },
+  expanded: { width: 380, height: 336 },
+} as const;
+
+export type BubblePresentation = keyof typeof BUBBLE_TARGET_GEOMETRY;
+
+export function bubbleTargetGeometry(
+  presentation: BubblePresentation,
+  bounds: RectLike | null,
+): { width: number; height: number } {
+  const target = BUBBLE_TARGET_GEOMETRY[presentation];
+  const measured = bubbleWindowSize(bounds);
+  return {
+    width: target.width,
+    height: Math.max(target.height, measured?.height ?? 0),
+  };
+}
+
 function normalizeBounds(
   bounds: RectLike | null,
 ): OverlayInteractiveRegion | null {

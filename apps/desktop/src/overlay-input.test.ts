@@ -3,6 +3,9 @@ import {
   alphaPixelsToRegions,
   buildBubbleInteractiveRegions,
   buildInteractiveRegions,
+  bubbleTargetGeometry,
+  BUBBLE_TARGET_GEOMETRY,
+  bubbleWindowSize,
 } from "./overlay-input";
 
 function rgbaMask(rows: string[]): Uint8ClampedArray {
@@ -129,5 +132,54 @@ describe("sprite alpha regions", () => {
     expect(buildBubbleInteractiveRegions(true, bounds)).toEqual([bounds]);
     expect(buildBubbleInteractiveRegions(false, bounds)).toEqual([]);
     expect(buildBubbleInteractiveRegions(true, null)).toEqual([]);
+  });
+
+  it("keeps native bubble geometry tied to the visible DOM bounds", () => {
+    expect(bubbleWindowSize({ x: 8, y: 8, width: 344, height: 92 })).toEqual({
+      width: 360,
+      height: 108,
+    });
+    expect(bubbleWindowSize({ x: 8, y: 8, width: 0, height: 92 })).toBeNull();
+    expect(
+      bubbleWindowSize({ x: 8, y: 8, width: 5000, height: 92 }),
+    ).toBeNull();
+  });
+
+  it("uses stable native widths for every bubble presentation", () => {
+    expect(bubbleTargetGeometry("compact", null)).toEqual(
+      BUBBLE_TARGET_GEOMETRY.compact,
+    );
+    expect(bubbleTargetGeometry("minimized", null)).toEqual(
+      BUBBLE_TARGET_GEOMETRY.minimized,
+    );
+    expect(bubbleTargetGeometry("expanded", null)).toEqual(
+      BUBBLE_TARGET_GEOMETRY.expanded,
+    );
+    expect(
+      bubbleTargetGeometry("compact", {
+        x: 8,
+        y: 8,
+        width: 364,
+        height: 180,
+      }),
+    ).toEqual({ width: 380, height: 196 });
+  });
+
+  it("keeps repeated presentation transitions on stable target widths", () => {
+    const sequence = [
+      "compact",
+      "expanded",
+      "compact",
+      "expanded",
+      "minimized",
+      "expanded",
+      "minimized",
+      "compact",
+    ] as const;
+    expect(
+      sequence.map(
+        (presentation) => bubbleTargetGeometry(presentation, null).width,
+      ),
+    ).toEqual([380, 380, 380, 380, 196, 380, 196, 380]);
   });
 });
