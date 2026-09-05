@@ -3097,9 +3097,7 @@ fn move_overlay(
     let window = app
         .get_webview_window(label)
         .ok_or("operation_unavailable")?;
-    let position = window
-        .outer_position()
-        .map_err(|_| "operation_failed")?;
+    let position = window.outer_position().map_err(|_| "operation_failed")?;
     let scale = window.scale_factor().map_err(|_| "operation_failed")?;
     let next = overlays::offset_overlay_position(position, scale, delta_x, delta_y)
         .ok_or("operation_unavailable")?;
