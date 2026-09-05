@@ -121,7 +121,7 @@ describe("ConversationDraftSurface", () => {
     await act(async () =>
       container
         ?.querySelector<HTMLButtonElement>(
-          ".conversation-draft-surface .composer-footer > button",
+          ".conversation-draft-surface .composer-submit",
         )
         ?.click(),
     );
@@ -187,7 +187,7 @@ describe("ConversationDraftSurface", () => {
     await act(async () =>
       container
         ?.querySelector<HTMLButtonElement>(
-          ".conversation-draft-surface .composer-footer > button",
+          ".conversation-draft-surface .composer-submit",
         )
         ?.click(),
     );
@@ -214,42 +214,40 @@ describe("ConversationDraftSurface", () => {
     expect(onPersisted).toHaveBeenCalledOnce();
   });
 
-  it("persists an explicitly named empty conversation without sending", async () => {
+  it("keeps naming out of the draft and exposes compact header controls", async () => {
     hookState.phase = loadedPhase;
-    const created = {
-      ...loadedPhase.conversation,
-      id: "named",
-      title: "Notas",
-    };
-    invoke.mockImplementation((command: string) =>
-      command === "create_agent_conversation"
-        ? Promise.resolve(created)
-        : Promise.resolve(undefined),
+    const onToggleTemporary = vi.fn();
+    renderDraft(vi.fn(), vi.fn());
+    expect(container?.querySelector(".draft-title-field")).toBeNull();
+    expect(
+      container?.querySelector<HTMLButtonElement>(
+        '.conversation-header-action[aria-label="Atualizar modelos"]',
+      ),
+    ).not.toBeNull();
+    const temporary = container?.querySelector<HTMLButtonElement>(
+      '.conversation-header-action[aria-label="Iniciar conversa temporária"]',
     );
-    const onPersisted = renderDraft();
-    const title = container?.querySelector<HTMLInputElement>(
-      ".draft-title-field input",
-    );
-    if (title === null || title === undefined) throw new Error("Missing title");
-    change(title, "Notas");
-    await act(async () =>
-      Array.from(container?.querySelectorAll("button") ?? [])
-        .find((button) => button.textContent === "Salvar nome")
-        ?.click(),
-    );
+    expect(temporary).toBeNull();
 
-    expect(invoke).toHaveBeenCalledWith("create_agent_conversation", {
-      agentId: "agent",
-      title: "Notas",
+    act(() => {
+      root?.unmount();
+      container?.remove();
+      container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+      root.render(
+        <ConversationDraftSurface
+          agentId="agent"
+          onCreated={vi.fn()}
+          onPersisted={vi.fn()}
+          onToggleTemporary={onToggleTemporary}
+        />,
+      );
     });
-    expect(invoke).toHaveBeenCalledWith("set_active_agent_conversation", {
-      agentId: "agent",
-      conversationId: "named",
-    });
-    expect(invoke).not.toHaveBeenCalledWith(
-      "send_phase_one_message",
-      expect.anything(),
-    );
-    expect(onPersisted).toHaveBeenCalledOnce();
+    expect(
+      container?.querySelector<HTMLButtonElement>(
+        '.conversation-header-action[aria-label="Iniciar conversa temporária"]',
+      ),
+    ).not.toBeNull();
   });
 });

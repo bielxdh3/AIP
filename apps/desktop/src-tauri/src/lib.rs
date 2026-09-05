@@ -2586,6 +2586,20 @@ fn rename_agent_conversation(
 }
 
 #[tauri::command]
+fn auto_title_phase_one_conversation(
+    state: State<'_, AppState>,
+    agent_id: String,
+    conversation_id: String,
+) -> Result<Option<String>, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .auto_title_conversation(&agent_id, &conversation_id)
+        .map_err(|error| error.code())
+}
+
+#[tauri::command]
 fn archive_agent_conversation(
     state: State<'_, AppState>,
     agent_id: String,
@@ -2718,6 +2732,18 @@ fn close_temporary_phase_one_chat(
         .as_ref()
         .ok_or("operation_unavailable")?
         .reset_temporary(&agent_id)
+}
+
+#[tauri::command]
+fn persist_temporary_phase_one_chat(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<PhaseOneConversation, &'static str> {
+    state
+        .chat
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .persist_temporary(&agent_id)
 }
 
 #[tauri::command]
@@ -3404,6 +3430,7 @@ pub fn run() {
             create_agent_conversation,
             set_active_agent_conversation,
             rename_agent_conversation,
+            auto_title_phase_one_conversation,
             archive_agent_conversation,
             restore_agent_conversation,
             pin_agent_conversation,
@@ -3413,6 +3440,7 @@ pub fn run() {
             create_agent_memory,
             send_temporary_phase_one_message,
             close_temporary_phase_one_chat,
+            persist_temporary_phase_one_chat,
             set_temporary_phase_one_model,
             get_agent_simulated_state,
             set_agent_simulated_mode,

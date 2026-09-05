@@ -293,7 +293,7 @@ describe("conversation event reducer", () => {
 
   it("exposes provider, model, cancel and compact bubble states", () => {
     const current = phase();
-    expect(providerStatusCopy(current)).toBe("Ollama disponível");
+    expect(providerStatusCopy(current)).toBe("");
     expect(blockedSendCopy("selected_model_unavailable")).toContain(
       "indisponível",
     );
@@ -339,7 +339,7 @@ describe("conversation event reducer", () => {
   it("explains how to recover when the local Ollama service is unavailable", () => {
     const current = phase();
     current.provider.state = "unavailable";
-    expect(providerRecoveryCopy(current)).toContain("Ollama não está ativo");
+    expect(providerRecoveryCopy(current)).toContain("Ollama indisponível");
     current.provider.state = "available";
     expect(providerRecoveryCopy(current)).toBeNull();
   });
