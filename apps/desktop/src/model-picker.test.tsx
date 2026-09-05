@@ -80,14 +80,15 @@ describe("ModelPicker", () => {
       throw new Error("Missing trigger");
 
     await act(async () => trigger.click());
-    const search = container?.querySelector<HTMLInputElement>(
+    const search = document.body.querySelector<HTMLInputElement>(
       'input[type="search"]',
     );
     if (search === null || search === undefined)
       throw new Error("Missing search");
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
-    const listbox = container?.querySelector<HTMLElement>('[role="listbox"]');
-    const initialSearch = container?.querySelector<HTMLInputElement>(
+    const listbox =
+      document.body.querySelector<HTMLElement>('[role="listbox"]');
+    const initialSearch = document.body.querySelector<HTMLInputElement>(
       'input[type="search"]',
     );
     if (listbox === null || listbox === undefined)
@@ -102,19 +103,19 @@ describe("ModelPicker", () => {
       document.getElementById(initialActiveId!)?.getAttribute("data-active"),
     ).toBe("true");
     const visionBeforeFilter = Array.from(
-      container?.querySelectorAll<HTMLElement>('[role="option"]') ?? [],
+      document.body.querySelectorAll<HTMLElement>('[role="option"]') ?? [],
     ).find((candidate) => candidate.textContent?.includes("Vision local"));
 
     await act(async () => {
       changeInput(search, "vision");
     });
     expect(
-      Array.from(container?.querySelectorAll('[role="option"]') ?? []).map(
+      Array.from(document.body.querySelectorAll('[role="option"]') ?? []).map(
         (option) => option.textContent,
       ),
     ).toEqual([expect.stringContaining("Vision local")]);
 
-    const option = container?.querySelector<HTMLElement>('[role="option"]');
+    const option = document.body.querySelector<HTMLElement>('[role="option"]');
     if (option === null || option === undefined)
       throw new Error("Missing option");
     expect(initialSearch.getAttribute("aria-activedescendant")).toBe(option.id);
@@ -122,7 +123,7 @@ describe("ModelPicker", () => {
     expect(visionBeforeFilter?.id).toBe(option.id);
     await act(async () => option.click());
     expect(onSelect).toHaveBeenCalledWith("ollama:vision");
-    expect(container?.querySelector('[role="listbox"]')).toBeNull();
+    expect(document.body.querySelector('[role="listbox"]')).toBeNull();
 
     await act(async () => trigger.click());
     await act(async () =>
@@ -130,7 +131,7 @@ describe("ModelPicker", () => {
         new PointerEvent("pointerdown", { bubbles: true }),
       ),
     );
-    expect(container?.querySelector('[role="listbox"]')).toBeNull();
+    expect(document.body.querySelector('[role="listbox"]')).toBeNull();
   });
 
   it("shows provider errors and keeps an unavailable selection visible", async () => {
@@ -151,7 +152,7 @@ describe("ModelPicker", () => {
     expect(container?.textContent).toContain("O Ollama não respondeu a tempo");
 
     await act(async () => trigger.click());
-    const unavailable = container?.querySelector<HTMLElement>(
+    const unavailable = document.body.querySelector<HTMLElement>(
       '[role="option"][aria-disabled="true"]',
     );
     if (unavailable === null || unavailable === undefined)
@@ -160,7 +161,7 @@ describe("ModelPicker", () => {
     await act(async () => unavailable.click());
     expect(onSelect).not.toHaveBeenCalled();
 
-    const search = container?.querySelector<HTMLInputElement>(
+    const search = document.body.querySelector<HTMLInputElement>(
       'input[type="search"]',
     );
     if (search === null || search === undefined)
@@ -191,7 +192,7 @@ describe("ModelPicker", () => {
         new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
       ),
     );
-    const search = container?.querySelector<HTMLInputElement>(
+    const search = document.body.querySelector<HTMLInputElement>(
       'input[type="search"]',
     );
     if (search === null || search === undefined)
@@ -205,7 +206,7 @@ describe("ModelPicker", () => {
     expect(onSelect).toHaveBeenCalledWith(null);
 
     await act(async () => trigger.click());
-    const reopenedSearch = container?.querySelector<HTMLInputElement>(
+    const reopenedSearch = document.body.querySelector<HTMLInputElement>(
       'input[type="search"]',
     );
     if (reopenedSearch === null || reopenedSearch === undefined)
@@ -215,7 +216,70 @@ describe("ModelPicker", () => {
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
       ),
     );
-    expect(container?.querySelector('[role="listbox"]')).toBeNull();
+    expect(document.body.querySelector('[role="listbox"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("portals the menu to body and repositions it when the viewport changes", async () => {
+    const onSelect = vi.fn().mockResolvedValue(undefined);
+    renderPicker(onSelect);
+    const trigger = container?.querySelector<HTMLButtonElement>(
+      '[aria-haspopup="listbox"]',
+    );
+    if (trigger === null || trigger === undefined)
+      throw new Error("Missing trigger");
+    trigger.getBoundingClientRect = () =>
+      ({
+        x: 700,
+        y: 100,
+        top: 100,
+        right: 780,
+        bottom: 136,
+        left: 700,
+        width: 80,
+        height: 36,
+        toJSON: () => ({}),
+      }) as DOMRect;
+
+    await act(async () => trigger.click());
+    const portal = document.body.querySelector<HTMLElement>(
+      '[data-model-picker-portal="true"]',
+    );
+    if (portal === null) throw new Error("Missing model picker portal");
+    expect(portal.parentElement).toBe(document.body);
+    expect(portal.style.visibility).toBe("visible");
+    expect(portal.style.left).toBe("700px");
+    Object.defineProperty(portal, "scrollHeight", {
+      configurable: true,
+      value: 420,
+    });
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    expect(Number.parseFloat(portal.style.maxHeight)).toBe(420);
+
+    trigger.getBoundingClientRect = () =>
+      ({
+        x: 900,
+        y: 600,
+        top: 600,
+        right: 980,
+        bottom: 636,
+        left: 900,
+        width: 80,
+        height: 36,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    await act(async () => window.dispatchEvent(new Event("resize")));
+    expect(Number.parseFloat(portal.style.left)).toBe(
+      window.innerWidth - Number.parseFloat(portal.style.width) - 8,
+    );
+    expect(portal.getAttribute("data-placement")).toBe("above");
+
+    await act(async () =>
+      document.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true }),
+      ),
+    );
+    expect(document.body.querySelector('[role="listbox"]')).toBeNull();
     expect(document.activeElement).toBe(trigger);
   });
 });

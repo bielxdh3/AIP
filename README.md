@@ -114,7 +114,7 @@ Linux, macOS, and iOS are not supported by the current stable release. Phase 12 
 
 [Download the current stable v0.1.0 MSI](https://github.com/bielxdh3/AIP/releases/download/v0.1.0/A.I.P._0.1.0_x64_en-US.msi)
 
-The active 0.2.1 line is unreleased development. The stable download above remains the reviewed v0.1.0 release asset.
+The active 0.2.2 line is unreleased development. The stable download above remains the reviewed v0.1.0 release asset.
 
 ## Quick start
 

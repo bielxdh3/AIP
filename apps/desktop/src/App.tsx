@@ -179,6 +179,7 @@ import {
   canRequestCancellation,
   conversationOverrideArguments,
   messageStatusCopy,
+  modelSelectionStatusCopy,
   providerRecoveryCopy,
   providerStatusCopy,
   requestForAgent,
@@ -199,7 +200,7 @@ import {
 import { usePhaseOne } from "./use-phase-one";
 import { createListenerRegistration } from "./listener-lifecycle";
 import { ThemeControls } from "./theme";
-import { AipSelect, FilePicker } from "./shared-controls";
+import { AipSelect, FilePicker, naturalMenuHeight } from "./shared-controls";
 import {
   MODEL_POLICY_MODES,
   type ModelPolicyMode,
@@ -631,7 +632,7 @@ export function SidebarNavigation({
   const activeAgent = agents.find((agent) => agent.id === activeAgentId);
   return (
     <div className="sidebar-navigation">
-      <details className="sidebar-section sidebar-agents" open>
+      <details className="sidebar-section sidebar-agents">
         <summary>
           <span>Agentes</span>
           <small>{agents.length}</small>
@@ -648,7 +649,7 @@ export function SidebarNavigation({
         </div>
       </details>
       {activeAgentId ? (
-        <details className="sidebar-section sidebar-secondary" open>
+        <details className="sidebar-section sidebar-secondary">
           <summary>
             <span>Navegação</span>
             <small>{activeAgent?.name ?? "agente"}</small>
@@ -674,23 +675,6 @@ export function SidebarNavigation({
             ))}
             <button type="button" onClick={() => onProfile(activeAgentId)}>
               Perfil de {activeAgent?.name ?? "agente"}
-            </button>
-            <p className="sidebar-label">Aplicativo</p>
-            <button
-              className={workspace === "resources" ? "active" : undefined}
-              type="button"
-              aria-current={workspace === "resources" ? "page" : undefined}
-              onClick={() => onWorkspace("resources")}
-            >
-              Recursos locais
-            </button>
-            <button
-              className={workspace === "settings" ? "active" : undefined}
-              type="button"
-              aria-current={workspace === "settings" ? "page" : undefined}
-              onClick={() => onWorkspace("settings")}
-            >
-              Configurações
             </button>
           </nav>
         </details>
@@ -782,6 +766,19 @@ type ModelPickerOption = {
   searchText: string;
   unavailable?: boolean;
 };
+
+type ModelPickerPosition = {
+  top: number;
+  left: number;
+  width: number;
+  maxHeight: number;
+  placement: "above" | "below";
+  ready: boolean;
+};
+
+const MODEL_PICKER_VIEWPORT_PADDING = 8;
+const MODEL_PICKER_MENU_GAP = 4;
+const MODEL_PICKER_MIN_HEIGHT = 40;
 
 const modelPickerStateCopy: Record<
   ProviderSnapshot["state"],
@@ -883,10 +880,19 @@ export function ModelPicker({
   const [activeIndex, setActiveIndex] = useState(0);
   const [selecting, setSelecting] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const listboxId = useId();
   const [modelPreferences] = useModelPreferences();
+  const [position, setPosition] = useState<ModelPickerPosition>({
+    top: 0,
+    left: 0,
+    width: 240,
+    maxHeight: 320,
+    placement: "above",
+    ready: false,
+  });
 
   const visibleModels = models.filter(
     (model) => !modelPreferences.hiddenModelRefs.includes(model.ref),
@@ -950,6 +956,55 @@ export function ModelPicker({
     (models.length > 0 ? "Selecione um modelo local" : stateCopy.label);
   const triggerDetail = selectedOption?.detail ?? stateCopy.detail;
 
+  const updatePosition = useCallback(() => {
+    const trigger = triggerRef.current;
+    const popover = popoverRef.current;
+    if (trigger === null || popover === null) return;
+    const rect = trigger.getBoundingClientRect();
+    const menuHeight = Math.max(
+      MODEL_PICKER_MIN_HEIGHT,
+      naturalMenuHeight(
+        popover,
+        Math.min(filteredOptions.length * 48 + 48, 360),
+      ),
+    );
+    const viewportWidth = Math.max(window.innerWidth, 1);
+    const viewportHeight = Math.max(window.innerHeight, 1);
+    const spaceBelow = Math.max(
+      0,
+      viewportHeight - rect.bottom - MODEL_PICKER_VIEWPORT_PADDING,
+    );
+    const spaceAbove = Math.max(0, rect.top - MODEL_PICKER_VIEWPORT_PADDING);
+    const placement =
+      menuHeight > spaceBelow && spaceAbove > spaceBelow ? "above" : "below";
+    const availableHeight = placement === "above" ? spaceAbove : spaceBelow;
+    const maxHeight = Math.min(menuHeight, Math.max(1, availableHeight));
+    const maxWidth = Math.max(
+      160,
+      viewportWidth - MODEL_PICKER_VIEWPORT_PADDING * 2,
+    );
+    const width = Math.min(Math.max(rect.width, 220), maxWidth);
+    const left = Math.min(
+      Math.max(MODEL_PICKER_VIEWPORT_PADDING, rect.left),
+      Math.max(
+        MODEL_PICKER_VIEWPORT_PADDING,
+        viewportWidth - width - MODEL_PICKER_VIEWPORT_PADDING,
+      ),
+    );
+    const requestedTop =
+      placement === "above"
+        ? rect.top - Math.min(menuHeight, maxHeight) - MODEL_PICKER_MENU_GAP
+        : rect.bottom + MODEL_PICKER_MENU_GAP;
+    const top = Math.min(
+      Math.max(MODEL_PICKER_VIEWPORT_PADDING, requestedTop),
+      Math.max(
+        MODEL_PICKER_VIEWPORT_PADDING,
+        viewportHeight - maxHeight - MODEL_PICKER_VIEWPORT_PADDING,
+      ),
+    );
+    setPosition({ top, left, width, maxHeight, placement, ready: true });
+  }, [filteredOptions.length]);
+
   useEffect(() => {
     if (open) searchRef.current?.focus();
   }, [open]);
@@ -963,14 +1018,34 @@ export function ModelPicker({
       if (
         rootRef.current !== null &&
         event.target instanceof Node &&
-        !rootRef.current.contains(event.target)
+        !rootRef.current.contains(event.target) &&
+        !popoverRef.current?.contains(event.target)
       ) {
         setOpen(false);
         setQuery("");
+        triggerRef.current?.focus();
       }
     }
     document.addEventListener("pointerdown", closeFromOutside);
     return () => document.removeEventListener("pointerdown", closeFromOutside);
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    updatePosition();
+    const frame = window.requestAnimationFrame(updatePosition);
+    const onViewportChange = () => updatePosition();
+    window.addEventListener("resize", onViewportChange);
+    window.addEventListener("scroll", onViewportChange, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", onViewportChange);
+      window.removeEventListener("scroll", onViewportChange, true);
+    };
+  }, [open, updatePosition]);
+
+  useEffect(() => {
+    if (!open) setPosition((current) => ({ ...current, ready: false }));
   }, [open]);
 
   function closePicker() {
@@ -1060,57 +1135,75 @@ export function ModelPicker({
           </span>
           <span aria-hidden="true">⌄</span>
         </button>
-        {open ? (
-          <div className="model-picker-popover">
-            <input
-              ref={searchRef}
-              type="search"
-              value={query}
-              aria-label={`Buscar em ${label.toLowerCase()}`}
-              aria-controls={listboxId}
-              aria-activedescendant={activeOptionId}
-              placeholder="Buscar por nome, ref. ou metadados"
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={handleSearchKeyDown}
-            />
-            <div
-              id={listboxId}
-              className="model-picker-options"
-              role="listbox"
-              aria-label={label}
-            >
-              {filteredOptions.length > 0 ? (
-                filteredOptions.map((option, index) => (
-                  <div
-                    key={option.ref ?? "default"}
-                    id={modelPickerOptionId(listboxId, option)}
-                    role="option"
-                    aria-selected={option.ref === value}
-                    aria-disabled={option.unavailable}
-                    data-active={index === activeIndex}
-                    className={
-                      index === activeIndex
-                        ? "model-picker-option active"
-                        : "model-picker-option"
-                    }
-                    onMouseEnter={() => setActiveIndex(index)}
-                    onClick={() => void selectOption(option)}
-                  >
-                    <strong>
-                      {option.label}
-                      {option.unavailable ? " · indisponível" : ""}
-                    </strong>
-                    <small className="readable-helper">{option.detail}</small>
-                  </div>
-                ))
-              ) : (
-                <p className="model-picker-empty">
-                  Nenhum modelo corresponde à busca.
-                </p>
-              )}
-            </div>
-          </div>
-        ) : null}
+        {open
+          ? createPortal(
+              <div
+                ref={popoverRef}
+                className="model-picker-popover"
+                data-model-picker-portal="true"
+                data-placement={position.placement}
+                style={{
+                  top: position.top,
+                  left: position.left,
+                  right: "auto",
+                  width: position.width,
+                  maxHeight: position.maxHeight,
+                  visibility: position.ready ? "visible" : "hidden",
+                }}
+              >
+                <input
+                  ref={searchRef}
+                  type="search"
+                  value={query}
+                  aria-label={`Buscar em ${label.toLowerCase()}`}
+                  aria-controls={listboxId}
+                  aria-activedescendant={activeOptionId}
+                  placeholder="Buscar por nome, ref. ou metadados"
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={handleSearchKeyDown}
+                />
+                <div
+                  id={listboxId}
+                  className="model-picker-options"
+                  role="listbox"
+                  aria-label={label}
+                >
+                  {filteredOptions.length > 0 ? (
+                    filteredOptions.map((option, index) => (
+                      <div
+                        key={option.ref ?? "default"}
+                        id={modelPickerOptionId(listboxId, option)}
+                        role="option"
+                        aria-selected={option.ref === value}
+                        aria-disabled={option.unavailable}
+                        data-active={index === activeIndex}
+                        className={
+                          index === activeIndex
+                            ? "model-picker-option active"
+                            : "model-picker-option"
+                        }
+                        onMouseEnter={() => setActiveIndex(index)}
+                        onClick={() => void selectOption(option)}
+                      >
+                        <strong>
+                          {option.label}
+                          {option.unavailable ? " · indisponível" : ""}
+                        </strong>
+                        <small className="readable-helper">
+                          {option.detail}
+                        </small>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="model-picker-empty">
+                      Nenhum modelo corresponde à busca.
+                    </p>
+                  )}
+                </div>
+              </div>,
+              document.body,
+            )
+          : null}
       </div>
       <small className="model-picker-status readable-helper">
         {providerState !== "available"
@@ -1391,8 +1484,10 @@ export function ConversationSurface({
   const request = requestForAgent(phase.queue, phase.agent.id);
   const blocked = blockedSendCopy(phase.sendBlockedCode);
   const providerRecovery = providerRecoveryCopy(phase);
+  const providerUnavailable = phase.provider.state !== "available";
   const modelsAvailable = phase.provider.models.length > 0;
-  const canSend = canSendConversationMessage(currentPhase);
+  const canSend =
+    canSendConversationMessage(currentPhase) && !providerUnavailable;
   const canDraft = canDraftConversationMessage(currentPhase);
   const routingPolicy = routingPolicyPayload(modelPreferences);
 
@@ -1484,68 +1579,8 @@ export function ConversationSurface({
     >
       <header className="conversation-header">
         <div>
-          <p className="eyebrow">
-            {temporary ? "Conversa temporária" : "Conversa"}
-          </p>
           <h1>{phase.agent.name}</h1>
           <span className="conversation-title">{phase.conversation.title}</span>
-          <span className={`provider-state ${phase.provider.state}`}>
-            {providerStatusCopy(phase)}
-          </span>
-        </div>
-        <div className="conversation-controls">
-          {onToggleTemporary ? (
-            <button
-              className={
-                temporary ? "temporary-control active" : "temporary-control"
-              }
-              type="button"
-              aria-pressed={temporary}
-              onClick={onToggleTemporary}
-            >
-              {temporary
-                ? "Encerrar conversa temporária"
-                : "Iniciar conversa temporária"}
-            </button>
-          ) : null}
-          {temporary ? (
-            <p className="temporary-disclosure readable-helper" role="status">
-              Temporária ativa: mensagens e contexto ficam apenas na memória e
-              são apagados ao encerrar.
-            </p>
-          ) : null}
-          {providerRecovery ? (
-            <p className="provider-recovery" role="status">
-              {providerRecovery}
-            </p>
-          ) : null}
-          <details className="model-advanced-controls">
-            <summary>Opções do modelo</summary>
-            <div>
-              <button type="button" onClick={() => void refreshModels()}>
-                Atualizar modelos locais
-              </button>
-              <label>
-                <span>Manter modelo carregado</span>
-                <select
-                  value={phase.keepAliveMinutes}
-                  onChange={(event) =>
-                    void invoke("update_keep_alive", {
-                      agentId: currentPhase.agent.id,
-                      minutes: Number(event.target.value),
-                    }).then(load)
-                  }
-                >
-                  <option value={0}>Descarregar imediatamente</option>
-                  <option value={5}>5 minutos</option>
-                  <option value={15}>15 minutos</option>
-                  <option value={30}>30 minutos</option>
-                  <option value={60}>60 minutos</option>
-                  <option value={120}>120 minutos</option>
-                </select>
-              </label>
-            </div>
-          </details>
         </div>
       </header>
 
@@ -1628,6 +1663,22 @@ export function ConversationSurface({
       </div>
 
       <footer className="composer">
+        <div className="composer-status" aria-live="polite">
+          <span className={`provider-state ${phase.provider.state}`}>
+            {providerStatusCopy(phase)}
+          </span>
+          {providerRecovery ? (
+            <p className="provider-recovery" role="status">
+              {providerRecovery}
+            </p>
+          ) : null}
+          {temporary ? (
+            <p className="temporary-disclosure readable-helper" role="status">
+              Temporária ativa: mensagens e contexto ficam apenas na memória e
+              são apagados ao encerrar.
+            </p>
+          ) : null}
+        </div>
         {request !== null ? (
           <div className="queue-banner">
             <span
@@ -1670,6 +1721,36 @@ export function ConversationSurface({
         />
         <div className="composer-footer">
           <div className="composer-actions">
+            {onToggleTemporary ? (
+              <button
+                className={
+                  temporary ? "temporary-control active" : "temporary-control"
+                }
+                type="button"
+                aria-label={
+                  temporary
+                    ? "Encerrar conversa temporária"
+                    : "Iniciar conversa temporária"
+                }
+                aria-pressed={temporary}
+                title={
+                  temporary
+                    ? "Encerrar conversa temporária"
+                    : "Iniciar conversa temporária"
+                }
+                onClick={onToggleTemporary}
+              >
+                <svg
+                  className="temporary-control-icon"
+                  viewBox="0 0 20 20"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <path d="M4.25 4.5h8.5a3 3 0 0 1 3 3v2.5a3 3 0 0 1-3 3H8l-3.75 2.25.65-2.25h-.65a3 3 0 0 1-3-3V7.5a3 3 0 0 1 3-3Z" />
+                  <path d="M9.5 4.75v8.1" />
+                </svg>
+              </button>
+            ) : null}
             <div className="conversation-model-selector">
               <ModelPicker
                 label="Modelo desta conversa"
@@ -1684,13 +1765,7 @@ export function ConversationSurface({
                     ? `Equilibrado · ${phase.defaultModelRef}`
                     : "Equilibrado · seleção automática",
                 }}
-                statusText={
-                  phase.modelOverrideRef
-                    ? `Em uso: ${phase.selectedModelRef ?? "indisponível"} · substituição desta conversa`
-                    : phase.selectedModelRef
-                      ? `Equilibrado · ${phase.selectedModelRef}`
-                      : "Nenhum modelo local disponível"
-                }
+                statusText={modelSelectionStatusCopy(phase)}
                 onSelect={async (modelRef) => {
                   const command = temporary
                     ? "set_temporary_phase_one_model"
@@ -1710,6 +1785,13 @@ export function ConversationSurface({
                 {blocked ?? "Enter envia · Shift+Enter cria uma linha"}
               </span>
             </div>
+            <button
+              className="model-refresh"
+              type="button"
+              onClick={() => void refreshModels()}
+            >
+              Atualizar modelos
+            </button>
           </div>
           <button
             type="button"
@@ -1764,7 +1846,10 @@ export function ConversationDraftSurface({
   const currentPhase: PhaseOneState = phase;
   const request = requestForAgent(currentPhase.queue, agentId);
   const blocked = blockedSendCopy(currentPhase.sendBlockedCode);
-  const canSend = canSendConversationMessage(currentPhase);
+  const providerRecovery = providerRecoveryCopy(currentPhase);
+  const providerUnavailable = currentPhase.provider.state !== "available";
+  const canSend =
+    canSendConversationMessage(currentPhase) && !providerUnavailable;
   const canDraft = canDraftConversationMessage(currentPhase);
   const routingPolicy = routingPolicyPayload(modelPreferences);
 
@@ -1839,13 +1924,9 @@ export function ConversationDraftSurface({
     >
       <header className="conversation-header">
         <div>
-          <p className="eyebrow">Rascunho local</p>
           <h1>{currentPhase.agent.name}</h1>
           <span className="conversation-title">
             Ainda não foi salvo no histórico
-          </span>
-          <span className={`provider-state ${currentPhase.provider.state}`}>
-            {providerStatusCopy(currentPhase)}
           </span>
         </div>
         <div className="conversation-controls draft-controls">
@@ -1877,6 +1958,16 @@ export function ConversationDraftSurface({
       </div>
 
       <footer className="composer">
+        <div className="composer-status" aria-live="polite">
+          <span className={`provider-state ${currentPhase.provider.state}`}>
+            {providerStatusCopy(currentPhase)}
+          </span>
+          {providerRecovery ? (
+            <p className="provider-recovery" role="status">
+              {providerRecovery}
+            </p>
+          ) : null}
+        </div>
         {request !== null ? (
           <div className="queue-banner">
             <span
@@ -2304,6 +2395,30 @@ export function ProfileForm({
             await loadPhase();
           }}
         />
+        <label className="profile-keep-alive">
+          <span>Manter modelo carregado neste agente</span>
+          <small className="readable-helper">
+            Esta preferência é persistente e também vale para novas conversas.
+          </small>
+          <select
+            aria-label={`Permanência do modelo de ${agent.name}`}
+            value={phase?.keepAliveMinutes ?? 0}
+            disabled={phase === null}
+            onChange={(event) =>
+              void invoke("update_keep_alive", {
+                agentId: agent.id,
+                minutes: Number(event.target.value),
+              }).then(loadPhase)
+            }
+          >
+            <option value={0}>Descarregar imediatamente</option>
+            <option value={5}>5 minutos</option>
+            <option value={15}>15 minutos</option>
+            <option value={30}>30 minutos</option>
+            <option value={60}>60 minutos</option>
+            <option value={120}>120 minutos</option>
+          </select>
+        </label>
       </section>
       {error ? <p role="alert">{error}</p> : null}
       {saved ? <p role="status">Perfil salvo.</p> : null}
@@ -3169,21 +3284,32 @@ export function AgentStateControls({ agentId }: { agentId: string }) {
         comportamento do agente; não são medições de saúde.
       </p>
       <div className="state-mode-control">
-        <AipSelect
-          id="state-mode"
-          label="Modo"
-          value={state.mode}
-          options={modes.map(({ value, label }) => ({ value, label }))}
-          onChange={(mode) =>
-            void update(() =>
-              invoke("set_agent_simulated_mode", {
-                agentId,
-                mode,
-              }),
-            )
-          }
-          disabled={saving}
-        />
+        <span className="state-mode-label">Modo</span>
+        <div className="state-mode-options" role="group" aria-label="Modo">
+          {modes.map((mode) => (
+            <button
+              type="button"
+              className={
+                mode.value === state.mode
+                  ? "state-mode-button active"
+                  : "state-mode-button"
+              }
+              aria-pressed={mode.value === state.mode}
+              disabled={saving}
+              key={mode.value}
+              onClick={() =>
+                void update(() =>
+                  invoke("set_agent_simulated_mode", {
+                    agentId,
+                    mode: mode.value,
+                  }),
+                )
+              }
+            >
+              {mode.label}
+            </button>
+          ))}
+        </div>
         <div
           className="state-mode-explanations"
           aria-label="Explicações dos modos"
@@ -10461,6 +10587,7 @@ export function SettingsSurface({
   const modelsProvider = provider === null ? null : { ...provider, models };
   const sections = [
     "Geral",
+    "Recursos locais",
     "Perfil do Owner",
     "Agentes",
     "Modelos",
@@ -10508,6 +10635,22 @@ export function SettingsSurface({
                 Administrador local do A.I.P. A edição do nome do Owner ainda
                 não está disponível.
               </p>
+            </section>
+          ) : null}
+          {activeSection === "Recursos locais" ? (
+            <section className="settings-card">
+              <h2>Recursos locais</h2>
+              <p className="readable-helper">
+                Acesse as capacidades locais e seus estados sem ocupar a
+                navegação persistente de cada agente.
+              </p>
+              <button
+                type="button"
+                disabled={activeAgentId === null}
+                onClick={() => onWorkspace("resources")}
+              >
+                Abrir recursos locais
+              </button>
             </section>
           ) : null}
           {activeSection === "Agentes" ? (

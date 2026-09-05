@@ -2,13 +2,20 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ProvisionalAgent } from "@aip/contracts";
+import type { PhaseOneState, ProvisionalAgent } from "@aip/contracts";
 import { ProfileForm } from "./App";
 
-const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
+const { invoke, phaseHook } = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  phaseHook: {
+    phase: null as PhaseOneState | null,
+    error: false,
+    load: vi.fn(),
+  },
+}));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("./use-phase-one", () => ({
-  usePhaseOne: () => ({ phase: null, error: false, load: vi.fn() }),
+  usePhaseOne: () => phaseHook,
 }));
 
 const agent: ProvisionalAgent = {
@@ -59,6 +66,8 @@ describe("ProfileForm", () => {
     container?.remove();
     root = undefined;
     container = undefined;
+    phaseHook.phase = null;
+    phaseHook.load.mockReset();
     vi.clearAllMocks();
   });
 
@@ -74,7 +83,11 @@ describe("ProfileForm", () => {
         '.profile-default-model [aria-haspopup="listbox"]',
       ),
     ).not.toBeNull();
-    expect(container.querySelector(".profile-default-model select")).toBeNull();
+    expect(
+      container.querySelector<HTMLSelectElement>(
+        ".profile-default-model .profile-keep-alive select",
+      )?.disabled,
+    ).toBe(true);
 
     const fields = container.querySelectorAll(".profile-fields > label");
     const age = fields[2]?.querySelector("input") as HTMLInputElement;
@@ -157,6 +170,36 @@ describe("ProfileForm", () => {
         ) as HTMLInputElement | null
       )?.value,
     ).toBe("Luma");
+  });
+
+  it("persists model residency per agent from the profile surface", async () => {
+    phaseHook.phase = {
+      provider: { state: "available", models: [] },
+      defaultModelRef: null,
+      keepAliveMinutes: 30,
+    } as unknown as PhaseOneState;
+    invoke.mockResolvedValue(undefined);
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () =>
+      root?.render(<ProfileForm agent={agent} done={vi.fn()} />),
+    );
+
+    const keepAlive = container.querySelector<HTMLSelectElement>(
+      ".profile-keep-alive select",
+    );
+    if (keepAlive === null) throw new Error("Missing profile keep-alive");
+    expect(keepAlive.value).toBe("30");
+    await act(async () => {
+      keepAlive.value = "60";
+      keepAlive.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(invoke).toHaveBeenCalledWith("update_keep_alive", {
+      agentId: "agent",
+      minutes: 60,
+    });
+    expect(phaseHook.load).toHaveBeenCalled();
   });
 
   it("persists traits, fictive age, description and supported select values", async () => {
