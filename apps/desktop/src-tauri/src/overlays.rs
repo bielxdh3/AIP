@@ -338,10 +338,8 @@ pub fn create_windows(
                 api.prevent_close();
                 bubble_state.set_bubble_visible(bubble_agent_id, false);
                 bubble_state.replace(bubble_label, Vec::new());
-                let _ = bubble_for_close.emit(
-                    "bubble-native-close",
-                    json!({ "agentId": bubble_agent_id }),
-                );
+                let _ = bubble_for_close
+                    .emit("bubble-native-close", json!({ "agentId": bubble_agent_id }));
                 let _ = bubble_for_close.hide();
             }
             WindowEvent::Destroyed => {
