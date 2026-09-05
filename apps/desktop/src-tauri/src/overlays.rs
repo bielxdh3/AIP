@@ -931,13 +931,9 @@ mod tests {
 
     #[test]
     fn controlled_overlay_drag_converts_physical_position_to_logical_delta() {
-        let next = offset_overlay_position(
-            tauri::PhysicalPosition::new(150, -75),
-            1.5,
-            10.0,
-            -20.0,
-        )
-        .expect("valid drag delta");
+        let next =
+            offset_overlay_position(tauri::PhysicalPosition::new(150, -75), 1.5, 10.0, -20.0)
+                .expect("valid drag delta");
         assert_eq!(next, tauri::LogicalPosition::new(110.0, -70.0));
         for invalid in [
             (0.0, 1.0, 1.0),
