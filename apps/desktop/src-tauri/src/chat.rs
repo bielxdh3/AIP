@@ -792,7 +792,11 @@ impl ChatCoordinator {
                 "operation_failed"
             })?;
         let job = job_from_attempt(agent_id, conversation_id, &model_ref, &attempt);
-        if let Err(code) = lock(&self.inner.queue).enqueue(job.clone()) {
+        let enqueue_result = {
+            let _scheduler_guard = lock(&self.inner.scheduler_lock);
+            lock(&self.inner.queue).enqueue(job.clone())
+        };
+        if let Err(code) = enqueue_result {
             let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
             return Err(code);
         }
@@ -910,7 +914,11 @@ impl ChatCoordinator {
             }
         };
         let job = job_from_attempt(agent_id, conversation_id, model_ref, &attempt);
-        if let Err(code) = lock(&self.inner.queue).enqueue(job.clone()) {
+        let enqueue_result = {
+            let _scheduler_guard = lock(&self.inner.scheduler_lock);
+            lock(&self.inner.queue).enqueue(job.clone())
+        };
+        if let Err(code) = enqueue_result {
             if code == "duplicate_request" {
                 return Ok(SendMessageResult {
                     request_id: attempt.request_id,
@@ -1039,7 +1047,11 @@ impl ChatCoordinator {
             model_ref,
             temporary: true,
         };
-        if let Err(code) = lock(&self.inner.queue).enqueue(job.clone()) {
+        let enqueue_result = {
+            let _scheduler_guard = lock(&self.inner.scheduler_lock);
+            lock(&self.inner.queue).enqueue(job.clone())
+        };
+        if let Err(code) = enqueue_result {
             let _ = self.finish_temporary(&job, MessageStatus::Failed, Some(code));
             return Err(code);
         }
@@ -1844,6 +1856,13 @@ impl ChatCoordinator {
             if self.inner.runtime.snapshot().state != RuntimeState::Ready
                 || self.inner.safe_mode.load(Ordering::SeqCst)
             {
+                return;
+            }
+            let queue_is_busy = {
+                let queue = lock(&self.inner.queue);
+                queue.active.is_some() || !queue.pending.is_empty()
+            };
+            if queue_is_busy {
                 return;
             }
             let Some(job) = lock(&self.inner.queue).activate_next() else {
