@@ -4402,6 +4402,7 @@ export type PhaseOneEvent = {
   protocolVersion: typeof PROTOCOL_VERSION;
   eventType:
     | "state.changed"
+    | "conversation-list.changed"
     | "generation.started"
     | "generation.chunk"
     | "generation.complete"

@@ -113,6 +113,7 @@ import type {
   ToolSession,
   ProviderSnapshot,
   OllamaModel,
+  PhaseOneEvent,
   PhaseOneState,
   WorkspaceRoot,
 } from "@aip/contracts";
@@ -1403,14 +1404,12 @@ export function ConversationSurface({
   onToggleTemporary,
   refreshRevision = 0,
   onActiveConversationChange,
-  onConversationTitleChange,
 }: {
   agentId: string;
   temporary: boolean;
   onToggleTemporary?: () => void;
   refreshRevision?: number;
   onActiveConversationChange?: (conversationId: string) => void;
-  onConversationTitleChange?: () => void;
 }) {
   const { phase, error, load } = usePhaseOne(agentId, temporary);
   const [modelPreferences] = useModelPreferences();
@@ -1425,10 +1424,6 @@ export function ConversationSurface({
   );
   const historyRef = useRef<HTMLDivElement>(null);
   const conversationIdRef = useRef<string | null>(null);
-  const conversationTitleRef = useRef<{
-    id: string;
-    title: string;
-  } | null>(null);
   const followsBottomRef = useRef(true);
   const phaseConversationId = phase?.conversation.id;
 
@@ -1441,24 +1436,6 @@ export function ConversationSurface({
       onActiveConversationChange?.(phaseConversationId);
     }
   }, [onActiveConversationChange, phaseConversationId, temporary]);
-
-  useEffect(() => {
-    if (temporary || phase?.conversation.id === undefined) return;
-    const next = {
-      id: phase.conversation.id,
-      title: phase.conversation.title,
-    };
-    const previous = conversationTitleRef.current;
-    if (previous?.id === next.id && previous.title !== next.title) {
-      onConversationTitleChange?.();
-    }
-    conversationTitleRef.current = next;
-  }, [
-    onConversationTitleChange,
-    phase?.conversation.id,
-    phase?.conversation.title,
-    temporary,
-  ]);
 
   useLayoutEffect(() => {
     const history = historyRef.current;
@@ -11659,6 +11636,7 @@ function App() {
 
   useEffect(() => {
     const registration = createListenerRegistration();
+    const phaseRegistration = createListenerRegistration();
     void listen<OpenAgentConversationsPayload>(
       OPEN_AGENT_CONVERSATIONS_EVENT,
       (event) => {
@@ -11671,7 +11649,14 @@ function App() {
         setConversationNavigationRevision((value) => value + 1);
       },
     ).then(registration.register);
-    return registration.dispose;
+    void listen<PhaseOneEvent>("phase-one-event", (event) => {
+      if (event.payload.eventType !== "conversation-list.changed") return;
+      setConversationListRevision((value) => value + 1);
+    }).then(phaseRegistration.register);
+    return () => {
+      registration.dispose();
+      phaseRegistration.dispose();
+    };
   }, []);
 
   async function toggleSafeMode() {
@@ -11918,9 +11903,6 @@ function App() {
             temporary={temporaryChat}
             refreshRevision={conversationNavigationRevision}
             onActiveConversationChange={syncActiveConversation}
-            onConversationTitleChange={() =>
-              setConversationListRevision((value) => value + 1)
-            }
             onToggleTemporary={() => void toggleTemporaryChat()}
           />
         )}
