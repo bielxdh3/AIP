@@ -1842,7 +1842,6 @@ export function ConversationDraftSurface({
   const modelBlockedCodes = new Set([
     "model_not_selected",
     "selected_model_unavailable",
-    "no_candidate",
   ]);
   const blocked = draftModelUnavailable
     ? blockedSendCopy("selected_model_unavailable")

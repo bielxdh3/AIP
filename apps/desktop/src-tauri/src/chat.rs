@@ -511,6 +511,7 @@ impl ChatCoordinator {
             &provider,
             selected_model_ref.as_deref(),
             selected_model_available,
+            model_override_ref.is_some(),
             queue.len(),
             simulated_state.suspended,
             auto_candidate_available,
@@ -634,6 +635,7 @@ impl ChatCoordinator {
                 &state.provider,
                 state.selected_model_ref.as_deref(),
                 state.selected_model_available,
+                state.model_override_ref.is_some(),
                 state.queue.len(),
                 simulated_state.suspended,
                 self.auto_candidate_available(),
@@ -757,7 +759,7 @@ impl ChatCoordinator {
             let auto_can_resolve = matches!(
                 policy.mode,
                 RoutingMode::Auto | RoutingMode::Quality | RoutingMode::Speed
-            );
+            ) && state.model_override_ref.is_none();
             if !auto_can_resolve
                 || !matches!(
                     code,
@@ -984,7 +986,7 @@ impl ChatCoordinator {
             let auto_can_resolve = matches!(
                 policy.mode,
                 RoutingMode::Auto | RoutingMode::Quality | RoutingMode::Speed
-            );
+            ) && state.model_override_ref.is_none();
             if !auto_can_resolve
                 || !matches!(
                     code,
@@ -1326,6 +1328,7 @@ impl ChatCoordinator {
         provider: &ProviderSnapshot,
         selected_model: Option<&str>,
         selected_available: bool,
+        explicit_override: bool,
         queue_length: usize,
         suspended: bool,
         auto_candidate_available: bool,
@@ -1336,6 +1339,7 @@ impl ChatCoordinator {
             provider,
             selected_model,
             selected_available,
+            explicit_override,
             queue_length,
             suspended,
             auto_candidate_available,
@@ -2331,6 +2335,7 @@ fn send_blocked_code_for_state(
     provider: &ProviderSnapshot,
     selected_model: Option<&str>,
     selected_available: bool,
+    explicit_override: bool,
     queue_length: usize,
     suspended: bool,
     auto_candidate_available: bool,
@@ -2350,7 +2355,9 @@ fn send_blocked_code_for_state(
     } else if provider.state != ProviderState::Available {
         Some("provider_unavailable")
     } else if selected_model.is_none() || !selected_available {
-        if auto_candidate_available {
+        if explicit_override && selected_model.is_some() && !selected_available {
+            Some("selected_model_unavailable")
+        } else if auto_candidate_available {
             None
         } else if selected_model.is_none() {
             Some("no_candidate")
@@ -2494,6 +2501,7 @@ mod tests {
                 &provider,
                 None,
                 false,
+                false,
                 0,
                 true,
                 true,
@@ -2507,11 +2515,45 @@ mod tests {
                 &provider,
                 None,
                 false,
+                false,
                 MAX_QUEUE_LENGTH,
                 false,
                 true,
             ),
             Some("queue_full")
+        );
+    }
+
+    #[test]
+    fn unavailable_explicit_override_never_falls_back_to_auto() {
+        let provider = available_provider();
+        assert_eq!(
+            send_blocked_code_for_state(
+                false,
+                RuntimeState::Ready,
+                &provider,
+                Some("ollama:missing"),
+                false,
+                true,
+                0,
+                false,
+                true,
+            ),
+            Some("selected_model_unavailable")
+        );
+        assert_eq!(
+            send_blocked_code_for_state(
+                false,
+                RuntimeState::Ready,
+                &provider,
+                Some("ollama:default"),
+                false,
+                false,
+                0,
+                false,
+                true,
+            ),
+            None
         );
     }
 
