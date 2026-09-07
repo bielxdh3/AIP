@@ -332,10 +332,6 @@ impl GenerationQueue {
         self.pending.len() + usize::from(self.active.is_some())
     }
 
-    fn has_pending(&self) -> bool {
-        !self.pending.is_empty()
-    }
-
     fn snapshots(&self) -> Vec<QueueEntrySnapshot> {
         let mut snapshots = Vec::with_capacity(self.len());
         if let Some(active) = &self.active {
@@ -398,6 +394,7 @@ struct ChatInner {
     discovery_requests: Mutex<HashSet<String>>,
     model_detail_requests: Mutex<HashMap<String, String>>,
     send_lock: Mutex<()>,
+    scheduler_lock: Mutex<()>,
     queue: Mutex<GenerationQueue>,
     title_generations: Mutex<HashMap<String, TitleGeneration>>,
     deferred_title_generations: Mutex<VecDeque<GenerationJob>>,
@@ -431,6 +428,7 @@ impl ChatCoordinator {
                 discovery_requests: Mutex::new(HashSet::new()),
                 model_detail_requests: Mutex::new(HashMap::new()),
                 send_lock: Mutex::new(()),
+                scheduler_lock: Mutex::new(()),
                 queue: Mutex::new(GenerationQueue::default()),
                 title_generations: Mutex::new(HashMap::new()),
                 deferred_title_generations: Mutex::new(VecDeque::new()),
@@ -1090,6 +1088,7 @@ impl ChatCoordinator {
     }
 
     pub fn cancel_all(&self, error_code: &'static str) {
+        let _scheduler_guard = lock(&self.inner.scheduler_lock);
         let mut queue = lock(&self.inner.queue);
         if let Some(request_id) = queue.active_request().map(str::to_string) {
             let cancel_id = format!("cancel-{}", uuid::Uuid::now_v7());
@@ -1717,6 +1716,7 @@ impl ChatCoordinator {
     }
 
     fn fail_all(&self, code: &str) {
+        let _scheduler_guard = lock(&self.inner.scheduler_lock);
         let jobs = lock(&self.inner.queue).clear();
         lock(&self.inner.title_generations).clear();
         lock(&self.inner.deferred_title_generations).clear();
@@ -1795,7 +1795,8 @@ impl ChatCoordinator {
     }
 
     fn schedule_title_generation_or_defer(&self, job: &GenerationJob) {
-        if lock(&self.inner.queue).has_pending() {
+        let _scheduler_guard = lock(&self.inner.scheduler_lock);
+        if lock(&self.inner.queue).len() > 0 {
             let mut deferred = lock(&self.inner.deferred_title_generations);
             if !deferred
                 .iter()
@@ -1809,6 +1810,11 @@ impl ChatCoordinator {
     }
 
     fn dispatch_next(&self) {
+        let _scheduler_guard = lock(&self.inner.scheduler_lock);
+        self.dispatch_next_locked();
+    }
+
+    fn dispatch_next_locked(&self) {
         loop {
             if !lock(&self.inner.title_generations).is_empty() {
                 return;
@@ -2208,8 +2214,18 @@ fn routing_policy_with_selection(
     selected_model: Option<&str>,
 ) -> RoutingPolicy {
     let mut policy = policy.clone();
-    if policy.mode != RoutingMode::Manual && policy.preferred_model_ref.is_none() {
-        policy.preferred_model_ref = selected_model.map(str::to_string);
+    if let Some(selected_model) = selected_model {
+        // An explicit conversation selection takes precedence over global routing preferences,
+        // including exclusions and fallback-only hints.
+        policy
+            .excluded_model_refs
+            .retain(|model_ref| model_ref != selected_model);
+        policy
+            .fallback_only_model_refs
+            .retain(|model_ref| model_ref != selected_model);
+        if policy.mode != RoutingMode::Manual {
+            policy.preferred_model_ref = Some(selected_model.to_string());
+        }
     }
     policy
 }
@@ -2422,6 +2438,31 @@ mod tests {
             Some("ollama:selected"),
         );
         assert_eq!(manual.preferred_model_ref, None);
+    }
+
+    #[test]
+    fn explicit_model_selection_overrides_global_routing_hints() {
+        let policy = routing_policy_with_selection(
+            &RoutingPolicy {
+                excluded_model_refs: vec!["ollama:selected".into()],
+                fallback_only_model_refs: vec!["ollama:selected".into()],
+                preferred_model_ref: Some("ollama:global".into()),
+                ..RoutingPolicy::default()
+            },
+            Some("ollama:selected"),
+        );
+        assert_eq!(
+            policy.preferred_model_ref.as_deref(),
+            Some("ollama:selected")
+        );
+        assert!(!policy
+            .excluded_model_refs
+            .iter()
+            .any(|model_ref| model_ref == "ollama:selected"));
+        assert!(!policy
+            .fallback_only_model_refs
+            .iter()
+            .any(|model_ref| model_ref == "ollama:selected"));
     }
 
     #[test]
