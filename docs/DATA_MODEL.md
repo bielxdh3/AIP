@@ -153,6 +153,17 @@ One current row per agent.
 
 Temporary conversations are not stored here.
 
+Migration `0029` adds `title_source` for the one-shot local title flow. Existing
+rows are conservatively backfilled as `manual`; conversations created after the
+migration start as `placeholder` and may transition once to `auto` after the
+first successful durable assistant response. The title request uses only the
+first durable user/assistant turn and its final write requires the source to
+remain `placeholder`, so a manual rename always wins without recency churn.
+
+Continuing a temporary chat creates a fresh empty normal conversation, makes it
+the agent's authoritative active conversation, and clears the in-memory
+temporary state. No temporary message or derived content is imported.
+
 ### `messages`
 
 | Field | Type | Notes |

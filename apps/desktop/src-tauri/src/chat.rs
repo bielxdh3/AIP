@@ -34,6 +34,8 @@ const MAX_REQUEST_TRACE_ENTRIES: usize = 24;
 const MAX_RETAINED_REQUEST_TRACES: usize = 16;
 const CANCELLATION_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+const MAX_TITLE_OUTPUT_BYTES: usize = 512;
+const MAX_TITLE_CONTEXT_CHARS: usize = 2_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GenerationJob {
@@ -56,6 +58,16 @@ struct TemporaryConversation {
     conversation: crate::domain::PhaseOneConversation,
     messages: Vec<crate::domain::ConversationMessage>,
     model_override_ref: Option<String>,
+}
+
+#[derive(Debug)]
+struct TitleGeneration {
+    agent_id: String,
+    conversation_id: String,
+    assistant_message_id: String,
+    output: String,
+    last_sequence: u64,
+    output_bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -382,6 +394,7 @@ struct ChatInner {
     model_detail_requests: Mutex<HashMap<String, String>>,
     send_lock: Mutex<()>,
     queue: Mutex<GenerationQueue>,
+    title_generations: Mutex<HashMap<String, TitleGeneration>>,
     request_traces: Mutex<RequestTraceStore>,
     temporary_chats: Mutex<TemporaryChatStore>,
     cancellation_recovery: AtomicBool,
@@ -413,6 +426,7 @@ impl ChatCoordinator {
                 model_detail_requests: Mutex::new(HashMap::new()),
                 send_lock: Mutex::new(()),
                 queue: Mutex::new(GenerationQueue::default()),
+                title_generations: Mutex::new(HashMap::new()),
                 request_traces: Mutex::new(RequestTraceStore::default()),
                 temporary_chats: Mutex::new(TemporaryChatStore::default()),
                 cancellation_recovery: AtomicBool::new(false),
@@ -1108,7 +1122,7 @@ impl ChatCoordinator {
         Ok(())
     }
 
-    pub fn persist_temporary(
+    pub fn continue_temporary(
         &self,
         agent_id: &str,
     ) -> Result<crate::domain::PhaseOneConversation, &'static str> {
@@ -1124,15 +1138,10 @@ impl ChatCoordinator {
         {
             return Err("generation_active");
         }
-        let messages = lock(&self.inner.temporary_chats)
-            .conversations
-            .get(agent_id)
-            .map(|chat| chat.messages.clone())
-            .ok_or("operation_unavailable")?;
         let conversation = self
             .inner
             .database
-            .persist_temporary_conversation(agent_id, &messages)
+            .create_conversation_and_activate(agent_id, "Nova conversa")
             .map_err(|error| error.code())?;
         clear_temporary_chat(&mut lock(&self.inner.temporary_chats), agent_id);
         self.emit_refresh(Some(agent_id));
@@ -1299,8 +1308,13 @@ impl ChatCoordinator {
                     .remove(&id)
                     .is_none()
                 {
-                    self.trace(&id, "request_error", None, Some(&code));
-                    self.fail_active(&id, &code);
+                    if lock(&self.inner.title_generations).remove(&id).is_some() {
+                        self.trace(&id, "title_generation_failed", None, Some(&code));
+                        self.dispatch_next();
+                    } else {
+                        self.trace(&id, "request_error", None, Some(&code));
+                        self.fail_active(&id, &code);
+                    }
                 }
             }
             RuntimeNotice::Output(RuntimeOutput::ModelDetails {
@@ -1354,6 +1368,9 @@ impl ChatCoordinator {
     }
 
     fn handle_generation_event(&self, event: PhaseOneEvent) {
+        if self.handle_title_event(&event) {
+            return;
+        }
         if !lock(&self.inner.queue).matches_event(&event) {
             if let Some(request_id) = event.request_id.as_deref() {
                 self.trace(
@@ -1464,6 +1481,84 @@ impl ChatCoordinator {
         }
     }
 
+    fn handle_title_event(&self, event: &PhaseOneEvent) -> bool {
+        let Some(request_id) = event.request_id.as_deref() else {
+            return false;
+        };
+        let mut completed = None;
+        let mut failed = false;
+        {
+            let mut requests = lock(&self.inner.title_generations);
+            let Some(request) = requests.get_mut(request_id) else {
+                return false;
+            };
+            if event.agent_id.as_deref() != Some(request.agent_id.as_str())
+                || event.conversation_id.as_deref() != Some(request.conversation_id.as_str())
+                || event.assistant_message_id.as_deref()
+                    != Some(request.assistant_message_id.as_str())
+            {
+                return true;
+            }
+            match event.event_type.as_str() {
+                "generation.started" if event.sequence == Some(0) => {}
+                "generation.chunk" => {
+                    if let Some((sequence, content)) = event.sequence.zip(event.content.as_deref())
+                    {
+                        let next_size = request.output_bytes.saturating_add(content.len());
+                        if sequence != request.last_sequence + 1
+                            || next_size > MAX_TITLE_OUTPUT_BYTES
+                        {
+                            requests.remove(request_id);
+                            failed = true;
+                        } else {
+                            request.last_sequence = sequence;
+                            request.output_bytes = next_size;
+                            request.output.push_str(content);
+                        }
+                    } else {
+                        requests.remove(request_id);
+                        failed = true;
+                    }
+                }
+                "generation.complete" => {
+                    if event.sequence == Some(request.last_sequence) {
+                        completed = requests.remove(request_id);
+                    } else {
+                        requests.remove(request_id);
+                        failed = true;
+                    }
+                }
+                "generation.failed" | "generation.cancelled" => {
+                    requests.remove(request_id);
+                    failed = true;
+                }
+                _ => {}
+            }
+        }
+        if let Some(request) = completed {
+            if let Some(title) = sanitize_generated_title(&request.output) {
+                let committed = self.inner.database.commit_generated_title(
+                    &request.agent_id,
+                    &request.conversation_id,
+                    &title,
+                );
+                if matches!(committed, Ok(true)) {
+                    self.emit_refresh(Some(&request.agent_id));
+                }
+            }
+            self.dispatch_next();
+        } else if failed {
+            self.trace(
+                request_id,
+                "title_generation_failed",
+                event.sequence,
+                event.error_code.as_deref(),
+            );
+            self.dispatch_next();
+        }
+        true
+    }
+
     fn finish_runtime_terminal(
         &self,
         request_id: &str,
@@ -1508,6 +1603,7 @@ impl ChatCoordinator {
                         &job.branch_id,
                         &job.assistant_message_id,
                     );
+                self.schedule_title_generation(&job);
             }
             self.trace(request_id, "terminal_persisted", event.sequence, error_code);
             self.emit(event);
@@ -1530,14 +1626,85 @@ impl ChatCoordinator {
 
     fn fail_all(&self, code: &str) {
         let jobs = lock(&self.inner.queue).clear();
+        lock(&self.inner.title_generations).clear();
         for job in jobs {
             let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
             self.emit_terminal(&job, "generation.failed", Some(code));
         }
     }
 
+    fn schedule_title_generation(&self, job: &GenerationJob) {
+        let provider_model_id = match job.model_ref.strip_prefix("ollama:") {
+            Some(model) if valid_provider_model_id(model) => model,
+            _ => return,
+        };
+        let Ok(Some((user_content, assistant_content))) = self
+            .inner
+            .database
+            .first_title_context(&job.agent_id, &job.conversation_id)
+        else {
+            return;
+        };
+        if lock(&self.inner.title_generations)
+            .values()
+            .any(|request| request.conversation_id == job.conversation_id)
+        {
+            return;
+        }
+        let Ok(settings) = self.inner.database.settings(&job.agent_id) else {
+            return;
+        };
+        let request_id = format!("title-{}", uuid::Uuid::now_v7());
+        let assistant_message_id = format!("title-message-{}", uuid::Uuid::now_v7());
+        let context = format!(
+            "Mensagem do usuário:\n{}\n\nPrimeira resposta do agente:\n{}",
+            bounded_title_context(&user_content),
+            bounded_title_context(&assistant_content),
+        );
+        let messages = [
+            PromptMessage {
+                role: "system",
+                content: "Gere apenas um título curto em português para esta conversa. Use 3 a 7 palavras, sem aspas, sem prefixo e com no máximo 64 caracteres. Não explique nada além do título.".into(),
+            },
+            PromptMessage {
+                role: "user",
+                content: context,
+            },
+        ];
+        let Ok(request) = generation_request(
+            &request_id,
+            &job.agent_id,
+            &job.conversation_id,
+            &assistant_message_id,
+            provider_model_id,
+            settings.keep_alive_minutes,
+            &messages,
+        ) else {
+            return;
+        };
+        lock(&self.inner.title_generations).insert(
+            request_id.clone(),
+            TitleGeneration {
+                agent_id: job.agent_id.clone(),
+                conversation_id: job.conversation_id.clone(),
+                assistant_message_id,
+                output: String::new(),
+                last_sequence: 0,
+                output_bytes: 0,
+            },
+        );
+        if self.inner.runtime.send(request).is_err() {
+            lock(&self.inner.title_generations).remove(&request_id);
+            return;
+        }
+        self.trace(&request_id, "title_generation_sent", None, None);
+    }
+
     fn dispatch_next(&self) {
         loop {
+            if !lock(&self.inner.title_generations).is_empty() {
+                return;
+            }
             if self.inner.runtime.snapshot().state != RuntimeState::Ready
                 || self.inner.safe_mode.load(Ordering::SeqCst)
             {
@@ -1760,6 +1927,36 @@ impl ChatCoordinator {
     ) {
         lock(&self.inner.request_traces).record(request_id, code, sequence, terminal_code);
     }
+}
+
+fn bounded_title_context(content: &str) -> String {
+    content.chars().take(MAX_TITLE_CONTEXT_CHARS).collect()
+}
+
+fn sanitize_generated_title(raw: &str) -> Option<String> {
+    let mut title = raw.trim().replace(['\r', '\n', '\t'], " ");
+    if let Some(stripped) = title
+        .strip_prefix("Título:")
+        .or_else(|| title.strip_prefix("título:"))
+    {
+        title = stripped.trim().into();
+    }
+    let title_chars = title.chars().collect::<Vec<_>>();
+    if title_chars.len() >= 2
+        && ((title_chars.first() == Some(&'"') && title_chars.last() == Some(&'"'))
+            || (title_chars.first() == Some(&'“') && title_chars.last() == Some(&'”')))
+    {
+        title = title_chars[1..title_chars.len() - 1]
+            .iter()
+            .collect::<String>()
+            .trim()
+            .into();
+    }
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() {
+        return None;
+    }
+    Some(title.chars().take(64).collect())
 }
 
 fn build_generation_request_from_database(
@@ -2803,6 +3000,70 @@ mod tests {
     }
 
     #[test]
+    fn desktop_generation_requests_forward_distinct_current_prompts() {
+        let path = std::env::temp_dir()
+            .join(format!("aip-phase1-prompt-probe-{}", Uuid::now_v7()))
+            .join("aip.sqlite3");
+        let database = Database::initialize(&path).unwrap();
+        let agent = database.snapshot().unwrap().agents.remove(0);
+        let mut payloads = Vec::new();
+        for prompt in [
+            "Responda apenas com: AZUL-17",
+            "Responda apenas com: VERDE-93",
+        ] {
+            let conversation = database
+                .create_conversation(&agent.id, "Nova conversa")
+                .unwrap();
+            let attempt = database
+                .create_message_attempt(&agent.id, &conversation.id, prompt, "ollama:llama3.2:1b")
+                .unwrap();
+            let job = job_from_attempt(&agent.id, &conversation.id, "ollama:llama3.2:1b", &attempt);
+            let request = build_generation_request_from_database(&database, &job).unwrap();
+            let body: serde_json::Value = serde_json::from_str(&request).unwrap();
+            payloads.push(
+                body["params"]["messages"]
+                    .as_array()
+                    .unwrap()
+                    .last()
+                    .unwrap()["content"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            );
+        }
+        assert_eq!(
+            payloads,
+            [
+                "Responda apenas com: AZUL-17",
+                "Responda apenas com: VERDE-93",
+            ]
+        );
+        assert_ne!(payloads[0], payloads[1]);
+        drop(database);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn generated_title_output_is_bounded_and_plain() {
+        assert_eq!(
+            sanitize_generated_title(" Título: \"Planejamento do litoral\"\n"),
+            Some("Planejamento do litoral".into())
+        );
+        assert_eq!(
+            sanitize_generated_title("“Planejamento do litoral”"),
+            Some("Planejamento do litoral".into())
+        );
+        assert_eq!(sanitize_generated_title("\n\t"), None);
+        assert!(
+            sanitize_generated_title(&"x".repeat(100))
+                .unwrap()
+                .chars()
+                .count()
+                <= 64
+        );
+    }
+
+    #[test]
     #[ignore = "requires a local Ollama llama3.2:1b model"]
     fn desktop_equivalent_persisted_generation_reaches_runtime_and_persists() {
         let path = std::env::temp_dir()
@@ -2811,12 +3072,14 @@ mod tests {
         let database = Database::initialize(&path).unwrap();
         let agent = database.snapshot().unwrap().agents.remove(0);
         let conversation = database.main_conversation(&agent.id).unwrap();
+        let model = std::env::var("AIP_OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2:1b".into());
+        let model_ref = format!("ollama:{model}");
         let completed = database
             .create_message_attempt(
                 &agent.id,
                 &conversation.id,
                 "Synthetic completed user",
-                "ollama:llama3.2:1b",
+                &model_ref,
             )
             .unwrap();
         database
@@ -2843,7 +3106,7 @@ mod tests {
                     &agent.id,
                     &conversation.id,
                     "Synthetic terminal user",
-                    "ollama:llama3.2:1b",
+                    &model_ref,
                 )
                 .unwrap();
             database
@@ -2856,9 +3119,9 @@ mod tests {
                 .unwrap();
         }
         let fresh = database
-            .create_message_attempt(&agent.id, &conversation.id, "ping", "ollama:llama3.2:1b")
+            .create_message_attempt(&agent.id, &conversation.id, "ping", &model_ref)
             .unwrap();
-        let job = job_from_attempt(&agent.id, &conversation.id, "ollama:llama3.2:1b", &fresh);
+        let job = job_from_attempt(&agent.id, &conversation.id, &model_ref, &fresh);
         let request = build_generation_request_from_database(&database, &job).unwrap();
         database
             .mark_streaming(&fresh.assistant_message_id, &fresh.request_id)
@@ -2873,7 +3136,7 @@ mod tests {
         runtime.send(request).unwrap();
 
         let mut chunks = 0;
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(120);
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let notice = receiver.recv_timeout(remaining).unwrap();
