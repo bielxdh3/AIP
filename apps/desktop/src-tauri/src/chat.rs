@@ -1103,6 +1103,29 @@ impl ChatCoordinator {
             let _ = self.finish_job(&job, MessageStatus::Cancelled, Some(error_code));
             self.emit_terminal(&job, "generation.cancelled", Some(error_code));
         }
+
+        // Title generations are metadata work outside the main FIFO. Safe mode shuts down the
+        // runtime without guaranteeing a terminal event, so clear both active and deferred title
+        // state here to prevent a later HealthReady from blocking dispatch forever.
+        let title_request_ids = {
+            let mut requests = lock(&self.inner.title_generations);
+            let ids = requests.keys().cloned().collect::<Vec<_>>();
+            requests.clear();
+            ids
+        };
+        lock(&self.inner.deferred_title_generations).clear();
+        for request_id in title_request_ids {
+            let cancel_id = format!("cancel-{}", uuid::Uuid::now_v7());
+            if let Ok(request) = cancellation_request(&cancel_id, &request_id) {
+                let _ = self.inner.runtime.send(request);
+            }
+            self.trace(
+                &request_id,
+                "title_generation_cancelled",
+                None,
+                Some(error_code),
+            );
+        }
     }
 
     pub fn reset_temporary(&self, agent_id: &str) -> Result<(), &'static str> {
@@ -1654,7 +1677,10 @@ impl ChatCoordinator {
         };
         let persisted = self.finish_job(&job, status, error_code);
         if persisted.is_ok() {
-            if status == MessageStatus::Complete && !job.temporary {
+            if status == MessageStatus::Complete
+                && !job.temporary
+                && !self.inner.safe_mode.load(Ordering::SeqCst)
+            {
                 let _ = self.inner.database.refresh_conversation_summary_for_branch(
                     &job.agent_id,
                     &job.conversation_id,

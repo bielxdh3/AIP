@@ -4941,6 +4941,15 @@ input[type="radio"] {
   line-height: 1.58;
 }
 
+.message-author-label {
+  display: block;
+  margin-bottom: var(--space-1);
+  color: var(--color-text-subtle);
+  font-size: var(--type-meta);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
 .message-status {
   display: block;
   margin-top: var(--space-2);

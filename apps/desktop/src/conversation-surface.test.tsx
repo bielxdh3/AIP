@@ -130,6 +130,9 @@ describe("ConversationSurface", () => {
       ),
     ).not.toThrow();
     expect(container.textContent).toContain("Resposta elegível");
+    expect(container.querySelector(".message-author-label")?.textContent).toBe(
+      "Agente",
+    );
     expect(onActiveConversationChange).toHaveBeenCalledWith("conversation");
     expect(container.textContent).toContain("Tentar novamente");
     expect(
