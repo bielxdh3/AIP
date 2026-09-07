@@ -157,6 +157,12 @@ describe("ConversationDraftSurface", () => {
     expect(container?.querySelector(".message-history")?.textContent).toContain(
       "Rascunho ainda não persistido",
     );
+    expect(container?.querySelector(".message-history")?.textContent).toContain(
+      "Envie a primeira mensagem para começar",
+    );
+    expect(
+      container?.querySelector(".message-history")?.textContent,
+    ).not.toContain("Salve um nome");
     expect(container?.querySelectorAll(".chat-message")).toHaveLength(0);
     act(() => root?.unmount());
     expect(invoke).not.toHaveBeenCalledWith(

@@ -1138,12 +1138,11 @@ impl ChatCoordinator {
         {
             return Err("generation_active");
         }
-        let conversation = self
-            .inner
-            .database
-            .create_conversation_and_activate(agent_id, "Nova conversa")
-            .map_err(|error| error.code())?;
-        clear_temporary_chat(&mut lock(&self.inner.temporary_chats), agent_id);
+        let conversation = continue_temporary_in_database(
+            &self.inner.database,
+            &self.inner.temporary_chats,
+            agent_id,
+        )?;
         self.emit_refresh(Some(agent_id));
         Ok(conversation)
     }
@@ -2026,6 +2025,22 @@ fn clear_temporary_chat(store: &mut TemporaryChatStore, agent_id: &str) {
     store.conversations.remove(agent_id);
 }
 
+fn continue_temporary_in_database(
+    database: &Database,
+    temporary_chats: &Mutex<TemporaryChatStore>,
+    agent_id: &str,
+) -> Result<crate::domain::PhaseOneConversation, &'static str> {
+    lock(temporary_chats)
+        .conversations
+        .get(agent_id)
+        .ok_or("operation_unavailable")?;
+    let conversation = database
+        .create_conversation_and_activate(agent_id, "Nova conversa")
+        .map_err(|error| error.code())?;
+    clear_temporary_chat(&mut lock(temporary_chats), agent_id);
+    Ok(conversation)
+}
+
 fn assemble_context(
     agent: &crate::domain::ProvisionalAgent,
     messages: Vec<ContextMessage>,
@@ -2353,6 +2368,49 @@ mod tests {
         assert!(luma.id.starts_with("temporary-luma-"));
         assert_ne!(astra.id, luma.id);
         assert_eq!(astra.model_override_ref, None);
+    }
+
+    #[test]
+    fn failed_temporary_conversion_keeps_the_in_memory_chat() {
+        let path = std::env::temp_dir()
+            .join(format!("aip-temporary-conversion-{}", Uuid::now_v7()))
+            .join("aip.sqlite3");
+        let database = Database::initialize(&path).unwrap();
+        database
+            .open()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_conversation_activation
+                 BEFORE UPDATE OF active_conversation_id ON agent_phase3_settings
+                 WHEN NEW.agent_id = 'agt_astra_provisional'
+                   AND NEW.active_conversation_id <> OLD.active_conversation_id
+                 BEGIN
+                   SELECT RAISE(ABORT, 'simulated activation failure');
+                 END;",
+            )
+            .unwrap();
+        let mut temporary = TemporaryChatStore::default();
+        let temporary_conversation = temporary_conversation(crate::database::ASTRA_ID);
+        temporary.conversations.insert(
+            crate::database::ASTRA_ID.into(),
+            TemporaryConversation {
+                conversation: temporary_conversation,
+                messages: Vec::new(),
+                model_override_ref: None,
+            },
+        );
+        let temporary_chats = Mutex::new(temporary);
+
+        assert_eq!(
+            continue_temporary_in_database(&database, &temporary_chats, crate::database::ASTRA_ID,),
+            Err("persistence_failed")
+        );
+        assert!(lock(&temporary_chats)
+            .conversations
+            .contains_key(crate::database::ASTRA_ID));
+        drop(temporary_chats);
+        drop(database);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
