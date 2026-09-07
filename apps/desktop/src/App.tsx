@@ -2828,12 +2828,14 @@ function ConversationActionMenu({
 export function ConversationList({
   agentId,
   changed,
+  refreshRevision = 0,
   onNewDraft,
   onSelectExisting,
   activeConversationId,
 }: {
   agentId: string;
   changed: () => void;
+  refreshRevision?: number;
   onNewDraft?: () => void;
   onSelectExisting?: (conversationId: string) => void;
   activeConversationId?: string | null;
@@ -2862,7 +2864,7 @@ export function ConversationList({
   }, [agentId]);
   useEffect(() => {
     load();
-  }, [load]);
+  }, [load, refreshRevision]);
   useEffect(() => {
     if (renamingId !== null) renameInputRef.current?.focus();
   }, [renamingId]);
@@ -11636,7 +11638,6 @@ function App() {
 
   useEffect(() => {
     const registration = createListenerRegistration();
-    const phaseRegistration = createListenerRegistration();
     void listen<OpenAgentConversationsPayload>(
       OPEN_AGENT_CONVERSATIONS_EVENT,
       (event) => {
@@ -11649,15 +11650,21 @@ function App() {
         setConversationNavigationRevision((value) => value + 1);
       },
     ).then(registration.register);
-    void listen<PhaseOneEvent>("phase-one-event", (event) => {
-      if (event.payload.eventType !== "conversation-list.changed") return;
-      setConversationListRevision((value) => value + 1);
-    }).then(phaseRegistration.register);
-    return () => {
-      registration.dispose();
-      phaseRegistration.dispose();
-    };
+    return registration.dispose;
   }, []);
+
+  useEffect(() => {
+    const registration = createListenerRegistration();
+    void listen<PhaseOneEvent>("phase-one-event", (event) => {
+      if (
+        event.payload.eventType !== "conversation-list.changed" ||
+        event.payload.agentId !== activeAgentId
+      )
+        return;
+      setConversationListRevision((value) => value + 1);
+    }).then(registration.register);
+    return registration.dispose;
+  }, [activeAgentId]);
 
   async function toggleSafeMode() {
     if (!snapshot || changingMode) return;
@@ -11766,8 +11773,8 @@ function App() {
         />
         {activeAgentId ? (
           <ConversationList
-            key={`${activeAgentId}-${conversationListRevision}`}
             agentId={activeAgentId}
+            refreshRevision={conversationListRevision}
             activeConversationId={activeConversationId}
             onNewDraft={openConversationDraft}
             onSelectExisting={(conversationId) => {

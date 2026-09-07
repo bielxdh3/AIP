@@ -153,9 +153,11 @@ describe("App conversation navigation integration", () => {
     );
   }
 
-  function emitConversationListChanged() {
+  function emitConversationListChanged(agentId = "agent") {
     for (const callback of listeners.get("phase-one-event") ?? []) {
-      callback({ payload: { eventType: "conversation-list.changed" } });
+      callback({
+        payload: { eventType: "conversation-list.changed", agentId },
+      });
     }
   }
 
@@ -276,6 +278,15 @@ describe("App conversation navigation integration", () => {
       ([command]) => command === "list_agent_conversations",
     ).length;
     await act(async () => {
+      emitConversationListChanged("other-agent");
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const inactiveLoads = invoke.mock.calls.filter(
+      ([command]) => command === "list_agent_conversations",
+    ).length;
+    expect(inactiveLoads).toBe(initialLoads);
+    await act(async () => {
       emitConversationListChanged();
       await Promise.resolve();
       await Promise.resolve();
@@ -285,6 +296,42 @@ describe("App conversation navigation integration", () => {
       ([command]) => command === "list_agent_conversations",
     ).length;
     expect(finalLoads).toBe(initialLoads + 1);
+  });
+
+  it("reloads titles without remounting an in-progress rename", async () => {
+    await renderApp();
+    const actionTrigger = container?.querySelector<HTMLButtonElement>(
+      ".conversation-actions-trigger",
+    );
+    if (actionTrigger === null || actionTrigger === undefined)
+      throw new Error("Missing conversation actions");
+    await act(async () => actionTrigger.click());
+    const rename = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(
+        ".conversation-actions-menu button",
+      ),
+    ).find((button) => button.textContent === "Renomear");
+    if (rename === undefined) throw new Error("Missing rename action");
+    await act(async () => rename.click());
+    const input = container?.querySelector<HTMLInputElement>(
+      ".conversation-rename input",
+    );
+    if (input === null || input === undefined)
+      throw new Error("Missing rename input");
+
+    listedConversations = conversations.map((conversation) =>
+      conversation.id === "main"
+        ? { ...conversation, title: "Título atualizado" }
+        : conversation,
+    );
+    await act(async () => {
+      emitConversationListChanged();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container?.querySelector(".conversation-rename input")).toBe(input);
+    expect(container?.textContent).toContain("Título atualizado");
   });
 
   it("moves selection only after successful activation and preserves it on failure", async () => {
