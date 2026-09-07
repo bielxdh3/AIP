@@ -68,6 +68,7 @@ struct TitleGeneration {
     output: String,
     last_sequence: u64,
     output_bytes: usize,
+    cancellation_requested: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -331,6 +332,10 @@ impl GenerationQueue {
         self.pending.len() + usize::from(self.active.is_some())
     }
 
+    fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     fn snapshots(&self) -> Vec<QueueEntrySnapshot> {
         let mut snapshots = Vec::with_capacity(self.len());
         if let Some(active) = &self.active {
@@ -395,6 +400,7 @@ struct ChatInner {
     send_lock: Mutex<()>,
     queue: Mutex<GenerationQueue>,
     title_generations: Mutex<HashMap<String, TitleGeneration>>,
+    deferred_title_generations: Mutex<VecDeque<GenerationJob>>,
     request_traces: Mutex<RequestTraceStore>,
     temporary_chats: Mutex<TemporaryChatStore>,
     cancellation_recovery: AtomicBool,
@@ -427,6 +433,7 @@ impl ChatCoordinator {
                 send_lock: Mutex::new(()),
                 queue: Mutex::new(GenerationQueue::default()),
                 title_generations: Mutex::new(HashMap::new()),
+                deferred_title_generations: Mutex::new(VecDeque::new()),
                 request_traces: Mutex::new(RequestTraceStore::default()),
                 temporary_chats: Mutex::new(TemporaryChatStore::default()),
                 cancellation_recovery: AtomicBool::new(false),
@@ -1486,6 +1493,7 @@ impl ChatCoordinator {
         };
         let mut completed = None;
         let mut failed = false;
+        let mut cancellation_requested = false;
         {
             let mut requests = lock(&self.inner.title_generations);
             let Some(request) = requests.get_mut(request_id) else {
@@ -1498,43 +1506,56 @@ impl ChatCoordinator {
             {
                 return true;
             }
-            match event.event_type.as_str() {
-                "generation.started" if event.sequence == Some(0) => {}
-                "generation.chunk" => {
-                    if let Some((sequence, content)) = event.sequence.zip(event.content.as_deref())
-                    {
-                        let next_size = request.output_bytes.saturating_add(content.len());
-                        if sequence != request.last_sequence + 1
-                            || next_size > MAX_TITLE_OUTPUT_BYTES
-                        {
-                            requests.remove(request_id);
-                            failed = true;
-                        } else {
-                            request.last_sequence = sequence;
-                            request.output_bytes = next_size;
-                            request.output.push_str(content);
-                        }
-                    } else {
-                        requests.remove(request_id);
-                        failed = true;
-                    }
-                }
-                "generation.complete" => {
-                    if event.sequence == Some(request.last_sequence) {
-                        completed = requests.remove(request_id);
-                    } else {
-                        requests.remove(request_id);
-                        failed = true;
-                    }
-                }
-                "generation.failed" | "generation.cancelled" => {
+            if request.cancellation_requested {
+                if matches!(
+                    event.event_type.as_str(),
+                    "generation.complete" | "generation.failed" | "generation.cancelled"
+                ) {
                     requests.remove(request_id);
                     failed = true;
                 }
-                _ => {}
+            } else {
+                match event.event_type.as_str() {
+                    "generation.started" if event.sequence == Some(0) => {}
+                    "generation.chunk" => {
+                        if let Some((sequence, content)) =
+                            event.sequence.zip(event.content.as_deref())
+                        {
+                            let next_size = request.output_bytes.saturating_add(content.len());
+                            if sequence != request.last_sequence + 1
+                                || next_size > MAX_TITLE_OUTPUT_BYTES
+                            {
+                                request.cancellation_requested = true;
+                                cancellation_requested = true;
+                            } else {
+                                request.last_sequence = sequence;
+                                request.output_bytes = next_size;
+                                request.output.push_str(content);
+                            }
+                        } else {
+                            request.cancellation_requested = true;
+                            cancellation_requested = true;
+                        }
+                    }
+                    "generation.complete" => {
+                        if event.sequence == Some(request.last_sequence) {
+                            completed = requests.remove(request_id);
+                        } else {
+                            request.cancellation_requested = true;
+                            cancellation_requested = true;
+                        }
+                    }
+                    "generation.failed" | "generation.cancelled" => {
+                        requests.remove(request_id);
+                        failed = true;
+                    }
+                    _ => {}
+                }
             }
         }
-        if let Some(request) = completed {
+        if cancellation_requested {
+            self.cancel_title_generation(request_id);
+        } else if let Some(request) = completed {
             if let Some(title) = sanitize_generated_title(&request.output) {
                 let committed = self.inner.database.commit_generated_title(
                     &request.agent_id,
@@ -1556,6 +1577,52 @@ impl ChatCoordinator {
             self.dispatch_next();
         }
         true
+    }
+
+    fn cancel_title_generation(&self, request_id: &str) {
+        let cancel_id = format!("cancel-{}", uuid::Uuid::now_v7());
+        let Ok(request) = cancellation_request(&cancel_id, request_id) else {
+            self.recover_stalled_title_cancellation(request_id);
+            return;
+        };
+        if let Err(code) = self.inner.runtime.send(request) {
+            self.trace(
+                request_id,
+                "title_generation_cancel_failed",
+                None,
+                Some(code),
+            );
+            self.recover_stalled_title_cancellation(request_id);
+            return;
+        }
+        self.trace(request_id, "title_generation_cancel_sent", None, None);
+        let coordinator = self.clone();
+        let request_id = request_id.to_string();
+        thread::spawn(move || {
+            thread::sleep(CANCELLATION_GRACE_PERIOD);
+            coordinator.recover_stalled_title_cancellation(&request_id);
+        });
+    }
+
+    fn recover_stalled_title_cancellation(&self, request_id: &str) {
+        let still_pending = lock(&self.inner.title_generations)
+            .get(request_id)
+            .is_some_and(|request| request.cancellation_requested);
+        if !still_pending {
+            return;
+        }
+        lock(&self.inner.title_generations).remove(request_id);
+        self.trace(
+            request_id,
+            "title_generation_cancellation_watchdog",
+            None,
+            Some("generation_cancel_timeout"),
+        );
+        self.inner
+            .cancellation_recovery
+            .store(true, Ordering::SeqCst);
+        self.inner.runtime.shutdown();
+        self.inner.runtime.start();
     }
 
     fn finish_runtime_terminal(
@@ -1602,7 +1669,7 @@ impl ChatCoordinator {
                         &job.branch_id,
                         &job.assistant_message_id,
                     );
-                self.schedule_title_generation(&job);
+                self.schedule_title_generation_or_defer(&job);
             }
             self.trace(request_id, "terminal_persisted", event.sequence, error_code);
             self.emit(event);
@@ -1626,6 +1693,7 @@ impl ChatCoordinator {
     fn fail_all(&self, code: &str) {
         let jobs = lock(&self.inner.queue).clear();
         lock(&self.inner.title_generations).clear();
+        lock(&self.inner.deferred_title_generations).clear();
         for job in jobs {
             let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
             self.emit_terminal(&job, "generation.failed", Some(code));
@@ -1690,6 +1758,7 @@ impl ChatCoordinator {
                 output: String::new(),
                 last_sequence: 0,
                 output_bytes: 0,
+                cancellation_requested: false,
             },
         );
         if self.inner.runtime.send(request).is_err() {
@@ -1697,6 +1766,20 @@ impl ChatCoordinator {
             return;
         }
         self.trace(&request_id, "title_generation_sent", None, None);
+    }
+
+    fn schedule_title_generation_or_defer(&self, job: &GenerationJob) {
+        if lock(&self.inner.queue).has_pending() {
+            let mut deferred = lock(&self.inner.deferred_title_generations);
+            if !deferred
+                .iter()
+                .any(|candidate| candidate.conversation_id == job.conversation_id)
+            {
+                deferred.push_back(job.clone());
+            }
+            return;
+        }
+        self.schedule_title_generation(job);
     }
 
     fn dispatch_next(&self) {
@@ -1710,7 +1793,12 @@ impl ChatCoordinator {
                 return;
             }
             let Some(job) = lock(&self.inner.queue).activate_next() else {
-                return;
+                let Some(title_job) = lock(&self.inner.deferred_title_generations).pop_front()
+                else {
+                    return;
+                };
+                self.schedule_title_generation(&title_job);
+                continue;
             };
             self.trace(&job.request_id, "queue_activated", None, None);
             let dispatch = self.build_generation_request(&job).and_then(|request| {
