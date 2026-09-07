@@ -345,4 +345,29 @@ describe("ConversationDraftSurface", () => {
       expect.anything(),
     );
   });
+
+  it("keeps a no-candidate block when the selected draft model is available", async () => {
+    hookState.phase = {
+      ...loadedPhase,
+      sendBlockedCode: "no_candidate",
+    } as unknown as PhaseOneState;
+    renderDraft();
+
+    const picker = container?.querySelector<HTMLButtonElement>(
+      '.model-picker-trigger[aria-label="Selecionar modelo"]',
+    );
+    if (picker === null || picker === undefined)
+      throw new Error("Missing model picker");
+    await act(async () => picker.click());
+    const options = document.querySelectorAll<HTMLElement>('[role="option"]');
+    await act(async () => options[1]?.click());
+
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    expect(submit?.disabled).toBe(true);
+    expect(container?.textContent).toContain(
+      "Nenhum dispositivo disponível para este modelo.",
+    );
+  });
 });
