@@ -1087,8 +1087,13 @@ impl ChatCoordinator {
         Ok(())
     }
 
-    pub fn cancel_all(&self, error_code: &'static str) {
+    pub fn enter_safe_mode(&self, error_code: &'static str) {
         let _scheduler_guard = lock(&self.inner.scheduler_lock);
+        self.inner.safe_mode.store(true, Ordering::SeqCst);
+        self.cancel_all_locked(error_code);
+    }
+
+    fn cancel_all_locked(&self, error_code: &'static str) {
         let mut queue = lock(&self.inner.queue);
         if let Some(request_id) = queue.active_request().map(str::to_string) {
             let cancel_id = format!("cancel-{}", uuid::Uuid::now_v7());
@@ -1155,6 +1160,7 @@ impl ChatCoordinator {
         &self,
         agent_id: &str,
     ) -> Result<crate::domain::PhaseOneConversation, &'static str> {
+        let _send_guard = lock(&self.inner.send_lock);
         let conversation_id = lock(&self.inner.temporary_chats)
             .conversations
             .get(agent_id)
@@ -1632,21 +1638,16 @@ impl ChatCoordinator {
     }
 
     fn recover_stalled_title_cancellation(&self, request_id: &str) {
-        let removed = {
-            let _scheduler_guard = lock(&self.inner.scheduler_lock);
-            let mut requests = lock(&self.inner.title_generations);
-            if !requests
-                .get(request_id)
-                .is_some_and(|request| request.cancellation_requested)
-            {
-                false
-            } else {
-                requests.remove(request_id).is_some()
-            }
-        };
-        if !removed {
+        let _scheduler_guard = lock(&self.inner.scheduler_lock);
+        let mut requests = lock(&self.inner.title_generations);
+        if !requests
+            .get(request_id)
+            .is_some_and(|request| request.cancellation_requested)
+        {
             return;
         }
+        requests.remove(request_id);
+        drop(requests);
         self.trace(
             request_id,
             "title_generation_cancellation_watchdog",
@@ -1657,7 +1658,9 @@ impl ChatCoordinator {
             .cancellation_recovery
             .store(true, Ordering::SeqCst);
         self.inner.runtime.shutdown();
-        self.inner.runtime.start();
+        if !self.inner.safe_mode.load(Ordering::SeqCst) {
+            self.inner.runtime.start();
+        }
     }
 
     fn finish_runtime_terminal(

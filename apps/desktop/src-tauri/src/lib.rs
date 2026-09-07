@@ -2463,15 +2463,17 @@ fn set_safe_mode(
         .ok_or("operation_unavailable")?
         .set_safe_mode(enabled)
         .map_err(|_| "operation_failed")?;
-    state.safe_mode.store(enabled, Ordering::SeqCst);
     if enabled {
         if let Some(chat) = &state.chat {
-            chat.cancel_all("safe_mode_active");
+            chat.enter_safe_mode("safe_mode_active");
+        } else {
+            state.safe_mode.store(true, Ordering::SeqCst);
         }
         overlays::clear_native_regions(&app, &state.overlay_input);
         state.runtime.enter_safe_mode();
         overlays::set_visible(&app, &state.overlay_input, false);
     } else {
+        state.safe_mode.store(false, Ordering::SeqCst);
         state.runtime.leave_safe_mode();
         overlays::set_visible(&app, &state.overlay_input, true);
     }
