@@ -1259,7 +1259,7 @@ function MessageItem({
       className={`chat-message ${message.author}`}
       data-status={message.status}
     >
-      <span className="message-author-label">
+      <span className="message-author-label visually-hidden">
         {message.author === "user" ? "Você" : "Agente"}
       </span>
       {editing ? (

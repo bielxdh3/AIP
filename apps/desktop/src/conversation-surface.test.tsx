@@ -130,9 +130,9 @@ describe("ConversationSurface", () => {
       ),
     ).not.toThrow();
     expect(container.textContent).toContain("Resposta elegível");
-    expect(container.querySelector(".message-author-label")?.textContent).toBe(
-      "Agente",
-    );
+    const assistantAuthor = container.querySelector(".message-author-label");
+    expect(assistantAuthor?.textContent).toBe("Agente");
+    expect(assistantAuthor?.classList.contains("visually-hidden")).toBe(true);
     expect(onActiveConversationChange).toHaveBeenCalledWith("conversation");
     expect(container.textContent).toContain("Tentar novamente");
     expect(
@@ -150,6 +150,39 @@ describe("ConversationSurface", () => {
       expect.stringContaining("Rendered more hooks"),
     );
     consoleError.mockRestore();
+  });
+
+  it("keeps user and assistant authorship accessible without visible labels", () => {
+    phase = {
+      ...loadedPhase,
+      messages: [
+        {
+          ...loadedPhase.messages[0],
+          id: "user",
+          author: "user",
+          content: "Pergunta do Owner",
+          modelRef: null,
+        },
+        loadedPhase.messages[0],
+      ],
+    } as unknown as PhaseOneState;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    renderSurface();
+
+    const labels = Array.from(
+      container.querySelectorAll(".message-author-label"),
+    );
+    expect(labels.map((label) => label.textContent)).toEqual([
+      "Você",
+      "Agente",
+    ]);
+    expect(
+      labels.every((label) => label.classList.contains("visually-hidden")),
+    ).toBe(true);
+    expect(container.querySelectorAll(".message-heading")).toHaveLength(0);
   });
 
   it("hides assistant actions while keeping queue cancellation available", () => {
