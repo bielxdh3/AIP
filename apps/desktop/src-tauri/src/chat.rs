@@ -1201,7 +1201,6 @@ impl ChatCoordinator {
             &self.inner.temporary_chats,
             agent_id,
         )?;
-        self.emit_refresh(Some(agent_id));
         Ok(conversation)
     }
 

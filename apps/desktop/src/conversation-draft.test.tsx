@@ -370,4 +370,45 @@ describe("ConversationDraftSurface", () => {
       "Nenhum dispositivo disponível para este modelo.",
     );
   });
+
+  it("routes an automatic draft independently of an unavailable active override", async () => {
+    hookState.phase = {
+      ...loadedPhase,
+      conversation: {
+        ...loadedPhase.conversation,
+        modelOverrideRef: "ollama:missing",
+      },
+      modelOverrideRef: "ollama:missing",
+      selectedModelRef: "ollama:missing",
+      selectedModelAvailable: false,
+      canSend: false,
+      sendBlockedCode: "selected_model_unavailable",
+    } as unknown as PhaseOneState;
+    invoke.mockImplementation((command: string) =>
+      command === "create_agent_conversation"
+        ? Promise.resolve({
+            ...loadedPhase.conversation,
+            id: "created",
+            title: "Nova conversa",
+          })
+        : Promise.resolve(undefined),
+    );
+    renderDraft();
+
+    const textarea = container?.querySelector<HTMLTextAreaElement>(
+      ".conversation-draft-surface .composer textarea",
+    );
+    if (textarea === null || textarea === undefined)
+      throw new Error("Missing draft composer");
+    change(textarea, "mensagem automática");
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    expect(submit?.disabled).toBe(false);
+    await act(async () => submit?.click());
+    expect(invoke).toHaveBeenCalledWith(
+      "send_phase_one_message",
+      expect.objectContaining({ content: "mensagem automática" }),
+    );
+  });
 });
