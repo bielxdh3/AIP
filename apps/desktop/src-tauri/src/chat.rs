@@ -775,8 +775,12 @@ impl ChatCoordinator {
             }
         }
         let request_id = uuid::Uuid::now_v7().to_string();
-        let model_ref =
-            self.reserve_route(&request_id, state.selected_model_ref.as_deref(), &policy)?;
+        let model_ref = self.reserve_route(
+            &request_id,
+            state.selected_model_ref.as_deref(),
+            state.model_override_ref.as_deref(),
+            &policy,
+        )?;
         let attempt = self
             .inner
             .database
@@ -901,6 +905,7 @@ impl ChatCoordinator {
         self.reserve_route(
             request_id,
             Some(model_ref),
+            Some(model_ref),
             &RoutingPolicy {
                 mode: RoutingMode::Manual,
                 ..RoutingPolicy::default()
@@ -998,8 +1003,12 @@ impl ChatCoordinator {
         }
         let now = now_millis();
         let request_id = uuid::Uuid::now_v7().to_string();
-        let model_ref =
-            self.reserve_route(&request_id, state.selected_model_ref.as_deref(), &policy)?;
+        let model_ref = self.reserve_route(
+            &request_id,
+            state.selected_model_ref.as_deref(),
+            state.model_override_ref.as_deref(),
+            &policy,
+        )?;
         let user_message_id = uuid::Uuid::now_v7().to_string();
         let assistant_message_id = uuid::Uuid::now_v7().to_string();
         let conversation = state.conversation.clone();
@@ -1276,6 +1285,7 @@ impl ChatCoordinator {
         &self,
         request_id: &str,
         selected_model: Option<&str>,
+        explicit_model: Option<&str>,
         policy: &RoutingPolicy,
     ) -> Result<String, &'static str> {
         if policy.mode == RoutingMode::Manual && selected_model.is_none() {
@@ -1284,9 +1294,7 @@ impl ChatCoordinator {
         let policy = routing_policy_with_selection(policy, selected_model);
         let request = RoutingRequest {
             request_id: request_id.to_string(),
-            model_ref: (policy.mode == RoutingMode::Manual)
-                .then(|| selected_model.map(str::to_string))
-                .flatten(),
+            model_ref: requested_model_ref(policy.mode, selected_model, explicit_model),
             capability: crate::orchestration::ModelCapability::TextGeneration,
             priority: RequestPriority::ActiveConversation,
             additional_ram_mb: 0,
@@ -2271,6 +2279,18 @@ fn routing_policy_with_selection(
     policy
 }
 
+fn requested_model_ref(
+    mode: RoutingMode,
+    selected_model: Option<&str>,
+    explicit_model: Option<&str>,
+) -> Option<String> {
+    explicit_model.map(str::to_string).or_else(|| {
+        (mode == RoutingMode::Manual)
+            .then(|| selected_model.map(str::to_string))
+            .flatten()
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn send_blocked_code_for_state(
     safe_mode: bool,
@@ -2504,6 +2524,26 @@ mod tests {
             .fallback_only_model_refs
             .iter()
             .any(|model_ref| model_ref == "ollama:selected"));
+    }
+
+    #[test]
+    fn explicit_conversation_model_constrains_auto_routing() {
+        assert_eq!(
+            requested_model_ref(
+                RoutingMode::Auto,
+                Some("ollama:default"),
+                Some("ollama:selected"),
+            ),
+            Some("ollama:selected".into())
+        );
+        assert_eq!(
+            requested_model_ref(RoutingMode::Quality, Some("ollama:default"), None),
+            None
+        );
+        assert_eq!(
+            requested_model_ref(RoutingMode::Manual, Some("ollama:selected"), None),
+            Some("ollama:selected".into())
+        );
     }
 
     #[test]
