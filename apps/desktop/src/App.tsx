@@ -1838,14 +1838,16 @@ export function ConversationDraftSurface({
   const draftModelAvailable =
     draftModelRef !== null &&
     currentPhase.provider.models.some((model) => model.ref === draftModelRef);
+  const draftModelUnavailable = draftModelRef !== null && !draftModelAvailable;
   const modelBlockedCodes = new Set([
     "model_not_selected",
     "selected_model_unavailable",
     "no_candidate",
   ]);
-  const blocked =
-    draftModelAvailable &&
-    modelBlockedCodes.has(currentPhase.sendBlockedCode ?? "")
+  const blocked = draftModelUnavailable
+    ? blockedSendCopy("selected_model_unavailable")
+    : draftModelAvailable &&
+        modelBlockedCodes.has(currentPhase.sendBlockedCode ?? "")
       ? null
       : blockedSendCopy(currentPhase.sendBlockedCode);
   const providerRecovery = providerRecoveryCopy(currentPhase);
@@ -1854,8 +1856,11 @@ export function ConversationDraftSurface({
     currentPhase.sendBlockedCode !== null &&
     !modelBlockedCodes.has(currentPhase.sendBlockedCode);
   const canSend =
+    !draftModelUnavailable &&
     !nonModelBlocked &&
-    (draftModelAvailable || canSendConversationMessage(currentPhase)) &&
+    (draftModelRef === null
+      ? canSendConversationMessage(currentPhase)
+      : draftModelAvailable) &&
     !providerUnavailable;
   const canDraft = canDraftConversationMessage(currentPhase);
   const routingPolicy = routingPolicyPayload(modelPreferences);

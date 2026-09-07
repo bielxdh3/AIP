@@ -307,4 +307,42 @@ describe("ConversationDraftSurface", () => {
       }),
     );
   });
+
+  it("blocks a selected draft model that disappears before the first send", async () => {
+    hookState.phase = loadedPhase;
+    renderDraft();
+    const picker = container?.querySelector<HTMLButtonElement>(
+      '.model-picker-trigger[aria-label="Selecionar modelo"]',
+    );
+    if (picker === null || picker === undefined)
+      throw new Error("Missing model picker");
+    await act(async () => picker.click());
+    const options = document.querySelectorAll<HTMLElement>('[role="option"]');
+    await act(async () => options[1]?.click());
+
+    hookState.phase = {
+      ...loadedPhase,
+      provider: { ...loadedPhase.provider, models: [] },
+    } as unknown as PhaseOneState;
+    await act(async () => {
+      root?.render(
+        <ConversationDraftSurface
+          agentId="agent"
+          onCreated={vi.fn()}
+          onPersisted={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    expect(submit?.disabled).toBe(true);
+    expect(container?.textContent).toContain("Modelo selecionado indisponível");
+    expect(invoke).not.toHaveBeenCalledWith(
+      "send_phase_one_message",
+      expect.anything(),
+    );
+  });
 });
