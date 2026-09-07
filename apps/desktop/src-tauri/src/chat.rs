@@ -1336,7 +1336,11 @@ impl ChatCoordinator {
                     .remove(&id)
                     .is_none()
                 {
-                    if lock(&self.inner.title_generations).remove(&id).is_some() {
+                    let title_failed = {
+                        let _scheduler_guard = lock(&self.inner.scheduler_lock);
+                        lock(&self.inner.title_generations).remove(&id).is_some()
+                    };
+                    if title_failed {
                         self.trace(&id, "title_generation_failed", None, Some(&code));
                         self.dispatch_next();
                     } else {
@@ -1517,6 +1521,7 @@ impl ChatCoordinator {
         let mut failed = false;
         let mut cancellation_requested = false;
         {
+            let _scheduler_guard = lock(&self.inner.scheduler_lock);
             let mut requests = lock(&self.inner.title_generations);
             let Some(request) = requests.get_mut(request_id) else {
                 return false;
@@ -1627,13 +1632,21 @@ impl ChatCoordinator {
     }
 
     fn recover_stalled_title_cancellation(&self, request_id: &str) {
-        let still_pending = lock(&self.inner.title_generations)
-            .get(request_id)
-            .is_some_and(|request| request.cancellation_requested);
-        if !still_pending {
+        let removed = {
+            let _scheduler_guard = lock(&self.inner.scheduler_lock);
+            let mut requests = lock(&self.inner.title_generations);
+            if !requests
+                .get(request_id)
+                .is_some_and(|request| request.cancellation_requested)
+            {
+                false
+            } else {
+                requests.remove(request_id).is_some()
+            }
+        };
+        if !removed {
             return;
         }
-        lock(&self.inner.title_generations).remove(request_id);
         self.trace(
             request_id,
             "title_generation_cancellation_watchdog",
@@ -1727,6 +1740,9 @@ impl ChatCoordinator {
     }
 
     fn schedule_title_generation(&self, job: &GenerationJob) {
+        if self.inner.safe_mode.load(Ordering::SeqCst) {
+            return;
+        }
         let provider_model_id = match job.model_ref.strip_prefix("ollama:") {
             Some(model) if valid_provider_model_id(model) => model,
             _ => return,
@@ -1796,6 +1812,9 @@ impl ChatCoordinator {
 
     fn schedule_title_generation_or_defer(&self, job: &GenerationJob) {
         let _scheduler_guard = lock(&self.inner.scheduler_lock);
+        if self.inner.safe_mode.load(Ordering::SeqCst) {
+            return;
+        }
         if lock(&self.inner.queue).len() > 0 {
             let mut deferred = lock(&self.inner.deferred_title_generations);
             if !deferred
@@ -2150,14 +2169,14 @@ fn continue_temporary_in_database(
     temporary_chats: &Mutex<TemporaryChatStore>,
     agent_id: &str,
 ) -> Result<crate::domain::PhaseOneConversation, &'static str> {
-    lock(temporary_chats)
-        .conversations
-        .get(agent_id)
-        .ok_or("operation_unavailable")?;
+    let mut chats = lock(temporary_chats);
+    if !chats.conversations.contains_key(agent_id) {
+        return Err("operation_unavailable");
+    }
     let conversation = database
         .create_conversation_and_activate(agent_id, "Nova conversa")
         .map_err(|error| error.code())?;
-    clear_temporary_chat(&mut lock(temporary_chats), agent_id);
+    clear_temporary_chat(&mut chats, agent_id);
     Ok(conversation)
 }
 
