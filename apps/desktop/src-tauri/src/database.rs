@@ -748,19 +748,18 @@ impl Database {
             return Ok(None);
         }
         let messages = self.messages(agent_id, conversation_id)?;
-        let Some(user) = messages.iter().find(|message| {
+        for user in messages.iter().filter(|message| {
             message.author == MessageAuthor::User && message.status == MessageStatus::Complete
-        }) else {
-            return Ok(None);
-        };
-        let Some(assistant) = messages.iter().find(|message| {
-            message.author == MessageAuthor::Agent
-                && message.status == MessageStatus::Complete
-                && message.turn_group_id == user.turn_group_id
-        }) else {
-            return Ok(None);
-        };
-        Ok(Some((user.content.clone(), assistant.content.clone())))
+        }) {
+            if let Some(assistant) = messages.iter().find(|message| {
+                message.author == MessageAuthor::Agent
+                    && message.status == MessageStatus::Complete
+                    && message.turn_group_id == user.turn_group_id
+            }) {
+                return Ok(Some((user.content.clone(), assistant.content.clone())));
+            }
+        }
+        Ok(None)
     }
 
     pub fn commit_generated_title(
@@ -3559,6 +3558,69 @@ mod tests {
                 .unwrap()
                 .title,
             "Meu roteiro"
+        );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn title_context_skips_incomplete_earlier_turns() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let conversation = database
+            .create_conversation(ASTRA_ID, "Nova conversa")
+            .unwrap();
+        let failed = database
+            .create_message_attempt(
+                ASTRA_ID,
+                &conversation.id,
+                "Primeira tentativa que falhou",
+                "ollama:test",
+            )
+            .unwrap();
+        database
+            .finish_assistant(
+                &failed.assistant_message_id,
+                &failed.request_id,
+                MessageStatus::Failed,
+                Some("provider_failed"),
+            )
+            .unwrap();
+
+        let completed = database
+            .create_message_attempt(
+                ASTRA_ID,
+                &conversation.id,
+                "Segundo pedido concluído",
+                "ollama:test",
+            )
+            .unwrap();
+        database
+            .mark_streaming(&completed.assistant_message_id, &completed.request_id)
+            .unwrap();
+        database
+            .append_assistant_chunk(
+                &completed.assistant_message_id,
+                &completed.request_id,
+                "Resposta concluída",
+            )
+            .unwrap();
+        database
+            .finish_assistant(
+                &completed.assistant_message_id,
+                &completed.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            database
+                .first_title_context(ASTRA_ID, &conversation.id)
+                .unwrap(),
+            Some((
+                "Segundo pedido concluído".into(),
+                "Resposta concluída".into()
+            ))
         );
         cleanup(&path);
     }
