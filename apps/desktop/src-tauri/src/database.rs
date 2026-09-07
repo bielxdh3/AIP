@@ -266,7 +266,7 @@ impl Database {
             }
         }
         connection.execute(
-            "ALTER TABLE conversations ADD COLUMN title_source TEXT NOT NULL DEFAULT 'placeholder' CHECK (title_source IN ('placeholder', 'auto', 'manual'))",
+            "ALTER TABLE conversations ADD COLUMN title_source TEXT NOT NULL DEFAULT 'manual' CHECK (title_source IN ('placeholder', 'auto', 'manual'))",
             [],
         )?;
         Ok(())
@@ -338,14 +338,29 @@ impl Database {
 
     fn seed_phase_one(connection: &mut Connection) -> Result<(), DatabaseError> {
         let now = now_millis();
+        let has_title_source = connection
+            .prepare("PRAGMA table_info(conversations)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|column| column == "title_source");
         let transaction = connection.transaction()?;
         for agent_id in [ASTRA_ID, LUMA_ID] {
-            transaction.execute(
-                "INSERT OR IGNORE INTO conversations
-                 (id, agent_id, owner_user_id, title, kind, is_main, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, 'Nova conversa', 'normal', 0, ?4, ?4)",
-                params![Uuid::now_v7().to_string(), agent_id, OWNER_ID, now],
-            )?;
+            if has_title_source {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO conversations
+                     (id, agent_id, owner_user_id, title, title_source, kind, is_main, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, 'Nova conversa', 'placeholder', 'normal', 0, ?4, ?4)",
+                    params![Uuid::now_v7().to_string(), agent_id, OWNER_ID, now],
+                )?;
+            } else {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO conversations
+                     (id, agent_id, owner_user_id, title, kind, is_main, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, 'Nova conversa', 'normal', 0, ?4, ?4)",
+                    params![Uuid::now_v7().to_string(), agent_id, OWNER_ID, now],
+                )?;
+            }
             transaction.execute(
                 "INSERT OR IGNORE INTO agent_identity_profiles
                  (agent_id, birthday, fictive_age, age_category, species, pronouns, personality_summary, traits_json, appearance_preset, created_at, updated_at)
@@ -655,6 +670,16 @@ impl Database {
         Ok(conversation)
     }
 
+    pub fn create_conversation_and_activate(
+        &self,
+        agent_id: &str,
+        title: &str,
+    ) -> Result<PhaseOneConversation, DatabaseError> {
+        let conversation = self.create_conversation(agent_id, title)?;
+        self.set_active_conversation(agent_id, &conversation.id)?;
+        Ok(conversation)
+    }
+
     pub fn rename_conversation(
         &self,
         agent_id: &str,
@@ -669,115 +694,56 @@ impl Database {
         if connection.execute("UPDATE conversations SET title = ?1, title_source = 'manual', updated_at = ?2 WHERE id = ?3 AND agent_id = ?4 AND archived_at IS NULL", params![title, now_millis(), conversation_id, agent_id])? == 1 { Ok(()) } else { Err(DatabaseError::OwnershipMismatch) }
     }
 
-    pub fn auto_title_conversation(
+    pub fn first_title_context(
         &self,
         agent_id: &str,
         conversation_id: &str,
-    ) -> Result<Option<String>, DatabaseError> {
+    ) -> Result<Option<(String, String)>, DatabaseError> {
         let connection = self.open()?;
-        let (source, content) = connection
+        let source = connection
             .query_row(
-                "SELECT c.title_source,
-                        (SELECT message.content FROM conversation_messages AS message
-                         WHERE message.conversation_id = c.id AND message.agent_id = c.agent_id
-                           AND message.author_type = 'user' AND message.status = 'complete'
-                         ORDER BY message.created_at ASC, message.id ASC LIMIT 1)
-                 FROM conversations AS c
-                 WHERE c.id = ?1 AND c.agent_id = ?2 AND c.archived_at IS NULL",
+                "SELECT title_source FROM conversations
+                 WHERE id = ?1 AND agent_id = ?2 AND archived_at IS NULL",
                 params![conversation_id, agent_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                |row| row.get::<_, String>(0),
             )
             .optional()?
             .ok_or(DatabaseError::OwnershipMismatch)?;
-        if source == "manual" {
+        if source != "placeholder" {
             return Ok(None);
         }
-        let Some(content) = content else {
+        let messages = self.messages(agent_id, conversation_id)?;
+        let Some(user) = messages.iter().find(|message| {
+            message.author == MessageAuthor::User && message.status == MessageStatus::Complete
+        }) else {
             return Ok(None);
         };
-        let Some(title) = derive_conversation_title(&content) else {
+        let Some(assistant) = messages.iter().find(|message| {
+            message.author == MessageAuthor::Agent
+                && message.status == MessageStatus::Complete
+                && message.turn_group_id == user.turn_group_id
+        }) else {
             return Ok(None);
         };
-        connection.execute(
-            "UPDATE conversations SET title = ?1, title_source = 'auto', updated_at = ?2
-             WHERE id = ?3 AND agent_id = ?4 AND archived_at IS NULL AND title_source != 'manual'",
-            params![title, now_millis(), conversation_id, agent_id],
-        )?;
-        Ok(Some(title))
+        Ok(Some((user.content.clone(), assistant.content.clone())))
     }
 
-    pub fn persist_temporary_conversation(
+    pub fn commit_generated_title(
         &self,
         agent_id: &str,
-        messages: &[ConversationMessage],
-    ) -> Result<PhaseOneConversation, DatabaseError> {
-        if messages.is_empty()
-            || messages.iter().any(|message| {
-                message.agent_id != agent_id
-                    || message.status != MessageStatus::Complete
-                    || !matches!(message.author, MessageAuthor::User | MessageAuthor::Agent)
-                    || message.content.is_empty()
-            })
-        {
+        conversation_id: &str,
+        title: &str,
+    ) -> Result<bool, DatabaseError> {
+        let title = title.trim();
+        if title.is_empty() || title.len() > 64 {
             return Err(DatabaseError::InvalidValue);
         }
-        self.agent(agent_id)?;
-        let mut connection = self.open()?;
-        let transaction = connection.transaction()?;
-        let conversation = PhaseOneConversation {
-            id: Uuid::now_v7().to_string(),
-            agent_id: agent_id.into(),
-            title: "Nova conversa".into(),
-            model_override_ref: None,
-            is_pinned: false,
-        };
-        let now = now_millis();
-        transaction.execute(
-            "INSERT INTO conversations
-             (id, agent_id, owner_user_id, title, title_source, kind, is_main,
-              created_at, updated_at, empty_expires_at)
-             VALUES (?1, ?2, ?3, ?4, 'placeholder', 'normal', 0, ?5, ?5, NULL)",
-            params![conversation.id, agent_id, OWNER_ID, conversation.title, now],
-        )?;
-        let branch_id = format!("{}:main", conversation.id);
-        transaction.execute(
-            "INSERT INTO conversation_branches
-             (id, conversation_id, agent_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?4)",
-            params![branch_id, conversation.id, agent_id, now],
-        )?;
-        transaction.execute(
-            "INSERT INTO conversation_active_branches
-             (conversation_id, agent_id, branch_id, updated_at)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![conversation.id, agent_id, branch_id, now],
-        )?;
-        for (index, message) in messages.iter().enumerate() {
-            let author = match message.author {
-                MessageAuthor::User => "user",
-                MessageAuthor::Agent => "agent",
-                MessageAuthor::System => return Err(DatabaseError::InvalidValue),
-            };
-            transaction.execute(
-                "INSERT INTO conversation_messages
-                 (id, conversation_id, agent_id, author_type, content, actual_model_ref,
-                  status, created_at, completed_at, branch_id, turn_group_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'complete', ?7, ?7, ?8, ?9)",
-                params![
-                    Uuid::now_v7().to_string(),
-                    conversation.id,
-                    agent_id,
-                    author,
-                    message.content,
-                    message.model_ref,
-                    now + index as i64 + 1,
-                    branch_id,
-                    format!("temporary-{}", index),
-                ],
-            )?;
-        }
-        transaction.commit()?;
-        Ok(conversation)
+        let connection = self.open()?;
+        Ok(connection.execute(
+            "UPDATE conversations SET title = ?1, title_source = 'auto', updated_at = ?2
+             WHERE id = ?3 AND agent_id = ?4 AND archived_at IS NULL AND title_source = 'placeholder'",
+            params![title, now_millis(), conversation_id, agent_id],
+        )? == 1)
     }
 
     pub fn set_conversation_pinned(
@@ -849,9 +815,9 @@ impl Database {
                 let id = Uuid::now_v7().to_string();
                 transaction.execute(
                     "INSERT INTO conversations
-                     (id, agent_id, owner_user_id, title, kind, is_main,
+                     (id, agent_id, owner_user_id, title, title_source, kind, is_main,
                       created_at, updated_at, empty_expires_at)
-                     VALUES (?1, ?2, ?3, 'Nova conversa', 'normal', 0, ?4, ?4, NULL)",
+                     VALUES (?1, ?2, ?3, 'Nova conversa', 'placeholder', 'normal', 0, ?4, ?4, NULL)",
                     params![id, agent_id, OWNER_ID, now],
                 )?;
                 transaction.execute(
@@ -3208,19 +3174,6 @@ pub fn now_millis() -> i64 {
         .map_or(0, |duration| duration.as_millis() as i64)
 }
 
-fn derive_conversation_title(content: &str) -> Option<String> {
-    let words = content.split_whitespace().take(7).collect::<Vec<_>>();
-    if words.is_empty() {
-        return None;
-    }
-    let mut title = words.join(" ");
-    if title.chars().count() > 64 {
-        title = title.chars().take(61).collect::<String>();
-        title.push('…');
-    }
-    Some(title)
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -3228,9 +3181,7 @@ mod tests {
     use rusqlite::{params, Connection, OptionalExtension};
     use uuid::Uuid;
 
-    use crate::domain::{
-        CognitiveSource, ConversationMessage, MessageAuthor, MessageStatus, TraitDeltaCandidate,
-    };
+    use crate::domain::{CognitiveSource, MessageAuthor, MessageStatus, TraitDeltaCandidate};
     use crate::tools::{
         ToolActionInput, ToolActionPreviewRequest, ToolFileMove, ToolPermission,
         ToolSessionPermission, ToolSessionRequest,
@@ -3351,7 +3302,7 @@ mod tests {
             .unwrap();
         connection
             .execute(
-                "UPDATE conversations SET is_main = 1 WHERE id = ?1",
+                "UPDATE conversations SET is_main = 1, title = 'Meu nome' WHERE id = ?1",
                 params![conversation_id],
             )
             .unwrap();
@@ -3360,6 +3311,14 @@ mod tests {
                 "INSERT INTO conversation_messages
                  (id, conversation_id, agent_id, author_type, content, status, created_at, completed_at, branch_id)
                  VALUES ('legacy-main-message', ?1, ?2, 'user', 'preservar', 'complete', 1, 1, ?1 || ':main')",
+                params![conversation_id, ASTRA_ID],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO conversation_messages
+                 (id, conversation_id, agent_id, author_type, content, status, created_at, completed_at, branch_id)
+                 VALUES ('legacy-main-response', ?1, ?2, 'agent', 'resposta antiga', 'complete', 2, 2, ?1 || ':main')",
                 params![conversation_id, ASTRA_ID],
             )
             .unwrap();
@@ -3378,6 +3337,16 @@ mod tests {
         assert_eq!(
             connection
                 .query_row(
+                    "SELECT title, title_source FROM conversations WHERE id = ?1",
+                    params![conversation_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .unwrap(),
+            ("Meu nome".into(), "manual".into())
+        );
+        assert_eq!(
+            connection
+                .query_row(
                     "SELECT content FROM conversation_messages WHERE id = 'legacy-main-message'",
                     [],
                     |row| row.get::<_, String>(0),
@@ -3389,6 +3358,9 @@ mod tests {
             upgraded.active_conversation(ASTRA_ID).unwrap().id,
             conversation_id
         );
+        assert!(!upgraded
+            .commit_generated_title(ASTRA_ID, &conversation_id, "Título novo")
+            .unwrap());
         drop(connection);
         drop(upgraded);
         cleanup(&path);
@@ -3462,7 +3434,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_title_is_derived_once_and_manual_names_win() {
+    fn generated_title_is_one_shot_and_manual_names_win() {
         let path = test_path();
         let database = Database::initialize(&path).unwrap();
         let conversation = database
@@ -3497,19 +3469,52 @@ mod tests {
 
         assert_eq!(
             database
-                .auto_title_conversation(ASTRA_ID, &conversation.id)
+                .first_title_context(ASTRA_ID, &conversation.id)
                 .unwrap(),
-            Some("Planeje uma viagem curta para o litoral".into())
+            Some((
+                "Planeje uma viagem curta para o litoral".into(),
+                "Aqui está uma sugestão.".into()
+            ))
+        );
+        assert!(database
+            .commit_generated_title(ASTRA_ID, &conversation.id, "Planejamento litoral")
+            .unwrap());
+        let updated_at = database
+            .open()
+            .unwrap()
+            .query_row(
+                "SELECT updated_at FROM conversations WHERE id = ?1",
+                params![conversation.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(
+            database
+                .first_title_context(ASTRA_ID, &conversation.id)
+                .unwrap(),
+            None
+        );
+        assert!(!database
+            .commit_generated_title(ASTRA_ID, &conversation.id, "Outro título")
+            .unwrap());
+        assert_eq!(
+            database
+                .open()
+                .unwrap()
+                .query_row(
+                    "SELECT updated_at FROM conversations WHERE id = ?1",
+                    params![conversation.id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            updated_at
         );
         database
             .rename_conversation(ASTRA_ID, &conversation.id, "Meu roteiro")
             .unwrap();
-        assert_eq!(
-            database
-                .auto_title_conversation(ASTRA_ID, &conversation.id)
-                .unwrap(),
-            None
-        );
+        assert!(!database
+            .commit_generated_title(ASTRA_ID, &conversation.id, "Título tardio")
+            .unwrap());
         assert_eq!(
             database
                 .conversations(ASTRA_ID)
@@ -3524,49 +3529,30 @@ mod tests {
     }
 
     #[test]
-    fn temporary_messages_persist_as_a_new_normal_conversation() {
+    fn new_conversation_becomes_authoritative_active_without_importing_messages() {
         let path = test_path();
         let database = Database::initialize(&path).unwrap();
-        let messages = vec![
-            ConversationMessage {
-                id: "temporary-user".into(),
-                conversation_id: "temporary".into(),
-                agent_id: ASTRA_ID.into(),
-                author: MessageAuthor::User,
-                content: "Mensagem privada".into(),
-                model_ref: None,
-                status: MessageStatus::Complete,
-                created_at: 1,
-                completed_at: Some(1),
-                error_code: None,
-                branch_id: "main".into(),
-                turn_group_id: "turn-1".into(),
-            },
-            ConversationMessage {
-                id: "temporary-agent".into(),
-                conversation_id: "temporary".into(),
-                agent_id: ASTRA_ID.into(),
-                author: MessageAuthor::Agent,
-                content: "Resposta privada".into(),
-                model_ref: Some("ollama:test".into()),
-                status: MessageStatus::Complete,
-                created_at: 2,
-                completed_at: Some(2),
-                error_code: None,
-                branch_id: "main".into(),
-                turn_group_id: "turn-1".into(),
-            },
-        ];
-        let persisted = database
-            .persist_temporary_conversation(ASTRA_ID, &messages)
+        let previous = database.active_conversation(ASTRA_ID).unwrap();
+        let created = database
+            .create_conversation_and_activate(ASTRA_ID, "Nova conversa")
             .unwrap();
-        assert_eq!(persisted.title, "Nova conversa");
-        assert_eq!(database.messages(ASTRA_ID, &persisted.id).unwrap().len(), 2);
-        assert!(database
-            .conversations(ASTRA_ID)
-            .unwrap()
-            .iter()
-            .any(|conversation| conversation.id == persisted.id));
+        assert_ne!(created.id, previous.id);
+        assert_eq!(
+            database.active_conversation(ASTRA_ID).unwrap().id,
+            created.id
+        );
+        assert!(database.messages(ASTRA_ID, &created.id).unwrap().is_empty());
+        let connection = database.open().unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM conversation_messages WHERE content IN ('Mensagem privada', 'Resposta privada')",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
         cleanup(&path);
     }
 

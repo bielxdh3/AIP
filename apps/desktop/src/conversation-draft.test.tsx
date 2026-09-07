@@ -250,4 +250,55 @@ describe("ConversationDraftSurface", () => {
       ),
     ).not.toBeNull();
   });
+
+  it("allows choosing a model before the first send", async () => {
+    hookState.phase = loadedPhase;
+    const created = {
+      ...loadedPhase.conversation,
+      id: "created",
+      title: "Nova conversa",
+    };
+    invoke.mockImplementation((command: string) =>
+      command === "create_agent_conversation"
+        ? Promise.resolve(created)
+        : Promise.resolve(undefined),
+    );
+    renderDraft();
+    const picker = container?.querySelector<HTMLButtonElement>(
+      '.model-picker-trigger[aria-label="Selecionar modelo"]',
+    );
+    if (picker === null || picker === undefined)
+      throw new Error("Missing model picker");
+    await act(async () => picker.click());
+    const options = document.querySelectorAll<HTMLElement>('[role="option"]');
+    expect(options.length).toBeGreaterThan(1);
+    await act(async () => options[1]?.click());
+
+    const textarea = container?.querySelector<HTMLTextAreaElement>(
+      ".conversation-draft-surface .composer textarea",
+    );
+    if (textarea === null || textarea === undefined)
+      throw new Error("Missing draft composer");
+    change(textarea, "primeira mensagem");
+    await act(async () =>
+      container
+        ?.querySelector<HTMLButtonElement>(
+          ".conversation-draft-surface .composer-submit",
+        )
+        ?.click(),
+    );
+
+    expect(invoke).toHaveBeenCalledWith("set_conversation_model_override", {
+      agentId: "agent",
+      conversationId: "created",
+      modelRef: "ollama:test",
+    });
+    expect(invoke).toHaveBeenCalledWith(
+      "send_phase_one_message",
+      expect.objectContaining({
+        conversationId: "created",
+        content: "primeira mensagem",
+      }),
+    );
+  });
 });

@@ -1420,7 +1420,6 @@ export function ConversationSurface({
   );
   const historyRef = useRef<HTMLDivElement>(null);
   const conversationIdRef = useRef<string | null>(null);
-  const autoTitleRequestedRef = useRef<string | null>(null);
   const followsBottomRef = useRef(true);
   const phaseConversationId = phase?.conversation.id;
 
@@ -1462,34 +1461,6 @@ export function ConversationSurface({
       setCancellingRequestId(null);
     }
   }, [cancellingRequestId, phase]);
-
-  useEffect(() => {
-    if (temporary || phase === null) {
-      return;
-    }
-    const hasCompletedResponse = phase.messages.some(
-      (message) => message.author === "agent" && message.status === "complete",
-    );
-    if (
-      !hasCompletedResponse ||
-      autoTitleRequestedRef.current === phase.conversation.id
-    ) {
-      return;
-    }
-    void Promise.resolve(
-      invoke("auto_title_phase_one_conversation", {
-        agentId: phase.agent.id,
-        conversationId: phase.conversation.id,
-      }),
-    )
-      .then(() => {
-        autoTitleRequestedRef.current = phase.conversation.id;
-        return load();
-      })
-      .catch(() => {
-        autoTitleRequestedRef.current = null;
-      });
-  }, [load, phase, temporary]);
 
   if (error) {
     return (
@@ -1633,7 +1604,7 @@ export function ConversationSurface({
               }
               title={
                 temporary
-                  ? "Transformar em conversa normal"
+                  ? "Novas mensagens serão salvas; o conteúdo temporário anterior não é persistido."
                   : "Iniciar conversa temporária"
               }
               aria-pressed={temporary}
@@ -1838,6 +1809,7 @@ export function ConversationDraftSurface({
   const [persistedConversationId, setPersistedConversationId] = useState<
     string | null
   >(null);
+  const [draftModelRef, setDraftModelRef] = useState<string | null>(null);
   const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
     null,
   );
@@ -1859,11 +1831,28 @@ export function ConversationDraftSurface({
 
   const currentPhase: PhaseOneState = phase;
   const request = requestForAgent(currentPhase.queue, agentId);
-  const blocked = blockedSendCopy(currentPhase.sendBlockedCode);
+  const draftModelAvailable =
+    draftModelRef !== null &&
+    currentPhase.provider.models.some((model) => model.ref === draftModelRef);
+  const modelBlockedCodes = new Set([
+    "model_not_selected",
+    "selected_model_unavailable",
+    "no_candidate",
+  ]);
+  const blocked =
+    draftModelAvailable &&
+    modelBlockedCodes.has(currentPhase.sendBlockedCode ?? "")
+      ? null
+      : blockedSendCopy(currentPhase.sendBlockedCode);
   const providerRecovery = providerRecoveryCopy(currentPhase);
   const providerUnavailable = currentPhase.provider.state !== "available";
+  const nonModelBlocked =
+    currentPhase.sendBlockedCode !== null &&
+    !modelBlockedCodes.has(currentPhase.sendBlockedCode);
   const canSend =
-    canSendConversationMessage(currentPhase) && !providerUnavailable;
+    !nonModelBlocked &&
+    (draftModelAvailable || canSendConversationMessage(currentPhase)) &&
+    !providerUnavailable;
   const canDraft = canDraftConversationMessage(currentPhase);
   const routingPolicy = routingPolicyPayload(modelPreferences);
 
@@ -1903,6 +1892,13 @@ export function ConversationDraftSurface({
         agentId,
         conversationId,
       });
+      if (draftModelRef !== null) {
+        await invoke("set_conversation_model_override", {
+          agentId,
+          conversationId,
+          modelRef: draftModelRef,
+        });
+      }
       if (persistedConversationId === null) onCreated?.();
       await invoke("send_phase_one_message", {
         agentId,
@@ -2009,24 +2005,23 @@ export function ConversationDraftSurface({
             ariaLabel="Selecionar modelo"
             compact
             models={currentPhase.provider.models}
-            value={currentPhase.modelOverrideRef}
+            value={draftModelRef}
             providerState={currentPhase.provider.state}
-            disabled={
-              persistedConversationId === null ||
-              currentPhase.provider.models.length === 0
-            }
+            disabled={currentPhase.provider.models.length === 0}
             defaultOption={{
               label: "Automático",
               detail: currentPhase.defaultModelRef ?? "Seleção automática",
             }}
             onSelect={async (modelRef) => {
-              if (persistedConversationId === null) return;
-              await invoke("set_conversation_model_override", {
-                agentId,
-                conversationId: persistedConversationId,
-                modelRef,
-              });
-              await load();
+              setDraftModelRef(modelRef);
+              if (persistedConversationId !== null) {
+                await invoke("set_conversation_model_override", {
+                  agentId,
+                  conversationId: persistedConversationId,
+                  modelRef,
+                });
+                await load();
+              }
             }}
           />
           <button
@@ -11697,7 +11692,7 @@ function App() {
       if (activeAgentId === null) return;
       try {
         const conversation = await invoke<PhaseOneConversation>(
-          "persist_temporary_phase_one_chat",
+          "continue_temporary_phase_one_chat",
           { agentId: activeAgentId },
         );
         setTemporaryChat(false);
