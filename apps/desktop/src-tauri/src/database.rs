@@ -640,33 +640,10 @@ impl Database {
         agent_id: &str,
         title: &str,
     ) -> Result<PhaseOneConversation, DatabaseError> {
-        let title = title.trim();
-        if title.is_empty() || title.len() > 160 {
-            return Err(DatabaseError::InvalidValue);
-        }
-        self.agent(agent_id)?;
-        let conversation = PhaseOneConversation {
-            id: Uuid::now_v7().to_string(),
-            agent_id: agent_id.into(),
-            title: title.into(),
-            model_override_ref: None,
-            is_pinned: false,
-        };
-        let connection = self.open()?;
-        let now = now_millis();
-        let empty_expires_at = now.saturating_add(EMPTY_CONVERSATION_TTL_MILLIS);
-        connection.execute("INSERT INTO conversations (id, agent_id, owner_user_id, title, title_source, kind, is_main, created_at, updated_at, empty_expires_at)
-            VALUES (?1, ?2, ?3, ?4, 'placeholder', 'normal', 0, ?5, ?5, ?6)", params![conversation.id, agent_id, OWNER_ID, title, now, empty_expires_at])?;
-        connection.execute(
-            "INSERT INTO conversation_branches (id, conversation_id, agent_id, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?4)",
-            params![format!("{}:main", conversation.id), conversation.id, agent_id, now],
-        )?;
-        connection.execute(
-            "INSERT INTO conversation_active_branches (conversation_id, agent_id, branch_id, updated_at)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![conversation.id, agent_id, format!("{}:main", conversation.id), now],
-        )?;
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        let conversation = Self::create_conversation_in_transaction(&transaction, agent_id, title)?;
+        transaction.commit()?;
         Ok(conversation)
     }
 
@@ -675,8 +652,66 @@ impl Database {
         agent_id: &str,
         title: &str,
     ) -> Result<PhaseOneConversation, DatabaseError> {
-        let conversation = self.create_conversation(agent_id, title)?;
-        self.set_active_conversation(agent_id, &conversation.id)?;
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        let conversation = Self::create_conversation_in_transaction(&transaction, agent_id, title)?;
+        let activated = transaction.execute(
+            "UPDATE agent_phase3_settings
+             SET active_conversation_id = ?1, updated_at = ?2
+             WHERE agent_id = ?3",
+            params![conversation.id, now_millis(), agent_id],
+        )?;
+        if activated != 1 {
+            return Err(DatabaseError::NotFound);
+        }
+        transaction.commit()?;
+        Ok(conversation)
+    }
+
+    fn create_conversation_in_transaction(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        title: &str,
+    ) -> Result<PhaseOneConversation, DatabaseError> {
+        let title = title.trim();
+        if title.is_empty() || title.len() > 160 {
+            return Err(DatabaseError::InvalidValue);
+        }
+        let agent_exists = transaction.query_row(
+            "SELECT EXISTS(
+               SELECT 1
+               FROM agents a
+               JOIN agent_screen_preferences p ON p.agent_id = a.id
+               JOIN agent_identity_profiles i ON i.agent_id = a.id
+               WHERE a.id = ?1 AND a.status = 'active'
+             )",
+            params![agent_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !agent_exists {
+            return Err(DatabaseError::NotFound);
+        }
+        let conversation = PhaseOneConversation {
+            id: Uuid::now_v7().to_string(),
+            agent_id: agent_id.into(),
+            title: title.into(),
+            model_override_ref: None,
+            is_pinned: false,
+        };
+        let now = now_millis();
+        let empty_expires_at = now.saturating_add(EMPTY_CONVERSATION_TTL_MILLIS);
+        transaction.execute("INSERT INTO conversations (id, agent_id, owner_user_id, title, title_source, kind, is_main, created_at, updated_at, empty_expires_at)
+            VALUES (?1, ?2, ?3, ?4, 'placeholder', 'normal', 0, ?5, ?5, ?6)", params![conversation.id, agent_id, OWNER_ID, title, now, empty_expires_at])?;
+        transaction.execute(
+            "INSERT INTO conversation_branches (id, conversation_id, agent_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?4)",
+            params![format!("{}:main", conversation.id), conversation.id, agent_id, now],
+        )?;
+        transaction.execute(
+            "INSERT INTO conversation_active_branches (conversation_id, agent_id, branch_id, updated_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![conversation.id, agent_id, format!("{}:main", conversation.id), now],
+        )?;
         Ok(conversation)
     }
 
@@ -735,7 +770,7 @@ impl Database {
         title: &str,
     ) -> Result<bool, DatabaseError> {
         let title = title.trim();
-        if title.is_empty() || title.len() > 64 {
+        if title.is_empty() || title.chars().count() > 64 {
             return Err(DatabaseError::InvalidValue);
         }
         let connection = self.open()?;
@@ -3552,6 +3587,113 @@ mod tests {
                 )
                 .unwrap(),
             0
+        );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn create_and_activate_rolls_back_when_activation_fails() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let previous = database.active_conversation(ASTRA_ID).unwrap();
+        let before_count: i64 = database
+            .open()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM conversations WHERE agent_id = ?1",
+                params![ASTRA_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let before_branch_count: (i64, i64) = database
+            .open()
+            .unwrap()
+            .query_row(
+                "SELECT
+                    (SELECT count(*) FROM conversation_branches WHERE agent_id = ?1),
+                    (SELECT count(*) FROM conversation_active_branches WHERE agent_id = ?1)",
+                params![ASTRA_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        database
+            .open()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_conversation_activation
+                 BEFORE UPDATE OF active_conversation_id ON agent_phase3_settings
+                 WHEN NEW.agent_id = 'agt_astra_provisional'
+                   AND NEW.active_conversation_id <> OLD.active_conversation_id
+                 BEGIN
+                   SELECT RAISE(ABORT, 'simulated activation failure');
+                 END;",
+            )
+            .unwrap();
+
+        assert_eq!(
+            database.create_conversation_and_activate(ASTRA_ID, "Não deve persistir"),
+            Err(DatabaseError::Unavailable)
+        );
+        let connection = database.open().unwrap();
+        let after_count: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM conversations WHERE agent_id = ?1",
+                params![ASTRA_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after_count, before_count);
+        let after_branch_count: (i64, i64) = connection
+            .query_row(
+                "SELECT
+                    (SELECT count(*) FROM conversation_branches WHERE agent_id = ?1),
+                    (SELECT count(*) FROM conversation_active_branches WHERE agent_id = ?1)",
+                params![ASTRA_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(after_branch_count, before_branch_count);
+        assert_eq!(
+            database.active_conversation(ASTRA_ID).unwrap().id,
+            previous.id
+        );
+        drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn generated_title_uses_unicode_character_limit() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let accented = database
+            .create_conversation(ASTRA_ID, "Título Unicode")
+            .unwrap();
+        let title = "á".repeat(64);
+        assert!(title.len() > 64);
+        assert!(database
+            .commit_generated_title(ASTRA_ID, &accented.id, &title)
+            .unwrap());
+        assert_eq!(
+            database
+                .conversations(ASTRA_ID)
+                .unwrap()
+                .into_iter()
+                .find(|conversation| conversation.id == accented.id)
+                .unwrap()
+                .title,
+            title
+        );
+
+        let invalid = database
+            .create_conversation(ASTRA_ID, "Limite Unicode")
+            .unwrap();
+        assert_eq!(
+            database.commit_generated_title(ASTRA_ID, &invalid.id, &"x".repeat(65)),
+            Err(DatabaseError::InvalidValue)
+        );
+        assert_eq!(
+            database.commit_generated_title(ASTRA_ID, &invalid.id, " \n\t"),
+            Err(DatabaseError::InvalidValue)
         );
         cleanup(&path);
     }

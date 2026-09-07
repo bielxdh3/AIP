@@ -162,13 +162,12 @@ record. The selected conversation is restored locally for that agent.
 
 Normal conversations are persisted in local history. Selecting `Nova conversa` opens an
 in-memory draft surface only; it does not create a conversation row or history entry.
-Leaving the draft, changing agent or workspace, or opening an existing conversation
-discards it. The draft is persisted only when the Owner saves a bounded non-empty name,
-or sends its first message. The first-message path uses `Nova conversa` as its bounded
-fallback title, selects the new conversation, and then sends through the normal chat
-path. Only explicitly named empty persisted conversations use the seven-day TTL and
-are removed during later conversation access if they still contain no messages; adding
-the first message clears that expiry.
+There is no initial name input or `Salvar nome` action in this draft flow. Leaving the
+draft, changing agent or workspace, or opening an existing conversation discards it.
+The first send creates one fresh normal conversation with `Nova conversa` as its bounded
+fallback title, selects it authoritatively, and then sends through the normal chat path.
+After the first successful durable assistant response, local AI may generate one bounded
+title; manual rename remains available from the normal conversation UI and always wins.
 
 Conversation types:
 

@@ -1957,7 +1957,7 @@ export function ConversationDraftSurface({
       <div className="message-history" aria-live="polite">
         <div className="history-placeholder">
           <strong>Rascunho ainda não persistido.</strong>
-          <span>Salve um nome ou envie a primeira mensagem para começar.</span>
+          <span>Envie a primeira mensagem para começar.</span>
         </div>
       </div>
 
