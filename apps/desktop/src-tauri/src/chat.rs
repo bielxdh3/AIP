@@ -1291,7 +1291,7 @@ impl ChatCoordinator {
         if policy.mode == RoutingMode::Manual && selected_model.is_none() {
             return Err("model_unavailable");
         }
-        let policy = routing_policy_with_selection(policy, selected_model);
+        let policy = routing_policy_with_selection(policy, selected_model, explicit_model);
         let request = RoutingRequest {
             request_id: request_id.to_string(),
             model_ref: requested_model_ref(policy.mode, selected_model, explicit_model),
@@ -2261,18 +2261,33 @@ fn assemble_context(
 fn routing_policy_with_selection(
     policy: &RoutingPolicy,
     selected_model: Option<&str>,
+    explicit_model: Option<&str>,
 ) -> RoutingPolicy {
     let mut policy = policy.clone();
-    if let Some(selected_model) = selected_model {
-        // An explicit conversation selection takes precedence over global routing preferences,
-        // including exclusions and fallback-only hints.
+    if let Some(explicit_model) = explicit_model {
+        // An explicit conversation/temporary selection takes precedence over global routing
+        // preferences, including exclusions and fallback-only hints.
         policy
             .excluded_model_refs
-            .retain(|model_ref| model_ref != selected_model);
+            .retain(|model_ref| model_ref != explicit_model);
         policy
             .fallback_only_model_refs
-            .retain(|model_ref| model_ref != selected_model);
+            .retain(|model_ref| model_ref != explicit_model);
         if policy.mode != RoutingMode::Manual {
+            policy.preferred_model_ref = Some(explicit_model.to_string());
+        }
+    } else if let Some(selected_model) = selected_model {
+        // An inherited agent default is only a soft preference. It must not bypass explicit
+        // exclusions/fallback-only hints or replace a stronger policy preference.
+        let eligible = !policy
+            .excluded_model_refs
+            .iter()
+            .any(|model_ref| model_ref == selected_model)
+            && !policy
+                .fallback_only_model_refs
+                .iter()
+                .any(|model_ref| model_ref == selected_model);
+        if policy.mode != RoutingMode::Manual && policy.preferred_model_ref.is_none() && eligible {
             policy.preferred_model_ref = Some(selected_model.to_string());
         }
     }
@@ -2485,7 +2500,7 @@ mod tests {
     #[test]
     fn auto_selection_preserves_selected_model_as_preference() {
         let policy =
-            routing_policy_with_selection(&RoutingPolicy::default(), Some("ollama:selected"));
+            routing_policy_with_selection(&RoutingPolicy::default(), Some("ollama:selected"), None);
         assert_eq!(
             policy.preferred_model_ref.as_deref(),
             Some("ollama:selected")
@@ -2497,6 +2512,7 @@ mod tests {
                 ..RoutingPolicy::default()
             },
             Some("ollama:selected"),
+            None,
         );
         assert_eq!(manual.preferred_model_ref, None);
     }
@@ -2511,6 +2527,7 @@ mod tests {
                 ..RoutingPolicy::default()
             },
             Some("ollama:selected"),
+            Some("ollama:selected"),
         );
         assert_eq!(
             policy.preferred_model_ref.as_deref(),
@@ -2524,6 +2541,125 @@ mod tests {
             .fallback_only_model_refs
             .iter()
             .any(|model_ref| model_ref == "ollama:selected"));
+    }
+
+    #[test]
+    fn inherited_default_preserves_exclusion_and_is_not_forced() {
+        let policy = routing_policy_with_selection(
+            &RoutingPolicy {
+                excluded_model_refs: vec!["ollama:default".into()],
+                ..RoutingPolicy::default()
+            },
+            Some("ollama:default"),
+            None,
+        );
+        assert_eq!(policy.excluded_model_refs, vec!["ollama:default"]);
+        assert_eq!(policy.preferred_model_ref, None);
+        assert_eq!(
+            requested_model_ref(RoutingMode::Auto, Some("ollama:default"), None),
+            None
+        );
+    }
+
+    #[test]
+    fn inherited_default_preserves_fallback_only_restriction() {
+        let policy = routing_policy_with_selection(
+            &RoutingPolicy {
+                fallback_only_model_refs: vec!["ollama:default".into()],
+                ..RoutingPolicy::default()
+            },
+            Some("ollama:default"),
+            None,
+        );
+        assert_eq!(policy.fallback_only_model_refs, vec!["ollama:default"]);
+        assert_eq!(policy.preferred_model_ref, None);
+        assert_eq!(
+            requested_model_ref(RoutingMode::Quality, Some("ollama:default"), None),
+            None
+        );
+    }
+
+    #[test]
+    fn inherited_default_does_not_replace_stronger_policy_preference() {
+        let policy = routing_policy_with_selection(
+            &RoutingPolicy {
+                preferred_model_ref: Some("ollama:preferred".into()),
+                ..RoutingPolicy::default()
+            },
+            Some("ollama:default"),
+            None,
+        );
+        assert_eq!(
+            policy.preferred_model_ref.as_deref(),
+            Some("ollama:preferred")
+        );
+        assert_eq!(
+            requested_model_ref(RoutingMode::Speed, Some("ollama:default"), None),
+            None
+        );
+    }
+
+    #[test]
+    fn inherited_default_is_only_a_soft_preference_without_stronger_hints() {
+        let policy =
+            routing_policy_with_selection(&RoutingPolicy::default(), Some("ollama:default"), None);
+        assert_eq!(
+            policy.preferred_model_ref.as_deref(),
+            Some("ollama:default")
+        );
+        for mode in [RoutingMode::Auto, RoutingMode::Quality, RoutingMode::Speed] {
+            assert_eq!(
+                requested_model_ref(mode, Some("ollama:default"), None),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn coordinator_route_precedence_separates_inherited_defaults_from_overrides() {
+        let inherited = routing_policy_with_selection(
+            &RoutingPolicy {
+                excluded_model_refs: vec!["ollama:default".into()],
+                preferred_model_ref: Some("ollama:preferred".into()),
+                ..RoutingPolicy::default()
+            },
+            Some("ollama:default"),
+            None,
+        );
+        assert_eq!(
+            inherited.preferred_model_ref.as_deref(),
+            Some("ollama:preferred")
+        );
+        assert_eq!(inherited.excluded_model_refs, vec!["ollama:default"]);
+        assert_eq!(
+            requested_model_ref(RoutingMode::Auto, Some("ollama:default"), None),
+            None
+        );
+
+        let explicit = routing_policy_with_selection(
+            &RoutingPolicy {
+                excluded_model_refs: vec!["ollama:selected".into()],
+                fallback_only_model_refs: vec!["ollama:selected".into()],
+                preferred_model_ref: Some("ollama:preferred".into()),
+                ..RoutingPolicy::default()
+            },
+            Some("ollama:selected"),
+            Some("ollama:selected"),
+        );
+        assert_eq!(
+            explicit.preferred_model_ref.as_deref(),
+            Some("ollama:selected")
+        );
+        assert!(explicit.excluded_model_refs.is_empty());
+        assert!(explicit.fallback_only_model_refs.is_empty());
+        assert_eq!(
+            requested_model_ref(
+                RoutingMode::Auto,
+                Some("ollama:selected"),
+                Some("ollama:selected"),
+            ),
+            Some("ollama:selected".into())
+        );
     }
 
     #[test]
@@ -2542,6 +2678,14 @@ mod tests {
         );
         assert_eq!(
             requested_model_ref(RoutingMode::Manual, Some("ollama:selected"), None),
+            Some("ollama:selected".into())
+        );
+        assert_eq!(
+            requested_model_ref(
+                RoutingMode::Manual,
+                Some("ollama:default"),
+                Some("ollama:selected"),
+            ),
             Some("ollama:selected".into())
         );
     }
