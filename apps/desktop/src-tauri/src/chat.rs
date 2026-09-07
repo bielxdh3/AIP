@@ -1323,6 +1323,7 @@ impl ChatCoordinator {
         let _ = lock(&self.inner.orchestration).sync_local_provider(&model_refs, health, health);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn send_blocked_code(
         &self,
         provider: &ProviderSnapshot,
