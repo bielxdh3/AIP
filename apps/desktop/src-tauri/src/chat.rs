@@ -1858,11 +1858,11 @@ impl ChatCoordinator {
             {
                 return;
             }
-            let queue_is_busy = {
+            let queue_has_active_generation = {
                 let queue = lock(&self.inner.queue);
-                queue.active.is_some() || !queue.pending.is_empty()
+                queue.active.is_some()
             };
-            if queue_is_busy {
+            if queue_has_active_generation {
                 return;
             }
             let Some(job) = lock(&self.inner.queue).activate_next() else {
