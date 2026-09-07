@@ -729,10 +729,21 @@ impl Database {
         if connection.execute("UPDATE conversations SET title = ?1, title_source = 'manual', updated_at = ?2 WHERE id = ?3 AND agent_id = ?4 AND archived_at IS NULL", params![title, now_millis(), conversation_id, agent_id])? == 1 { Ok(()) } else { Err(DatabaseError::OwnershipMismatch) }
     }
 
+    #[allow(dead_code)]
     pub fn first_title_context(
         &self,
         agent_id: &str,
         conversation_id: &str,
+    ) -> Result<Option<(String, String)>, DatabaseError> {
+        let branch_id = self.active_branch_id(agent_id, conversation_id)?;
+        self.first_title_context_for_branch(agent_id, conversation_id, &branch_id)
+    }
+
+    pub fn first_title_context_for_branch(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        branch_id: &str,
     ) -> Result<Option<(String, String)>, DatabaseError> {
         let connection = self.open()?;
         let source = connection
@@ -747,7 +758,7 @@ impl Database {
         if source != "placeholder" {
             return Ok(None);
         }
-        let messages = self.messages(agent_id, conversation_id)?;
+        let messages = self.messages_for_branch(agent_id, conversation_id, branch_id)?;
         for user in messages.iter().filter(|message| {
             message.author == MessageAuthor::User && message.status == MessageStatus::Complete
         }) {
@@ -3720,6 +3731,77 @@ mod tests {
             previous.id
         );
         drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn title_context_can_read_the_completed_branch_when_another_is_active() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let agent = database.agent(ASTRA_ID).unwrap();
+        let conversation = database.main_conversation(ASTRA_ID).unwrap();
+        let original = database
+            .create_message_attempt(&agent.id, &conversation.id, "hello", "ollama:model-a")
+            .unwrap();
+        database
+            .mark_streaming(&original.assistant_message_id, &original.request_id)
+            .unwrap();
+        database
+            .append_assistant_chunk(
+                &original.assistant_message_id,
+                &original.request_id,
+                "original answer",
+            )
+            .unwrap();
+        database
+            .finish_assistant(
+                &original.assistant_message_id,
+                &original.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+        let alternative = database
+            .create_regeneration_attempt(
+                &agent.id,
+                &conversation.id,
+                &original.assistant_message_id,
+                "ollama:model-b",
+                &Uuid::now_v7().to_string(),
+            )
+            .unwrap();
+        database
+            .mark_streaming(&alternative.assistant_message_id, &alternative.request_id)
+            .unwrap();
+        database
+            .append_assistant_chunk(
+                &alternative.assistant_message_id,
+                &alternative.request_id,
+                "alternative answer",
+            )
+            .unwrap();
+        database
+            .finish_assistant(
+                &alternative.assistant_message_id,
+                &alternative.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+        database
+            .set_active_branch(&agent.id, &conversation.id, &original.branch_id)
+            .unwrap();
+
+        assert_eq!(
+            database
+                .first_title_context_for_branch(
+                    &agent.id,
+                    &conversation.id,
+                    &alternative.branch_id,
+                )
+                .unwrap(),
+            Some(("hello".into(), "alternative answer".into()))
+        );
         cleanup(&path);
     }
 

@@ -1111,8 +1111,8 @@ impl ChatCoordinator {
     }
 
     pub fn enter_safe_mode(&self, error_code: &'static str) {
-        let _scheduler_guard = lock(&self.inner.scheduler_lock);
         self.inner.safe_mode.store(true, Ordering::SeqCst);
+        let _scheduler_guard = lock(&self.inner.scheduler_lock);
         self.cancel_all_locked(error_code);
     }
 
@@ -1782,7 +1782,7 @@ impl ChatCoordinator {
         let Ok(Some((user_content, assistant_content))) = self
             .inner
             .database
-            .first_title_context(&job.agent_id, &job.conversation_id)
+            .first_title_context_for_branch(&job.agent_id, &job.conversation_id, &job.branch_id)
         else {
             return;
         };
