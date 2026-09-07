@@ -1617,6 +1617,10 @@ impl ChatCoordinator {
                 );
                 if matches!(committed, Ok(true)) {
                     self.emit_refresh(Some(&request.agent_id));
+                    self.emit_conversation_list_changed(
+                        &request.agent_id,
+                        &request.conversation_id,
+                    );
                 }
             }
             self.dispatch_next();
@@ -2065,6 +2069,20 @@ impl ChatCoordinator {
             request_id: None,
             agent_id: agent_id.map(str::to_string),
             conversation_id: None,
+            assistant_message_id: None,
+            sequence: None,
+            content: None,
+            error_code: None,
+        });
+    }
+
+    fn emit_conversation_list_changed(&self, agent_id: &str, conversation_id: &str) {
+        self.emit(PhaseOneEvent {
+            protocol_version: PROTOCOL_VERSION,
+            event_type: "conversation-list.changed".into(),
+            request_id: None,
+            agent_id: Some(agent_id.to_string()),
+            conversation_id: Some(conversation_id.to_string()),
             assistant_message_id: None,
             sequence: None,
             content: None,
