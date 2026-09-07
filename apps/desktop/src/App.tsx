@@ -1843,9 +1843,14 @@ export function ConversationDraftSurface({
     "model_not_selected",
     "selected_model_unavailable",
   ]);
+  const draftCanResolveModelBlock =
+    draftModelRef === null || draftModelAvailable;
+  const currentModelBlock = modelBlockedCodes.has(
+    currentPhase.sendBlockedCode ?? "",
+  );
   const blocked = draftModelUnavailable
     ? blockedSendCopy("selected_model_unavailable")
-    : draftModelAvailable &&
+    : draftCanResolveModelBlock &&
         modelBlockedCodes.has(currentPhase.sendBlockedCode ?? "")
       ? null
       : blockedSendCopy(currentPhase.sendBlockedCode);
@@ -1858,7 +1863,8 @@ export function ConversationDraftSurface({
     !draftModelUnavailable &&
     !nonModelBlocked &&
     (draftModelRef === null
-      ? canSendConversationMessage(currentPhase)
+      ? canSendConversationMessage(currentPhase) ||
+        (currentModelBlock && draftCanResolveModelBlock && request === null)
       : draftModelAvailable) &&
     !providerUnavailable;
   const canDraft = canDraftConversationMessage(currentPhase);
