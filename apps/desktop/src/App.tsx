@@ -1403,12 +1403,14 @@ export function ConversationSurface({
   onToggleTemporary,
   refreshRevision = 0,
   onActiveConversationChange,
+  onConversationTitleChange,
 }: {
   agentId: string;
   temporary: boolean;
   onToggleTemporary?: () => void;
   refreshRevision?: number;
   onActiveConversationChange?: (conversationId: string) => void;
+  onConversationTitleChange?: () => void;
 }) {
   const { phase, error, load } = usePhaseOne(agentId, temporary);
   const [modelPreferences] = useModelPreferences();
@@ -1423,6 +1425,10 @@ export function ConversationSurface({
   );
   const historyRef = useRef<HTMLDivElement>(null);
   const conversationIdRef = useRef<string | null>(null);
+  const conversationTitleRef = useRef<{
+    id: string;
+    title: string;
+  } | null>(null);
   const followsBottomRef = useRef(true);
   const phaseConversationId = phase?.conversation.id;
 
@@ -1435,6 +1441,24 @@ export function ConversationSurface({
       onActiveConversationChange?.(phaseConversationId);
     }
   }, [onActiveConversationChange, phaseConversationId, temporary]);
+
+  useEffect(() => {
+    if (temporary || phase?.conversation.id === undefined) return;
+    const next = {
+      id: phase.conversation.id,
+      title: phase.conversation.title,
+    };
+    const previous = conversationTitleRef.current;
+    if (previous?.id === next.id && previous.title !== next.title) {
+      onConversationTitleChange?.();
+    }
+    conversationTitleRef.current = next;
+  }, [
+    onConversationTitleChange,
+    phase?.conversation.id,
+    phase?.conversation.title,
+    temporary,
+  ]);
 
   useLayoutEffect(() => {
     const history = historyRef.current;
@@ -11894,6 +11918,9 @@ function App() {
             temporary={temporaryChat}
             refreshRevision={conversationNavigationRevision}
             onActiveConversationChange={syncActiveConversation}
+            onConversationTitleChange={() =>
+              setConversationListRevision((value) => value + 1)
+            }
             onToggleTemporary={() => void toggleTemporaryChat()}
           />
         )}
