@@ -4,7 +4,9 @@ import { fileURLToPath } from "node:url";
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ACTIVE_DEVELOPMENT_VERSION = "0.2.3";
+const EXPECTED_BUILD_REVISION = "0.2.3.1";
 const SEMVER = /^\d+\.\d+\.\d+$/;
+const BUILD_REVISION = /^\d+\.\d+\.\d+\.\d+$/;
 
 function jsonVersion(path, readFile) {
   const manifest = JSON.parse(readFile(path));
@@ -87,7 +89,24 @@ export function validateManifestVersions(readFile) {
     );
   }
 
-  return { canonicalVersion, versions };
+  const buildRevision = readFile("build-revision.txt").trim();
+  if (!BUILD_REVISION.test(buildRevision)) {
+    throw new Error(
+      `build-revision.txt is not a four-part build identity: ${buildRevision}`,
+    );
+  }
+  if (buildRevision !== EXPECTED_BUILD_REVISION) {
+    throw new Error(
+      `Phase H build identity must remain ${EXPECTED_BUILD_REVISION}; build-revision.txt=${buildRevision}`,
+    );
+  }
+  if (!buildRevision.startsWith(`${canonicalVersion}.`)) {
+    throw new Error(
+      `Phase H build identity must extend ${canonicalVersion}; build-revision.txt=${buildRevision}`,
+    );
+  }
+
+  return { canonicalVersion, versions, buildRevision };
 }
 
 export function validateWorkspaceVersions(repositoryRoot = REPOSITORY_ROOT) {
@@ -100,8 +119,10 @@ if (
   process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
-  const { canonicalVersion } = validateWorkspaceVersions();
-  console.log(`Phase H manifest version synchronized: ${canonicalVersion}`);
+  const { canonicalVersion, buildRevision } = validateWorkspaceVersions();
+  console.log(
+    `Phase H manifest version synchronized: ${canonicalVersion}; build identity: ${buildRevision}`,
+  );
   console.log(
     "pnpm-lock.yaml dependency integrity remains validated by pnpm install --frozen-lockfile",
   );

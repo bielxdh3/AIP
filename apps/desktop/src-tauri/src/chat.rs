@@ -5,6 +5,7 @@ use std::{
         Arc, Mutex,
     },
     thread,
+    time::{Duration, Instant},
 };
 
 use tauri::{AppHandle, Emitter};
@@ -34,6 +35,9 @@ const MAX_REQUEST_TRACE_ENTRIES: usize = 24;
 const MAX_RETAINED_REQUEST_TRACES: usize = 16;
 const CANCELLATION_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+const RUNTIME_ACCEPT_TIMEOUT: Duration = Duration::from_secs(15);
+const GENERATION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(90);
+const GENERATION_WATCHDOG_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_TITLE_OUTPUT_BYTES: usize = 512;
 const MAX_TITLE_CONTEXT_CHARS: usize = 2_000;
 
@@ -77,6 +81,10 @@ struct ActiveGeneration {
     last_sequence: u64,
     output_bytes: usize,
     cancellation_requested: bool,
+    dispatched_at: Instant,
+    last_progress_at: Instant,
+    runtime_accepted: bool,
+    generation_started: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,6 +210,10 @@ impl GenerationQueue {
             last_sequence: 0,
             output_bytes: 0,
             cancellation_requested: false,
+            dispatched_at: Instant::now(),
+            last_progress_at: Instant::now(),
+            runtime_accepted: false,
+            generation_started: false,
         });
         Some(job)
     }
@@ -279,6 +291,51 @@ impl GenerationQueue {
         self.matches_event(event) && event.sequence == Some(0)
     }
 
+    fn mark_runtime_accepted(&mut self, request_id: &str) -> bool {
+        let Some(active) = self.active.as_mut() else {
+            return false;
+        };
+        if active.job.request_id != request_id {
+            return false;
+        }
+        active.runtime_accepted = true;
+        active.last_progress_at = Instant::now();
+        true
+    }
+
+    fn mark_generation_started(&mut self, event: &PhaseOneEvent) -> bool {
+        if !self.accepts_started(event) {
+            return false;
+        }
+        let active = self
+            .active
+            .as_mut()
+            .expect("started event has active generation");
+        // The event is authoritative even if the response envelope is delivered later.
+        active.runtime_accepted = true;
+        active.generation_started = true;
+        active.last_progress_at = Instant::now();
+        true
+    }
+
+    fn expired_request(&self, now: Instant) -> Option<(String, &'static str)> {
+        let active = self.active.as_ref()?;
+        let code = if !active.runtime_accepted
+            && now.duration_since(active.dispatched_at) >= RUNTIME_ACCEPT_TIMEOUT
+        {
+            "runtime_accept_timeout"
+        } else if now.duration_since(active.last_progress_at) >= GENERATION_RESPONSE_TIMEOUT {
+            if active.generation_started {
+                "generation_response_timeout"
+            } else {
+                "generation_start_timeout"
+            }
+        } else {
+            return None;
+        };
+        Some((active.job.request_id.clone(), code))
+    }
+
     fn accepts_terminal(&self, event: &PhaseOneEvent) -> bool {
         self.active.as_ref().is_some_and(|active| {
             if !self.matches_event(event) {
@@ -320,6 +377,7 @@ impl GenerationQueue {
         }
         active.last_sequence = sequence;
         active.output_bytes = next_size;
+        active.last_progress_at = Instant::now();
         ChunkDecision::Accepted(active.job.clone())
     }
 
@@ -491,6 +549,8 @@ impl ChatCoordinator {
                 listener.handle_notice(notice);
             }
         });
+        let watchdog = coordinator.clone();
+        thread::spawn(move || watchdog.generation_watchdog_loop());
         coordinator
     }
 
@@ -1482,7 +1542,11 @@ impl ChatCoordinator {
                 self.dispatch_next();
             }
             RuntimeNotice::Output(RuntimeOutput::Accepted { id }) => {
-                self.trace(&id, "runtime_accepted", None, None);
+                if lock(&self.inner.queue).mark_runtime_accepted(&id) {
+                    self.trace(&id, "runtime_accepted", None, None);
+                } else {
+                    self.trace(&id, "runtime_accepted_ignored", None, None);
+                }
             }
         }
     }
@@ -1507,7 +1571,7 @@ impl ChatCoordinator {
         };
         match event.event_type.as_str() {
             "generation.started" => {
-                if !lock(&self.inner.queue).accepts_started(&event) {
+                if !lock(&self.inner.queue).mark_generation_started(&event) {
                     self.trace(&request_id, "started_ignored", event.sequence, None);
                     return;
                 }
@@ -1964,6 +2028,7 @@ impl ChatCoordinator {
             };
             self.trace(&job.request_id, "queue_activated", None, None);
             let dispatch = self.build_generation_request(&job).and_then(|request| {
+                self.trace(&job.request_id, "dispatching", None, None);
                 self.mark_job_streaming(&job)?;
                 self.inner.runtime.send(request)
             });
@@ -2179,6 +2244,18 @@ impl ChatCoordinator {
         terminal_code: Option<&str>,
     ) {
         lock(&self.inner.request_traces).record(request_id, code, sequence, terminal_code);
+    }
+
+    fn generation_watchdog_loop(&self) {
+        loop {
+            thread::sleep(GENERATION_WATCHDOG_INTERVAL);
+            let expired = lock(&self.inner.queue).expired_request(Instant::now());
+            let Some((request_id, code)) = expired else {
+                continue;
+            };
+            self.trace(&request_id, "generation_watchdog_timeout", None, Some(code));
+            self.fail_active(&request_id, code);
+        }
     }
 }
 
@@ -2874,6 +2951,29 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(queue.enqueue(job("overflow", "luma")), Err("queue_full"));
+    }
+
+    #[test]
+    fn queue_watchdog_distinguishes_acceptance_and_response_timeouts() {
+        let mut queue = GenerationQueue::default();
+        queue.enqueue(job("timeout", "astra")).unwrap();
+        queue.activate_next();
+
+        let acceptance_deadline = Instant::now() + RUNTIME_ACCEPT_TIMEOUT + Duration::from_secs(1);
+        assert_eq!(
+            queue.expired_request(acceptance_deadline),
+            Some(("timeout".into(), "runtime_accept_timeout"))
+        );
+
+        let active = queue.active.as_mut().unwrap();
+        active.runtime_accepted = true;
+        active.generation_started = true;
+        active.last_progress_at =
+            Instant::now() - GENERATION_RESPONSE_TIMEOUT - Duration::from_secs(1);
+        assert_eq!(
+            queue.expired_request(Instant::now()),
+            Some(("timeout".into(), "generation_response_timeout"))
+        );
     }
 
     #[test]

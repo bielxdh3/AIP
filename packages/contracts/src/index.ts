@@ -53,6 +53,7 @@ export type ProvisionalAgent = {
 
 export type AppSnapshot = {
   appVersion: string;
+  buildRevision: string;
   buildSha: string;
   buildTimestamp: string;
   runtimePackagingMode: string;

@@ -13,6 +13,7 @@ const files = {
   "apps/desktop/src-tauri/tauri.conf.json": JSON.stringify({
     version: "0.2.3",
   }),
+  "build-revision.txt": "0.2.3.1\n",
 };
 
 const readFixture = (path) => {
@@ -23,6 +24,7 @@ const readFixture = (path) => {
 test("accepts synchronized active manifest versions without reading pnpm-lock.yaml", () => {
   const result = validateManifestVersions(readFixture);
   assert.equal(result.canonicalVersion, "0.2.3");
+  assert.equal(result.buildRevision, "0.2.3.1");
 });
 
 test("rejects drift in an authoritative manifest", () => {
@@ -46,5 +48,17 @@ test("rejects changing the active development version", () => {
   assert.throws(
     () => validateManifestVersions((path) => changedFiles[path]),
     /active development version must remain 0\.2\.3/,
+  );
+});
+
+test("rejects a build identity that does not extend the active version", () => {
+  const changedFiles = {
+    ...files,
+    "build-revision.txt": "0.2.4.1\n",
+  };
+
+  assert.throws(
+    () => validateManifestVersions((path) => changedFiles[path]),
+    /build identity must remain 0\.2\.3\.1/,
   );
 });
