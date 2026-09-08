@@ -582,6 +582,43 @@ describe("ConversationDraftSurface", () => {
     localStorage.removeItem("aip.settings.models");
   });
 
+  it("allows manual drafts to use an available default despite an active override error", () => {
+    localStorage.setItem(
+      "aip.settings.models",
+      JSON.stringify({
+        excludedModelRefs: [],
+        fallbackOnlyModelRefs: [],
+        hiddenModelRefs: [],
+        preferredModelRef: null,
+        policyMode: "manual",
+      }),
+    );
+    hookState.phase = {
+      ...loadedPhase,
+      conversation: {
+        ...loadedPhase.conversation,
+        modelOverrideRef: "ollama:missing",
+      },
+      selectedModelRef: "ollama:missing",
+      selectedModelAvailable: false,
+      canSend: false,
+      sendBlockedCode: "selected_model_unavailable",
+    } as unknown as PhaseOneState;
+    renderDraft();
+
+    const textarea = container?.querySelector<HTMLTextAreaElement>(
+      ".conversation-draft-surface .composer textarea",
+    );
+    if (textarea === null || textarea === undefined)
+      throw new Error("Missing draft composer");
+    change(textarea, "mensagem com default herdado");
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    expect(submit?.disabled).toBe(false);
+    localStorage.removeItem("aip.settings.models");
+  });
+
   it("shows one unavailable-provider error inside the draft composer", () => {
     hookState.phase = {
       ...loadedPhase,
