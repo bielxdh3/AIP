@@ -185,6 +185,35 @@ describe("ConversationSurface", () => {
     expect(container.querySelectorAll(".message-heading")).toHaveLength(0);
   });
 
+  it("labels copy actions by message author", () => {
+    phase = {
+      ...loadedPhase,
+      messages: [
+        {
+          ...loadedPhase.messages[0],
+          id: "user",
+          author: "user",
+          content: "Pergunta do Owner",
+          modelRef: null,
+        },
+        loadedPhase.messages[0],
+      ],
+    } as unknown as PhaseOneState;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    renderSurface();
+
+    expect(
+      Array.from(
+        container.querySelectorAll<HTMLButtonElement>(
+          '.message-actions button[aria-label^="Copiar"]',
+        ),
+      ).map((button) => button.getAttribute("aria-label")),
+    ).toEqual(["Copiar mensagem", "Copiar resposta"]);
+  });
+
   it("hides assistant actions while keeping queue cancellation available", () => {
     phase = {
       ...loadedPhase,
