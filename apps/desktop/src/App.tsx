@@ -10830,6 +10830,8 @@ export function SettingsSurface({
               <dl>
                 <dt>Versão</dt>
                 <dd>{snapshot?.appVersion ?? "—"}</dd>
+                <dt>Identidade</dt>
+                <dd>{snapshot?.buildRevision ?? "—"}</dd>
                 <dt>Commit</dt>
                 <dd>{snapshot?.buildSha ?? "—"}</dd>
                 <dt>Build</dt>
@@ -10858,6 +10860,7 @@ export function SettingsSurface({
                     void navigator.clipboard?.writeText(
                       JSON.stringify({
                         version: snapshot?.appVersion,
+                        buildRevision: snapshot?.buildRevision,
                         build: snapshot?.buildSha,
                         runtime: snapshot?.runtime,
                         databaseReady: snapshot?.databaseReady,

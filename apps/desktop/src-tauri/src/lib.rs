@@ -3179,6 +3179,7 @@ fn snapshot(state: &AppState) -> Result<AppSnapshot, &'static str> {
     let Some(database) = state.database.as_ref() else {
         return Ok(AppSnapshot {
             app_version: env!("CARGO_PKG_VERSION").to_string(),
+            build_revision: env!("AIP_BUILD_REVISION").to_string(),
             build_sha: env!("AIP_BUILD_SHA").to_string(),
             build_timestamp: env!("AIP_BUILD_TIMESTAMP").to_string(),
             runtime_packaging_mode: env!("AIP_RUNTIME_PACKAGING_MODE").to_string(),
@@ -3193,6 +3194,7 @@ fn snapshot(state: &AppState) -> Result<AppSnapshot, &'static str> {
     let stored = database.snapshot().map_err(|_| "operation_failed")?;
     Ok(AppSnapshot {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
+        build_revision: env!("AIP_BUILD_REVISION").to_string(),
         build_sha: env!("AIP_BUILD_SHA").to_string(),
         build_timestamp: env!("AIP_BUILD_TIMESTAMP").to_string(),
         runtime_packaging_mode: env!("AIP_RUNTIME_PACKAGING_MODE").to_string(),

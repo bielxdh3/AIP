@@ -64,6 +64,7 @@ let listedConversations = conversations;
 
 const snapshot = {
   appVersion: "0.2.2",
+  buildRevision: "0.2.3.1",
   buildSha: "test",
   buildTimestamp: "test",
   runtimePackagingMode: "managed",
