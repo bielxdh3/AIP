@@ -151,6 +151,55 @@ describe("ConversationDraftSurface", () => {
     expect(textarea.value).toBe("");
   });
 
+  it("locks the model picker while the first send is pending", async () => {
+    hookState.phase = loadedPhase;
+    const created = {
+      ...loadedPhase.conversation,
+      id: "created",
+      title: "Nova conversa",
+    };
+    let resolveCreated: ((value: typeof created) => void) | undefined;
+    invoke.mockImplementation((command: string) =>
+      command === "create_agent_conversation"
+        ? new Promise<typeof created>((resolve) => {
+            resolveCreated = resolve;
+          })
+        : Promise.resolve(undefined),
+    );
+    renderDraft();
+    const textarea = container?.querySelector<HTMLTextAreaElement>(
+      ".conversation-draft-surface .composer textarea",
+    );
+    const picker = container?.querySelector<HTMLButtonElement>(
+      '.model-picker-trigger[aria-label^="Selecionar modelo"]',
+    );
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    if (textarea === null || textarea === undefined)
+      throw new Error("Missing draft composer");
+    if (
+      picker === null ||
+      picker === undefined ||
+      submit === null ||
+      submit === undefined
+    )
+      throw new Error("Missing draft controls");
+    change(textarea, "primeira mensagem");
+
+    await act(async () => {
+      submit.click();
+      await Promise.resolve();
+    });
+    expect(picker.disabled).toBe(true);
+
+    await act(async () => {
+      resolveCreated?.(created);
+      await Promise.resolve();
+    });
+    expect(picker.disabled).toBe(false);
+  });
+
   it("can be abandoned without creating a persisted conversation or fake history", () => {
     hookState.phase = loadedPhase;
     renderDraft();

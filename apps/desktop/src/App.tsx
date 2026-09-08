@@ -2035,7 +2035,7 @@ export function ConversationDraftSurface({
             models={currentPhase.provider.models}
             value={draftModelRef}
             providerState={currentPhase.provider.state}
-            disabled={currentPhase.provider.models.length === 0}
+            disabled={busy || currentPhase.provider.models.length === 0}
             defaultOption={{
               label: "Automático",
               detail: currentPhase.defaultModelRef ?? "Seleção automática",
