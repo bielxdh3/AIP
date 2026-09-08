@@ -1880,6 +1880,10 @@ impl ChatCoordinator {
         ) else {
             return;
         };
+        let _ = self
+            .inner
+            .database
+            .mark_generated_title_attempted(&job.agent_id, &job.conversation_id);
         lock(&self.inner.title_generations).insert(
             request_id.clone(),
             TitleGeneration {
@@ -3631,8 +3635,8 @@ mod tests {
             Arc::new(Mutex::new(OrchestrationManager::default())),
         );
         let provider = ProviderSnapshot {
-            state: ProviderState::Available,
-            detail_code: "provider_available".into(),
+            state: ProviderState::Checking,
+            detail_code: "provider_checking".into(),
             models: vec![OllamaModel {
                 model_ref: "ollama:test".into(),
                 provider_model_id: "test".into(),
@@ -3649,10 +3653,8 @@ mod tests {
         *lock(&coordinator.inner.provider) = provider;
         runtime.start();
         wait_for_runtime_state(&runtime, RuntimeState::Ready);
-        // HealthReady triggers the coordinator's provider discovery. Wait for that
-        // checking -> available transition before submitting the first prompt so
-        // the assertion exercises dispatch rather than the discovery boundary.
-        wait_for_provider_state(&coordinator, ProviderState::Checking);
+        // HealthReady triggers provider discovery; the initial Checking state makes
+        // completion observable without depending on the transient state timing.
         wait_for_provider_state(&coordinator, ProviderState::Available);
 
         let first = coordinator

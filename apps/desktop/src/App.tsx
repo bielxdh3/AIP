@@ -1851,6 +1851,12 @@ export function ConversationDraftSurface({
   const currentModelBlock = modelBlockedCodes.has(
     currentPhase.sendBlockedCode ?? "",
   );
+  const routingPolicy = routingPolicyPayload(modelPreferences);
+  const automaticPolicyHasCandidate =
+    routingPolicy.mode !== "manual" &&
+    currentPhase.provider.models.some(
+      (model) => !modelPreferences.excludedModelRefs.includes(model.ref),
+    );
   const providerError = providerUnavailableCopy(currentPhase);
   const blocked = providerError
     ? null
@@ -1869,11 +1875,13 @@ export function ConversationDraftSurface({
     !nonModelBlocked &&
     (draftModelRef === null
       ? canSendConversationMessage(currentPhase) ||
-        (currentModelBlock && draftCanResolveModelBlock && request === null)
+        (currentModelBlock &&
+          draftCanResolveModelBlock &&
+          request === null &&
+          automaticPolicyHasCandidate)
       : draftModelAvailable) &&
     !providerUnavailable;
   const canDraft = canDraftConversationMessage(currentPhase);
-  const routingPolicy = routingPolicyPayload(modelPreferences);
 
   async function cancelCurrentRequest() {
     if (

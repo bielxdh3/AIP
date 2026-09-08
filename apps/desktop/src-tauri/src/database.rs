@@ -791,6 +791,19 @@ impl Database {
         )? == 1)
     }
 
+    pub fn mark_generated_title_attempted(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+    ) -> Result<bool, DatabaseError> {
+        let connection = self.open()?;
+        Ok(connection.execute(
+            "UPDATE conversations SET title_source = 'auto', updated_at = ?1
+             WHERE id = ?2 AND agent_id = ?3 AND archived_at IS NULL AND title_source = 'placeholder'",
+            params![now_millis(), conversation_id, agent_id],
+        )? == 1)
+    }
+
     pub fn set_conversation_pinned(
         &self,
         agent_id: &str,
@@ -3570,6 +3583,50 @@ mod tests {
                 .title,
             "Meu roteiro"
         );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn failed_generated_title_attempt_is_persisted_as_one_shot() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let conversation = database
+            .create_conversation(ASTRA_ID, "Nova conversa")
+            .unwrap();
+        let attempt = database
+            .create_message_attempt(ASTRA_ID, &conversation.id, "Primeira", "ollama:test")
+            .unwrap();
+        database
+            .mark_streaming(&attempt.assistant_message_id, &attempt.request_id)
+            .unwrap();
+        database
+            .append_assistant_chunk(
+                &attempt.assistant_message_id,
+                &attempt.request_id,
+                "Resposta",
+            )
+            .unwrap();
+        database
+            .finish_assistant(
+                &attempt.assistant_message_id,
+                &attempt.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+
+        assert!(database
+            .mark_generated_title_attempted(ASTRA_ID, &conversation.id)
+            .unwrap());
+        assert_eq!(
+            database
+                .first_title_context(ASTRA_ID, &conversation.id)
+                .unwrap(),
+            None
+        );
+        assert!(!database
+            .commit_generated_title(ASTRA_ID, &conversation.id, "Título tardio")
+            .unwrap());
         cleanup(&path);
     }
 
