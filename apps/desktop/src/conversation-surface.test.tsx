@@ -213,9 +213,10 @@ describe("ConversationSurface", () => {
     expect(
       container.querySelector(".chat-message .message-actions"),
     ).toBeNull();
-    expect(container.querySelector(".generation-status")?.textContent).toBe(
-      "Gerando resposta…",
-    );
+    expect(
+      container.querySelector(".chat-message .message-status")?.textContent,
+    ).toBe("Gerando resposta…");
+    expect(container.querySelector(".generation-status")).toBeNull();
     expect(
       container
         .querySelector<HTMLButtonElement>(".composer-submit")
@@ -224,6 +225,7 @@ describe("ConversationSurface", () => {
 
     phase = {
       ...loadedPhase,
+      messages: [{ ...loadedPhase.messages[0], status: "streaming" }],
       queue: [
         {
           agentId: "agent",
@@ -235,9 +237,25 @@ describe("ConversationSurface", () => {
       ],
     } as unknown as PhaseOneState;
     renderSurface();
-    expect(container.querySelector(".generation-status")?.textContent).toBe(
-      "Cancelando resposta…",
-    );
+    expect(
+      container.querySelector(".chat-message .message-status")?.textContent,
+    ).toBe("Cancelando resposta…");
+  });
+
+  it("removes the only generation indicator on every terminal state", () => {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    for (const status of ["complete", "failed", "cancelled"] as const) {
+      phase = {
+        ...loadedPhase,
+        messages: [{ ...loadedPhase.messages[0], status }],
+        queue: [],
+      } as unknown as PhaseOneState;
+      renderSurface();
+      expect(container.querySelector(".generation-status")).toBeNull();
+      expect(container.textContent).not.toContain("Gerando resposta…");
+    }
   });
 
   it("keeps retry details collapsed until the user asks for model controls", () => {
@@ -371,7 +389,7 @@ describe("ConversationSurface", () => {
     });
   });
 
-  it("keeps provider recovery and temporary controls compact", () => {
+  it("shows exactly one unavailable-provider error inside the composer", () => {
     phase = {
       ...loadedPhase,
       messages: [],
@@ -396,10 +414,15 @@ describe("ConversationSurface", () => {
     ).toBeNull();
     expect(
       container.querySelector(".composer .provider-state")?.textContent,
-    ).toContain("Ollama indisponível");
+    ).toBe("Servidor de IA indisponível.");
+    expect(container.querySelectorAll(".provider-state")).toHaveLength(1);
+    expect(container.querySelectorAll(".provider-recovery")).toHaveLength(0);
     expect(
-      container.querySelector(".provider-recovery")?.textContent,
-    ).toContain("Abra o Ollama");
+      container.textContent?.match(/Servidor de IA indisponível\./g),
+    ).toHaveLength(1);
+    expect(
+      container.querySelector(".composer-helper")?.textContent,
+    ).not.toContain("Servidor de IA indisponível");
     const temporaryControl = container.querySelector<HTMLButtonElement>(
       '.conversation-header-action[aria-label="Iniciar conversa temporária"]',
     );

@@ -180,8 +180,8 @@ import {
   canRequestCancellation,
   conversationOverrideArguments,
   messageStatusCopy,
-  providerRecoveryCopy,
   providerStatusCopy,
+  providerUnavailableCopy,
   requestForAgent,
 } from "./conversation-state";
 import {
@@ -1231,6 +1231,7 @@ function MessageItem({
   message,
   onRegenerate,
   onEdit,
+  cancellationRequested = false,
   variants = [],
   onSelectVariant,
   retrying,
@@ -1239,6 +1240,7 @@ function MessageItem({
   message: ConversationMessage;
   onRegenerate: (message: ConversationMessage, modelRef?: string) => void;
   onEdit: (message: ConversationMessage, content: string) => void;
+  cancellationRequested?: boolean;
   variants?: Array<{ id: string; branchId: string; active: boolean }>;
   onSelectVariant?: (id: string) => void;
   retrying: boolean;
@@ -1294,7 +1296,9 @@ function MessageItem({
       ) : null}
       {message.author === "agent" && message.status !== "complete" ? (
         <span className="message-status" role="status">
-          {messageStatusCopy(message)}
+          {cancellationRequested
+            ? "Cancelando resposta…"
+            : messageStatusCopy(message)}
         </span>
       ) : null}
       {!pendingAssistant ? (
@@ -1483,8 +1487,8 @@ export function ConversationSurface({
 
   const currentPhase = phase;
   const request = requestForAgent(phase.queue, phase.agent.id);
-  const blocked = blockedSendCopy(phase.sendBlockedCode);
-  const providerRecovery = providerRecoveryCopy(phase);
+  const providerError = providerUnavailableCopy(phase);
+  const blocked = providerError ? null : blockedSendCopy(phase.sendBlockedCode);
   const providerUnavailable = phase.provider.state !== "available";
   const modelsAvailable = phase.provider.models.length > 0;
   const canSend =
@@ -1670,6 +1674,10 @@ export function ConversationSurface({
                 void regenerate(message, modelRef)
               }
               onEdit={(message, content) => void edit(message, content)}
+              cancellationRequested={
+                request?.assistantMessageId === message.id &&
+                request.cancellationRequested
+              }
               retrying={retryingMessageId === message.id}
               models={currentPhase.provider.models}
               variants={
@@ -1700,30 +1708,20 @@ export function ConversationSurface({
 
       <footer className="composer">
         <div className="composer-status" aria-live="polite">
-          {providerStatusCopy(phase) ? (
+          {providerError ? (
+            <span className="provider-state unavailable" role="alert">
+              {providerError}
+            </span>
+          ) : providerStatusCopy(phase) ? (
             <span className={`provider-state ${phase.provider.state}`}>
               {providerStatusCopy(phase)}
             </span>
-          ) : null}
-          {providerRecovery ? (
-            <p className="provider-recovery" role="status">
-              {providerRecovery}
-            </p>
           ) : null}
           {temporary ? (
             <p className="temporary-disclosure readable-helper" role="status">
               Temporária ativa: mensagens e contexto ficam apenas na memória e
               são apagados ao encerrar.
             </p>
-          ) : null}
-          {request !== null ? (
-            <span className="generation-status" role="status">
-              {request.cancellationRequested
-                ? "Cancelando resposta…"
-                : request.active
-                  ? "Gerando resposta…"
-                  : "Aguardando processamento…"}
-            </span>
           ) : null}
         </div>
         <textarea
@@ -1848,13 +1846,15 @@ export function ConversationDraftSurface({
   const currentModelBlock = modelBlockedCodes.has(
     currentPhase.sendBlockedCode ?? "",
   );
-  const blocked = draftModelUnavailable
-    ? blockedSendCopy("selected_model_unavailable")
-    : draftCanResolveModelBlock &&
-        modelBlockedCodes.has(currentPhase.sendBlockedCode ?? "")
-      ? null
-      : blockedSendCopy(currentPhase.sendBlockedCode);
-  const providerRecovery = providerRecoveryCopy(currentPhase);
+  const providerError = providerUnavailableCopy(currentPhase);
+  const blocked = providerError
+    ? null
+    : draftModelUnavailable
+      ? blockedSendCopy("selected_model_unavailable")
+      : draftCanResolveModelBlock &&
+          modelBlockedCodes.has(currentPhase.sendBlockedCode ?? "")
+        ? null
+        : blockedSendCopy(currentPhase.sendBlockedCode);
   const providerUnavailable = currentPhase.provider.state !== "available";
   const nonModelBlocked =
     currentPhase.sendBlockedCode !== null &&
@@ -1977,26 +1977,16 @@ export function ConversationDraftSurface({
 
       <footer className="composer">
         <div className="composer-status" aria-live="polite">
-          {providerStatusCopy(currentPhase) ? (
+          {providerError ? (
+            <span className="provider-state unavailable" role="alert">
+              {providerError}
+            </span>
+          ) : providerStatusCopy(currentPhase) ? (
             <span className={`provider-state ${currentPhase.provider.state}`}>
               {providerStatusCopy(currentPhase)}
             </span>
           ) : null}
-          {providerRecovery ? (
-            <p className="provider-recovery" role="status">
-              {providerRecovery}
-            </p>
-          ) : null}
         </div>
-        {request !== null ? (
-          <span className="generation-status" role="status">
-            {request.cancellationRequested
-              ? "Cancelando resposta…"
-              : request.active
-                ? "Gerando resposta…"
-                : "Aguardando processamento…"}
-          </span>
-        ) : null}
         <textarea
           value={draft}
           maxLength={16_384}

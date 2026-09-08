@@ -385,7 +385,7 @@ fn snapshot(
 }
 
 struct ChatInner {
-    app: AppHandle,
+    events: Arc<dyn ChatEventSink>,
     database: Database,
     runtime: RuntimeController,
     orchestration: Arc<Mutex<OrchestrationManager>>,
@@ -403,6 +403,38 @@ struct ChatInner {
     cancellation_recovery: AtomicBool,
 }
 
+trait ChatEventSink: Send + Sync {
+    fn emit(&self, event: PhaseOneEvent);
+}
+
+struct TauriEventSink {
+    app: AppHandle,
+}
+
+impl ChatEventSink for TauriEventSink {
+    fn emit(&self, event: PhaseOneEvent) {
+        if let Some(agent_id) = event.agent_id.as_deref() {
+            let _ = self.app.emit_to("main", EVENT_NAME, event.clone());
+            if let Some(label) = overlays::window_label(agent_id) {
+                let _ = self.app.emit_to(label, EVENT_NAME, event.clone());
+            }
+            if let Some(label) = overlays::bubble_window_label(agent_id) {
+                let _ = self.app.emit_to(label, EVENT_NAME, event);
+            }
+        } else {
+            let _ = self.app.emit(EVENT_NAME, event);
+        }
+    }
+}
+
+#[cfg(test)]
+struct NoopEventSink;
+
+#[cfg(test)]
+impl ChatEventSink for NoopEventSink {
+    fn emit(&self, _event: PhaseOneEvent) {}
+}
+
 #[derive(Clone)]
 pub struct ChatCoordinator {
     inner: Arc<ChatInner>,
@@ -416,10 +448,26 @@ impl ChatCoordinator {
         safe_mode: Arc<AtomicBool>,
         orchestration: Arc<Mutex<OrchestrationManager>>,
     ) -> Self {
+        Self::new_with_sink(
+            Arc::new(TauriEventSink { app }),
+            database,
+            runtime,
+            safe_mode,
+            orchestration,
+        )
+    }
+
+    fn new_with_sink(
+        events: Arc<dyn ChatEventSink>,
+        database: Database,
+        runtime: RuntimeController,
+        safe_mode: Arc<AtomicBool>,
+        orchestration: Arc<Mutex<OrchestrationManager>>,
+    ) -> Self {
         let receiver = runtime.subscribe();
         let coordinator = Self {
             inner: Arc::new(ChatInner {
-                app,
+                events,
                 database,
                 runtime,
                 orchestration,
@@ -444,6 +492,22 @@ impl ChatCoordinator {
             }
         });
         coordinator
+    }
+
+    #[cfg(test)]
+    fn new_for_test(
+        database: Database,
+        runtime: RuntimeController,
+        safe_mode: Arc<AtomicBool>,
+        orchestration: Arc<Mutex<OrchestrationManager>>,
+    ) -> Self {
+        Self::new_with_sink(
+            Arc::new(NoopEventSink),
+            database,
+            runtime,
+            safe_mode,
+            orchestration,
+        )
     }
 
     pub fn state(&self, agent_id: &str) -> Result<PhaseOneState, &'static str> {
@@ -1256,6 +1320,7 @@ impl ChatCoordinator {
         self.inner.runtime.shutdown();
         self.inner.runtime.start();
         self.emit_refresh(Some(&job.agent_id));
+        self.dispatch_next();
     }
 
     fn auto_candidate_available(&self) -> bool {
@@ -1416,7 +1481,9 @@ impl ChatCoordinator {
                 let _ = self.refresh_models();
                 self.dispatch_next();
             }
-            RuntimeNotice::Output(RuntimeOutput::Accepted { .. }) => {}
+            RuntimeNotice::Output(RuntimeOutput::Accepted { id }) => {
+                self.trace(&id, "runtime_accepted", None, None);
+            }
         }
     }
 
@@ -2094,17 +2161,7 @@ impl ChatCoordinator {
     }
 
     fn emit(&self, event: PhaseOneEvent) {
-        if let Some(agent_id) = event.agent_id.as_deref() {
-            let _ = self.inner.app.emit_to("main", EVENT_NAME, event.clone());
-            if let Some(label) = overlays::window_label(agent_id) {
-                let _ = self.inner.app.emit_to(label, EVENT_NAME, event.clone());
-            }
-            if let Some(label) = overlays::bubble_window_label(agent_id) {
-                let _ = self.inner.app.emit_to(label, EVENT_NAME, event);
-            }
-        } else {
-            let _ = self.inner.app.emit(EVENT_NAME, event);
-        }
+        self.inner.events.emit(event);
     }
 
     fn trace(
@@ -2443,11 +2500,12 @@ mod tests {
     use std::{
         fs,
         path::PathBuf,
-        sync::mpsc,
+        sync::{atomic::AtomicBool, mpsc, Arc, Mutex},
+        thread,
         time::{Duration, Instant},
     };
 
-    use crate::domain::ConversationMessage;
+    use crate::domain::{ConversationMessage, OllamaModel, ProviderState};
     use uuid::Uuid;
 
     use super::*;
@@ -3550,6 +3608,207 @@ mod tests {
         assert_ne!(payloads[0], payloads[1]);
         drop(database);
         let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn coordinator_runtime_dispatch_isolates_sequential_prompts() {
+        let path = std::env::temp_dir()
+            .join(format!("aip-coordinator-runtime-{}", Uuid::now_v7()))
+            .join("aip.sqlite3");
+        let database = Database::initialize(&path).unwrap();
+        let agent = database.agent(crate::database::ASTRA_ID).unwrap();
+        let conversation = database.main_conversation(&agent.id).unwrap();
+        database
+            .set_selected_model(&agent.id, "ollama:test")
+            .unwrap();
+
+        let source_root = coordinator_fixture_source_root();
+        let runtime = RuntimeController::new(source_root.clone(), false);
+        let coordinator = ChatCoordinator::new_for_test(
+            database.clone(),
+            runtime.clone(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(OrchestrationManager::default())),
+        );
+        let provider = ProviderSnapshot {
+            state: ProviderState::Available,
+            detail_code: "provider_available".into(),
+            models: vec![OllamaModel {
+                model_ref: "ollama:test".into(),
+                provider_model_id: "test".into(),
+                display_name: "Test".into(),
+                size: 1,
+                family: None,
+                parameter_size: None,
+                quantization: None,
+                capabilities: vec![],
+            }],
+            refreshed_at: Some(now_millis()),
+        };
+        coordinator.sync_orchestration(&provider);
+        *lock(&coordinator.inner.provider) = provider;
+        runtime.start();
+        wait_for_runtime_state(&runtime, RuntimeState::Ready);
+
+        let first = coordinator
+            .send_message(&agent.id, &conversation.id, "Responda apenas com AZUL-17")
+            .unwrap();
+        wait_for_message_status(
+            &database,
+            &agent.id,
+            &conversation.id,
+            &first.assistant_message_id,
+            MessageStatus::Complete,
+        );
+        wait_for_request_trace(&coordinator, &first.request_id, "terminal_persisted");
+        let first_message = database
+            .messages(&agent.id, &conversation.id)
+            .unwrap()
+            .into_iter()
+            .find(|message| message.id == first.assistant_message_id)
+            .unwrap();
+        assert_eq!(first_message.content, "AZUL-17");
+
+        let second = coordinator
+            .send_message(&agent.id, &conversation.id, "Responda apenas com VERDE-93")
+            .unwrap();
+        wait_for_message_status(
+            &database,
+            &agent.id,
+            &conversation.id,
+            &second.assistant_message_id,
+            MessageStatus::Complete,
+        );
+        let second_message = database
+            .messages(&agent.id, &conversation.id)
+            .unwrap()
+            .into_iter()
+            .find(|message| message.id == second.assistant_message_id)
+            .unwrap();
+        assert_eq!(second_message.content, "VERDE-93");
+        assert_ne!(first_message.content, second_message.content);
+
+        for request_id in [&first.request_id, &second.request_id] {
+            wait_for_request_trace(&coordinator, request_id, "runtime_accepted");
+            wait_for_request_trace(&coordinator, request_id, "terminal_persisted");
+            let trace = lock(&coordinator.inner.request_traces).entries(request_id);
+            let codes = trace.iter().map(|entry| entry.code).collect::<Vec<_>>();
+            assert!(codes.contains(&"request_written"));
+            assert!(codes.contains(&"runtime_accepted"));
+            assert!(codes.contains(&"generation_started"));
+            assert!(codes.contains(&"terminal_persisted"));
+        }
+
+        runtime.shutdown();
+        drop(database);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+        let _ = fs::remove_dir_all(source_root);
+    }
+
+    fn coordinator_fixture_source_root() -> PathBuf {
+        const RUNTIME: &str = r#"
+import json
+import sys
+
+def write(value):
+    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+def event(request, kind, sequence, content=None):
+    value = {
+        "protocolVersion": 1,
+        "event": kind,
+        "requestId": request["id"],
+        "agentId": request["params"]["agentId"],
+        "conversationId": request["params"]["conversationId"],
+        "assistantMessageId": request["params"]["assistantMessageId"],
+        "sequence": sequence,
+    }
+    if content is not None:
+        value["content"] = content
+    write(value)
+
+for raw in sys.stdin:
+    request = json.loads(raw)
+    method = request["method"]
+    if method == "runtime.health":
+        write({"protocolVersion": 1, "id": request["id"], "result": {"name": "aip-runtime", "status": "ready", "protocolVersion": 1}})
+    elif method == "runtime.shutdown":
+        write({"protocolVersion": 1, "id": request["id"], "result": {"status": "stopping"}})
+        raise SystemExit(0)
+    elif method == "provider.discover":
+        write({"protocolVersion": 1, "id": request["id"], "result": {"provider": "ollama", "state": "available", "models": [{"ref": "ollama:test", "providerModelId": "test", "displayName": "Test", "size": 1, "capabilities": []}]}})
+    elif method == "generation.start":
+        write({"protocolVersion": 1, "id": request["id"], "result": {"status": "accepted"}})
+        event(request, "generation.started", 0)
+        prompt = request["params"]["messages"][-1]["content"]
+        marker = "AZUL-17" if "AZUL-17" in prompt else ("VERDE-93" if "VERDE-93" in prompt else "TITULO")
+        event(request, "generation.chunk", 1, marker)
+        event(request, "generation.complete", 1)
+    elif method == "generation.cancel":
+        write({"protocolVersion": 1, "id": request["id"], "error": {"code": "generation_not_active"}})
+"#;
+        let root = std::env::temp_dir().join(format!(
+            "aip-coordinator-runtime-fixture-{}",
+            Uuid::now_v7()
+        ));
+        let package = root.join("aip_runtime");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("__init__.py"), "").unwrap();
+        fs::write(package.join("__main__.py"), RUNTIME).unwrap();
+        root
+    }
+
+    fn wait_for_runtime_state(runtime: &RuntimeController, expected: RuntimeState) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if runtime.snapshot().state == expected {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!("runtime did not reach expected state");
+    }
+
+    fn wait_for_message_status(
+        database: &Database,
+        agent_id: &str,
+        conversation_id: &str,
+        message_id: &str,
+        expected: MessageStatus,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if database
+                .messages(agent_id, conversation_id)
+                .unwrap()
+                .iter()
+                .any(|message| message.id == message_id && message.status == expected)
+            {
+                return;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!("message did not reach expected status");
+    }
+
+    fn wait_for_request_trace(
+        coordinator: &ChatCoordinator,
+        request_id: &str,
+        expected_code: &'static str,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if lock(&coordinator.inner.request_traces)
+                .entries(request_id)
+                .iter()
+                .any(|entry| entry.code == expected_code)
+            {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!("request trace did not reach expected state");
     }
 
     #[test]

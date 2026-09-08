@@ -16,6 +16,7 @@ import {
   modelSourceCopy,
   providerRecoveryCopy,
   providerStatusCopy,
+  providerUnavailableCopy,
   requestTerminalState,
   requestForAgent,
 } from "./conversation-state";
@@ -216,6 +217,38 @@ describe("conversation event reducer", () => {
     ).toBe(complete);
   });
 
+  it("does not apply an old assistant response to the next request", () => {
+    const current = phase();
+    current.messages[0] = {
+      ...current.messages[0]!,
+      content: "Oi",
+      status: "complete",
+    };
+    current.messages.push({
+      ...current.messages[0]!,
+      id: "assistant-next",
+      content: "",
+      status: "pending",
+      turnGroupId: "user-next",
+    });
+    current.queue = [
+      {
+        ...current.queue[0]!,
+        requestId: "request-next",
+        assistantMessageId: "assistant-next",
+      },
+    ];
+    const initial = createConversationViewState(current);
+    const stale = applyPhaseOneEvent(initial, {
+      ...event("generation.complete", 0, null),
+      requestId: "request",
+      assistantMessageId: "assistant",
+    });
+    expect(stale).toBe(initial);
+    expect(stale.phase.messages[1]?.content).toBe("");
+    expect(stale.phase.messages[1]?.status).toBe("pending");
+  });
+
   it("rejects a terminal event whose sequence does not match accepted chunks", () => {
     const initial = createConversationViewState(phase());
     const chunked = applyPhaseOneEvent(
@@ -342,6 +375,21 @@ describe("conversation event reducer", () => {
     expect(providerRecoveryCopy(current)).toContain("Ollama indisponível");
     current.provider.state = "available";
     expect(providerRecoveryCopy(current)).toBeNull();
+  });
+
+  it("collapses runtime and provider outages to one composer error", () => {
+    const current = phase();
+    current.provider.state = "unavailable";
+    expect(providerUnavailableCopy(current)).toBe(
+      "Servidor de IA indisponível.",
+    );
+    current.provider.state = "available";
+    current.sendBlockedCode = "runtime_unavailable";
+    expect(providerUnavailableCopy(current)).toBe(
+      "Servidor de IA indisponível.",
+    );
+    current.sendBlockedCode = "selected_model_unavailable";
+    expect(providerUnavailableCopy(current)).toBeNull();
   });
 
   it("derives compact, expanded and cancel controls from authoritative state", () => {
