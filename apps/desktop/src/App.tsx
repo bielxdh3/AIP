@@ -957,6 +957,11 @@ export function ModelPicker({
     selectedOption?.label ??
     (models.length > 0 ? "Selecione um modelo local" : stateCopy.label);
   const triggerDetail = selectedOption?.detail ?? stateCopy.detail;
+  const triggerAccessibleLabel = compact
+    ? [ariaLabel ?? label, triggerLabel, triggerDetail, statusText]
+        .filter((part): part is string => Boolean(part && part.trim()))
+        .join(" · ")
+    : (ariaLabel ?? label);
 
   const updatePosition = useCallback(() => {
     const trigger = triggerRef.current;
@@ -1115,7 +1120,7 @@ export function ModelPicker({
           ref={triggerRef}
           type="button"
           className="model-picker-trigger"
-          aria-label={ariaLabel ?? label}
+          aria-label={triggerAccessibleLabel}
           aria-haspopup="listbox"
           aria-expanded={open}
           aria-controls={listboxId}

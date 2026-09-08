@@ -271,7 +271,7 @@ describe("ConversationDraftSurface", () => {
     );
     renderDraft();
     const picker = container?.querySelector<HTMLButtonElement>(
-      '.model-picker-trigger[aria-label="Selecionar modelo"]',
+      '.model-picker-trigger[aria-label^="Selecionar modelo"]',
     );
     if (picker === null || picker === undefined)
       throw new Error("Missing model picker");
@@ -312,7 +312,7 @@ describe("ConversationDraftSurface", () => {
     hookState.phase = loadedPhase;
     renderDraft();
     const picker = container?.querySelector<HTMLButtonElement>(
-      '.model-picker-trigger[aria-label="Selecionar modelo"]',
+      '.model-picker-trigger[aria-label^="Selecionar modelo"]',
     );
     if (picker === null || picker === undefined)
       throw new Error("Missing model picker");
@@ -354,7 +354,7 @@ describe("ConversationDraftSurface", () => {
     renderDraft();
 
     const picker = container?.querySelector<HTMLButtonElement>(
-      '.model-picker-trigger[aria-label="Selecionar modelo"]',
+      '.model-picker-trigger[aria-label^="Selecionar modelo"]',
     );
     if (picker === null || picker === undefined)
       throw new Error("Missing model picker");
