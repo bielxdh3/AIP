@@ -72,6 +72,7 @@ describe("ConversationDraftSurface", () => {
     hookState.error = false;
     hookState.load.mockReset();
     invoke.mockReset();
+    localStorage.removeItem("aip.settings.models");
   });
 
   function renderDraft(onPersisted = vi.fn(), onCreated = vi.fn()) {
@@ -410,6 +411,38 @@ describe("ConversationDraftSurface", () => {
       "send_phase_one_message",
       expect.objectContaining({ content: "mensagem automática" }),
     );
+  });
+
+  it("blocks automatic drafts when the active routing policy excludes every model", () => {
+    localStorage.setItem(
+      "aip.settings.models",
+      JSON.stringify({
+        excludedModelRefs: ["ollama:test"],
+        fallbackOnlyModelRefs: [],
+        hiddenModelRefs: [],
+        preferredModelRef: null,
+        policyMode: "auto",
+      }),
+    );
+    hookState.phase = {
+      ...loadedPhase,
+      conversation: {
+        ...loadedPhase.conversation,
+        modelOverrideRef: "ollama:missing",
+      },
+      modelOverrideRef: "ollama:missing",
+      selectedModelRef: "ollama:missing",
+      selectedModelAvailable: false,
+      canSend: false,
+      sendBlockedCode: "selected_model_unavailable",
+    } as unknown as PhaseOneState;
+    renderDraft();
+
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    expect(submit?.disabled).toBe(true);
+    localStorage.removeItem("aip.settings.models");
   });
 
   it("shows one unavailable-provider error inside the draft composer", () => {
