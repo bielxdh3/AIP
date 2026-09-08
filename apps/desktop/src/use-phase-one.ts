@@ -16,6 +16,29 @@ export function loadIsCurrent(
   return startedRevision === currentRevision;
 }
 
+export function mergeLoadedPhase(
+  current: ConversationViewState | null,
+  phase: PhaseOneState,
+): ConversationViewState {
+  const next = createConversationViewState(phase);
+  if (
+    current === null ||
+    current.phase.agent.id !== phase.agent.id ||
+    current.phase.conversation.id !== phase.conversation.id
+  ) {
+    return next;
+  }
+  const activeRequestIds = new Set(phase.queue.map((entry) => entry.requestId));
+  return {
+    phase,
+    lastSequenceByRequest: Object.fromEntries(
+      Object.entries(current.lastSequenceByRequest).filter(([requestId]) =>
+        activeRequestIds.has(requestId),
+      ),
+    ),
+  };
+}
+
 export function usePhaseOne(agentId: string | null, temporary = false) {
   const [view, setView] = useState<ConversationViewState | null>(null);
   const [error, setError] = useState(false);
@@ -25,11 +48,14 @@ export function usePhaseOne(agentId: string | null, temporary = false) {
     if (agentId === null) return;
     const revision = ++loadRevision.current;
     try {
-      const phase = await invoke<PhaseOneState>(temporary ? "get_temporary_phase_one_state" : "get_phase_one_state", {
-        agentId,
-      });
+      const phase = await invoke<PhaseOneState>(
+        temporary ? "get_temporary_phase_one_state" : "get_phase_one_state",
+        {
+          agentId,
+        },
+      );
       if (!loadIsCurrent(revision, loadRevision.current)) return;
-      setView(createConversationViewState(phase));
+      setView((current) => mergeLoadedPhase(current, phase));
       setError(false);
     } catch {
       if (!loadIsCurrent(revision, loadRevision.current)) return;

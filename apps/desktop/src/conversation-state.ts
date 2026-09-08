@@ -301,6 +301,20 @@ export function providerRecoveryCopy(state: PhaseOneState): string | null {
   }
 }
 
+export function providerUnavailableCopy(
+  state: Pick<PhaseOneState, "provider" | "sendBlockedCode">,
+): string | null {
+  if (
+    state.provider.state === "unavailable" ||
+    state.sendBlockedCode === "runtime_unavailable" ||
+    state.sendBlockedCode === "provider_unavailable" ||
+    state.sendBlockedCode === "orchestration_unavailable"
+  ) {
+    return "Servidor de IA indisponível.";
+  }
+  return null;
+}
+
 export function blockedSendCopy(code: string | null): string | null {
   switch (code) {
     case null:

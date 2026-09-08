@@ -411,4 +411,23 @@ describe("ConversationDraftSurface", () => {
       expect.objectContaining({ content: "mensagem automática" }),
     );
   });
+
+  it("shows one unavailable-provider error inside the draft composer", () => {
+    hookState.phase = {
+      ...loadedPhase,
+      provider: { ...loadedPhase.provider, state: "unavailable" },
+      canSend: false,
+      sendBlockedCode: "provider_unavailable",
+    } as unknown as PhaseOneState;
+    renderDraft();
+
+    expect(
+      container?.querySelector(".composer .provider-state")?.textContent,
+    ).toBe("Servidor de IA indisponível.");
+    expect(container?.querySelectorAll(".provider-state")).toHaveLength(1);
+    expect(container?.querySelectorAll(".provider-recovery")).toHaveLength(0);
+    expect(
+      container?.textContent?.match(/Servidor de IA indisponível\./g),
+    ).toHaveLength(1);
+  });
 });
