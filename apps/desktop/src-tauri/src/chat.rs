@@ -1099,7 +1099,23 @@ impl ChatCoordinator {
         content: &str,
         policy: RoutingPolicy,
     ) -> Result<SendMessageResult, &'static str> {
+        // Capture the session before waiting for the send lock. Conversion takes this same
+        // lock and clears the temporary store; a sender that was already waiting must not
+        // recreate a hidden temporary conversation after conversion succeeds.
+        let temporary_conversation_id = lock(&self.inner.temporary_chats)
+            .conversations
+            .get(agent_id)
+            .map(|chat| chat.conversation.id.clone());
         let _send_guard = lock(&self.inner.send_lock);
+        if let Some(expected_conversation_id) = temporary_conversation_id.as_deref() {
+            if !temporary_session_is_active(
+                &lock(&self.inner.temporary_chats),
+                agent_id,
+                expected_conversation_id,
+            ) {
+                return Err("operation_unavailable");
+            }
+        }
         if content.is_empty() || content.len() > MAX_USER_MESSAGE_BYTES {
             return Err("invalid_message");
         }
@@ -2469,6 +2485,17 @@ fn clear_temporary_chat(store: &mut TemporaryChatStore, agent_id: &str) {
     store.conversations.remove(agent_id);
 }
 
+fn temporary_session_is_active(
+    store: &TemporaryChatStore,
+    agent_id: &str,
+    conversation_id: &str,
+) -> bool {
+    store
+        .conversations
+        .get(agent_id)
+        .is_some_and(|chat| chat.conversation.id == conversation_id)
+}
+
 fn continue_temporary_in_database(
     database: &Database,
     temporary_chats: &Mutex<TemporaryChatStore>,
@@ -3126,6 +3153,34 @@ mod tests {
         assert!(luma.id.starts_with("temporary-luma-"));
         assert_ne!(astra.id, luma.id);
         assert_eq!(astra.model_override_ref, None);
+    }
+
+    #[test]
+    fn conversion_invalidates_a_waiting_temporary_send_session() {
+        let mut store = TemporaryChatStore::default();
+        let conversation = temporary_conversation("astra");
+        let conversation_id = conversation.id.clone();
+        store.conversations.insert(
+            "astra".into(),
+            TemporaryConversation {
+                conversation,
+                messages: Vec::new(),
+                model_override_ref: None,
+            },
+        );
+        assert!(temporary_session_is_active(
+            &store,
+            "astra",
+            &conversation_id
+        ));
+
+        clear_temporary_chat(&mut store, "astra");
+
+        assert!(!temporary_session_is_active(
+            &store,
+            "astra",
+            &conversation_id
+        ));
     }
 
     #[test]
