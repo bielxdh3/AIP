@@ -798,10 +798,7 @@ impl ChatCoordinator {
                 "operation_failed"
             })?;
         let job = job_from_attempt(agent_id, conversation_id, &model_ref, &attempt);
-        let enqueue_result = {
-            let _scheduler_guard = lock(&self.inner.scheduler_lock);
-            lock(&self.inner.queue).enqueue(job.clone())
-        };
+        let enqueue_result = self.enqueue_job(&job);
         if let Err(code) = enqueue_result {
             let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
             return Err(code);
@@ -921,10 +918,7 @@ impl ChatCoordinator {
             }
         };
         let job = job_from_attempt(agent_id, conversation_id, model_ref, &attempt);
-        let enqueue_result = {
-            let _scheduler_guard = lock(&self.inner.scheduler_lock);
-            lock(&self.inner.queue).enqueue(job.clone())
-        };
+        let enqueue_result = self.enqueue_job(&job);
         if let Err(code) = enqueue_result {
             if code == "duplicate_request" {
                 return Ok(SendMessageResult {
@@ -1058,10 +1052,7 @@ impl ChatCoordinator {
             model_ref,
             temporary: true,
         };
-        let enqueue_result = {
-            let _scheduler_guard = lock(&self.inner.scheduler_lock);
-            lock(&self.inner.queue).enqueue(job.clone())
-        };
+        let enqueue_result = self.enqueue_job(&job);
         if let Err(code) = enqueue_result {
             let _ = self.finish_temporary(&job, MessageStatus::Failed, Some(code));
             return Err(code);
@@ -1864,6 +1855,14 @@ impl ChatCoordinator {
         self.dispatch_next_locked();
     }
 
+    fn enqueue_job(&self, job: &GenerationJob) -> Result<(), &'static str> {
+        let _scheduler_guard = lock(&self.inner.scheduler_lock);
+        if self.inner.safe_mode.load(Ordering::SeqCst) {
+            return Err("safe_mode_active");
+        }
+        lock(&self.inner.queue).enqueue(job.clone())
+    }
+
     fn dispatch_next_locked(&self) {
         loop {
             if !lock(&self.inner.title_generations).is_empty() {
@@ -2359,10 +2358,8 @@ fn send_blocked_code_for_state(
             Some("selected_model_unavailable")
         } else if auto_candidate_available {
             None
-        } else if selected_model.is_none() {
-            Some("no_candidate")
         } else {
-            Some("selected_model_unavailable")
+            Some("no_candidate")
         }
     } else {
         None
@@ -2554,6 +2551,20 @@ mod tests {
                 true,
             ),
             None
+        );
+        assert_eq!(
+            send_blocked_code_for_state(
+                false,
+                RuntimeState::Ready,
+                &provider,
+                Some("ollama:default"),
+                false,
+                false,
+                0,
+                false,
+                false,
+            ),
+            Some("no_candidate")
         );
     }
 
