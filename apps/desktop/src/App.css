@@ -6338,10 +6338,6 @@ input[type="radio"] {
   overflow: visible;
 }
 
-.conversation-header {
-  display: block;
-}
-
 .composer-status {
   display: grid;
   gap: var(--space-2);
