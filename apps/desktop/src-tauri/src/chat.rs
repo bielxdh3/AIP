@@ -1881,6 +1881,30 @@ impl ChatCoordinator {
         self.dispatch_next();
     }
 
+    fn fail_timed_out_generation(&self, request_id: &str, code: &'static str) {
+        let Some(job) = lock(&self.inner.queue).finish_active(request_id) else {
+            return;
+        };
+        self.trace(request_id, "queue_finalized", None, Some(code));
+        let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
+        self.emit_terminal(&job, "generation.failed", Some(code));
+
+        // A timed-out provider call may still be inside the Python worker. Restart the
+        // sidecar before advancing FIFO so the next request cannot receive generation_busy.
+        self.inner
+            .cancellation_recovery
+            .store(true, Ordering::SeqCst);
+        self.trace(request_id, "runtime_recovery_restart", None, Some(code));
+        self.inner.runtime.shutdown();
+        if self.inner.safe_mode.load(Ordering::SeqCst) {
+            self.inner
+                .cancellation_recovery
+                .store(false, Ordering::SeqCst);
+        } else {
+            self.inner.runtime.start();
+        }
+    }
+
     fn fail_all(&self, code: &str) {
         let _scheduler_guard = lock(&self.inner.scheduler_lock);
         let jobs = lock(&self.inner.queue).clear();
@@ -2254,7 +2278,7 @@ impl ChatCoordinator {
                 continue;
             };
             self.trace(&request_id, "generation_watchdog_timeout", None, Some(code));
-            self.fail_active(&request_id, code);
+            self.fail_timed_out_generation(&request_id, code);
         }
     }
 }
