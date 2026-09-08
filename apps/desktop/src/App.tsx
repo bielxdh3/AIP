@@ -1310,7 +1310,9 @@ function MessageItem({
         <div className="message-actions">
           <button
             type="button"
-            aria-label="Copiar resposta"
+            aria-label={
+              message.author === "user" ? "Copiar mensagem" : "Copiar resposta"
+            }
             onClick={() => void navigator.clipboard?.writeText(message.content)}
           >
             Copiar
@@ -1857,17 +1859,26 @@ export function ConversationDraftSurface({
     currentPhase.provider.models.some(
       (model) => !modelPreferences.excludedModelRefs.includes(model.ref),
     );
+  const manualDraftNeedsSelection =
+    routingPolicy.mode === "manual" &&
+    draftModelRef === null &&
+    (currentPhase.defaultModelRef === null ||
+      currentPhase.sendBlockedCode === "selected_model_unavailable");
   const automaticDraftPolicyAllowsSend =
-    routingPolicy.mode === "manual" || automaticPolicyHasCandidate;
+    routingPolicy.mode === "manual"
+      ? !manualDraftNeedsSelection
+      : automaticPolicyHasCandidate;
   const providerError = providerUnavailableCopy(currentPhase);
   const blocked = providerError
     ? null
-    : draftModelUnavailable
-      ? blockedSendCopy("selected_model_unavailable")
-      : draftCanResolveModelBlock &&
-          modelBlockedCodes.has(currentPhase.sendBlockedCode ?? "")
-        ? null
-        : blockedSendCopy(currentPhase.sendBlockedCode);
+    : manualDraftNeedsSelection
+      ? blockedSendCopy("model_not_selected")
+      : draftModelUnavailable
+        ? blockedSendCopy("selected_model_unavailable")
+        : draftCanResolveModelBlock &&
+            modelBlockedCodes.has(currentPhase.sendBlockedCode ?? "")
+          ? null
+          : blockedSendCopy(currentPhase.sendBlockedCode);
   const providerUnavailable = currentPhase.provider.state !== "available";
   const nonModelBlocked =
     currentPhase.sendBlockedCode !== null &&
@@ -1878,9 +1889,7 @@ export function ConversationDraftSurface({
     (draftModelRef === null
       ? automaticDraftPolicyAllowsSend &&
         (canSendConversationMessage(currentPhase) ||
-          (currentModelBlock &&
-            draftCanResolveModelBlock &&
-            request === null))
+          (currentModelBlock && draftCanResolveModelBlock && request === null))
       : draftModelAvailable) &&
     !providerUnavailable;
   const canDraft = canDraftConversationMessage(currentPhase);

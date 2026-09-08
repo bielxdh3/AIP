@@ -73,6 +73,10 @@ struct TitleGeneration {
     last_sequence: u64,
     output_bytes: usize,
     cancellation_requested: bool,
+    dispatched_at: Instant,
+    last_progress_at: Instant,
+    runtime_accepted: bool,
+    generation_started: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1542,7 +1546,9 @@ impl ChatCoordinator {
                 self.dispatch_next();
             }
             RuntimeNotice::Output(RuntimeOutput::Accepted { id }) => {
-                if lock(&self.inner.queue).mark_runtime_accepted(&id) {
+                let queue_accepted = lock(&self.inner.queue).mark_runtime_accepted(&id);
+                let title_accepted = self.mark_title_runtime_accepted(&id);
+                if queue_accepted || title_accepted {
                     self.trace(&id, "runtime_accepted", None, None);
                 } else {
                     self.trace(&id, "runtime_accepted_ignored", None, None);
@@ -1672,6 +1678,7 @@ impl ChatCoordinator {
         let mut completed = None;
         let mut failed = false;
         let mut cancellation_requested = false;
+        let now = Instant::now();
         {
             let _scheduler_guard = lock(&self.inner.scheduler_lock);
             let mut requests = lock(&self.inner.title_generations);
@@ -1695,7 +1702,10 @@ impl ChatCoordinator {
                 }
             } else {
                 match event.event_type.as_str() {
-                    "generation.started" if event.sequence == Some(0) => {}
+                    "generation.started" if event.sequence == Some(0) => {
+                        request.generation_started = true;
+                        request.last_progress_at = now;
+                    }
                     "generation.chunk" => {
                         if let Some((sequence, content)) =
                             event.sequence.zip(event.content.as_deref())
@@ -1710,6 +1720,7 @@ impl ChatCoordinator {
                                 request.last_sequence = sequence;
                                 request.output_bytes = next_size;
                                 request.output.push_str(content);
+                                request.last_progress_at = now;
                             }
                         } else {
                             request.cancellation_requested = true;
@@ -1762,6 +1773,17 @@ impl ChatCoordinator {
         true
     }
 
+    fn mark_title_runtime_accepted(&self, request_id: &str) -> bool {
+        let _scheduler_guard = lock(&self.inner.scheduler_lock);
+        let mut requests = lock(&self.inner.title_generations);
+        let Some(request) = requests.get_mut(request_id) else {
+            return false;
+        };
+        request.runtime_accepted = true;
+        request.last_progress_at = Instant::now();
+        true
+    }
+
     fn cancel_title_generation(&self, request_id: &str) {
         let cancel_id = format!("cancel-{}", uuid::Uuid::now_v7());
         let Ok(request) = cancellation_request(&cancel_id, request_id) else {
@@ -1809,6 +1831,43 @@ impl ChatCoordinator {
             .store(true, Ordering::SeqCst);
         self.inner.runtime.shutdown();
         if !self.inner.safe_mode.load(Ordering::SeqCst) {
+            self.inner.runtime.start();
+        }
+    }
+
+    fn expired_title_generation(&self, now: Instant) -> Option<(String, &'static str)> {
+        let _scheduler_guard = lock(&self.inner.scheduler_lock);
+        lock(&self.inner.title_generations)
+            .iter()
+            .find_map(|(request_id, request)| {
+                title_generation_timeout(request, now).map(|code| (request_id.clone(), code))
+            })
+    }
+
+    fn fail_timed_out_title_generation(&self, request_id: &str, code: &'static str) {
+        let _scheduler_guard = lock(&self.inner.scheduler_lock);
+        if lock(&self.inner.title_generations)
+            .remove(request_id)
+            .is_none()
+        {
+            return;
+        }
+        self.trace(
+            request_id,
+            "title_generation_watchdog_timeout",
+            None,
+            Some(code),
+        );
+        self.inner
+            .cancellation_recovery
+            .store(true, Ordering::SeqCst);
+        self.trace(request_id, "runtime_recovery_restart", None, Some(code));
+        self.inner.runtime.shutdown();
+        if self.inner.safe_mode.load(Ordering::SeqCst) {
+            self.inner
+                .cancellation_recovery
+                .store(false, Ordering::SeqCst);
+        } else if !self.inner.safe_mode.load(Ordering::SeqCst) {
             self.inner.runtime.start();
         }
     }
@@ -1986,6 +2045,10 @@ impl ChatCoordinator {
                 last_sequence: 0,
                 output_bytes: 0,
                 cancellation_requested: false,
+                dispatched_at: Instant::now(),
+                last_progress_at: Instant::now(),
+                runtime_accepted: false,
+                generation_started: false,
             },
         );
         if self.inner.runtime.send(request).is_err() {
@@ -2274,6 +2337,10 @@ impl ChatCoordinator {
     fn generation_watchdog_loop(&self) {
         loop {
             thread::sleep(GENERATION_WATCHDOG_INTERVAL);
+            if let Some((request_id, code)) = self.expired_title_generation(Instant::now()) {
+                self.fail_timed_out_title_generation(&request_id, code);
+                continue;
+            }
             let expired = lock(&self.inner.queue).expired_request(Instant::now());
             let Some((request_id, code)) = expired else {
                 continue;
@@ -2282,6 +2349,27 @@ impl ChatCoordinator {
             self.fail_timed_out_generation(&request_id, code);
         }
     }
+}
+
+fn title_generation_timeout(request: &TitleGeneration, now: Instant) -> Option<&'static str> {
+    if request.cancellation_requested {
+        return None;
+    }
+    let (last_progress_at, timeout, code) =
+        if request.runtime_accepted || request.generation_started {
+            (
+                request.last_progress_at,
+                GENERATION_RESPONSE_TIMEOUT,
+                "generation_response_timeout",
+            )
+        } else {
+            (
+                request.dispatched_at,
+                RUNTIME_ACCEPT_TIMEOUT,
+                "runtime_accept_timeout",
+            )
+        };
+    (now.duration_since(last_progress_at) >= timeout).then_some(code)
 }
 
 fn bounded_title_context(content: &str) -> String {
@@ -2998,6 +3086,35 @@ mod tests {
         assert_eq!(
             queue.expired_request(Instant::now()),
             Some(("timeout".into(), "generation_response_timeout"))
+        );
+    }
+
+    #[test]
+    fn title_watchdog_distinguishes_acceptance_and_response_timeouts() {
+        let now = Instant::now();
+        let mut request = TitleGeneration {
+            agent_id: "astra".into(),
+            conversation_id: "conversation-astra".into(),
+            assistant_message_id: "title-message".into(),
+            output: String::new(),
+            last_sequence: 0,
+            output_bytes: 0,
+            cancellation_requested: false,
+            dispatched_at: now - RUNTIME_ACCEPT_TIMEOUT - Duration::from_secs(1),
+            last_progress_at: now,
+            runtime_accepted: false,
+            generation_started: false,
+        };
+        assert_eq!(
+            title_generation_timeout(&request, now),
+            Some("runtime_accept_timeout")
+        );
+
+        request.runtime_accepted = true;
+        request.last_progress_at = now - GENERATION_RESPONSE_TIMEOUT - Duration::from_secs(1);
+        assert_eq!(
+            title_generation_timeout(&request, now),
+            Some("generation_response_timeout")
         );
     }
 
