@@ -445,6 +445,35 @@ describe("ConversationDraftSurface", () => {
     localStorage.removeItem("aip.settings.models");
   });
 
+  it("keeps an otherwise sendable draft blocked when policy has no candidate", () => {
+    localStorage.setItem(
+      "aip.settings.models",
+      JSON.stringify({
+        excludedModelRefs: ["ollama:test"],
+        fallbackOnlyModelRefs: [],
+        hiddenModelRefs: [],
+        preferredModelRef: null,
+        policyMode: "auto",
+      }),
+    );
+    hookState.phase = {
+      ...loadedPhase,
+      conversation: { ...loadedPhase.conversation, modelOverrideRef: null },
+      modelOverrideRef: null,
+      selectedModelRef: "ollama:test",
+      selectedModelAvailable: true,
+      canSend: true,
+      sendBlockedCode: null,
+    } as unknown as PhaseOneState;
+    renderDraft();
+
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    expect(submit?.disabled).toBe(true);
+    localStorage.removeItem("aip.settings.models");
+  });
+
   it("shows one unavailable-provider error inside the draft composer", () => {
     hookState.phase = {
       ...loadedPhase,

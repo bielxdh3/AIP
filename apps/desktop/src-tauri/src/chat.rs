@@ -1882,6 +1882,7 @@ impl ChatCoordinator {
     }
 
     fn fail_timed_out_generation(&self, request_id: &str, code: &'static str) {
+        let _scheduler_guard = lock(&self.inner.scheduler_lock);
         let Some(job) = lock(&self.inner.queue).finish_active(request_id) else {
             return;
         };
@@ -1900,7 +1901,7 @@ impl ChatCoordinator {
             self.inner
                 .cancellation_recovery
                 .store(false, Ordering::SeqCst);
-        } else {
+        } else if !self.inner.safe_mode.load(Ordering::SeqCst) {
             self.inner.runtime.start();
         }
     }

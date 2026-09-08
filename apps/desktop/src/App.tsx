@@ -1857,6 +1857,8 @@ export function ConversationDraftSurface({
     currentPhase.provider.models.some(
       (model) => !modelPreferences.excludedModelRefs.includes(model.ref),
     );
+  const automaticDraftPolicyAllowsSend =
+    routingPolicy.mode === "manual" || automaticPolicyHasCandidate;
   const providerError = providerUnavailableCopy(currentPhase);
   const blocked = providerError
     ? null
@@ -1874,11 +1876,11 @@ export function ConversationDraftSurface({
     !draftModelUnavailable &&
     !nonModelBlocked &&
     (draftModelRef === null
-      ? canSendConversationMessage(currentPhase) ||
-        (currentModelBlock &&
-          draftCanResolveModelBlock &&
-          request === null &&
-          automaticPolicyHasCandidate)
+      ? automaticDraftPolicyAllowsSend &&
+        (canSendConversationMessage(currentPhase) ||
+          (currentModelBlock &&
+            draftCanResolveModelBlock &&
+            request === null))
       : draftModelAvailable) &&
     !providerUnavailable;
   const canDraft = canDraftConversationMessage(currentPhase);
