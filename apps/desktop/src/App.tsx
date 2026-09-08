@@ -1859,10 +1859,15 @@ export function ConversationDraftSurface({
     currentPhase.provider.models.some(
       (model) => !modelPreferences.excludedModelRefs.includes(model.ref),
     );
+  const inheritedDefaultAvailable =
+    currentPhase.defaultModelRef !== null &&
+    currentPhase.provider.models.some(
+      (model) => model.ref === currentPhase.defaultModelRef,
+    );
   const manualDraftNeedsSelection =
     routingPolicy.mode === "manual" &&
     draftModelRef === null &&
-    (currentPhase.defaultModelRef === null ||
+    (!inheritedDefaultAvailable ||
       currentPhase.sendBlockedCode === "selected_model_unavailable");
   const automaticDraftPolicyAllowsSend =
     routingPolicy.mode === "manual"
