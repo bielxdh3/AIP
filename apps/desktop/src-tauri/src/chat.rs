@@ -1880,10 +1880,13 @@ impl ChatCoordinator {
         ) else {
             return;
         };
-        let _ = self
+        let Ok(true) = self
             .inner
             .database
-            .mark_generated_title_attempted(&job.agent_id, &job.conversation_id);
+            .mark_generated_title_attempted(&job.agent_id, &job.conversation_id)
+        else {
+            return;
+        };
         lock(&self.inner.title_generations).insert(
             request_id.clone(),
             TitleGeneration {

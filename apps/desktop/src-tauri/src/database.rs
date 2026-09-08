@@ -45,7 +45,8 @@ const MIGRATION_0026: &str = include_str!("../migrations/0026_conversation_organ
 const MIGRATION_0027: &str = include_str!("../migrations/0027_conversation_empty_expiry.sql");
 const MIGRATION_0028: &str = include_str!("../migrations/0028_optional_human_identity.sql");
 const MIGRATION_0029: &str = include_str!("../migrations/0029_conversation_title_provenance.sql");
-const MIGRATIONS: [(i64, &str); 29] = [
+const MIGRATION_0030: &str = include_str!("../migrations/0030_conversation_title_attempt.sql");
+const MIGRATIONS: [(i64, &str); 30] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
@@ -75,6 +76,7 @@ const MIGRATIONS: [(i64, &str); 29] = [
     (27, MIGRATION_0027),
     (28, MIGRATION_0028),
     (29, MIGRATION_0029),
+    (30, MIGRATION_0030),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -217,6 +219,9 @@ impl Database {
                 if version == 29 {
                     Self::ensure_conversation_title_source_column(connection)?;
                 }
+                if version == 30 {
+                    Self::ensure_conversation_title_attempt_column(connection)?;
+                }
                 connection.execute_batch(sql)?;
             }
         }
@@ -267,6 +272,23 @@ impl Database {
         }
         connection.execute(
             "ALTER TABLE conversations ADD COLUMN title_source TEXT NOT NULL DEFAULT 'manual' CHECK (title_source IN ('placeholder', 'auto', 'manual'))",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn ensure_conversation_title_attempt_column(
+        connection: &Connection,
+    ) -> Result<(), DatabaseError> {
+        let mut statement = connection.prepare("PRAGMA table_info(conversations)")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            if row.get::<_, String>(1)? == "title_generation_attempted_at" {
+                return Ok(());
+            }
+        }
+        connection.execute(
+            "ALTER TABLE conversations ADD COLUMN title_generation_attempted_at INTEGER",
             [],
         )?;
         Ok(())
@@ -748,14 +770,14 @@ impl Database {
         let connection = self.open()?;
         let source = connection
             .query_row(
-                "SELECT title_source FROM conversations
+                "SELECT title_source, title_generation_attempted_at FROM conversations
                  WHERE id = ?1 AND agent_id = ?2 AND archived_at IS NULL",
                 params![conversation_id, agent_id],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
             )
             .optional()?
             .ok_or(DatabaseError::OwnershipMismatch)?;
-        if source != "placeholder" {
+        if source.0 != "placeholder" || source.1.is_some() {
             return Ok(None);
         }
         let messages = self.messages_for_branch(agent_id, conversation_id, branch_id)?;
@@ -798,8 +820,9 @@ impl Database {
     ) -> Result<bool, DatabaseError> {
         let connection = self.open()?;
         Ok(connection.execute(
-            "UPDATE conversations SET title_source = 'auto', updated_at = ?1
-             WHERE id = ?2 AND agent_id = ?3 AND archived_at IS NULL AND title_source = 'placeholder'",
+            "UPDATE conversations SET title_generation_attempted_at = ?1, updated_at = ?1
+             WHERE id = ?2 AND agent_id = ?3 AND archived_at IS NULL
+               AND title_source = 'placeholder' AND title_generation_attempted_at IS NULL",
             params![now_millis(), conversation_id, agent_id],
         )? == 1)
     }
@@ -3535,6 +3558,22 @@ mod tests {
             ))
         );
         assert!(database
+            .mark_generated_title_attempted(ASTRA_ID, &conversation.id)
+            .unwrap());
+        assert_eq!(
+            database
+                .open()
+                .unwrap()
+                .query_row(
+                    "SELECT title_source, title_generation_attempted_at FROM conversations WHERE id = ?1",
+                    params![conversation.id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
+                )
+                .unwrap()
+                .0,
+            "placeholder"
+        );
+        assert!(database
             .commit_generated_title(ASTRA_ID, &conversation.id, "Planejamento litoral")
             .unwrap());
         let updated_at = database
@@ -3587,7 +3626,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_generated_title_attempt_is_persisted_as_one_shot() {
+    fn generated_title_attempt_marker_is_one_shot_and_commit_safe() {
         let path = test_path();
         let database = Database::initialize(&path).unwrap();
         let conversation = database
@@ -3620,12 +3659,27 @@ mod tests {
             .unwrap());
         assert_eq!(
             database
+                .open()
+                .unwrap()
+                .query_row(
+                    "SELECT title_source FROM conversations WHERE id = ?1",
+                    params![conversation.id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "placeholder"
+        );
+        assert_eq!(
+            database
                 .first_title_context(ASTRA_ID, &conversation.id)
                 .unwrap(),
             None
         );
-        assert!(!database
+        assert!(database
             .commit_generated_title(ASTRA_ID, &conversation.id, "Título tardio")
+            .unwrap());
+        assert!(!database
+            .commit_generated_title(ASTRA_ID, &conversation.id, "Outro título tardio")
             .unwrap());
         cleanup(&path);
     }
