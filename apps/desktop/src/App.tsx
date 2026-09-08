@@ -1867,8 +1867,7 @@ export function ConversationDraftSurface({
   const manualDraftNeedsSelection =
     routingPolicy.mode === "manual" &&
     draftModelRef === null &&
-    (!inheritedDefaultAvailable ||
-      currentPhase.sendBlockedCode === "selected_model_unavailable");
+    !inheritedDefaultAvailable;
   const automaticDraftPolicyAllowsSend =
     routingPolicy.mode === "manual"
       ? !manualDraftNeedsSelection
