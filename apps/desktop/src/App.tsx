@@ -1861,6 +1861,9 @@ export function ConversationDraftSurface({
     );
   const inheritedDefaultAvailable =
     currentPhase.defaultModelRef !== null &&
+    !modelPreferences.excludedModelRefs.includes(
+      currentPhase.defaultModelRef,
+    ) &&
     currentPhase.provider.models.some(
       (model) => model.ref === currentPhase.defaultModelRef,
     );

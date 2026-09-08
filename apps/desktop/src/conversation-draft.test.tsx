@@ -619,6 +619,32 @@ describe("ConversationDraftSurface", () => {
     localStorage.removeItem("aip.settings.models");
   });
 
+  it("blocks manual drafts when the inherited default is excluded by policy", () => {
+    localStorage.setItem(
+      "aip.settings.models",
+      JSON.stringify({
+        excludedModelRefs: ["ollama:test"],
+        fallbackOnlyModelRefs: [],
+        hiddenModelRefs: [],
+        preferredModelRef: null,
+        policyMode: "manual",
+      }),
+    );
+    hookState.phase = {
+      ...loadedPhase,
+      canSend: true,
+      sendBlockedCode: null,
+    } as unknown as PhaseOneState;
+    renderDraft();
+
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    expect(submit?.disabled).toBe(true);
+    expect(container?.textContent).toContain("Selecione um modelo");
+    localStorage.removeItem("aip.settings.models");
+  });
+
   it("shows one unavailable-provider error inside the draft composer", () => {
     hookState.phase = {
       ...loadedPhase,
