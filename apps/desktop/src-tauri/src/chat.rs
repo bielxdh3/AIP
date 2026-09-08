@@ -3649,10 +3649,22 @@ mod tests {
         *lock(&coordinator.inner.provider) = provider;
         runtime.start();
         wait_for_runtime_state(&runtime, RuntimeState::Ready);
+        // HealthReady triggers the coordinator's provider discovery. Wait for that
+        // checking -> available transition before submitting the first prompt so
+        // the assertion exercises dispatch rather than the discovery boundary.
+        wait_for_provider_state(&coordinator, ProviderState::Checking);
+        wait_for_provider_state(&coordinator, ProviderState::Available);
 
         let first = coordinator
             .send_message(&agent.id, &conversation.id, "Responda apenas com AZUL-17")
-            .unwrap();
+            .unwrap_or_else(|error| {
+                panic!(
+                    "first dispatch failed: {error}; runtime={:?}; diagnostics={:?}; provider={:?}",
+                    runtime.snapshot(),
+                    runtime.diagnostics(),
+                    coordinator.provider_snapshot(),
+                )
+            });
         wait_for_message_status(
             &database,
             &agent.id,
@@ -3790,6 +3802,20 @@ for raw in sys.stdin:
             thread::sleep(Duration::from_millis(25));
         }
         panic!("message did not reach expected status");
+    }
+
+    fn wait_for_provider_state(coordinator: &ChatCoordinator, expected: ProviderState) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if coordinator.provider_snapshot().state == expected {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!(
+            "provider did not reach expected state {expected:?}; actual={:?}",
+            coordinator.provider_snapshot().state
+        );
     }
 
     fn wait_for_request_trace(
