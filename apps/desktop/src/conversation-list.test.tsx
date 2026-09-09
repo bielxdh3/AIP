@@ -233,9 +233,11 @@ describe("ConversationList regressions", () => {
     });
     expect(resolvers).toHaveLength(2);
 
-    await act(async () => resolvers[1]([{ ...current[0], title: "Atualizada" }]));
+    await act(async () =>
+      resolvers[1]?.([{ id: "main", title: "Atualizada", isPinned: true }]),
+    );
     expect(container.textContent).toContain("Atualizada");
-    await act(async () => resolvers[0](current));
+    await act(async () => resolvers[0]?.(current));
     expect(container.textContent).not.toContain("Conversa secundária");
     expect(container.textContent).toContain("Atualizada");
   });
