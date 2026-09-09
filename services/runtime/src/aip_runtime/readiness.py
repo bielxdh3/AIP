@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .ollama import OllamaClient, ProviderError
+from .ollama import OllamaClient, ProviderError, _ollama_endpoint
 
 MAX_CONFIG_BYTES = 16_384
 MAX_PATH_LENGTH = 260
@@ -86,9 +86,10 @@ class OllamaRuntimeManager:
         config = _load_config(self._environ)
         if config is None:
             raise first_error
+        _ollama_endpoint(self._environ.get("OLLAMA_HOST", ""))
         try:
             process = self._process_factory(config)
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError, ProviderError, subprocess.SubprocessError) as error:
             raise ProviderError("provider_start_failed") from error
         self._process = process
         self._started_process = True
@@ -155,12 +156,18 @@ class OllamaRuntimeManager:
 
 
 def _start_ollama(executable: Path) -> ProcessLike:
+    _, port = _ollama_endpoint()
+    environment = os.environ.copy()
+    # The child must receive the validated loopback bind too; normalizing only
+    # the client endpoint would leave a managed Ollama inheriting a wildcard.
+    environment["OLLAMA_HOST"] = f"127.0.0.1:{port}"
     return subprocess.Popen(
         [str(executable), "serve"],
         shell=False,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=environment,
     )
 
 

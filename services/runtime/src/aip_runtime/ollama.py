@@ -141,10 +141,10 @@ def _stream_connection() -> ConnectionLike:
     return _InterruptibleHttpConnection(http.client.HTTPConnection(host, port, timeout=120.0))
 
 
-def _ollama_endpoint() -> tuple[str, int]:
+def _ollama_endpoint(raw_value: str | None = None) -> tuple[str, int]:
     """Resolve an explicitly configured loopback endpoint without proxying or remote access."""
 
-    raw = os.environ.get("OLLAMA_HOST", "").strip()
+    raw = (os.environ.get("OLLAMA_HOST", "") if raw_value is None else raw_value).strip()
     if not raw:
         return OLLAMA_HOST, OLLAMA_PORT
     candidate = raw if "://" in raw else f"http://{raw}"
