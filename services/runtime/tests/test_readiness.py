@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
+import threading
 import unittest
 from collections.abc import Callable
 from pathlib import Path
@@ -193,6 +194,53 @@ class ReadinessTests(unittest.TestCase):
             self.assertEqual(manager.ensure_ready().source, "started")
             self.assertEqual(len(factory_calls), 1)
             self.assertTrue(factory_calls[0].samefile(executable))
+
+    def test_concurrent_readiness_checks_start_only_one_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "ollama.exe"
+            executable.touch()
+            release_first_health = threading.Event()
+            first_health_started = threading.Event()
+            health_calls = 0
+            health_calls_lock = threading.Lock()
+            factory_calls: list[Path] = []
+
+            class ConcurrentClient(FakeClient):
+                def health(self) -> None:
+                    nonlocal health_calls
+                    with health_calls_lock:
+                        health_calls += 1
+                        call_number = health_calls
+                    if call_number == 1:
+                        first_health_started.set()
+                        release_first_health.wait(timeout=2)
+                        raise ProviderError("provider_unavailable")
+                    if call_number == 2 and not release_first_health.is_set():
+                        raise ProviderError("provider_unavailable")
+
+            manager = OllamaRuntimeManager(
+                as_ollama_client(ConcurrentClient([])),
+                environ={"AIP_OLLAMA_EXECUTABLE": str(executable)},
+                process_factory=recording_factory(factory_calls),
+                readiness_timeout=0,
+            )
+            results: list[object] = []
+
+            def check_readiness() -> None:
+                results.append(manager.ensure_ready())
+
+            first = threading.Thread(target=check_readiness)
+            second = threading.Thread(target=check_readiness)
+            first.start()
+            self.assertTrue(first_health_started.wait(timeout=2))
+            second.start()
+            release_first_health.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+            self.assertFalse(first.is_alive() or second.is_alive())
+            self.assertEqual(len(factory_calls), 1)
+            self.assertEqual(len(results), 2)
 
     def test_autostart_uses_serve_without_shell(self) -> None:
         executable = Path("C:/Program Files/Ollama/ollama.exe")
