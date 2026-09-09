@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fs,
-    io::Write,
+    io::{BufRead, BufReader, Seek, SeekFrom, Write},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -11,6 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
@@ -36,6 +37,8 @@ use crate::{
 const EVENT_NAME: &str = "phase-one-event";
 const MAX_REQUEST_TRACE_ENTRIES: usize = 24;
 const MAX_RETAINED_REQUEST_TRACES: usize = 16;
+const MAX_TRACE_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_TRACE_CODE_BYTES: usize = 128;
 const CANCELLATION_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 const RUNTIME_ACCEPT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -58,6 +61,9 @@ struct GenerationJob {
 #[derive(Debug, Default)]
 struct TemporaryChatStore {
     conversations: HashMap<String, TemporaryConversation>,
+    // Conversion removes the in-memory conversation while the React surface may still be
+    // mounted. Keep a tombstone so a late temporary-state read cannot silently recreate it.
+    converted_agents: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -138,7 +144,21 @@ fn is_provider_error_code(code: &str) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RequestTraceEntry {
-    code: &'static str,
+    code: String,
+    sequence: Option<u64>,
+    terminal_code: Option<String>,
+    timestamp_ms: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedTraceRecord {
+    request_id: String,
+    agent_id: String,
+    conversation_id: String,
+    branch_id: String,
+    model_ref: String,
+    code: String,
     sequence: Option<u64>,
     terminal_code: Option<String>,
     timestamp_ms: i64,
@@ -181,7 +201,7 @@ impl TracePersistence {
     }
 }
 
-fn should_persist_trace_code(code: &'static str) -> bool {
+fn should_persist_trace_code(code: &str) -> bool {
     !matches!(
         code,
         "chunk_persisted" | "generation.chunk" | "chunk_ignored"
@@ -192,7 +212,7 @@ impl RequestTraceStore {
     fn record(
         &mut self,
         request_id: &str,
-        code: &'static str,
+        code: &str,
         sequence: Option<u64>,
         terminal_code: Option<&str>,
     ) {
@@ -214,10 +234,112 @@ impl RequestTraceStore {
             trace.pop_front();
         }
         trace.push_back(RequestTraceEntry {
-            code,
+            code: code.to_string(),
             sequence,
             terminal_code: terminal_code.map(str::to_string),
             timestamp_ms: now_millis(),
+        });
+    }
+
+    fn load(path: &PathBuf) -> Self {
+        let Ok(file) = fs::File::open(path) else {
+            return Self::default();
+        };
+        let Ok(file_length) = file.metadata().map(|metadata| metadata.len()) else {
+            return Self::default();
+        };
+        let mut reader = BufReader::new(file);
+        if file_length > MAX_TRACE_FILE_BYTES {
+            let offset = file_length.saturating_sub(MAX_TRACE_FILE_BYTES);
+            if reader.seek(SeekFrom::Start(offset)).is_err() {
+                return Self::default();
+            }
+            // The seek may land in the middle of a record. Discard that partial line and
+            // retain the newest bounded suffix, which is the only part that can survive the
+            // store's request/entry retention limits.
+            let mut partial = String::new();
+            let _ = reader.read_line(&mut partial);
+        }
+
+        let mut store = Self::default();
+        for line in reader.lines() {
+            let Ok(line) = line else {
+                continue;
+            };
+            if line.len() > MAX_TRACE_CODE_BYTES * 8 {
+                continue;
+            }
+            let Ok(record) = serde_json::from_str::<PersistedTraceRecord>(&line) else {
+                continue;
+            };
+            store.record_loaded(record);
+        }
+        store
+    }
+
+    fn record_loaded(&mut self, record: PersistedTraceRecord) {
+        if !valid_trace_field(&record.request_id, 200)
+            || !valid_trace_field(&record.agent_id, 200)
+            || !valid_trace_field(&record.conversation_id, 200)
+            || !valid_trace_field(&record.branch_id, 200)
+            || !valid_trace_field(&record.model_ref, 200)
+            || !valid_trace_code(&record.code)
+            || !record
+                .terminal_code
+                .as_deref()
+                .is_none_or(valid_trace_field_value)
+        {
+            return;
+        }
+        if !self.entries.contains_key(&record.request_id) {
+            if self.order.len() == MAX_RETAINED_REQUEST_TRACES {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.entries.remove(&oldest);
+                    self.metadata.remove(&oldest);
+                }
+            }
+            self.order.push_back(record.request_id.clone());
+            self.entries
+                .insert(record.request_id.clone(), VecDeque::new());
+            self.metadata.insert(
+                record.request_id.clone(),
+                RequestTraceMetadata {
+                    agent_id: record.agent_id.clone(),
+                    conversation_id: record.conversation_id.clone(),
+                    branch_id: record.branch_id.clone(),
+                    model_ref: record.model_ref.clone(),
+                    // Temporary traces are never written, so every record read from disk is
+                    // safe to retain as a non-temporary historical trace.
+                    temporary: false,
+                },
+            );
+        } else if self
+            .metadata
+            .get(&record.request_id)
+            .is_none_or(|metadata| {
+                metadata.agent_id != record.agent_id
+                    || metadata.conversation_id != record.conversation_id
+                    || metadata.branch_id != record.branch_id
+                    || metadata.model_ref != record.model_ref
+            })
+        {
+            // A request id is the correlation key. Reject records that try to change its
+            // immutable metadata instead of mixing unrelated content into one trace.
+            return;
+        }
+
+        let trace = self
+            .entries
+            .get_mut(&record.request_id)
+            .expect("loaded request trace exists");
+        if trace.len() == MAX_REQUEST_TRACE_ENTRIES {
+            trace.pop_front();
+        }
+        trace.push_back(RequestTraceEntry {
+            code: record.code,
+            sequence: record.sequence,
+            terminal_code: record.terminal_code,
+            timestamp_ms: record.timestamp_ms,
         });
     }
 
@@ -285,6 +407,29 @@ impl RequestTraceStore {
             .map(|entries| entries.iter().cloned().collect())
             .unwrap_or_default()
     }
+}
+
+fn valid_trace_field(value: &str, maximum: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || "_-.".contains(character)
+                || character == ':'
+                || character == '/'
+        })
+}
+
+fn valid_trace_field_value(value: &str) -> bool {
+    valid_trace_field(value, MAX_TRACE_CODE_BYTES)
+}
+
+fn valid_trace_code(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_TRACE_CODE_BYTES
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
 }
 
 #[derive(Debug, Default)]
@@ -637,6 +782,10 @@ impl ChatCoordinator {
         request_trace_path: Option<PathBuf>,
     ) -> Self {
         let receiver = runtime.subscribe();
+        let request_traces = request_trace_path
+            .as_ref()
+            .map(RequestTraceStore::load)
+            .unwrap_or_default();
         let trace_persistence = request_trace_path.clone().map(TracePersistence::new);
         let coordinator = Self {
             inner: Arc::new(ChatInner {
@@ -653,7 +802,7 @@ impl ChatCoordinator {
                 queue: Mutex::new(GenerationQueue::default()),
                 title_generations: Mutex::new(HashMap::new()),
                 deferred_title_generations: Mutex::new(VecDeque::new()),
-                request_traces: Mutex::new(RequestTraceStore::default()),
+                request_traces: Mutex::new(request_traces),
                 request_trace_path,
                 trace_persistence,
                 temporary_chats: Mutex::new(TemporaryChatStore::default()),
@@ -829,14 +978,7 @@ impl ChatCoordinator {
         let mut state = self.state(agent_id)?;
         let conversation = {
             let mut chats = lock(&self.inner.temporary_chats);
-            chats
-                .conversations
-                .entry(agent_id.to_string())
-                .or_insert_with(|| TemporaryConversation {
-                    conversation: temporary_conversation(agent_id),
-                    messages: Vec::new(),
-                    model_override_ref: None,
-                })
+            ensure_temporary_chat(&mut chats, agent_id)?
                 .conversation
                 .clone()
         };
@@ -885,6 +1027,14 @@ impl ChatCoordinator {
             .map(str::to_string);
         state.can_send = state.send_blocked_code.is_none();
         Ok(state)
+    }
+
+    pub fn start_temporary(&self, agent_id: &str) -> Result<(), &'static str> {
+        let _send_guard = lock(&self.inner.send_lock);
+        let mut chats = lock(&self.inner.temporary_chats);
+        chats.converted_agents.remove(agent_id);
+        let _ = ensure_temporary_chat(&mut chats, agent_id)?;
+        Ok(())
     }
 
     pub fn select_model(&self, agent_id: &str, model_ref: &str) -> Result<(), &'static str> {
@@ -1416,11 +1566,14 @@ impl ChatCoordinator {
     }
 
     pub fn reset_temporary(&self, agent_id: &str) -> Result<(), &'static str> {
-        let Some(conversation_id) = lock(&self.inner.temporary_chats)
+        let conversation_id = lock(&self.inner.temporary_chats)
             .conversations
             .get(agent_id)
-            .map(|chat| chat.conversation.id.clone())
-        else {
+            .map(|chat| chat.conversation.id.clone());
+        let Some(conversation_id) = conversation_id else {
+            lock(&self.inner.temporary_chats)
+                .converted_agents
+                .remove(agent_id);
             return Ok(());
         };
         let mut queue = lock(&self.inner.queue);
@@ -2515,7 +2668,7 @@ impl ChatCoordinator {
     fn trace(
         &self,
         request_id: &str,
-        code: &'static str,
+        code: &str,
         sequence: Option<u64>,
         terminal_code: Option<&str>,
     ) {
@@ -2669,6 +2822,23 @@ fn clear_temporary_chat(store: &mut TemporaryChatStore, agent_id: &str) {
     store.conversations.remove(agent_id);
 }
 
+fn ensure_temporary_chat<'a>(
+    store: &'a mut TemporaryChatStore,
+    agent_id: &str,
+) -> Result<&'a mut TemporaryConversation, &'static str> {
+    if store.converted_agents.contains(agent_id) {
+        return Err("operation_unavailable");
+    }
+    Ok(store
+        .conversations
+        .entry(agent_id.to_string())
+        .or_insert_with(|| TemporaryConversation {
+            conversation: temporary_conversation(agent_id),
+            messages: Vec::new(),
+            model_override_ref: None,
+        }))
+}
+
 fn temporary_session_is_active(
     store: &TemporaryChatStore,
     agent_id: &str,
@@ -2692,6 +2862,7 @@ fn continue_temporary_in_database(
     let conversation = database
         .create_conversation_and_activate(agent_id, "Nova conversa")
         .map_err(|error| error.code())?;
+    chats.converted_agents.insert(agent_id.to_string());
     clear_temporary_chat(&mut chats, agent_id);
     Ok(conversation)
 }
@@ -3453,6 +3624,41 @@ mod tests {
     }
 
     #[test]
+    fn successful_temporary_conversion_marks_the_session_as_converted() {
+        let path = std::env::temp_dir()
+            .join(format!(
+                "aip-temporary-conversion-success-{}",
+                Uuid::now_v7()
+            ))
+            .join("aip.sqlite3");
+        let database = Database::initialize(&path).unwrap();
+        let mut temporary = TemporaryChatStore::default();
+        temporary.conversations.insert(
+            crate::database::ASTRA_ID.into(),
+            TemporaryConversation {
+                conversation: temporary_conversation(crate::database::ASTRA_ID),
+                messages: Vec::new(),
+                model_override_ref: None,
+            },
+        );
+        let temporary_chats = Mutex::new(temporary);
+
+        continue_temporary_in_database(&database, &temporary_chats, crate::database::ASTRA_ID)
+            .unwrap();
+        let mut chats = lock(&temporary_chats);
+        assert!(!chats.conversations.contains_key(crate::database::ASTRA_ID));
+        assert!(chats.converted_agents.contains(crate::database::ASTRA_ID));
+        assert_eq!(
+            ensure_temporary_chat(&mut chats, crate::database::ASTRA_ID).map(|_| ()),
+            Err("operation_unavailable")
+        );
+        drop(chats);
+        drop(temporary_chats);
+        drop(database);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
     fn closing_active_temporary_chat_releases_queue_and_ignores_late_events() {
         let mut temporary = TemporaryChatStore::default();
         let temporary_conversation = temporary_conversation("astra");
@@ -3728,6 +3934,34 @@ mod tests {
     }
 
     #[test]
+    fn request_trace_persistence_retains_records_across_restarts() {
+        let path = std::env::temp_dir().join(format!(
+            "aip-generation-trace-restart-{}.ndjson",
+            Uuid::now_v7()
+        ));
+        let previous = job("previous-trace-request", "astra");
+        let mut first_session = RequestTraceStore::default();
+        first_session.register(&previous);
+        first_session.record(&previous.request_id, "database.finalized", Some(1), None);
+        first_session.persist(&path);
+
+        let mut restarted = RequestTraceStore::load(&path);
+        assert_eq!(
+            restarted.entries(&previous.request_id)[0].code,
+            "database.finalized"
+        );
+        let current = job("current-trace-request", "astra");
+        restarted.register(&current);
+        restarted.record(&current.request_id, "database.finalized", Some(2), None);
+        restarted.persist(&path);
+
+        let persisted = fs::read_to_string(&path).unwrap();
+        assert!(persisted.contains("previous-trace-request"));
+        assert!(persisted.contains("current-trace-request"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn request_trace_does_not_persist_temporary_chat_metadata() {
         let path = std::env::temp_dir().join(format!(
             "aip-temporary-generation-trace-{}.ndjson",
@@ -3754,6 +3988,30 @@ mod tests {
         traces.persist(&path);
         assert!(!path.exists() || fs::read_to_string(&path).unwrap().is_empty());
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn converted_temporary_session_is_tombstoned_until_explicit_restart() {
+        let mut store = TemporaryChatStore::default();
+        store.conversations.insert(
+            "astra".into(),
+            TemporaryConversation {
+                conversation: temporary_conversation("astra"),
+                messages: Vec::new(),
+                model_override_ref: None,
+            },
+        );
+        store.converted_agents.insert("astra".into());
+        store.conversations.remove("astra");
+
+        assert_eq!(
+            ensure_temporary_chat(&mut store, "astra").map(|_| ()),
+            Err("operation_unavailable")
+        );
+
+        store.converted_agents.remove("astra");
+        assert!(ensure_temporary_chat(&mut store, "astra").is_ok());
+        assert!(store.conversations.contains_key("astra"));
     }
 
     #[test]
@@ -4312,7 +4570,10 @@ mod tests {
             wait_for_request_trace(&coordinator, request_id, "runtime_accepted");
             wait_for_request_trace(&coordinator, request_id, "terminal_persisted");
             let trace = lock(&coordinator.inner.request_traces).entries(request_id);
-            let codes = trace.iter().map(|entry| entry.code).collect::<Vec<_>>();
+            let codes = trace
+                .iter()
+                .map(|entry| entry.code.as_str())
+                .collect::<Vec<_>>();
             assert!(codes.contains(&"request_written"));
             assert!(codes.contains(&"runtime_accepted"));
             assert!(codes.contains(&"generation_started"));
