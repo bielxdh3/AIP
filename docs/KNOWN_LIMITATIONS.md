@@ -31,8 +31,12 @@ validation reservations are recorded in
 
 ## Ollama startup
 
-- AIP does not automatically start Ollama; the user must start the Ollama application/service or run an Ollama command before using a local model.
-- Automatic Ollama detection and explicit start controls are deferred to a future UX phase.
+- AIP first reuses a healthy external Ollama service on the validated loopback endpoint.
+- If that probe fails, AIP starts Ollama only when the Owner has supplied an explicit
+  `AIP_OLLAMA_EXECUTABLE` path or a bounded `AIP_OLLAMA_CONFIG` file containing one.
+- No executable is guessed, downloaded, or started implicitly. Remote and wildcard
+  endpoints are rejected; traffic remains on loopback. Without an external service or
+  explicit managed executable, the provider remains unavailable and the UI stays usable.
 
 ## Phase 8 voice checkpoint
 

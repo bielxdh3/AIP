@@ -1427,6 +1427,7 @@ export function ConversationSurface({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [showLegacyBranchPicker] = useState(false);
+  const sendInFlightRef = useRef(false);
   const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
     null,
   );
@@ -1505,7 +1506,8 @@ export function ConversationSurface({
 
   async function send() {
     const content = draft.trim();
-    if (!content || busy || !canSend) return;
+    if (!content || busy || sendInFlightRef.current || !canSend) return;
+    sendInFlightRef.current = true;
     followsBottomRef.current = true;
     setBusy(true);
     try {
@@ -1523,9 +1525,10 @@ export function ConversationSurface({
             },
       );
       setDraft("");
-      void load();
+      await load();
     } finally {
       setBusy(false);
+      sendInFlightRef.current = false;
     }
   }
 
@@ -1814,6 +1817,7 @@ export function ConversationDraftSurface({
   const [modelPreferences] = useModelPreferences();
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const sendInFlightRef = useRef(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [persistedConversationId, setPersistedConversationId] = useState<
     string | null
@@ -1919,7 +1923,9 @@ export function ConversationDraftSurface({
   }
 
   async function persist(sendContent: string) {
-    if (busy || !sendContent?.trim() || !canSend) return;
+    if (busy || sendInFlightRef.current || !sendContent?.trim() || !canSend)
+      return;
+    sendInFlightRef.current = true;
     setBusy(true);
     setErrorMessage(null);
     let conversationId = persistedConversationId;
@@ -1952,6 +1958,7 @@ export function ConversationDraftSurface({
         policy: routingPolicy,
       });
       setDraft("");
+      await load();
       onPersisted();
     } catch {
       setErrorMessage(
@@ -1959,6 +1966,7 @@ export function ConversationDraftSurface({
       );
     } finally {
       setBusy(false);
+      sendInFlightRef.current = false;
     }
   }
 

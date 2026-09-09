@@ -30,6 +30,9 @@ use std::{
     },
 };
 
+#[cfg(any(test, not(debug_assertions)))]
+use std::path::Path;
+
 use chat::ChatCoordinator;
 use cognitive::{
     CognitiveGoal, CognitiveOpinion, FictionalActivity, FictionalActivityRequest,
@@ -3219,30 +3222,42 @@ fn runtime_source_root(app: &AppHandle) -> PathBuf {
         let executable_dir = std::env::current_exe()
             .ok()
             .and_then(|path| path.parent().map(PathBuf::from));
-        [
-            resource_dir
-                .as_ref()
-                .map(|path| path.join("aip-runtime.exe")),
-            resource_dir
-                .as_ref()
-                .map(|path| path.join("aip-runtime-x86_64-pc-windows-msvc.exe")),
-            executable_dir.map(|path| path.join("aip-runtime.exe")),
-        ]
-        .into_iter()
-        .flatten()
-        .find(|path| path.is_file())
-        .or_else(|| {
-            app.path()
-                .resource_dir()
-                .ok()
-                .map(|path| path.join("aip-runtime.exe"))
-        })
-        .unwrap_or_else(|| PathBuf::from("aip-runtime.exe"))
+        runtime_binary_candidates(resource_dir.as_deref(), executable_dir.as_deref())
+            .into_iter()
+            .find(|path| path.is_file())
+            .or_else(|| {
+                app.path()
+                    .resource_dir()
+                    .ok()
+                    .map(|path| path.join("aip-runtime.exe"))
+            })
+            .unwrap_or_else(|| PathBuf::from("aip-runtime.exe"))
     }
+}
+
+#[cfg(any(test, not(debug_assertions)))]
+fn runtime_binary_candidates(
+    resource_dir: Option<&Path>,
+    executable_dir: Option<&Path>,
+) -> Vec<PathBuf> {
+    [
+        resource_dir.map(|path| path.join("aip-runtime.exe")),
+        resource_dir.map(|path| path.join("aip-runtime-x86_64-pc-windows-msvc.exe")),
+        executable_dir.map(|path| path.join("aip-runtime.exe")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if std::env::args_os()
+        .any(|argument| argument == std::ffi::OsStr::new("--print-build-identity"))
+    {
+        println!("{}", env!("AIP_BUILD_REVISION"));
+        return;
+    }
     let app = tauri::Builder::default()
         .setup(|app| {
             let data_directory = app
@@ -3526,7 +3541,7 @@ mod conversation_command_tests {
     use super::{
         append_public_conversation_turn_for_state, companion_transport_handler,
         complete_resource_job_for_state, emit_cognitive_candidate_for_state,
-        reserve_heavy_generation_for_state, routing_policy_or_default,
+        reserve_heavy_generation_for_state, routing_policy_or_default, runtime_binary_candidates,
         set_custom_voice_consent_for_state, start_agent_conversation_for_state,
         update_voice_settings_for_state, AppState, CompanionTransportState, GatewayTransportState,
         RoutingPolicy,
@@ -3583,6 +3598,21 @@ mod conversation_command_tests {
     #[test]
     fn omitted_chat_routing_policy_keeps_auto_default() {
         assert_eq!(routing_policy_or_default(None), RoutingPolicy::default());
+    }
+
+    #[test]
+    fn packaged_runtime_candidates_include_installed_sibling_layout() {
+        let resource = Path::new(r"C:\Program Files\A.I.P.\resources");
+        let executable = Path::new(r"C:\Program Files\A.I.P.");
+        let candidates = runtime_binary_candidates(Some(resource), Some(executable));
+        assert_eq!(
+            candidates,
+            vec![
+                resource.join("aip-runtime.exe"),
+                resource.join("aip-runtime-x86_64-pc-windows-msvc.exe"),
+                executable.join("aip-runtime.exe"),
+            ]
+        );
     }
 
     #[test]
