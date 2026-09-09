@@ -150,6 +150,7 @@ struct RequestTraceMetadata {
     conversation_id: String,
     branch_id: String,
     model_ref: String,
+    temporary: bool,
 }
 
 #[derive(Debug, Default)]
@@ -200,6 +201,7 @@ impl RequestTraceStore {
                 conversation_id: job.conversation_id.clone(),
                 branch_id: job.branch_id.clone(),
                 model_ref: job.model_ref.clone(),
+                temporary: job.temporary,
             },
         );
     }
@@ -219,6 +221,13 @@ impl RequestTraceStore {
             let Some(entries) = self.entries.get(request_id) else {
                 continue;
             };
+            if self
+                .metadata
+                .get(request_id)
+                .is_some_and(|metadata| metadata.temporary)
+            {
+                continue;
+            }
             for entry in entries {
                 let record = serde_json::json!({
                     "requestId": request_id,
@@ -3576,6 +3585,22 @@ mod tests {
         assert!(persisted.contains("conversation-astra"));
         assert!(persisted.contains("ollama:test"));
         assert!(!persisted.contains("Synthetic input"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn request_trace_does_not_persist_temporary_chat_metadata() {
+        let path = std::env::temp_dir().join(format!(
+            "aip-temporary-generation-trace-{}.ndjson",
+            Uuid::now_v7()
+        ));
+        let mut traces = RequestTraceStore::default();
+        let mut generation = job("temporary-trace-request", "astra");
+        generation.temporary = true;
+        traces.register(&generation);
+        traces.record("temporary-trace-request", "chat.finalized", Some(2), None);
+        traces.persist(&path);
+        assert!(!path.exists() || fs::read_to_string(&path).unwrap().is_empty());
         let _ = fs::remove_file(path);
     }
 

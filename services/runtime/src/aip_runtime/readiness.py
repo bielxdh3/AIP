@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 from collections.abc import Callable, Mapping
 from contextlib import suppress
@@ -61,12 +62,17 @@ class OllamaRuntimeManager:
         self._readiness_timeout = max(0.0, readiness_timeout)
         self._process: ProcessLike | None = None
         self._started_process = False
+        self._readiness_lock = threading.Lock()
 
     def discover(self) -> list[dict[str, object]]:
         self.ensure_ready()
         return self._client.discover()
 
     def ensure_ready(self) -> ProviderReadiness:
+        with self._readiness_lock:
+            return self._ensure_ready_locked()
+
+    def _ensure_ready_locked(self) -> ProviderReadiness:
         first_error = self._probe_health()
         if first_error is None:
             source = "started" if self._started_process else "existing"
@@ -89,10 +95,14 @@ class OllamaRuntimeManager:
         try:
             return self._wait_for_health(first_error, "started")
         except ProviderError:
-            self.shutdown()
+            self._shutdown_locked()
             raise
 
     def shutdown(self) -> None:
+        with self._readiness_lock:
+            self._shutdown_locked()
+
+    def _shutdown_locked(self) -> None:
         if not self._started_process or self._process is None:
             return
         process = self._process
