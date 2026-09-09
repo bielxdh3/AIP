@@ -156,11 +156,12 @@ class OllamaRuntimeManager:
 
 
 def _start_ollama(executable: Path) -> ProcessLike:
-    _, port = _ollama_endpoint()
+    host, port = _ollama_endpoint()
     environment = os.environ.copy()
     # The child must receive the validated loopback bind too; normalizing only
     # the client endpoint would leave a managed Ollama inheriting a wildcard.
-    environment["OLLAMA_HOST"] = f"127.0.0.1:{port}"
+    child_host = f"[{host}]" if ":" in host else host
+    environment["OLLAMA_HOST"] = f"{child_host}:{port}"
     return subprocess.Popen(
         [str(executable), "serve"],
         shell=False,

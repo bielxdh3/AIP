@@ -11807,6 +11807,7 @@ function App() {
         />
         {activeAgentId ? (
           <ConversationList
+            key={activeAgentId}
             agentId={activeAgentId}
             refreshRevision={conversationListRevision}
             activeConversationId={activeConversationId}
