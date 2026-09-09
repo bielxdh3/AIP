@@ -1,5 +1,8 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    fs,
+    io::Write,
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -8,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
     database::{now_millis, ContextMessage, Database, MessageAttempt},
@@ -138,12 +141,22 @@ struct RequestTraceEntry {
     code: &'static str,
     sequence: Option<u64>,
     terminal_code: Option<String>,
+    timestamp_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+struct RequestTraceMetadata {
+    agent_id: String,
+    conversation_id: String,
+    branch_id: String,
+    model_ref: String,
 }
 
 #[derive(Debug, Default)]
 struct RequestTraceStore {
     order: VecDeque<String>,
     entries: HashMap<String, VecDeque<RequestTraceEntry>>,
+    metadata: HashMap<String, RequestTraceMetadata>,
 }
 
 impl RequestTraceStore {
@@ -158,6 +171,7 @@ impl RequestTraceStore {
             if self.order.len() == MAX_RETAINED_REQUEST_TRACES {
                 if let Some(oldest) = self.order.pop_front() {
                     self.entries.remove(&oldest);
+                    self.metadata.remove(&oldest);
                 }
             }
             self.order.push_back(request_id.to_string());
@@ -174,7 +188,58 @@ impl RequestTraceStore {
             code,
             sequence,
             terminal_code: terminal_code.map(str::to_string),
+            timestamp_ms: now_millis(),
         });
+    }
+
+    fn register(&mut self, job: &GenerationJob) {
+        self.metadata.insert(
+            job.request_id.clone(),
+            RequestTraceMetadata {
+                agent_id: job.agent_id.clone(),
+                conversation_id: job.conversation_id.clone(),
+                branch_id: job.branch_id.clone(),
+                model_ref: job.model_ref.clone(),
+            },
+        );
+    }
+
+    fn persist(&self, path: &PathBuf) {
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        if fs::create_dir_all(parent).is_err() {
+            return;
+        }
+        let temporary = path.with_extension("ndjson.tmp");
+        let Ok(mut file) = fs::File::create(&temporary) else {
+            return;
+        };
+        for request_id in &self.order {
+            let Some(entries) = self.entries.get(request_id) else {
+                continue;
+            };
+            for entry in entries {
+                let record = serde_json::json!({
+                    "requestId": request_id,
+                    "agentId": self.metadata.get(request_id).map(|value| value.agent_id.as_str()),
+                    "conversationId": self.metadata.get(request_id).map(|value| value.conversation_id.as_str()),
+                    "branchId": self.metadata.get(request_id).map(|value| value.branch_id.as_str()),
+                    "modelRef": self.metadata.get(request_id).map(|value| value.model_ref.as_str()),
+                    "code": entry.code,
+                    "sequence": entry.sequence,
+                    "terminalCode": entry.terminal_code,
+                    "timestampMs": entry.timestamp_ms,
+                });
+                if serde_json::to_writer(&mut file, &record).is_err()
+                    || file.write_all(b"\n").is_err()
+                {
+                    return;
+                }
+            }
+        }
+        let _ = fs::remove_file(path);
+        let _ = fs::rename(temporary, path);
     }
 
     #[cfg(test)]
@@ -461,6 +526,7 @@ struct ChatInner {
     title_generations: Mutex<HashMap<String, TitleGeneration>>,
     deferred_title_generations: Mutex<VecDeque<GenerationJob>>,
     request_traces: Mutex<RequestTraceStore>,
+    request_trace_path: Option<PathBuf>,
     temporary_chats: Mutex<TemporaryChatStore>,
     cancellation_recovery: AtomicBool,
 }
@@ -510,12 +576,18 @@ impl ChatCoordinator {
         safe_mode: Arc<AtomicBool>,
         orchestration: Arc<Mutex<OrchestrationManager>>,
     ) -> Self {
+        let request_trace_path = app
+            .path()
+            .app_local_data_dir()
+            .ok()
+            .map(|path| path.join("diagnostics/generation-trace.ndjson"));
         Self::new_with_sink(
             Arc::new(TauriEventSink { app }),
             database,
             runtime,
             safe_mode,
             orchestration,
+            request_trace_path,
         )
     }
 
@@ -525,6 +597,7 @@ impl ChatCoordinator {
         runtime: RuntimeController,
         safe_mode: Arc<AtomicBool>,
         orchestration: Arc<Mutex<OrchestrationManager>>,
+        request_trace_path: Option<PathBuf>,
     ) -> Self {
         let receiver = runtime.subscribe();
         let coordinator = Self {
@@ -543,6 +616,7 @@ impl ChatCoordinator {
                 title_generations: Mutex::new(HashMap::new()),
                 deferred_title_generations: Mutex::new(VecDeque::new()),
                 request_traces: Mutex::new(RequestTraceStore::default()),
+                request_trace_path,
                 temporary_chats: Mutex::new(TemporaryChatStore::default()),
                 cancellation_recovery: AtomicBool::new(false),
             }),
@@ -571,6 +645,7 @@ impl ChatCoordinator {
             runtime,
             safe_mode,
             orchestration,
+            None,
         )
     }
 
@@ -905,12 +980,14 @@ impl ChatCoordinator {
             }
         }
         let request_id = uuid::Uuid::now_v7().to_string();
+        self.trace(&request_id, "chat.send.received", None, None);
         let model_ref = self.reserve_route(
             &request_id,
             state.selected_model_ref.as_deref(),
             state.model_override_ref.as_deref(),
             &policy,
         )?;
+        self.trace(&request_id, "chat.route.reserved", None, None);
         let attempt = self
             .inner
             .database
@@ -932,6 +1009,7 @@ impl ChatCoordinator {
             return Err(code);
         }
         self.trace(&attempt.request_id, "request_enqueued", None, None);
+        self.trace(&attempt.request_id, "chat.queue.enqueued", None, None);
         let result = SendMessageResult {
             request_id: attempt.request_id,
             conversation_id: conversation_id.to_string(),
@@ -1143,12 +1221,14 @@ impl ChatCoordinator {
         }
         let now = now_millis();
         let request_id = uuid::Uuid::now_v7().to_string();
+        self.trace(&request_id, "chat.send.received", None, None);
         let model_ref = self.reserve_route(
             &request_id,
             state.selected_model_ref.as_deref(),
             state.model_override_ref.as_deref(),
             &policy,
         )?;
+        self.trace(&request_id, "chat.route.reserved", None, None);
         let user_message_id = uuid::Uuid::now_v7().to_string();
         let assistant_message_id = uuid::Uuid::now_v7().to_string();
         let conversation = state.conversation.clone();
@@ -1202,6 +1282,7 @@ impl ChatCoordinator {
             return Err(code);
         }
         self.trace(&request_id, "temporary_request_enqueued", None, None);
+        self.trace(&request_id, "chat.queue.enqueued", None, None);
         self.emit_refresh(Some(agent_id));
         self.dispatch_next();
         Ok(SendMessageResult {
@@ -1566,6 +1647,7 @@ impl ChatCoordinator {
                 let title_accepted = self.mark_title_runtime_accepted(&id);
                 if queue_accepted || title_accepted {
                     self.trace(&id, "runtime_accepted", None, None);
+                    self.trace(&id, "generation.accepted", None, None);
                 } else {
                     self.trace(&id, "runtime_accepted_ignored", None, None);
                 }
@@ -1598,6 +1680,7 @@ impl ChatCoordinator {
                     return;
                 }
                 self.trace(&request_id, "generation_started", event.sequence, None);
+                self.trace(&request_id, "generation.started", event.sequence, None);
                 self.emit(event)
             }
             "generation.chunk" => {
@@ -1623,6 +1706,7 @@ impl ChatCoordinator {
                 };
                 if self.append_job_chunk(&job, content).is_ok() {
                     self.trace(&request_id, "chunk_persisted", Some(sequence), None);
+                    self.trace(&request_id, "generation.chunk", Some(sequence), None);
                     self.emit(event);
                 } else {
                     self.trace(&request_id, "persistence_failed", Some(sequence), None);
@@ -1635,6 +1719,7 @@ impl ChatCoordinator {
                     return;
                 }
                 self.trace(&request_id, "terminal_received", event.sequence, None);
+                self.trace(&request_id, "generation.completed", event.sequence, None);
                 self.finish_runtime_terminal(
                     &request_id,
                     RequestTerminalState::Completed,
@@ -1662,6 +1747,12 @@ impl ChatCoordinator {
                     event.sequence,
                     Some(&error_code),
                 );
+                self.trace(
+                    &request_id,
+                    "generation.failed",
+                    event.sequence,
+                    Some(&error_code),
+                );
                 self.finish_runtime_terminal(
                     &request_id,
                     request_terminal_state("generation.failed", Some(&error_code))
@@ -1676,6 +1767,7 @@ impl ChatCoordinator {
                     return;
                 }
                 self.trace(&request_id, "terminal_received", event.sequence, None);
+                self.trace(&request_id, "generation.cancelled", event.sequence, None);
                 self.finish_runtime_terminal(
                     &request_id,
                     RequestTerminalState::Cancelled,
@@ -1938,9 +2030,16 @@ impl ChatCoordinator {
                 self.schedule_title_generation_or_defer(&job);
             }
             self.trace(request_id, "terminal_persisted", event.sequence, error_code);
+            self.trace(request_id, "chat.finalized", event.sequence, error_code);
             self.emit(event);
         } else {
             self.trace(request_id, "persistence_failed", event.sequence, None);
+            self.trace(
+                request_id,
+                "chat.finalized.failed",
+                event.sequence,
+                Some("persistence_failed"),
+            );
             self.emit_terminal(&job, "generation.failed", Some("persistence_failed"));
         }
         self.dispatch_next();
@@ -1951,6 +2050,7 @@ impl ChatCoordinator {
             return;
         };
         self.trace(request_id, "queue_finalized", None, Some(code));
+        self.trace(request_id, "chat.finalized.failed", None, Some(code));
         let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
         self.emit_terminal(&job, "generation.failed", Some(code));
         self.dispatch_next();
@@ -1962,6 +2062,7 @@ impl ChatCoordinator {
             return;
         };
         self.trace(request_id, "queue_finalized", None, Some(code));
+        self.trace(request_id, "chat.finalized.failed", None, Some(code));
         let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
         self.emit_terminal(&job, "generation.failed", Some(code));
 
@@ -2102,7 +2203,11 @@ impl ChatCoordinator {
         if self.inner.safe_mode.load(Ordering::SeqCst) {
             return Err("safe_mode_active");
         }
-        lock(&self.inner.queue).enqueue(job.clone())
+        let result = lock(&self.inner.queue).enqueue(job.clone());
+        if result.is_ok() {
+            lock(&self.inner.request_traces).register(job);
+        }
+        result
     }
 
     fn dispatch_next_locked(&self) {
@@ -2131,6 +2236,7 @@ impl ChatCoordinator {
                 continue;
             };
             self.trace(&job.request_id, "queue_activated", None, None);
+            self.trace(&job.request_id, "chat.queue.activated", None, None);
             let dispatch = self.build_generation_request(&job).and_then(|request| {
                 self.trace(&job.request_id, "dispatching", None, None);
                 self.mark_job_streaming(&job)?;
@@ -2144,6 +2250,7 @@ impl ChatCoordinator {
                 continue;
             }
             self.trace(&job.request_id, "request_written", None, None);
+            self.trace(&job.request_id, "generation.start.sent", None, None);
             self.emit_refresh(Some(&job.agent_id));
             return;
         }
@@ -2347,7 +2454,11 @@ impl ChatCoordinator {
         sequence: Option<u64>,
         terminal_code: Option<&str>,
     ) {
-        lock(&self.inner.request_traces).record(request_id, code, sequence, terminal_code);
+        let mut traces = lock(&self.inner.request_traces);
+        traces.record(request_id, code, sequence, terminal_code);
+        if let Some(path) = self.inner.request_trace_path.as_ref() {
+            traces.persist(path);
+        }
     }
 
     fn generation_watchdog_loop(&self) {
@@ -3449,6 +3560,23 @@ mod tests {
             traces.record(&format!("request-{index}"), "request_enqueued", None, None);
         }
         assert!(traces.entries("request").is_empty());
+    }
+
+    #[test]
+    fn request_trace_persists_safe_correlated_metadata() {
+        let path =
+            std::env::temp_dir().join(format!("aip-generation-trace-{}.ndjson", Uuid::now_v7()));
+        let mut traces = RequestTraceStore::default();
+        let generation = job("trace-request", "astra");
+        traces.register(&generation);
+        traces.record("trace-request", "chat.finalized", Some(2), None);
+        traces.persist(&path);
+        let persisted = fs::read_to_string(&path).unwrap();
+        assert!(persisted.contains("trace-request"));
+        assert!(persisted.contains("conversation-astra"));
+        assert!(persisted.contains("ollama:test"));
+        assert!(!persisted.contains("Synthetic input"));
+        let _ = fs::remove_file(path);
     }
 
     #[test]

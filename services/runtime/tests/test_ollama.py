@@ -5,6 +5,7 @@ import socket
 import threading
 import unittest
 from typing import Any, cast
+from unittest.mock import patch
 
 from aip_runtime.ollama import (
     CancelledError,
@@ -13,6 +14,7 @@ from aip_runtime.ollama import (
     ProviderError,
     ResponseLike,
     _InterruptibleHttpConnection,
+    _ollama_endpoint,
 )
 from aip_runtime.protocol import MAX_ASSISTANT_OUTPUT_BYTES, MAX_DISCOVERED_MODELS
 
@@ -91,6 +93,17 @@ def client_for(response: ResponseLike) -> tuple[OllamaClient, FakeConnection]:
 
 
 class OllamaDiscoveryTests(unittest.TestCase):
+    def test_ollama_host_override_is_loopback_only(self) -> None:
+        with patch.dict("os.environ", {"OLLAMA_HOST": "http://127.0.0.1:11435"}):
+            self.assertEqual(_ollama_endpoint(), ("127.0.0.1", 11435))
+        with patch.dict("os.environ", {"OLLAMA_HOST": "0.0.0.0:11436"}):
+            self.assertEqual(_ollama_endpoint(), ("127.0.0.1", 11436))
+        with (
+            patch.dict("os.environ", {"OLLAMA_HOST": "http://example.invalid:11434"}),
+            self.assertRaisesRegex(ProviderError, "provider_config_invalid"),
+        ):
+            _ollama_endpoint()
+
     def test_discovery_normalizes_bounded_metadata(self) -> None:
         payload = json.dumps(
             {

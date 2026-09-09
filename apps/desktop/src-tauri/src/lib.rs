@@ -3207,17 +3207,37 @@ fn snapshot(state: &AppState) -> Result<AppSnapshot, &'static str> {
     })
 }
 
-fn runtime_source_root(_app: &AppHandle) -> PathBuf {
+fn runtime_source_root(app: &AppHandle) -> PathBuf {
     #[cfg(debug_assertions)]
     {
+        let _ = app;
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../services/runtime/src")
     }
     #[cfg(not(debug_assertions))]
     {
-        _app.path()
-            .resource_dir()
-            .map(|path| path.join("aip-runtime.exe"))
-            .unwrap_or_else(|_| PathBuf::from("aip-runtime.exe"))
+        let resource_dir = app.path().resource_dir().ok();
+        let executable_dir = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(PathBuf::from));
+        [
+            resource_dir
+                .as_ref()
+                .map(|path| path.join("aip-runtime.exe")),
+            resource_dir
+                .as_ref()
+                .map(|path| path.join("aip-runtime-x86_64-pc-windows-msvc.exe")),
+            executable_dir.map(|path| path.join("aip-runtime.exe")),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|path| path.is_file())
+        .or_else(|| {
+            app.path()
+                .resource_dir()
+                .ok()
+                .map(|path| path.join("aip-runtime.exe"))
+        })
+        .unwrap_or_else(|| PathBuf::from("aip-runtime.exe"))
     }
 }
 

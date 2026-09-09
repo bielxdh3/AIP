@@ -24,7 +24,8 @@ use crate::{
 
 const HANDSHAKE_ID: &str = "phase1-health";
 const DIAGNOSTIC_PREFIX: &str = "AIP_RUNTIME_DIAGNOSTIC ";
-const MAX_DIAGNOSTIC_LINE_BYTES: usize = 96;
+const TRACE_PREFIX: &str = "AIP_RUNTIME_TRACE ";
+const MAX_DIAGNOSTIC_LINE_BYTES: usize = 512;
 const MAX_DIAGNOSTIC_CODES: usize = 16;
 const DEVELOPMENT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 const PACKAGED_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -219,6 +220,11 @@ fn run_runtime_process(
         "TMP",
         "USERPROFILE",
         "LOCALAPPDATA",
+        // Keep the managed runtime local-first while allowing the Owner's explicit
+        // Ollama configuration to reach the packaged process.
+        "OLLAMA_HOST",
+        "AIP_OLLAMA_EXECUTABLE",
+        "AIP_OLLAMA_CONFIG",
     ]
     .into_iter()
     .filter_map(|key| std::env::var_os(key).map(|value| (key, value)))
@@ -233,6 +239,9 @@ fn run_runtime_process(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(parent) = source_root.parent() {
+        command.current_dir(parent);
+    }
     #[cfg(debug_assertions)]
     command.env("PYTHONPATH", source_root);
     #[cfg(target_os = "windows")]
@@ -524,10 +533,11 @@ fn read_runtime_stderr(stderr: ChildStderr, diagnostics: Arc<Mutex<RuntimeDiagno
                 if raw.last() == Some(&b'\r') {
                     raw.pop();
                 }
-                let Some(code) = parse_diagnostic_line(&raw) else {
-                    continue;
-                };
-                record_stderr_code(&diagnostics, code);
+                if let Some(code) = parse_diagnostic_line(&raw) {
+                    record_stderr_code(&diagnostics, code);
+                } else if let Some(trace) = parse_trace_line(&raw) {
+                    record_stderr_code(&diagnostics, &trace);
+                }
             }
             Err(_) => return,
         }
@@ -541,6 +551,28 @@ fn parse_diagnostic_line(raw: &[u8]) -> Option<&'static str> {
         .iter()
         .copied()
         .find(|code| *code == candidate)
+}
+
+fn parse_trace_line(raw: &[u8]) -> Option<String> {
+    let line = std::str::from_utf8(raw).ok()?;
+    let payload = line.strip_prefix(TRACE_PREFIX)?;
+    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let event = value.get("event")?.as_str()?;
+    if !matches!(
+        event,
+        "generation.accepted"
+            | "ollama.request.started"
+            | "ollama.first_chunk"
+            | "ollama.request.completed"
+            | "ollama.request.failed"
+    ) {
+        return None;
+    }
+    let request_id = value.get("requestId")?.as_str()?;
+    if !crate::protocol::valid_identifier(request_id) {
+        return None;
+    }
+    Some(format!("trace:{event}:{request_id}"))
 }
 
 fn record_stderr_code(diagnostics: &Arc<Mutex<RuntimeDiagnostics>>, code: &str) {
@@ -978,6 +1010,18 @@ for raw in sys.stdin:
         );
         assert_eq!(
             super::parse_diagnostic_line(b"AIP_RUNTIME_DIAGNOSTIC private_conversation_content"),
+            None
+        );
+        assert_eq!(
+            super::parse_trace_line(
+                br#"AIP_RUNTIME_TRACE {"event":"ollama.first_chunk","requestId":"request-1"}"#
+            ),
+            Some("trace:ollama.first_chunk:request-1".into())
+        );
+        assert_eq!(
+            super::parse_trace_line(
+                br#"AIP_RUNTIME_TRACE {"event":"ollama.first_chunk","requestId":"private conversation"}"#
+            ),
             None
         );
         let diagnostics = Arc::new(Mutex::new(super::RuntimeDiagnostics::default()));

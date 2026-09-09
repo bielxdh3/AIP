@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import IO, Any
 
-from .diagnostics import emit_diagnostic
+from .diagnostics import emit_diagnostic, emit_trace
 from .ollama import CancelledError, ConnectionLike, OllamaClient, ProviderError
 from .protocol import (
     MAX_CONTEXT_BYTES,
@@ -42,12 +42,14 @@ class RuntimeServer:
         output: IO[str],
         client: OllamaClient | None = None,
         diagnostic: Callable[[object], None] = emit_diagnostic,
+        trace: Callable[..., None] = emit_trace,
         provider_manager: OllamaRuntimeManager | None = None,
     ) -> None:
         self._output = output
         self._client = client or OllamaClient()
         self._provider_manager = provider_manager or OllamaRuntimeManager(client=self._client)
         self._diagnostic = diagnostic
+        self._trace = trace
         self._write_lock = threading.Lock()
         self._active_lock = threading.Lock()
         self._active: ActiveGeneration | None = None
@@ -191,6 +193,12 @@ class RuntimeServer:
         def emit_chunk(sequence: int, content: str) -> None:
             if active.cancel_event.is_set():
                 raise CancelledError()
+            if sequence == 1:
+                self._trace(
+                    "ollama.first_chunk",
+                    request_id=active.request_id,
+                    model=str(params.get("model", "")),
+                )
             self._event(active, "generation.chunk", sequence=sequence, content=content)
 
         def run() -> None:
@@ -209,6 +217,16 @@ class RuntimeServer:
                 messages = params["messages"]
                 keep_alive = int(params["keepAliveMinutes"])
                 assert isinstance(messages, list)
+                self._trace(
+                    "ollama.request.started",
+                    request_id=active.request_id,
+                    model=model,
+                )
+                # Discovery normally warms this manager, but generation must also
+                # enforce the provider-ready contract when a packaged app starts
+                # between refreshes or Ollama was restarted by the Owner.
+                if callable(getattr(self._client, "health", None)):
+                    self._provider_manager.ensure_ready()
                 self._client.stream_chat(
                     model_id=model,
                     messages=messages,
@@ -224,10 +242,22 @@ class RuntimeServer:
                 terminal = "generation.failed"
                 error_code = error.code
                 self._diagnostic("ollama_stream_failed")
+                self._trace(
+                    "ollama.request.failed",
+                    request_id=active.request_id,
+                    model=str(params.get("model", "")),
+                    error_code=error_code,
+                )
             except Exception:
                 terminal = "generation.failed"
                 error_code = "generation_failed_unknown"
                 self._diagnostic("runtime_worker_exception")
+                self._trace(
+                    "ollama.request.failed",
+                    request_id=active.request_id,
+                    model=str(params.get("model", "")),
+                    error_code=error_code,
+                )
             finally:
                 with self._active_lock:
                     if self._active is active:
@@ -239,6 +269,12 @@ class RuntimeServer:
                         sequence=last_sequence,
                         error_code=error_code,
                     )
+                    if terminal == "generation.complete":
+                        self._trace(
+                            "ollama.request.completed",
+                            request_id=active.request_id,
+                            model=str(params.get("model", "")),
+                        )
                 except Exception:
                     self._diagnostic("runtime_stdout_write_failed")
                 finally:
@@ -249,8 +285,13 @@ class RuntimeServer:
         active.thread = worker
         with self._generation_lock:
             self._generation_workers.add(worker)
-        worker.start()
         self._write(result_response(request_id, {"status": "accepted"}))
+        self._trace(
+            "generation.accepted",
+            request_id=request_id,
+            model=str(params.get("model", "")),
+        )
+        worker.start()
 
     def _cancel_generation(self, request_id: str, params: dict[str, Any]) -> None:
         try:
