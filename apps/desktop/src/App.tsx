@@ -11768,8 +11768,16 @@ function App() {
       }
       return;
     }
+    if (activeAgentId === null) return;
     setEditingAgentId(null);
     setWorkspace("chat");
+    try {
+      await invoke("start_temporary_phase_one_chat", {
+        agentId: activeAgentId,
+      });
+    } catch {
+      return;
+    }
     setTemporaryChat(true);
   }
 

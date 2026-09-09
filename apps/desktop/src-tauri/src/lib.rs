@@ -2726,6 +2726,18 @@ fn close_temporary_phase_one_chat(
 }
 
 #[tauri::command]
+fn start_temporary_phase_one_chat(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<(), &'static str> {
+    state
+        .chat
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .start_temporary(&agent_id)
+}
+
+#[tauri::command]
 fn continue_temporary_phase_one_chat(
     state: State<'_, AppState>,
     agent_id: String,
@@ -3464,6 +3476,7 @@ pub fn run() {
             create_agent_memory,
             send_temporary_phase_one_message,
             close_temporary_phase_one_chat,
+            start_temporary_phase_one_chat,
             continue_temporary_phase_one_chat,
             set_temporary_phase_one_model,
             get_agent_simulated_state,
