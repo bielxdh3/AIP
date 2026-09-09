@@ -2880,13 +2880,16 @@ export function ConversationList({
   const [pendingRemoval, setPendingRemoval] =
     useState<PhaseOneConversation | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const loadRevisionRef = useRef(0);
   const load = useCallback(async () => {
+    const revision = ++loadRevisionRef.current;
     const next = await invoke<PhaseOneConversation[]>(
       "list_agent_conversations",
       {
         agentId,
       },
     );
+    if (revision !== loadRevisionRef.current) return;
     setItems(
       [...next].sort(
         (left, right) => Number(right.isPinned) - Number(left.isPinned),
