@@ -4081,6 +4081,7 @@ mod tests {
 
     #[test]
     fn coordinator_runtime_dispatch_isolates_sequential_prompts() {
+        let _runtime_guard = crate::runtime::RUNTIME_TEST_LOCK.lock().unwrap();
         let path = std::env::temp_dir()
             .join(format!("aip-coordinator-runtime-{}", Uuid::now_v7()))
             .join("aip.sqlite3");
@@ -4330,6 +4331,7 @@ for raw in sys.stdin:
     #[test]
     #[ignore = "requires a local Ollama llama3.2:1b model"]
     fn desktop_equivalent_persisted_generation_reaches_runtime_and_persists() {
+        let _runtime_guard = crate::runtime::RUNTIME_TEST_LOCK.lock().unwrap();
         let path = std::env::temp_dir()
             .join(format!("aip-phase1-provider-probe-{}", Uuid::now_v7()))
             .join("aip.sqlite3");

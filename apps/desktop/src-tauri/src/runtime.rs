@@ -701,6 +701,11 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+// Runtime fixture tests launch child Python processes. Serialize those tests
+// across modules so Windows CI does not contend on process startup/teardown.
+#[cfg(test)]
+pub(crate) static RUNTIME_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -862,6 +867,7 @@ for raw in sys.stdin:
 
     #[test]
     fn exit_before_handshake_reports_actionable_detail() {
+        let _runtime_guard = super::RUNTIME_TEST_LOCK.lock().unwrap();
         let root = fixture_source_root_with_runtime("import sys\nraise SystemExit(23)\n");
         let controller = RuntimeController::new(root.clone(), false);
         controller.start();
@@ -876,6 +882,7 @@ for raw in sys.stdin:
 
     #[test]
     fn malformed_handshake_reports_actionable_detail() {
+        let _runtime_guard = super::RUNTIME_TEST_LOCK.lock().unwrap();
         let root = fixture_source_root_with_runtime(
             "import sys\nfor _ in sys.stdin:\n print('not-json', flush=True)\n break\n",
         );
@@ -891,6 +898,7 @@ for raw in sys.stdin:
 
     #[test]
     fn handshake_timeout_reports_actionable_detail() {
+        let _runtime_guard = super::RUNTIME_TEST_LOCK.lock().unwrap();
         let root = fixture_source_root_with_runtime(
             "import sys\nimport time\nfor _ in sys.stdin:\n time.sleep(4)\n",
         );
@@ -906,6 +914,7 @@ for raw in sys.stdin:
 
     #[test]
     fn clean_shutdown_stops_runtime_after_successful_handshake() {
+        let _runtime_guard = super::RUNTIME_TEST_LOCK.lock().unwrap();
         let root = fixture_source_root();
         let controller = RuntimeController::new(root.clone(), false);
         controller.start();
@@ -917,6 +926,7 @@ for raw in sys.stdin:
 
     #[test]
     fn persistent_child_survives_completion_cancellation_and_provider_failure() {
+        let _runtime_guard = super::RUNTIME_TEST_LOCK.lock().unwrap();
         let root = fixture_source_root();
         let controller = RuntimeController::new(root.clone(), false);
         let receiver = controller.subscribe();
@@ -957,6 +967,7 @@ for raw in sys.stdin:
 
     #[test]
     fn unexpected_exit_is_diagnosed_once_and_explicit_restart_recovers() {
+        let _runtime_guard = super::RUNTIME_TEST_LOCK.lock().unwrap();
         let root = fixture_source_root();
         let controller = RuntimeController::new(root.clone(), false);
         let receiver = controller.subscribe();
