@@ -251,6 +251,15 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(args[0], [str(executable), "serve"])
         self.assertFalse(kwargs["shell"])
 
+    def test_autostart_sanitizes_wildcard_bind_for_child(self) -> None:
+        executable = Path("C:/Program Files/Ollama/ollama.exe")
+        with (
+            patch.dict("os.environ", {"OLLAMA_HOST": "0.0.0.0:11436"}),
+            patch("aip_runtime.readiness.subprocess.Popen") as popen,
+        ):
+            _start_ollama(executable)
+        self.assertEqual(popen.call_args.kwargs["env"]["OLLAMA_HOST"], "127.0.0.1:11436")
+
     def test_shutdown_does_not_touch_an_existing_provider_process(self) -> None:
         client = FakeClient([None])
         manager = OllamaRuntimeManager(as_ollama_client(client), environ={})

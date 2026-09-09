@@ -221,20 +221,19 @@ impl RequestTraceStore {
             let Some(entries) = self.entries.get(request_id) else {
                 continue;
             };
-            if self
-                .metadata
-                .get(request_id)
-                .is_some_and(|metadata| metadata.temporary)
-            {
+            let Some(metadata) = self.metadata.get(request_id) else {
+                continue;
+            };
+            if metadata.temporary {
                 continue;
             }
             for entry in entries {
                 let record = serde_json::json!({
                     "requestId": request_id,
-                    "agentId": self.metadata.get(request_id).map(|value| value.agent_id.as_str()),
-                    "conversationId": self.metadata.get(request_id).map(|value| value.conversation_id.as_str()),
-                    "branchId": self.metadata.get(request_id).map(|value| value.branch_id.as_str()),
-                    "modelRef": self.metadata.get(request_id).map(|value| value.model_ref.as_str()),
+                    "agentId": metadata.agent_id,
+                    "conversationId": metadata.conversation_id,
+                    "branchId": metadata.branch_id,
+                    "modelRef": metadata.model_ref,
                     "code": entry.code,
                     "sequence": entry.sequence,
                     "terminalCode": entry.terminal_code,
@@ -3599,6 +3598,19 @@ mod tests {
         generation.temporary = true;
         traces.register(&generation);
         traces.record("temporary-trace-request", "chat.finalized", Some(2), None);
+        traces.persist(&path);
+        assert!(!path.exists() || fs::read_to_string(&path).unwrap().is_empty());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn request_trace_does_not_persist_unregistered_requests() {
+        let path = std::env::temp_dir().join(format!(
+            "aip-unregistered-generation-trace-{}.ndjson",
+            Uuid::now_v7()
+        ));
+        let mut traces = RequestTraceStore::default();
+        traces.record("unregistered-request", "chat.send.received", None, None);
         traces.persist(&path);
         assert!(!path.exists() || fs::read_to_string(&path).unwrap().is_empty());
         let _ = fs::remove_file(path);
