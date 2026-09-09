@@ -5,11 +5,13 @@ from __future__ import annotations
 import codecs
 import http.client
 import json
+import os
 import socket
 import threading
 from collections.abc import Callable, Iterable
 from contextlib import suppress
 from typing import Any, Protocol, cast
+from urllib.parse import urlsplit
 
 from .protocol import (
     MAX_ASSISTANT_OUTPUT_BYTES,
@@ -127,16 +129,48 @@ class _InterruptibleHttpConnection:
 
 def _request_connection() -> ConnectionLike:
     # HTTPConnection does not consult proxy environment variables and never follows redirects.
+    host, port = _ollama_endpoint()
     return cast(
         ConnectionLike,
-        http.client.HTTPConnection(OLLAMA_HOST, OLLAMA_PORT, timeout=4.0),
+        http.client.HTTPConnection(host, port, timeout=4.0),
     )
 
 
 def _stream_connection() -> ConnectionLike:
-    return _InterruptibleHttpConnection(
-        http.client.HTTPConnection(OLLAMA_HOST, OLLAMA_PORT, timeout=120.0)
-    )
+    host, port = _ollama_endpoint()
+    return _InterruptibleHttpConnection(http.client.HTTPConnection(host, port, timeout=120.0))
+
+
+def _ollama_endpoint() -> tuple[str, int]:
+    """Resolve an explicitly configured loopback endpoint without proxying or remote access."""
+
+    raw = os.environ.get("OLLAMA_HOST", "").strip()
+    if not raw:
+        return OLLAMA_HOST, OLLAMA_PORT
+    candidate = raw if "://" in raw else f"http://{raw}"
+    try:
+        parsed = urlsplit(candidate)
+        host = parsed.hostname
+        port = parsed.port or OLLAMA_PORT
+    except ValueError as error:
+        raise ProviderError("provider_config_invalid") from error
+    if (
+        parsed.scheme != "http"
+        or host is None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or parsed.username is not None
+        or parsed.password is not None
+        or not 1 <= port <= 65_535
+    ):
+        raise ProviderError("provider_config_invalid")
+    normalized_host = host.casefold()
+    if normalized_host in {"0.0.0.0", "::"}:
+        normalized_host = OLLAMA_HOST
+    if normalized_host not in {"127.0.0.1", "localhost", "::1"}:
+        raise ProviderError("provider_config_invalid")
+    return normalized_host, port
 
 
 class OllamaClient:

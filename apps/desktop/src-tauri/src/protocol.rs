@@ -358,7 +358,7 @@ pub fn valid_provider_model_id(value: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || ".:_/-".contains(character))
 }
 
-fn valid_identifier(value: &str) -> bool {
+pub(crate) fn valid_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 200
         && value
