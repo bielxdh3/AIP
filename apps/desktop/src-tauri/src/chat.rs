@@ -4227,7 +4227,10 @@ for raw in sys.stdin:
     }
 
     fn wait_for_runtime_state(runtime: &RuntimeController, expected: RuntimeState) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // CI Windows runners can cold-start the Python runtime well beyond the
+        // interactive local path; keep this assertion bounded without making
+        // the test sensitive to that startup variance.
+        let deadline = Instant::now() + Duration::from_secs(15);
         while Instant::now() < deadline {
             if runtime.snapshot().state == expected {
                 return;
