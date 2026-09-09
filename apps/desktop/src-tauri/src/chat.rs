@@ -160,6 +160,13 @@ struct RequestTraceStore {
     metadata: HashMap<String, RequestTraceMetadata>,
 }
 
+fn should_persist_trace_code(code: &'static str) -> bool {
+    !matches!(
+        code,
+        "chunk_persisted" | "generation.chunk" | "chunk_ignored"
+    )
+}
+
 impl RequestTraceStore {
     fn record(
         &mut self,
@@ -1112,7 +1119,12 @@ impl ChatCoordinator {
         if state.conversation.id != conversation_id {
             return Err("operation_unavailable");
         }
-        if state.send_blocked_code.is_some() {
+        let explicit_retry_model_available = explicit_retry_can_bypass_selection_block(
+            state.send_blocked_code.as_deref(),
+            model_ref,
+            &lock(&self.inner.provider),
+        );
+        if state.send_blocked_code.is_some() && !explicit_retry_model_available {
             return Err("runtime_unavailable");
         }
         self.reserve_route(
@@ -2464,8 +2476,10 @@ impl ChatCoordinator {
     ) {
         let mut traces = lock(&self.inner.request_traces);
         traces.record(request_id, code, sequence, terminal_code);
-        if let Some(path) = self.inner.request_trace_path.as_ref() {
-            traces.persist(path);
+        if should_persist_trace_code(code) {
+            if let Some(path) = self.inner.request_trace_path.as_ref() {
+                traces.persist(path);
+            }
         }
     }
 
@@ -2766,6 +2780,18 @@ fn send_blocked_code_for_state(
     }
 }
 
+fn explicit_retry_can_bypass_selection_block(
+    blocked_code: Option<&str>,
+    model_ref: &str,
+    provider: &ProviderSnapshot,
+) -> bool {
+    blocked_code == Some("selected_model_unavailable")
+        && provider
+            .models
+            .iter()
+            .any(|candidate| candidate.model_ref == model_ref)
+}
+
 fn provider_error_snapshot(code: &str) -> ProviderSnapshot {
     let state = match code {
         "provider_malformed" | "provider_payload_too_large" | "provider_model_limit" => {
@@ -2967,6 +2993,36 @@ mod tests {
             ),
             Some("no_candidate")
         );
+    }
+
+    #[test]
+    fn explicit_retry_bypasses_only_a_selection_block_for_an_available_model() {
+        let mut provider = available_provider();
+        provider.models.push(OllamaModel {
+            model_ref: "ollama:installed".into(),
+            provider_model_id: "installed".into(),
+            display_name: "Installed".into(),
+            size: 1,
+            family: None,
+            parameter_size: None,
+            quantization: None,
+            capabilities: Vec::new(),
+        });
+        assert!(explicit_retry_can_bypass_selection_block(
+            Some("selected_model_unavailable"),
+            "ollama:installed",
+            &provider,
+        ));
+        assert!(!explicit_retry_can_bypass_selection_block(
+            Some("runtime_unavailable"),
+            "ollama:installed",
+            &provider,
+        ));
+        assert!(!explicit_retry_can_bypass_selection_block(
+            Some("selected_model_unavailable"),
+            "ollama:missing",
+            &provider,
+        ));
     }
 
     #[test]
@@ -3568,6 +3624,15 @@ mod tests {
             traces.record(&format!("request-{index}"), "request_enqueued", None, None);
         }
         assert!(traces.entries("request").is_empty());
+    }
+
+    #[test]
+    fn request_trace_skips_streaming_chunks_until_a_milestone() {
+        assert!(!should_persist_trace_code("chunk_persisted"));
+        assert!(!should_persist_trace_code("generation.chunk"));
+        assert!(!should_persist_trace_code("chunk_ignored"));
+        assert!(should_persist_trace_code("generation.accepted"));
+        assert!(should_persist_trace_code("terminal_persisted"));
     }
 
     #[test]
