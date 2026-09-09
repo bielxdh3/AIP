@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ACTIVE_DEVELOPMENT_VERSION = "0.2.3";
-const EXPECTED_BUILD_REVISION = "0.2.3.2";
+const EXPECTED_BUILD_REVISION = "0.2.3.3";
 const SEMVER = /^\d+\.\d+\.\d+$/;
 const BUILD_REVISION = /^\d+\.\d+\.\d+\.\d+$/;
 

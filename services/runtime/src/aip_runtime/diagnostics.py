@@ -26,6 +26,7 @@ DIAGNOSTIC_CODES = frozenset(
 TRACE_EVENTS = frozenset(
     {
         "generation.accepted",
+        "ollama.connected",
         "ollama.request.started",
         "ollama.first_chunk",
         "ollama.request.completed",
@@ -47,10 +48,13 @@ def emit_diagnostic(
 ) -> None:
     """Write one stable diagnostic code without exception or user content."""
 
-    sink = write or sys.stderr.write
     code = sanitize_diagnostic_code(candidate)
     try:
-        sink(f"{DIAGNOSTIC_PREFIX}{code}\n")
+        if write is None:
+            sys.stderr.write(f"{DIAGNOSTIC_PREFIX}{code}\n")
+            sys.stderr.flush()
+        else:
+            write(f"{DIAGNOSTIC_PREFIX}{code}\n")
     except Exception:
         # Diagnostics must never become a second runtime failure.
         return
@@ -79,12 +83,32 @@ def emit_trace(
     ):
         return
     payload: dict[str, str] = {"event": event, "requestId": request_id}
-    if isinstance(model, str) and model and len(model) <= 200:
+    if (
+        isinstance(model, str)
+        and model
+        and len(model) <= 200
+        and all(
+            character.isascii() and (character.isalnum() or character in ".:_/-")
+            for character in model
+        )
+    ):
         payload["model"] = model
-    if isinstance(error_code, str) and error_code and len(error_code) <= 64:
+    if (
+        isinstance(error_code, str)
+        and error_code
+        and len(error_code) <= 64
+        and all(
+            character.isascii() and (character.islower() or character == "_")
+            for character in error_code
+        )
+    ):
         payload["errorCode"] = error_code
-    sink = write or sys.stderr.write
     try:
-        sink(f"{TRACE_PREFIX}{json.dumps(payload, separators=(',', ':'))}\n")
+        line = f"{TRACE_PREFIX}{json.dumps(payload, separators=(',', ':'))}\n"
+        if write is None:
+            sys.stderr.write(line)
+            sys.stderr.flush()
+        else:
+            write(line)
     except Exception:
         return

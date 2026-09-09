@@ -54,7 +54,21 @@ pub(crate) struct RuntimeDiagnostics {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeNotice {
     Output(RuntimeOutput),
-    Disconnected { detail_code: &'static str },
+    Trace {
+        request_id: String,
+        event: &'static str,
+        error_code: Option<String>,
+    },
+    Disconnected {
+        detail_code: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeTrace {
+    request_id: String,
+    event: &'static str,
+    error_code: Option<String>,
 }
 
 enum RuntimeCommand {
@@ -205,12 +219,20 @@ fn run_runtime_process(
     subscribers: Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
     diagnostics: Arc<Mutex<RuntimeDiagnostics>>,
 ) {
+    let packaged_runtime = !cfg!(debug_assertions)
+        || source_root
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"));
     #[cfg(debug_assertions)]
-    let mut command = Command::new("python");
+    let mut command = if packaged_runtime {
+        Command::new(&source_root)
+    } else {
+        let mut command = Command::new("python");
+        command.args(["-m", "aip_runtime"]);
+        command
+    };
     #[cfg(not(debug_assertions))]
     let mut command = Command::new(&source_root);
-    #[cfg(debug_assertions)]
-    command.args(["-m", "aip_runtime"]);
     let inherited_environment = [
         "PATH",
         "PATHEXT",
@@ -243,7 +265,9 @@ fn run_runtime_process(
         command.current_dir(parent);
     }
     #[cfg(debug_assertions)]
-    command.env("PYTHONPATH", source_root);
+    if !packaged_runtime {
+        command.env("PYTHONPATH", &source_root);
+    }
     #[cfg(target_os = "windows")]
     command.creation_flags(0x0800_0000);
 
@@ -271,7 +295,9 @@ fn run_runtime_process(
     let (line_sender, line_receiver) = mpsc::channel();
     let reader = thread::spawn(move || read_runtime_lines(stdout, line_sender));
     let diagnostic_state = Arc::clone(&diagnostics);
-    let stderr_reader = thread::spawn(move || read_runtime_stderr(stderr, diagnostic_state));
+    let trace_subscribers = Arc::clone(&subscribers);
+    let stderr_reader =
+        thread::spawn(move || read_runtime_stderr(stderr, diagnostic_state, trace_subscribers));
     let Ok(request) = health_request(HANDSHAKE_ID) else {
         let _ = child.kill();
         unavailable(&status, &subscribers, "protocol_encoding_failed");
@@ -287,7 +313,7 @@ fn run_runtime_process(
         return;
     }
 
-    let deadline = Instant::now() + handshake_timeout(!cfg!(debug_assertions));
+    let deadline = Instant::now() + handshake_timeout(packaged_runtime);
     let mut handshake_failure = "runtime_handshake_timeout";
     let handshake_valid = loop {
         if stop.load(Ordering::SeqCst) {
@@ -515,7 +541,11 @@ fn read_runtime_lines(stdout: ChildStdout, sender: mpsc::Sender<ReaderItem>) {
     }
 }
 
-fn read_runtime_stderr(stderr: ChildStderr, diagnostics: Arc<Mutex<RuntimeDiagnostics>>) {
+fn read_runtime_stderr(
+    stderr: ChildStderr,
+    diagnostics: Arc<Mutex<RuntimeDiagnostics>>,
+    subscribers: Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
+) {
     let mut reader = BufReader::new(stderr);
     loop {
         let mut raw = Vec::new();
@@ -536,7 +566,16 @@ fn read_runtime_stderr(stderr: ChildStderr, diagnostics: Arc<Mutex<RuntimeDiagno
                 if let Some(code) = parse_diagnostic_line(&raw) {
                     record_stderr_code(&diagnostics, code);
                 } else if let Some(trace) = parse_trace_line(&raw) {
-                    record_stderr_code(&diagnostics, &trace);
+                    let code = format!("trace:{}:{}", trace.event, trace.request_id);
+                    record_stderr_code(&diagnostics, &code);
+                    broadcast(
+                        &subscribers,
+                        RuntimeNotice::Trace {
+                            request_id: trace.request_id,
+                            event: trace.event,
+                            error_code: trace.error_code,
+                        },
+                    );
                 }
             }
             Err(_) => return,
@@ -553,7 +592,7 @@ fn parse_diagnostic_line(raw: &[u8]) -> Option<&'static str> {
         .find(|code| *code == candidate)
 }
 
-fn parse_trace_line(raw: &[u8]) -> Option<String> {
+fn parse_trace_line(raw: &[u8]) -> Option<RuntimeTrace> {
     let line = std::str::from_utf8(raw).ok()?;
     let payload = line.strip_prefix(TRACE_PREFIX)?;
     let value: serde_json::Value = serde_json::from_str(payload).ok()?;
@@ -561,6 +600,7 @@ fn parse_trace_line(raw: &[u8]) -> Option<String> {
     if !matches!(
         event,
         "generation.accepted"
+            | "ollama.connected"
             | "ollama.request.started"
             | "ollama.first_chunk"
             | "ollama.request.completed"
@@ -572,7 +612,33 @@ fn parse_trace_line(raw: &[u8]) -> Option<String> {
     if !crate::protocol::valid_identifier(request_id) {
         return None;
     }
-    Some(format!("trace:{event}:{request_id}"))
+    let error_code = value
+        .get("errorCode")
+        .and_then(serde_json::Value::as_str)
+        .filter(|code| {
+            !code.is_empty()
+                && code.len() <= 64
+                && code
+                    .chars()
+                    .all(|character| character.is_ascii_lowercase() || character == '_')
+        })
+        .map(str::to_string);
+    if value.get("errorCode").is_some() && error_code.is_none() {
+        return None;
+    }
+    Some(RuntimeTrace {
+        request_id: request_id.to_string(),
+        event: match event {
+            "generation.accepted" => "generation.accepted",
+            "ollama.connected" => "ollama.connected",
+            "ollama.request.started" => "ollama.request.started",
+            "ollama.first_chunk" => "ollama.first_chunk",
+            "ollama.request.completed" => "ollama.request.completed",
+            "ollama.request.failed" => "ollama.request.failed",
+            _ => return None,
+        },
+        error_code,
+    })
 }
 
 fn record_stderr_code(diagnostics: &Arc<Mutex<RuntimeDiagnostics>>, code: &str) {
@@ -1027,7 +1093,21 @@ for raw in sys.stdin:
             super::parse_trace_line(
                 br#"AIP_RUNTIME_TRACE {"event":"ollama.first_chunk","requestId":"request-1"}"#
             ),
-            Some("trace:ollama.first_chunk:request-1".into())
+            Some(super::RuntimeTrace {
+                request_id: "request-1".into(),
+                event: "ollama.first_chunk",
+                error_code: None,
+            })
+        );
+        assert_eq!(
+            super::parse_trace_line(
+                br#"AIP_RUNTIME_TRACE {"event":"ollama.connected","requestId":"request-1","errorCode":"provider_timeout"}"#
+            ),
+            Some(super::RuntimeTrace {
+                request_id: "request-1".into(),
+                event: "ollama.connected",
+                error_code: Some("provider_timeout".into()),
+            })
         );
         assert_eq!(
             super::parse_trace_line(

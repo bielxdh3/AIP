@@ -200,6 +200,59 @@ describe("ConversationDraftSurface", () => {
     expect(picker.disabled).toBe(false);
   });
 
+  it("ignores a synchronous duplicate first-send click", async () => {
+    hookState.phase = loadedPhase;
+    const created = {
+      ...loadedPhase.conversation,
+      id: "created",
+      title: "Nova conversa",
+    };
+    let resolveCreated: ((value: typeof created) => void) | undefined;
+    invoke.mockImplementation((command: string) =>
+      command === "create_agent_conversation"
+        ? new Promise<typeof created>((resolve) => {
+            resolveCreated = resolve;
+          })
+        : Promise.resolve(undefined),
+    );
+    renderDraft();
+    const textarea = container?.querySelector<HTMLTextAreaElement>(
+      ".conversation-draft-surface .composer textarea",
+    );
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    if (
+      textarea === null ||
+      textarea === undefined ||
+      submit === null ||
+      submit === undefined
+    )
+      throw new Error("Missing draft controls");
+    change(textarea, "primeira mensagem");
+
+    await act(async () => {
+      submit.click();
+      submit.click();
+      await Promise.resolve();
+    });
+    expect(
+      invoke.mock.calls.filter(
+        ([command]) => command === "create_agent_conversation",
+      ),
+    ).toHaveLength(1);
+
+    await act(async () => {
+      resolveCreated?.(created);
+      await Promise.resolve();
+    });
+    expect(
+      invoke.mock.calls.filter(
+        ([command]) => command === "send_phase_one_message",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("can be abandoned without creating a persisted conversation or fake history", () => {
     hookState.phase = loadedPhase;
     renderDraft();

@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        mpsc, Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -153,11 +153,32 @@ struct RequestTraceMetadata {
     temporary: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct RequestTraceStore {
     order: VecDeque<String>,
     entries: HashMap<String, VecDeque<RequestTraceEntry>>,
     metadata: HashMap<String, RequestTraceMetadata>,
+}
+
+#[derive(Clone)]
+struct TracePersistence {
+    sender: mpsc::Sender<RequestTraceStore>,
+}
+
+impl TracePersistence {
+    fn new(path: PathBuf) -> Self {
+        let (sender, receiver) = mpsc::channel::<RequestTraceStore>();
+        thread::spawn(move || {
+            while let Ok(snapshot) = receiver.recv() {
+                snapshot.persist(&path);
+            }
+        });
+        Self { sender }
+    }
+
+    fn enqueue(&self, snapshot: RequestTraceStore) {
+        let _ = self.sender.send(snapshot);
+    }
 }
 
 fn should_persist_trace_code(code: &'static str) -> bool {
@@ -542,6 +563,7 @@ struct ChatInner {
     deferred_title_generations: Mutex<VecDeque<GenerationJob>>,
     request_traces: Mutex<RequestTraceStore>,
     request_trace_path: Option<PathBuf>,
+    trace_persistence: Option<TracePersistence>,
     temporary_chats: Mutex<TemporaryChatStore>,
     cancellation_recovery: AtomicBool,
 }
@@ -615,6 +637,7 @@ impl ChatCoordinator {
         request_trace_path: Option<PathBuf>,
     ) -> Self {
         let receiver = runtime.subscribe();
+        let trace_persistence = request_trace_path.clone().map(TracePersistence::new);
         let coordinator = Self {
             inner: Arc::new(ChatInner {
                 events,
@@ -632,6 +655,7 @@ impl ChatCoordinator {
                 deferred_title_generations: Mutex::new(VecDeque::new()),
                 request_traces: Mutex::new(RequestTraceStore::default()),
                 request_trace_path,
+                trace_persistence,
                 temporary_chats: Mutex::new(TemporaryChatStore::default()),
                 cancellation_recovery: AtomicBool::new(false),
             }),
@@ -1636,6 +1660,11 @@ impl ChatCoordinator {
             RuntimeNotice::Output(RuntimeOutput::Event(event)) => {
                 self.handle_generation_event(event)
             }
+            RuntimeNotice::Trace {
+                request_id,
+                event,
+                error_code,
+            } => self.trace(&request_id, event, None, error_code.as_deref()),
             RuntimeNotice::Disconnected { detail_code } => {
                 lock(&self.inner.discovery_requests).clear();
                 let cancellation_recovery = self
@@ -1725,6 +1754,9 @@ impl ChatCoordinator {
                     }
                 };
                 if self.append_job_chunk(&job, content).is_ok() {
+                    if sequence == 1 {
+                        self.trace(&request_id, "first_chunk", Some(sequence), None);
+                    }
                     self.trace(&request_id, "chunk_persisted", Some(sequence), None);
                     self.trace(&request_id, "generation.chunk", Some(sequence), None);
                     self.emit(event);
@@ -2050,8 +2082,10 @@ impl ChatCoordinator {
                 self.schedule_title_generation_or_defer(&job);
             }
             self.trace(request_id, "terminal_persisted", event.sequence, error_code);
+            self.trace(request_id, "database.finalized", event.sequence, error_code);
             self.trace(request_id, "chat.finalized", event.sequence, error_code);
             self.emit(event);
+            self.trace(request_id, "frontend.state_changed", None, error_code);
         } else {
             self.trace(request_id, "persistence_failed", event.sequence, None);
             self.trace(
@@ -2070,6 +2104,7 @@ impl ChatCoordinator {
             return;
         };
         self.trace(request_id, "queue_finalized", None, Some(code));
+        self.trace(request_id, "request_failed", None, Some(code));
         self.trace(request_id, "chat.finalized.failed", None, Some(code));
         let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
         self.emit_terminal(&job, "generation.failed", Some(code));
@@ -2082,6 +2117,7 @@ impl ChatCoordinator {
             return;
         };
         self.trace(request_id, "queue_finalized", None, Some(code));
+        self.trace(request_id, "request_failed", None, Some(code));
         self.trace(request_id, "chat.finalized.failed", None, Some(code));
         let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
         self.emit_terminal(&job, "generation.failed", Some(code));
@@ -2108,6 +2144,8 @@ impl ChatCoordinator {
         lock(&self.inner.title_generations).clear();
         lock(&self.inner.deferred_title_generations).clear();
         for job in jobs {
+            self.trace(&job.request_id, "runtime.exited", None, Some(code));
+            self.trace(&job.request_id, "request_failed", None, Some(code));
             let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
             self.emit_terminal(&job, "generation.failed", Some(code));
         }
@@ -2257,6 +2295,7 @@ impl ChatCoordinator {
             };
             self.trace(&job.request_id, "queue_activated", None, None);
             self.trace(&job.request_id, "chat.queue.activated", None, None);
+            self.trace(&job.request_id, "runtime_ready", None, None);
             let dispatch = self.build_generation_request(&job).and_then(|request| {
                 self.trace(&job.request_id, "dispatching", None, None);
                 self.mark_job_streaming(&job)?;
@@ -2271,6 +2310,12 @@ impl ChatCoordinator {
             }
             self.trace(&job.request_id, "request_written", None, None);
             self.trace(&job.request_id, "generation.start.sent", None, None);
+            self.trace(
+                &job.request_id,
+                "protocol.generation_start_written",
+                None,
+                None,
+            );
             self.emit_refresh(Some(&job.agent_id));
             return;
         }
@@ -2474,12 +2519,18 @@ impl ChatCoordinator {
         sequence: Option<u64>,
         terminal_code: Option<&str>,
     ) {
-        let mut traces = lock(&self.inner.request_traces);
-        traces.record(request_id, code, sequence, terminal_code);
-        if should_persist_trace_code(code) {
-            if let Some(path) = self.inner.request_trace_path.as_ref() {
-                traces.persist(path);
-            }
+        let snapshot = {
+            let mut traces = lock(&self.inner.request_traces);
+            traces.record(request_id, code, sequence, terminal_code);
+            should_persist_trace_code(code).then(|| traces.clone())
+        };
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        if let Some(persistence) = self.inner.trace_persistence.as_ref() {
+            persistence.enqueue(snapshot);
+        } else if let Some(path) = self.inner.request_trace_path.as_ref() {
+            snapshot.persist(path);
         }
     }
 
@@ -3633,6 +3684,30 @@ mod tests {
         assert!(!should_persist_trace_code("chunk_ignored"));
         assert!(should_persist_trace_code("generation.accepted"));
         assert!(should_persist_trace_code("terminal_persisted"));
+    }
+
+    #[test]
+    fn request_trace_persistence_is_serialized_off_the_calling_thread() {
+        let path = std::env::temp_dir().join(format!(
+            "aip-async-generation-trace-{}.ndjson",
+            Uuid::now_v7()
+        ));
+        let persistence = TracePersistence::new(path.clone());
+        let mut traces = RequestTraceStore::default();
+        let generation = job("async-trace-request", "astra");
+        traces.register(&generation);
+        traces.record("async-trace-request", "database.finalized", None, None);
+        persistence.enqueue(traces);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !path.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(path.exists());
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("async-trace-request"));
+        drop(persistence);
+        let _ = fs::remove_file(path);
     }
 
     #[test]

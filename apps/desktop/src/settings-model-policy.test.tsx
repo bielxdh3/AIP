@@ -81,7 +81,7 @@ const phases = {
 
 const snapshot: AppSnapshot = {
   appVersion: "0.1.0",
-  buildRevision: "0.2.3.2",
+  buildRevision: "0.2.3.3",
   buildSha: "fixture-build",
   buildTimestamp: "2026-08-31T00:00:00Z",
   runtimePackagingMode: "fixture",

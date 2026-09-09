@@ -189,6 +189,12 @@ class RuntimeServer:
             with self._active_lock:
                 if self._active is active:
                     active.connection = connection
+            if connection is not None:
+                self._trace(
+                    "ollama.connected",
+                    request_id=active.request_id,
+                    model=str(params.get("model", "")),
+                )
 
         def emit_chunk(sequence: int, content: str) -> None:
             if active.cancel_event.is_set():
