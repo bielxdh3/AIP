@@ -1,6 +1,6 @@
 # Phase H versioning and shipped behavior
 
-Status: 0.2.2 is unreleased development. The current public stable installer is
+Status: 0.2.3 is unreleased development. The current public stable installer is
 the v0.1.0 MSI linked from the README. No tag, release, or installer publication
 is implied by the active development metadata.
 
@@ -10,7 +10,7 @@ AIP uses SemVer (`MAJOR.MINOR.PATCH`) for active workspace, desktop, contract,
 runtime, and Tauri package metadata. A coordinated product/runtime change keeps
 the active manifests aligned; the Rust package version is also the source used
 by the desktop application version display. The active development version is
-0.2.2.
+0.2.3.
 
 The v0.1.0 tag, release asset, release notes, and validation records are
 historical evidence and remain unchanged. Fixture snapshots and contract test

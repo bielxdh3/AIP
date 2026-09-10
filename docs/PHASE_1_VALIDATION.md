@@ -50,6 +50,15 @@ before the new manual test. It:
 - reports genuine process death separately from ordinary provider failure or cancellation;
 - requires explicit runtime retry and does not add an automatic restart loop.
 
+## Native generation diagnostic trace
+
+Build `0.2.3.3` keeps a bounded, content-free NDJSON trace for the next Owner smoke at
+`%LOCALAPPDATA%\br.dev.biel.aip\diagnostics\generation-trace.ndjson` (the exact parent may
+follow the installed identifier). Each record carries the request ID, conversation/branch/model
+metadata when known, a lifecycle code, sequence, terminal error code, and timestamp. Prompt bodies,
+secrets, and raw model output are never written. Python also emits the same request-correlated safe
+Ollama milestones to the managed runtime stderr for crash reports.
+
 ## Remaining streamed-request failure evidence
 
 Manual validation of `9910418c803b62e756a7966980b321c601990b04` kept Ollama and the

@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
     process::{ChildStderr, ChildStdout, Command, ExitStatus, Stdio},
@@ -24,7 +24,11 @@ use crate::{
 
 const HANDSHAKE_ID: &str = "phase1-health";
 const DIAGNOSTIC_PREFIX: &str = "AIP_RUNTIME_DIAGNOSTIC ";
-const MAX_DIAGNOSTIC_LINE_BYTES: usize = 96;
+const TRACE_PREFIX: &str = "AIP_RUNTIME_TRACE ";
+// Trace lines include a bounded model identifier plus the full allowlisted
+// accounting map. Keep the reader limit comfortably above the largest valid
+// content-free payload so valid evidence is never split before parsing.
+const MAX_DIAGNOSTIC_LINE_BYTES: usize = 4096;
 const MAX_DIAGNOSTIC_CODES: usize = 16;
 const DEVELOPMENT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 const PACKAGED_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -53,8 +57,41 @@ pub(crate) struct RuntimeDiagnostics {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeNotice {
     Output(RuntimeOutput),
-    Disconnected { detail_code: &'static str },
+    Trace {
+        request_id: String,
+        event: &'static str,
+        error_code: Option<String>,
+        counters: BTreeMap<String, u64>,
+    },
+    Disconnected {
+        detail_code: &'static str,
+    },
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeTrace {
+    request_id: String,
+    event: &'static str,
+    error_code: Option<String>,
+    counters: BTreeMap<String, u64>,
+}
+
+const TRACE_COUNTER_KEYS: &[&str] = &[
+    "provider_chunks",
+    "provider_bytes",
+    "provider_characters",
+    "runtime_chunks",
+    "runtime_bytes",
+    "runtime_characters",
+    "runtime_terminal_events",
+    "rust_chunks",
+    "rust_bytes",
+    "rust_characters",
+    "persisted_bytes",
+    "persisted_chars",
+    "persisted_batches",
+    "heartbeat_max_latency_ms",
+];
 
 enum RuntimeCommand {
     Send(String),
@@ -75,6 +112,7 @@ pub struct RuntimeController {
     command_sender: Arc<Mutex<Option<mpsc::Sender<RuntimeCommand>>>>,
     subscribers: Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
     diagnostics: Arc<Mutex<RuntimeDiagnostics>>,
+    process_id: Arc<Mutex<Option<u32>>>,
     source_root: PathBuf,
 }
 
@@ -96,12 +134,17 @@ impl RuntimeController {
             command_sender: Arc::new(Mutex::new(None)),
             subscribers: Arc::new(Mutex::new(Vec::new())),
             diagnostics: Arc::new(Mutex::new(RuntimeDiagnostics::default())),
+            process_id: Arc::new(Mutex::new(None)),
             source_root,
         }
     }
 
     pub fn snapshot(&self) -> RuntimeStatus {
         lock(&self.status).clone()
+    }
+
+    pub(crate) fn process_id(&self) -> Option<u32> {
+        *lock(&self.process_id)
     }
 
     pub fn subscribe(&self) -> mpsc::Receiver<RuntimeNotice> {
@@ -151,6 +194,7 @@ impl RuntimeController {
         let source_root = self.source_root.clone();
         let subscribers = Arc::clone(&self.subscribers);
         let diagnostics = Arc::clone(&self.diagnostics);
+        let process_id = Arc::clone(&self.process_id);
         let stored_sender = Arc::clone(&self.command_sender);
         *worker = Some(thread::spawn(move || {
             run_runtime_process(
@@ -160,6 +204,7 @@ impl RuntimeController {
                 command_receiver,
                 subscribers,
                 diagnostics,
+                process_id,
             );
             *lock(&stored_sender) = None;
         }));
@@ -203,13 +248,22 @@ fn run_runtime_process(
     command_receiver: mpsc::Receiver<RuntimeCommand>,
     subscribers: Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
     diagnostics: Arc<Mutex<RuntimeDiagnostics>>,
+    process_id: Arc<Mutex<Option<u32>>>,
 ) {
+    let packaged_runtime = !cfg!(debug_assertions)
+        || source_root
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"));
     #[cfg(debug_assertions)]
-    let mut command = Command::new("python");
+    let mut command = if packaged_runtime {
+        Command::new(&source_root)
+    } else {
+        let mut command = Command::new("python");
+        command.args(["-m", "aip_runtime"]);
+        command
+    };
     #[cfg(not(debug_assertions))]
     let mut command = Command::new(&source_root);
-    #[cfg(debug_assertions)]
-    command.args(["-m", "aip_runtime"]);
     let inherited_environment = [
         "PATH",
         "PATHEXT",
@@ -219,6 +273,11 @@ fn run_runtime_process(
         "TMP",
         "USERPROFILE",
         "LOCALAPPDATA",
+        // Keep the managed runtime local-first while allowing the Owner's explicit
+        // Ollama configuration to reach the packaged process.
+        "OLLAMA_HOST",
+        "AIP_OLLAMA_EXECUTABLE",
+        "AIP_OLLAMA_CONFIG",
     ]
     .into_iter()
     .filter_map(|key| std::env::var_os(key).map(|value| (key, value)))
@@ -233,8 +292,13 @@ fn run_runtime_process(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(parent) = source_root.parent() {
+        command.current_dir(parent);
+    }
     #[cfg(debug_assertions)]
-    command.env("PYTHONPATH", source_root);
+    if !packaged_runtime {
+        command.env("PYTHONPATH", &source_root);
+    }
     #[cfg(target_os = "windows")]
     command.creation_flags(0x0800_0000);
 
@@ -242,6 +306,7 @@ fn run_runtime_process(
         unavailable(&status, &subscribers, "python_unavailable");
         return;
     };
+    let _process_id_guard = ProcessIdGuard::set(&process_id, child.id());
     let Some(mut stdin) = child.stdin.take() else {
         let _ = child.kill();
         unavailable(&status, &subscribers, "runtime_stdio_unavailable");
@@ -262,7 +327,9 @@ fn run_runtime_process(
     let (line_sender, line_receiver) = mpsc::channel();
     let reader = thread::spawn(move || read_runtime_lines(stdout, line_sender));
     let diagnostic_state = Arc::clone(&diagnostics);
-    let stderr_reader = thread::spawn(move || read_runtime_stderr(stderr, diagnostic_state));
+    let trace_subscribers = Arc::clone(&subscribers);
+    let stderr_reader =
+        thread::spawn(move || read_runtime_stderr(stderr, diagnostic_state, trace_subscribers));
     let Ok(request) = health_request(HANDSHAKE_ID) else {
         let _ = child.kill();
         unavailable(&status, &subscribers, "protocol_encoding_failed");
@@ -278,7 +345,7 @@ fn run_runtime_process(
         return;
     }
 
-    let deadline = Instant::now() + handshake_timeout(!cfg!(debug_assertions));
+    let deadline = Instant::now() + handshake_timeout(packaged_runtime);
     let mut handshake_failure = "runtime_handshake_timeout";
     let handshake_valid = loop {
         if stop.load(Ordering::SeqCst) {
@@ -455,6 +522,25 @@ fn handshake_timeout(packaged_runtime: bool) -> Duration {
     }
 }
 
+struct ProcessIdGuard {
+    target: Arc<Mutex<Option<u32>>>,
+}
+
+impl ProcessIdGuard {
+    fn set(target: &Arc<Mutex<Option<u32>>>, process_id: u32) -> Self {
+        *lock(target) = Some(process_id);
+        Self {
+            target: Arc::clone(target),
+        }
+    }
+}
+
+impl Drop for ProcessIdGuard {
+    fn drop(&mut self) {
+        *lock(&self.target) = None;
+    }
+}
+
 fn child_exit_within(child: &mut std::process::Child, timeout: Duration) -> Option<ExitStatus> {
     let deadline = Instant::now() + timeout;
     loop {
@@ -506,7 +592,11 @@ fn read_runtime_lines(stdout: ChildStdout, sender: mpsc::Sender<ReaderItem>) {
     }
 }
 
-fn read_runtime_stderr(stderr: ChildStderr, diagnostics: Arc<Mutex<RuntimeDiagnostics>>) {
+fn read_runtime_stderr(
+    stderr: ChildStderr,
+    diagnostics: Arc<Mutex<RuntimeDiagnostics>>,
+    subscribers: Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
+) {
     let mut reader = BufReader::new(stderr);
     loop {
         let mut raw = Vec::new();
@@ -524,10 +614,21 @@ fn read_runtime_stderr(stderr: ChildStderr, diagnostics: Arc<Mutex<RuntimeDiagno
                 if raw.last() == Some(&b'\r') {
                     raw.pop();
                 }
-                let Some(code) = parse_diagnostic_line(&raw) else {
-                    continue;
-                };
-                record_stderr_code(&diagnostics, code);
+                if let Some(code) = parse_diagnostic_line(&raw) {
+                    record_stderr_code(&diagnostics, code);
+                } else if let Some(trace) = parse_trace_line(&raw) {
+                    let code = format!("trace:{}:{}", trace.event, trace.request_id);
+                    record_stderr_code(&diagnostics, &code);
+                    broadcast(
+                        &subscribers,
+                        RuntimeNotice::Trace {
+                            request_id: trace.request_id,
+                            event: trace.event,
+                            error_code: trace.error_code,
+                            counters: trace.counters,
+                        },
+                    );
+                }
             }
             Err(_) => return,
         }
@@ -541,6 +642,89 @@ fn parse_diagnostic_line(raw: &[u8]) -> Option<&'static str> {
         .iter()
         .copied()
         .find(|code| *code == candidate)
+}
+
+fn parse_trace_line(raw: &[u8]) -> Option<RuntimeTrace> {
+    let line = std::str::from_utf8(raw).ok()?;
+    let payload = line.strip_prefix(TRACE_PREFIX)?;
+    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let event = value.get("event")?.as_str()?;
+    if !matches!(
+        event,
+        "generation.accepted"
+            | "ollama.connected"
+            | "ollama.request.started"
+            | "ollama.first_chunk"
+            | "ollama.request.completed"
+            | "ollama.request.failed"
+            | "provider.stream.started"
+            | "provider.chunk.received"
+            | "provider.stream.completed"
+            | "runtime.chunk.emitted"
+            | "runtime.terminal.emitted"
+    ) {
+        return None;
+    }
+    let request_id = value.get("requestId")?.as_str()?;
+    if !crate::protocol::valid_identifier(request_id) {
+        return None;
+    }
+    let error_code = value
+        .get("errorCode")
+        .and_then(serde_json::Value::as_str)
+        .filter(|code| {
+            !code.is_empty()
+                && code.len() <= 64
+                && code
+                    .chars()
+                    .all(|character| character.is_ascii_lowercase() || character == '_')
+        })
+        .map(str::to_string);
+    if value.get("errorCode").is_some() && error_code.is_none() {
+        return None;
+    }
+    let counters = parse_trace_counters(value.get("counters"))?;
+    Some(RuntimeTrace {
+        request_id: request_id.to_string(),
+        event: match event {
+            "generation.accepted" => "generation.accepted",
+            "ollama.connected" => "ollama.connected",
+            "ollama.request.started" => "ollama.request.started",
+            "ollama.first_chunk" => "ollama.first_chunk",
+            "ollama.request.completed" => "ollama.request.completed",
+            "ollama.request.failed" => "ollama.request.failed",
+            "provider.stream.started" => "provider.stream.started",
+            "provider.chunk.received" => "provider.chunk.received",
+            "provider.stream.completed" => "provider.stream.completed",
+            "runtime.chunk.emitted" => "runtime.chunk.emitted",
+            "runtime.terminal.emitted" => "runtime.terminal.emitted",
+            _ => return None,
+        },
+        error_code,
+        counters,
+    })
+}
+
+fn parse_trace_counters(value: Option<&serde_json::Value>) -> Option<BTreeMap<String, u64>> {
+    let Some(value) = value else {
+        return Some(BTreeMap::new());
+    };
+    let object = value.as_object()?;
+    if object.len() > TRACE_COUNTER_KEYS.len() {
+        return None;
+    }
+    let mut counters = BTreeMap::new();
+    for (key, value) in object {
+        if !TRACE_COUNTER_KEYS.contains(&key.as_str()) {
+            return None;
+        }
+        let number = value.as_u64()?;
+        if number > 2_147_483_647 {
+            return None;
+        }
+        counters.insert(key.clone(), number);
+    }
+    Some(counters)
 }
 
 fn record_stderr_code(diagnostics: &Arc<Mutex<RuntimeDiagnostics>>, code: &str) {
@@ -669,10 +853,15 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+// Runtime fixture tests launch child Python processes. Serialize those tests
+// across modules so Windows CI does not contend on process startup/teardown.
+#[cfg(test)]
+pub(crate) static RUNTIME_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::VecDeque,
+        collections::{BTreeMap, VecDeque},
         fs,
         path::{Path, PathBuf},
         sync::{mpsc, Arc, Mutex},
@@ -830,6 +1019,7 @@ for raw in sys.stdin:
 
     #[test]
     fn exit_before_handshake_reports_actionable_detail() {
+        let _runtime_guard = super::RUNTIME_TEST_LOCK.lock().unwrap();
         let root = fixture_source_root_with_runtime("import sys\nraise SystemExit(23)\n");
         let controller = RuntimeController::new(root.clone(), false);
         controller.start();
@@ -844,6 +1034,7 @@ for raw in sys.stdin:
 
     #[test]
     fn malformed_handshake_reports_actionable_detail() {
+        let _runtime_guard = super::RUNTIME_TEST_LOCK.lock().unwrap();
         let root = fixture_source_root_with_runtime(
             "import sys\nfor _ in sys.stdin:\n print('not-json', flush=True)\n break\n",
         );
@@ -859,6 +1050,7 @@ for raw in sys.stdin:
 
     #[test]
     fn handshake_timeout_reports_actionable_detail() {
+        let _runtime_guard = super::RUNTIME_TEST_LOCK.lock().unwrap();
         let root = fixture_source_root_with_runtime(
             "import sys\nimport time\nfor _ in sys.stdin:\n time.sleep(4)\n",
         );
@@ -874,6 +1066,7 @@ for raw in sys.stdin:
 
     #[test]
     fn clean_shutdown_stops_runtime_after_successful_handshake() {
+        let _runtime_guard = super::RUNTIME_TEST_LOCK.lock().unwrap();
         let root = fixture_source_root();
         let controller = RuntimeController::new(root.clone(), false);
         controller.start();
@@ -885,6 +1078,7 @@ for raw in sys.stdin:
 
     #[test]
     fn persistent_child_survives_completion_cancellation_and_provider_failure() {
+        let _runtime_guard = super::RUNTIME_TEST_LOCK.lock().unwrap();
         let root = fixture_source_root();
         let controller = RuntimeController::new(root.clone(), false);
         let receiver = controller.subscribe();
@@ -925,6 +1119,7 @@ for raw in sys.stdin:
 
     #[test]
     fn unexpected_exit_is_diagnosed_once_and_explicit_restart_recovers() {
+        let _runtime_guard = super::RUNTIME_TEST_LOCK.lock().unwrap();
         let root = fixture_source_root();
         let controller = RuntimeController::new(root.clone(), false);
         let receiver = controller.subscribe();
@@ -980,6 +1175,56 @@ for raw in sys.stdin:
             super::parse_diagnostic_line(b"AIP_RUNTIME_DIAGNOSTIC private_conversation_content"),
             None
         );
+        assert_eq!(
+            super::parse_trace_line(
+                br#"AIP_RUNTIME_TRACE {"event":"ollama.first_chunk","requestId":"request-1"}"#
+            ),
+            Some(super::RuntimeTrace {
+                request_id: "request-1".into(),
+                event: "ollama.first_chunk",
+                error_code: None,
+                counters: BTreeMap::new(),
+            })
+        );
+        assert_eq!(
+            super::parse_trace_line(
+                br#"AIP_RUNTIME_TRACE {"event":"ollama.connected","requestId":"request-1","errorCode":"provider_timeout"}"#
+            ),
+            Some(super::RuntimeTrace {
+                request_id: "request-1".into(),
+                event: "ollama.connected",
+                error_code: Some("provider_timeout".into()),
+                counters: BTreeMap::new(),
+            })
+        );
+        let accounted = super::parse_trace_line(
+            br#"AIP_RUNTIME_TRACE {"event":"runtime.terminal.emitted","requestId":"request-1","counters":{"provider_chunks":128,"runtime_chunks":128,"runtime_terminal_events":1}}"#,
+        )
+        .expect("bounded counters should parse");
+        assert_eq!(
+            accounted.counters,
+            BTreeMap::from([
+                ("provider_chunks".into(), 128),
+                ("runtime_chunks".into(), 128),
+                ("runtime_terminal_events".into(), 1),
+            ])
+        );
+        assert!(super::parse_trace_line(
+            br#"AIP_RUNTIME_TRACE {"event":"runtime.terminal.emitted","requestId":"request-1","counters":{"private":1}}"#,
+        )
+        .is_none());
+        assert_eq!(
+            super::parse_trace_line(
+                br#"AIP_RUNTIME_TRACE {"event":"ollama.first_chunk","requestId":"private conversation"}"#
+            ),
+            None
+        );
+        let long_model = "m".repeat(200);
+        let long_trace = format!(
+            "AIP_RUNTIME_TRACE {{\"event\":\"runtime.terminal.emitted\",\"requestId\":\"request-1\",\"model\":\"{long_model}\",\"counters\":{{\"provider_chunks\":128,\"provider_bytes\":128,\"provider_characters\":128,\"runtime_chunks\":128,\"runtime_bytes\":128,\"runtime_characters\":128,\"runtime_terminal_events\":1}}}}"
+        );
+        assert!(long_trace.len() <= super::MAX_DIAGNOSTIC_LINE_BYTES);
+        assert!(super::parse_trace_line(long_trace.as_bytes()).is_some());
         let diagnostics = Arc::new(Mutex::new(super::RuntimeDiagnostics::default()));
         for _ in 0..(super::MAX_DIAGNOSTIC_CODES + 5) {
             super::record_stderr_code(&diagnostics, "runtime_worker_exception");

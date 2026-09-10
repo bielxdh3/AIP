@@ -113,6 +113,7 @@ import type {
   ToolSession,
   ProviderSnapshot,
   OllamaModel,
+  PhaseOneEvent,
   PhaseOneState,
   WorkspaceRoot,
 } from "@aip/contracts";
@@ -179,9 +180,8 @@ import {
   canRequestCancellation,
   conversationOverrideArguments,
   messageStatusCopy,
-  modelSelectionStatusCopy,
-  providerRecoveryCopy,
   providerStatusCopy,
+  providerUnavailableCopy,
   requestForAgent,
 } from "./conversation-state";
 import {
@@ -198,6 +198,10 @@ import {
   type OpenAgentConversationsPayload,
 } from "./agent-navigation";
 import { usePhaseOne } from "./use-phase-one";
+import {
+  GENERATION_HEARTBEAT_INTERVAL_MS,
+  measureGenerationHeartbeat,
+} from "./generation-liveness";
 import { createListenerRegistration } from "./listener-lifecycle";
 import { ThemeControls } from "./theme";
 import { AipSelect, FilePicker, naturalMenuHeight } from "./shared-controls";
@@ -862,6 +866,7 @@ export function ModelPicker({
   providerState,
   defaultOption,
   statusText,
+  compact = false,
   disabled = false,
   onSelect,
 }: {
@@ -872,6 +877,7 @@ export function ModelPicker({
   providerState: ProviderSnapshot["state"];
   defaultOption?: { label: string; detail: string };
   statusText?: string;
+  compact?: boolean;
   disabled?: boolean;
   onSelect: (modelRef: string | null) => void | Promise<void>;
 }) {
@@ -955,6 +961,11 @@ export function ModelPicker({
     selectedOption?.label ??
     (models.length > 0 ? "Selecione um modelo local" : stateCopy.label);
   const triggerDetail = selectedOption?.detail ?? stateCopy.detail;
+  const triggerAccessibleLabel = compact
+    ? [ariaLabel ?? label, triggerLabel, triggerDetail, statusText]
+        .filter((part): part is string => Boolean(part && part.trim()))
+        .join(" · ")
+    : (ariaLabel ?? label);
 
   const updatePosition = useCallback(() => {
     const trigger = triggerRef.current;
@@ -1100,16 +1111,20 @@ export function ModelPicker({
   return (
     <div
       ref={rootRef}
-      className="model-picker-field"
+      className={
+        compact
+          ? "model-picker-field model-picker-field-compact"
+          : "model-picker-field"
+      }
       data-provider-state={providerState}
     >
-      <span className="model-picker-label">{label}</span>
+      {!compact ? <span className="model-picker-label">{label}</span> : null}
       <div className="model-picker">
         <button
           ref={triggerRef}
           type="button"
           className="model-picker-trigger"
-          aria-label={ariaLabel ?? label}
+          aria-label={triggerAccessibleLabel}
           aria-haspopup="listbox"
           aria-expanded={open}
           aria-controls={listboxId}
@@ -1131,7 +1146,9 @@ export function ModelPicker({
         >
           <span className="model-picker-trigger-copy">
             <strong>{triggerLabel}</strong>
-            <small className="readable-helper">{triggerDetail}</small>
+            {!compact ? (
+              <small className="readable-helper">{triggerDetail}</small>
+            ) : null}
           </span>
           <span aria-hidden="true">⌄</span>
         </button>
@@ -1205,14 +1222,16 @@ export function ModelPicker({
             )
           : null}
       </div>
-      <small className="model-picker-status readable-helper">
-        {providerState !== "available"
-          ? `${stateCopy.label} · ${statusText ?? stateCopy.detail}`
-          : (statusText ??
-            (models.length > 0
-              ? "Escolha uma opção local."
-              : stateCopy.detail))}
-      </small>
+      {!compact ? (
+        <small className="model-picker-status readable-helper">
+          {providerState !== "available"
+            ? `${stateCopy.label} · ${statusText ?? stateCopy.detail}`
+            : (statusText ??
+              (models.length > 0
+                ? "Escolha uma opção local."
+                : stateCopy.detail))}
+        </small>
+      ) : null}
     </div>
   );
 }
@@ -1221,6 +1240,7 @@ function MessageItem({
   message,
   onRegenerate,
   onEdit,
+  cancellationRequested = false,
   variants = [],
   onSelectVariant,
   retrying,
@@ -1229,6 +1249,7 @@ function MessageItem({
   message: ConversationMessage;
   onRegenerate: (message: ConversationMessage, modelRef?: string) => void;
   onEdit: (message: ConversationMessage, content: string) => void;
+  cancellationRequested?: boolean;
   variants?: Array<{ id: string; branchId: string; active: boolean }>;
   onSelectVariant?: (id: string) => void;
   retrying: boolean;
@@ -1236,7 +1257,6 @@ function MessageItem({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
-  const [retryMenuOpen, setRetryMenuOpen] = useState(false);
   const [advancedRetry, setAdvancedRetry] = useState(false);
   const [retryModel, setRetryModel] = useState(message.modelRef ?? "");
   const retryable =
@@ -1251,10 +1271,9 @@ function MessageItem({
       className={`chat-message ${message.author}`}
       data-status={message.status}
     >
-      <div className="message-heading">
-        <strong>{message.author === "user" ? "Você" : "Agente"}</strong>
-        <span>{messageStatusCopy(message)}</span>
-      </div>
+      <span className="message-author-label visually-hidden">
+        {message.author === "user" ? "Você" : "Agente"}
+      </span>
       {editing ? (
         <div className="message-editor">
           <textarea
@@ -1284,10 +1303,20 @@ function MessageItem({
       ) : message.content ? (
         <p>{message.content}</p>
       ) : null}
+      {message.author === "agent" && message.status !== "complete" ? (
+        <span className="message-status" role="status">
+          {cancellationRequested
+            ? "Cancelando resposta…"
+            : messageStatusCopy(message)}
+        </span>
+      ) : null}
       {!pendingAssistant ? (
         <div className="message-actions">
           <button
             type="button"
+            aria-label={
+              message.author === "user" ? "Copiar mensagem" : "Copiar resposta"
+            }
             onClick={() => void navigator.clipboard?.writeText(message.content)}
           >
             Copiar
@@ -1301,6 +1330,7 @@ function MessageItem({
             <>
               <button
                 type="button"
+                aria-label="Tentar novamente"
                 disabled={retrying}
                 onClick={() => onRegenerate(message)}
               >
@@ -1308,55 +1338,41 @@ function MessageItem({
               </button>
               <button
                 type="button"
-                aria-label="Opções de tentativa"
+                aria-expanded={advancedRetry}
+                aria-label={
+                  advancedRetry ? "Fechar avançado" : "Abrir avançado"
+                }
                 disabled={retrying}
-                onClick={() => setRetryMenuOpen(!retryMenuOpen)}
+                onClick={() => setAdvancedRetry(!advancedRetry)}
               >
-                ⌄
+                Avançado
               </button>
-              {retryMenuOpen ? (
-                <div className="retry-menu">
-                  <button type="button" onClick={() => onRegenerate(message)}>
-                    Tentar novamente
-                  </button>
+              {advancedRetry ? (
+                <div className="message-advanced" data-advanced-open="true">
+                  <span className="message-advanced-model">
+                    Modelo usado: {message.modelRef ?? "indisponível"}
+                  </span>
+                  <ModelPicker
+                    label="Modelo para nova tentativa"
+                    ariaLabel="Modelo para nova tentativa"
+                    models={models}
+                    value={retryModel || null}
+                    providerState="available"
+                    disabled={retrying}
+                    onSelect={(modelRef) => {
+                      if (modelRef !== null) setRetryModel(modelRef);
+                    }}
+                  />
                   <button
                     type="button"
-                    onClick={() => setAdvancedRetry(!advancedRetry)}
+                    disabled={retrying || !retryModel}
+                    onClick={() => onRegenerate(message, retryModel)}
                   >
-                    Avançado
+                    Tentar com este modelo
                   </button>
-                  {advancedRetry ? (
-                    <div>
-                      <ModelPicker
-                        label="Modelo para nova tentativa"
-                        ariaLabel="Modelo para nova tentativa"
-                        models={models}
-                        value={retryModel || null}
-                        providerState="available"
-                        disabled={retrying}
-                        statusText={`Modelo usado: ${message.modelRef ?? "indisponível"}`}
-                        onSelect={(modelRef) => {
-                          if (modelRef !== null) setRetryModel(modelRef);
-                        }}
-                      />
-                      <button
-                        type="button"
-                        disabled={retrying || !retryModel}
-                        onClick={() => onRegenerate(message, retryModel)}
-                      >
-                        Tentar com este modelo
-                      </button>
-                    </div>
-                  ) : null}
                 </div>
               ) : null}
             </>
-          ) : null}
-          {message.author === "agent" && message.modelRef ? (
-            <details>
-              <summary>Modelo</summary>
-              <span>{message.modelRef}</span>
-            </details>
           ) : null}
           {variants.length > 1 ? (
             <span className="turn-variants">
@@ -1415,6 +1431,7 @@ export function ConversationSurface({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [showLegacyBranchPicker] = useState(false);
+  const sendInFlightRef = useRef(false);
   const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
     null,
   );
@@ -1422,9 +1439,19 @@ export function ConversationSurface({
     null,
   );
   const historyRef = useRef<HTMLDivElement>(null);
+  const scrollFrameRef = useRef<number | null>(null);
   const conversationIdRef = useRef<string | null>(null);
   const followsBottomRef = useRef(true);
   const phaseConversationId = phase?.conversation.id;
+  const activeRequestId =
+    phase?.queue.find(
+      (entry) => entry.agentId === phase.agent.id && entry.active,
+    )?.requestId ?? null;
+  const [heartbeatLatencyMs, setHeartbeatLatencyMs] = useState<number | null>(
+    null,
+  );
+  const [heartbeatStalled, setHeartbeatStalled] = useState(false);
+  const heartbeatLatencyRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (refreshRevision > 0) void load();
@@ -1447,11 +1474,31 @@ export function ConversationSurface({
         followsBottomRef.current,
       )
     ) {
-      history.scrollTop = history.scrollHeight;
-      followsBottomRef.current = true;
+      // Streamed chunks can arrive much faster than React paints. Coalesce scroll writes
+      // into one frame so each chunk does not force a synchronous scrollHeight/layout pass.
+      if (scrollFrameRef.current === null) {
+        scrollFrameRef.current = window.requestAnimationFrame(() => {
+          scrollFrameRef.current = null;
+          const currentHistory = historyRef.current;
+          if (currentHistory !== null) {
+            currentHistory.scrollTop = currentHistory.scrollHeight;
+            followsBottomRef.current = true;
+          }
+        });
+      }
     }
     conversationIdRef.current = conversationId;
   }, [phase?.conversation.id, phase?.messages]);
+
+  useEffect(
+    () => () => {
+      if (scrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = null;
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     const activeRequest = phase
@@ -1464,6 +1511,49 @@ export function ConversationSurface({
       setCancellingRequestId(null);
     }
   }, [cancellingRequestId, phase]);
+
+  useEffect(() => {
+    if (activeRequestId === null) {
+      setHeartbeatLatencyMs(null);
+      setHeartbeatStalled(false);
+      heartbeatLatencyRef.current = null;
+      return;
+    }
+    let disposed = false;
+    let heartbeatInFlight = false;
+    async function heartbeat() {
+      if (disposed || heartbeatInFlight) return;
+      heartbeatInFlight = true;
+      const startedAt = performance.now();
+      try {
+        await invoke("phase_one_heartbeat", {
+          agentId,
+          latencyMs: heartbeatLatencyRef.current,
+        });
+        if (disposed) return;
+        const measurement = measureGenerationHeartbeat(
+          startedAt,
+          performance.now(),
+        );
+        setHeartbeatLatencyMs(measurement.latencyMs);
+        setHeartbeatStalled(measurement.stalled);
+        heartbeatLatencyRef.current = measurement.latencyMs;
+      } catch {
+        if (!disposed) setHeartbeatStalled(true);
+      } finally {
+        heartbeatInFlight = false;
+      }
+    }
+    void heartbeat();
+    const timer = window.setInterval(
+      () => void heartbeat(),
+      GENERATION_HEARTBEAT_INTERVAL_MS,
+    );
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [activeRequestId, agentId]);
 
   if (error) {
     return (
@@ -1482,8 +1572,8 @@ export function ConversationSurface({
 
   const currentPhase = phase;
   const request = requestForAgent(phase.queue, phase.agent.id);
-  const blocked = blockedSendCopy(phase.sendBlockedCode);
-  const providerRecovery = providerRecoveryCopy(phase);
+  const providerError = providerUnavailableCopy(phase);
+  const blocked = providerError ? null : blockedSendCopy(phase.sendBlockedCode);
   const providerUnavailable = phase.provider.state !== "available";
   const modelsAvailable = phase.provider.models.length > 0;
   const canSend =
@@ -1493,7 +1583,8 @@ export function ConversationSurface({
 
   async function send() {
     const content = draft.trim();
-    if (!content || busy || !canSend) return;
+    if (!content || busy || sendInFlightRef.current || !canSend) return;
+    sendInFlightRef.current = true;
     followsBottomRef.current = true;
     setBusy(true);
     try {
@@ -1511,9 +1602,10 @@ export function ConversationSurface({
             },
       );
       setDraft("");
-      void load();
+      await load();
     } finally {
       setBusy(false);
+      sendInFlightRef.current = false;
     }
   }
 
@@ -1582,6 +1674,56 @@ export function ConversationSurface({
           <h1>{phase.agent.name}</h1>
           <span className="conversation-title">{phase.conversation.title}</span>
         </div>
+        <div className="conversation-header-actions">
+          {activeRequestId !== null ? (
+            <span
+              className="conversation-liveness"
+              role="status"
+              aria-live="polite"
+              data-stalled={heartbeatStalled}
+              title={
+                heartbeatLatencyMs === null
+                  ? "Verificando responsividade local"
+                  : `Responsividade local: ${heartbeatLatencyMs} ms`
+              }
+            >
+              {heartbeatStalled ? "Runtime sem resposta" : "Runtime ativo"}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            className="conversation-header-action"
+            aria-label="Atualizar modelos"
+            title="Atualizar modelos"
+            onClick={() => void refreshModels()}
+          >
+            Atualizar modelos
+          </button>
+          {onToggleTemporary && (temporary || phase.messages.length === 0) ? (
+            <button
+              type="button"
+              className={
+                temporary
+                  ? "conversation-header-action active"
+                  : "conversation-header-action"
+              }
+              aria-label={
+                temporary
+                  ? "Transformar em conversa normal"
+                  : "Iniciar conversa temporária"
+              }
+              title={
+                temporary
+                  ? "Novas mensagens serão salvas; o conteúdo temporário anterior não é persistido."
+                  : "Iniciar conversa temporária"
+              }
+              aria-pressed={temporary}
+              onClick={onToggleTemporary}
+            >
+              {temporary ? "Transformar em conversa normal" : "Temporária"}
+            </button>
+          ) : null}
+        </div>
       </header>
 
       <div
@@ -1634,6 +1776,10 @@ export function ConversationSurface({
                 void regenerate(message, modelRef)
               }
               onEdit={(message, content) => void edit(message, content)}
+              cancellationRequested={
+                request?.assistantMessageId === message.id &&
+                request.cancellationRequested
+              }
               retrying={retryingMessageId === message.id}
               models={currentPhase.provider.models}
               variants={
@@ -1664,13 +1810,14 @@ export function ConversationSurface({
 
       <footer className="composer">
         <div className="composer-status" aria-live="polite">
-          <span className={`provider-state ${phase.provider.state}`}>
-            {providerStatusCopy(phase)}
-          </span>
-          {providerRecovery ? (
-            <p className="provider-recovery" role="status">
-              {providerRecovery}
-            </p>
+          {providerError ? (
+            <span className="provider-state unavailable" role="alert">
+              {providerError}
+            </span>
+          ) : providerStatusCopy(phase) ? (
+            <span className={`provider-state ${phase.provider.state}`}>
+              {providerStatusCopy(phase)}
+            </span>
           ) : null}
           {temporary ? (
             <p className="temporary-disclosure readable-helper" role="status">
@@ -1679,33 +1826,6 @@ export function ConversationSurface({
             </p>
           ) : null}
         </div>
-        {request !== null ? (
-          <div className="queue-banner">
-            <span
-              className={
-                request.active && !request.cancellationRequested
-                  ? "generation-status shiny-text"
-                  : "generation-status"
-              }
-            >
-              {request.active
-                ? request.cancellationRequested
-                  ? "Cancelando resposta…"
-                  : "Gerando resposta…"
-                : "Aguardando processamento…"}
-            </span>
-            <button
-              type="button"
-              disabled={!canRequestCancellation(request, cancellingRequestId)}
-              onClick={() => void cancelCurrentRequest()}
-            >
-              {request.cancellationRequested ||
-              cancellingRequestId === request.requestId
-                ? "Cancelando…"
-                : "Cancelar"}
-            </button>
-          </div>
-        ) : null}
         <textarea
           value={draft}
           maxLength={16_384}
@@ -1720,85 +1840,53 @@ export function ConversationSurface({
           }}
         />
         <div className="composer-footer">
+          <span className="composer-helper">
+            {blocked ?? "Enter envia · Shift+Enter cria uma linha"}
+          </span>
           <div className="composer-actions">
-            {onToggleTemporary ? (
-              <button
-                className={
-                  temporary ? "temporary-control active" : "temporary-control"
-                }
-                type="button"
-                aria-label={
-                  temporary
-                    ? "Encerrar conversa temporária"
-                    : "Iniciar conversa temporária"
-                }
-                aria-pressed={temporary}
-                title={
-                  temporary
-                    ? "Encerrar conversa temporária"
-                    : "Iniciar conversa temporária"
-                }
-                onClick={onToggleTemporary}
-              >
-                <svg
-                  className="temporary-control-icon"
-                  viewBox="0 0 20 20"
-                  aria-hidden="true"
-                  focusable="false"
-                >
-                  <path d="M4.25 4.5h8.5a3 3 0 0 1 3 3v2.5a3 3 0 0 1-3 3H8l-3.75 2.25.65-2.25h-.65a3 3 0 0 1-3-3V7.5a3 3 0 0 1 3-3Z" />
-                  <path d="M9.5 4.75v8.1" />
-                </svg>
-              </button>
-            ) : null}
-            <div className="conversation-model-selector">
-              <ModelPicker
-                label="Modelo desta conversa"
-                ariaLabel="Modelo desta conversa"
-                models={phase.provider.models}
-                value={phase.modelOverrideRef}
-                providerState={phase.provider.state}
-                disabled={!modelsAvailable}
-                defaultOption={{
-                  label: "Modelo: Automático",
-                  detail: phase.defaultModelRef
-                    ? `Equilibrado · ${phase.defaultModelRef}`
-                    : "Equilibrado · seleção automática",
-                }}
-                statusText={modelSelectionStatusCopy(phase)}
-                onSelect={async (modelRef) => {
-                  const command = temporary
-                    ? "set_temporary_phase_one_model"
-                    : "set_conversation_model_override";
-                  const argumentsForCommand = temporary
-                    ? { agentId: currentPhase.agent.id, modelRef }
-                    : conversationOverrideArguments(
-                        currentPhase.agent.id,
-                        currentPhase.conversation.id,
-                        modelRef ?? "",
-                      );
-                  await invoke(command, argumentsForCommand);
-                  await load();
-                }}
-              />
-              <span>
-                {blocked ?? "Enter envia · Shift+Enter cria uma linha"}
-              </span>
-            </div>
-            <button
-              className="model-refresh"
-              type="button"
-              onClick={() => void refreshModels()}
-            >
-              Atualizar modelos
-            </button>
+            <ModelPicker
+              label="Modelo"
+              ariaLabel="Selecionar modelo"
+              compact
+              models={phase.provider.models}
+              value={phase.modelOverrideRef}
+              providerState={phase.provider.state}
+              disabled={!modelsAvailable}
+              defaultOption={{
+                label: "Automático",
+                detail: phase.defaultModelRef ?? "Seleção automática",
+              }}
+              onSelect={async (modelRef) => {
+                const command = temporary
+                  ? "set_temporary_phase_one_model"
+                  : "set_conversation_model_override";
+                const argumentsForCommand = temporary
+                  ? { agentId: currentPhase.agent.id, modelRef }
+                  : conversationOverrideArguments(
+                      currentPhase.agent.id,
+                      currentPhase.conversation.id,
+                      modelRef ?? "",
+                    );
+                await invoke(command, argumentsForCommand);
+                await load();
+              }}
+            />
           </div>
           <button
             type="button"
-            disabled={!canSend || !draft.trim() || busy}
-            onClick={() => void send()}
+            className="composer-submit"
+            aria-label={request === null ? "Enviar mensagem" : "Parar geração"}
+            title={request === null ? "Enviar" : "Parar"}
+            disabled={
+              request === null
+                ? !canSend || !draft.trim() || busy
+                : !canRequestCancellation(request, cancellingRequestId)
+            }
+            onClick={() =>
+              request === null ? void send() : void cancelCurrentRequest()
+            }
           >
-            Enviar
+            {request === null ? "↑" : "■"}
           </button>
         </div>
       </footer>
@@ -1810,20 +1898,23 @@ export function ConversationDraftSurface({
   agentId,
   onCreated,
   onPersisted,
+  onToggleTemporary,
 }: {
   agentId: string;
   onCreated?: () => void;
   onPersisted: () => void;
+  onToggleTemporary?: () => void;
 }) {
   const { phase, error, load } = usePhaseOne(agentId, false);
   const [modelPreferences] = useModelPreferences();
-  const [title, setTitle] = useState("");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const sendInFlightRef = useRef(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [persistedConversationId, setPersistedConversationId] = useState<
     string | null
   >(null);
+  const [draftModelRef, setDraftModelRef] = useState<string | null>(null);
   const [cancellingRequestId, setCancellingRequestId] = useState<string | null>(
     null,
   );
@@ -1845,13 +1936,66 @@ export function ConversationDraftSurface({
 
   const currentPhase: PhaseOneState = phase;
   const request = requestForAgent(currentPhase.queue, agentId);
-  const blocked = blockedSendCopy(currentPhase.sendBlockedCode);
-  const providerRecovery = providerRecoveryCopy(currentPhase);
-  const providerUnavailable = currentPhase.provider.state !== "available";
-  const canSend =
-    canSendConversationMessage(currentPhase) && !providerUnavailable;
-  const canDraft = canDraftConversationMessage(currentPhase);
+  const draftModelAvailable =
+    draftModelRef !== null &&
+    currentPhase.provider.models.some((model) => model.ref === draftModelRef);
+  const draftModelUnavailable = draftModelRef !== null && !draftModelAvailable;
+  const modelBlockedCodes = new Set([
+    "model_not_selected",
+    "selected_model_unavailable",
+  ]);
+  const draftCanResolveModelBlock =
+    draftModelRef === null || draftModelAvailable;
+  const currentModelBlock = modelBlockedCodes.has(
+    currentPhase.sendBlockedCode ?? "",
+  );
   const routingPolicy = routingPolicyPayload(modelPreferences);
+  const automaticPolicyHasCandidate =
+    routingPolicy.mode !== "manual" &&
+    currentPhase.provider.models.some(
+      (model) => !modelPreferences.excludedModelRefs.includes(model.ref),
+    );
+  const inheritedDefaultAvailable =
+    currentPhase.defaultModelRef !== null &&
+    !modelPreferences.excludedModelRefs.includes(
+      currentPhase.defaultModelRef,
+    ) &&
+    currentPhase.provider.models.some(
+      (model) => model.ref === currentPhase.defaultModelRef,
+    );
+  const manualDraftNeedsSelection =
+    routingPolicy.mode === "manual" &&
+    draftModelRef === null &&
+    !inheritedDefaultAvailable;
+  const automaticDraftPolicyAllowsSend =
+    routingPolicy.mode === "manual"
+      ? !manualDraftNeedsSelection
+      : automaticPolicyHasCandidate;
+  const providerError = providerUnavailableCopy(currentPhase);
+  const blocked = providerError
+    ? null
+    : manualDraftNeedsSelection
+      ? blockedSendCopy("model_not_selected")
+      : draftModelUnavailable
+        ? blockedSendCopy("selected_model_unavailable")
+        : draftCanResolveModelBlock &&
+            modelBlockedCodes.has(currentPhase.sendBlockedCode ?? "")
+          ? null
+          : blockedSendCopy(currentPhase.sendBlockedCode);
+  const providerUnavailable = currentPhase.provider.state !== "available";
+  const nonModelBlocked =
+    currentPhase.sendBlockedCode !== null &&
+    !modelBlockedCodes.has(currentPhase.sendBlockedCode);
+  const canSend =
+    !draftModelUnavailable &&
+    !nonModelBlocked &&
+    (draftModelRef === null
+      ? automaticDraftPolicyAllowsSend &&
+        (canSendConversationMessage(currentPhase) ||
+          (currentModelBlock && draftCanResolveModelBlock && request === null))
+      : draftModelAvailable) &&
+    !providerUnavailable;
+  const canDraft = canDraftConversationMessage(currentPhase);
 
   async function cancelCurrentRequest() {
     if (
@@ -1870,22 +2014,18 @@ export function ConversationDraftSurface({
     }
   }
 
-  async function persist(sendContent: string | null) {
-    const trimmedTitle = title.trim();
-    if (sendContent === null && !trimmedTitle) {
-      setErrorMessage("Informe um nome para salvar a conversa.");
+  async function persist(sendContent: string) {
+    if (busy || sendInFlightRef.current || !sendContent?.trim() || !canSend)
       return;
-    }
-    if (busy || (sendContent !== null && (!sendContent || !canSend))) return;
+    sendInFlightRef.current = true;
     setBusy(true);
     setErrorMessage(null);
     let conversationId = persistedConversationId;
     try {
       if (conversationId === null) {
-        const persistedTitle = (trimmedTitle || "Nova conversa").slice(0, 160);
         const created = await invoke<PhaseOneConversation>(
           "create_agent_conversation",
-          { agentId, title: persistedTitle },
+          { agentId, title: "Nova conversa" },
         );
         if (!created?.id) throw new Error("conversation_create_failed");
         conversationId = created.id;
@@ -1895,25 +2035,30 @@ export function ConversationDraftSurface({
         agentId,
         conversationId,
       });
-      if (persistedConversationId === null) onCreated?.();
-      if (sendContent !== null) {
-        await invoke("send_phase_one_message", {
+      if (draftModelRef !== null) {
+        await invoke("set_conversation_model_override", {
           agentId,
           conversationId,
-          content: sendContent,
-          policy: routingPolicy,
+          modelRef: draftModelRef,
         });
-        setDraft("");
       }
+      if (persistedConversationId === null) onCreated?.();
+      await invoke("send_phase_one_message", {
+        agentId,
+        conversationId,
+        content: sendContent.trim(),
+        policy: routingPolicy,
+      });
+      setDraft("");
+      await load();
       onPersisted();
     } catch {
       setErrorMessage(
-        sendContent !== null
-          ? "Não foi possível enviar. O rascunho foi preservado; tente novamente."
-          : "Não foi possível salvar a conversa local.",
+        "Não foi possível enviar. O rascunho foi preservado; tente novamente.",
       );
     } finally {
       setBusy(false);
+      sendInFlightRef.current = false;
     }
   }
 
@@ -1925,76 +2070,54 @@ export function ConversationDraftSurface({
       <header className="conversation-header">
         <div>
           <h1>{currentPhase.agent.name}</h1>
-          <span className="conversation-title">
-            Ainda não foi salvo no histórico
-          </span>
+          <span className="conversation-title">Nova conversa</span>
         </div>
-        <div className="conversation-controls draft-controls">
-          <label className="draft-title-field">
-            <span>Nome da conversa (opcional)</span>
-            <input
-              value={title}
-              maxLength={160}
-              placeholder="Nova conversa"
-              disabled={busy}
-              onChange={(event) => setTitle(event.target.value)}
-            />
-          </label>
+        <div className="conversation-header-actions">
           <button
             type="button"
-            disabled={busy || !title.trim()}
-            onClick={() => void persist(null)}
+            className="conversation-header-action"
+            aria-label="Atualizar modelos"
+            title="Atualizar modelos"
+            onClick={() => {
+              void invoke("refresh_ollama_models").catch(() => undefined);
+              void load();
+            }}
           >
-            Salvar nome
+            Atualizar modelos
           </button>
+          {onToggleTemporary ? (
+            <button
+              type="button"
+              className="conversation-header-action"
+              aria-label="Iniciar conversa temporária"
+              title="Iniciar conversa temporária"
+              onClick={onToggleTemporary}
+            >
+              Temporária
+            </button>
+          ) : null}
         </div>
       </header>
 
       <div className="message-history" aria-live="polite">
         <div className="history-placeholder">
           <strong>Rascunho ainda não persistido.</strong>
-          <span>Salve um nome ou envie a primeira mensagem para começar.</span>
+          <span>Envie a primeira mensagem para começar.</span>
         </div>
       </div>
 
       <footer className="composer">
         <div className="composer-status" aria-live="polite">
-          <span className={`provider-state ${currentPhase.provider.state}`}>
-            {providerStatusCopy(currentPhase)}
-          </span>
-          {providerRecovery ? (
-            <p className="provider-recovery" role="status">
-              {providerRecovery}
-            </p>
+          {providerError ? (
+            <span className="provider-state unavailable" role="alert">
+              {providerError}
+            </span>
+          ) : providerStatusCopy(currentPhase) ? (
+            <span className={`provider-state ${currentPhase.provider.state}`}>
+              {providerStatusCopy(currentPhase)}
+            </span>
           ) : null}
         </div>
-        {request !== null ? (
-          <div className="queue-banner">
-            <span
-              className={
-                request.active && !request.cancellationRequested
-                  ? "generation-status shiny-text"
-                  : "generation-status"
-              }
-            >
-              {request.active
-                ? request.cancellationRequested
-                  ? "Cancelando resposta…"
-                  : "Gerando resposta…"
-                : "Aguardando processamento…"}
-            </span>
-            <button
-              type="button"
-              disabled={!canRequestCancellation(request, cancellingRequestId)}
-              onClick={() => void cancelCurrentRequest()}
-            >
-              {request.cancellationRequested ||
-              cancellingRequestId === request.requestId
-                ? "Cancelando…"
-                : "Cancelar"}
-            </button>
-          </div>
-        ) : null}
         <textarea
           value={draft}
           maxLength={16_384}
@@ -2009,15 +2132,50 @@ export function ConversationDraftSurface({
           }}
         />
         <div className="composer-footer">
-          <span>
+          <span className="composer-helper">
             {blocked ?? "Enter salva e envia · Shift+Enter cria uma linha"}
           </span>
+          <ModelPicker
+            label="Modelo"
+            ariaLabel="Selecionar modelo"
+            compact
+            models={currentPhase.provider.models}
+            value={draftModelRef}
+            providerState={currentPhase.provider.state}
+            disabled={busy || currentPhase.provider.models.length === 0}
+            defaultOption={{
+              label: "Automático",
+              detail: currentPhase.defaultModelRef ?? "Seleção automática",
+            }}
+            onSelect={async (modelRef) => {
+              setDraftModelRef(modelRef);
+              if (persistedConversationId !== null) {
+                await invoke("set_conversation_model_override", {
+                  agentId,
+                  conversationId: persistedConversationId,
+                  modelRef,
+                });
+                await load();
+              }
+            }}
+          />
           <button
             type="button"
-            disabled={!canSend || !draft.trim() || busy}
-            onClick={() => void persist(draft.trim())}
+            className="composer-submit"
+            aria-label={request === null ? "Enviar mensagem" : "Parar geração"}
+            title={request === null ? "Enviar" : "Parar"}
+            disabled={
+              request === null
+                ? !canSend || !draft.trim() || busy
+                : !canRequestCancellation(request, cancellingRequestId)
+            }
+            onClick={() =>
+              request === null
+                ? void persist(draft.trim())
+                : void cancelCurrentRequest()
+            }
           >
-            Enviar
+            {request === null ? "↑" : "■"}
           </button>
         </div>
         {errorMessage ? (
@@ -2801,12 +2959,14 @@ function ConversationActionMenu({
 export function ConversationList({
   agentId,
   changed,
+  refreshRevision = 0,
   onNewDraft,
   onSelectExisting,
   activeConversationId,
 }: {
   agentId: string;
   changed: () => void;
+  refreshRevision?: number;
   onNewDraft?: () => void;
   onSelectExisting?: (conversationId: string) => void;
   activeConversationId?: string | null;
@@ -2820,18 +2980,25 @@ export function ConversationList({
   const [pendingRemoval, setPendingRemoval] =
     useState<PhaseOneConversation | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const loadRevisionRef = useRef(0);
   const load = useCallback(async () => {
+    const revision = ++loadRevisionRef.current;
     const next = await invoke<PhaseOneConversation[]>(
       "list_agent_conversations",
       {
         agentId,
       },
     );
-    setItems(next);
+    if (revision !== loadRevisionRef.current) return;
+    setItems(
+      [...next].sort(
+        (left, right) => Number(right.isPinned) - Number(left.isPinned),
+      ),
+    );
   }, [agentId]);
   useEffect(() => {
     load();
-  }, [load]);
+  }, [load, refreshRevision]);
   useEffect(() => {
     if (renamingId !== null) renameInputRef.current?.focus();
   }, [renamingId]);
@@ -2914,7 +3081,6 @@ export function ConversationList({
     >
       <div className="conversation-list-heading">
         <span>Conversas recentes</span>
-        <small>Fixadas primeiro</small>
       </div>
       <button
         type="button"
@@ -10785,6 +10951,8 @@ export function SettingsSurface({
               <dl>
                 <dt>Versão</dt>
                 <dd>{snapshot?.appVersion ?? "—"}</dd>
+                <dt>Identidade</dt>
+                <dd>{snapshot?.buildRevision ?? "—"}</dd>
                 <dt>Commit</dt>
                 <dd>{snapshot?.buildSha ?? "—"}</dd>
                 <dt>Build</dt>
@@ -10813,6 +10981,7 @@ export function SettingsSurface({
                     void navigator.clipboard?.writeText(
                       JSON.stringify({
                         version: snapshot?.appVersion,
+                        buildRevision: snapshot?.buildRevision,
                         build: snapshot?.buildSha,
                         runtime: snapshot?.runtime,
                         databaseReady: snapshot?.databaseReady,
@@ -11621,6 +11790,19 @@ function App() {
     return registration.dispose;
   }, []);
 
+  useEffect(() => {
+    const registration = createListenerRegistration();
+    void listen<PhaseOneEvent>("phase-one-event", (event) => {
+      if (
+        event.payload.eventType !== "conversation-list.changed" ||
+        event.payload.agentId !== activeAgentId
+      )
+        return;
+      setConversationListRevision((value) => value + 1);
+    }).then(registration.register);
+    return registration.dispose;
+  }, [activeAgentId]);
+
   async function toggleSafeMode() {
     if (!snapshot || changingMode) return;
     setChangingMode(true);
@@ -11663,11 +11845,31 @@ function App() {
   async function toggleTemporaryChat() {
     setConversationDraftAgentId(null);
     if (temporaryChat) {
-      await leaveTemporaryChat();
+      if (activeAgentId === null) return;
+      try {
+        const conversation = await invoke<PhaseOneConversation>(
+          "continue_temporary_phase_one_chat",
+          { agentId: activeAgentId },
+        );
+        setTemporaryChat(false);
+        setActiveConversationId(conversation.id);
+        setConversationRevision((value) => value + 1);
+        setConversationListRevision((value) => value + 1);
+      } catch {
+        return;
+      }
       return;
     }
+    if (activeAgentId === null) return;
     setEditingAgentId(null);
     setWorkspace("chat");
+    try {
+      await invoke("start_temporary_phase_one_chat", {
+        agentId: activeAgentId,
+      });
+    } catch {
+      return;
+    }
     setTemporaryChat(true);
   }
 
@@ -11716,8 +11918,9 @@ function App() {
         />
         {activeAgentId ? (
           <ConversationList
-            key={`${activeAgentId}-${conversationListRevision}`}
+            key={activeAgentId}
             agentId={activeAgentId}
+            refreshRevision={conversationListRevision}
             activeConversationId={activeConversationId}
             onNewDraft={openConversationDraft}
             onSelectExisting={(conversationId) => {
@@ -11837,6 +12040,7 @@ function App() {
           <ConversationDraftSurface
             key={`${activeAgentId}-${conversationDraftRevision}`}
             agentId={activeAgentId}
+            onToggleTemporary={() => void toggleTemporaryChat()}
             onCreated={() => setConversationListRevision((value) => value + 1)}
             onPersisted={() => {
               setConversationDraftAgentId(null);

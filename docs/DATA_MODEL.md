@@ -149,9 +149,20 @@ One current row per agent.
 | `created_at` | integer | UTC milliseconds |
 | `updated_at` | integer | UTC milliseconds |
 | `archived_at` | integer nullable | Archive time |
-| `empty_expires_at` | integer nullable | Expiry for explicitly named empty conversations; cleared after the first message |
+| `empty_expires_at` | integer nullable | Compatibility expiry for explicitly created empty records; cleared after the first message |
 
 Temporary conversations are not stored here.
+
+Migration `0029` adds `title_source` for the one-shot local title flow. Existing
+rows are conservatively backfilled as `manual`; conversations created after the
+migration start as `placeholder` and may transition once to `auto` after the
+first successful durable assistant response. The title request uses only the
+first durable user/assistant turn and its final write requires the source to
+remain `placeholder`, so a manual rename always wins without recency churn.
+
+Continuing a temporary chat creates a fresh empty normal conversation, makes it
+the agent's authoritative active conversation, and clears the in-memory
+temporary state. No temporary message or derived content is imported.
 
 ### `messages`
 
@@ -437,7 +448,9 @@ an archived or deleted conversation was selected.
 Migration `0027` adds the nullable `conversations.empty_expires_at` expiry field, and
 migration `0028` adds nullable `agent_identity_profiles.gender` and `sexuality`. These
 are additive compatibility/data fields; migration history remains the authority for
-how they are introduced.
+how they are introduced. The current `Nova conversa` draft flow does not expose an
+initial naming form or create an empty row before the first send; the expiry field is
+retained for legacy and explicitly created empty records.
 
 The message table stores explicit conversation and agent identifiers with a composite foreign
 key, plain text, the actual provider-qualified model reference, generation request correlation,

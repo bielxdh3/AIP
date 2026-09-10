@@ -44,7 +44,9 @@ const MIGRATION_0025: &str = include_str!("../migrations/0025_local_provider_reg
 const MIGRATION_0026: &str = include_str!("../migrations/0026_conversation_organization.sql");
 const MIGRATION_0027: &str = include_str!("../migrations/0027_conversation_empty_expiry.sql");
 const MIGRATION_0028: &str = include_str!("../migrations/0028_optional_human_identity.sql");
-const MIGRATIONS: [(i64, &str); 28] = [
+const MIGRATION_0029: &str = include_str!("../migrations/0029_conversation_title_provenance.sql");
+const MIGRATION_0030: &str = include_str!("../migrations/0030_conversation_title_attempt.sql");
+const MIGRATIONS: [(i64, &str); 30] = [
     (1, MIGRATION_0001),
     (2, MIGRATION_0002),
     (3, MIGRATION_0003),
@@ -73,6 +75,8 @@ const MIGRATIONS: [(i64, &str); 28] = [
     (26, MIGRATION_0026),
     (27, MIGRATION_0027),
     (28, MIGRATION_0028),
+    (29, MIGRATION_0029),
+    (30, MIGRATION_0030),
 ];
 pub const OWNER_ID: &str = "usr_owner_local";
 pub const ASTRA_ID: &str = "agt_astra_provisional";
@@ -212,6 +216,12 @@ impl Database {
                 if version == 28 {
                     Self::ensure_optional_human_identity_columns(connection)?;
                 }
+                if version == 29 {
+                    Self::ensure_conversation_title_source_column(connection)?;
+                }
+                if version == 30 {
+                    Self::ensure_conversation_title_attempt_column(connection)?;
+                }
                 connection.execute_batch(sql)?;
             }
         }
@@ -245,6 +255,40 @@ impl Database {
         }
         connection.execute(
             "ALTER TABLE conversations ADD COLUMN empty_expires_at INTEGER",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn ensure_conversation_title_source_column(
+        connection: &Connection,
+    ) -> Result<(), DatabaseError> {
+        let mut statement = connection.prepare("PRAGMA table_info(conversations)")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            if row.get::<_, String>(1)? == "title_source" {
+                return Ok(());
+            }
+        }
+        connection.execute(
+            "ALTER TABLE conversations ADD COLUMN title_source TEXT NOT NULL DEFAULT 'manual' CHECK (title_source IN ('placeholder', 'auto', 'manual'))",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn ensure_conversation_title_attempt_column(
+        connection: &Connection,
+    ) -> Result<(), DatabaseError> {
+        let mut statement = connection.prepare("PRAGMA table_info(conversations)")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            if row.get::<_, String>(1)? == "title_generation_attempted_at" {
+                return Ok(());
+            }
+        }
+        connection.execute(
+            "ALTER TABLE conversations ADD COLUMN title_generation_attempted_at INTEGER",
             [],
         )?;
         Ok(())
@@ -316,14 +360,29 @@ impl Database {
 
     fn seed_phase_one(connection: &mut Connection) -> Result<(), DatabaseError> {
         let now = now_millis();
+        let has_title_source = connection
+            .prepare("PRAGMA table_info(conversations)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|column| column == "title_source");
         let transaction = connection.transaction()?;
         for agent_id in [ASTRA_ID, LUMA_ID] {
-            transaction.execute(
-                "INSERT OR IGNORE INTO conversations
-                 (id, agent_id, owner_user_id, title, kind, is_main, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, 'Nova conversa', 'normal', 0, ?4, ?4)",
-                params![Uuid::now_v7().to_string(), agent_id, OWNER_ID, now],
-            )?;
+            if has_title_source {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO conversations
+                     (id, agent_id, owner_user_id, title, title_source, kind, is_main, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, 'Nova conversa', 'placeholder', 'normal', 0, ?4, ?4)",
+                    params![Uuid::now_v7().to_string(), agent_id, OWNER_ID, now],
+                )?;
+            } else {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO conversations
+                     (id, agent_id, owner_user_id, title, kind, is_main, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, 'Nova conversa', 'normal', 0, ?4, ?4)",
+                    params![Uuid::now_v7().to_string(), agent_id, OWNER_ID, now],
+                )?;
+            }
             transaction.execute(
                 "INSERT OR IGNORE INTO agent_identity_profiles
                  (agent_id, birthday, fictive_age, age_category, species, pronouns, personality_summary, traits_json, appearance_preset, created_at, updated_at)
@@ -603,11 +662,57 @@ impl Database {
         agent_id: &str,
         title: &str,
     ) -> Result<PhaseOneConversation, DatabaseError> {
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        let conversation = Self::create_conversation_in_transaction(&transaction, agent_id, title)?;
+        transaction.commit()?;
+        Ok(conversation)
+    }
+
+    pub fn create_conversation_and_activate(
+        &self,
+        agent_id: &str,
+        title: &str,
+    ) -> Result<PhaseOneConversation, DatabaseError> {
+        let mut connection = self.open()?;
+        let transaction = connection.transaction()?;
+        let conversation = Self::create_conversation_in_transaction(&transaction, agent_id, title)?;
+        let activated = transaction.execute(
+            "UPDATE agent_phase3_settings
+             SET active_conversation_id = ?1, updated_at = ?2
+             WHERE agent_id = ?3",
+            params![conversation.id, now_millis(), agent_id],
+        )?;
+        if activated != 1 {
+            return Err(DatabaseError::NotFound);
+        }
+        transaction.commit()?;
+        Ok(conversation)
+    }
+
+    fn create_conversation_in_transaction(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        title: &str,
+    ) -> Result<PhaseOneConversation, DatabaseError> {
         let title = title.trim();
         if title.is_empty() || title.len() > 160 {
             return Err(DatabaseError::InvalidValue);
         }
-        self.agent(agent_id)?;
+        let agent_exists = transaction.query_row(
+            "SELECT EXISTS(
+               SELECT 1
+               FROM agents a
+               JOIN agent_screen_preferences p ON p.agent_id = a.id
+               JOIN agent_identity_profiles i ON i.agent_id = a.id
+               WHERE a.id = ?1 AND a.status = 'active'
+             )",
+            params![agent_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !agent_exists {
+            return Err(DatabaseError::NotFound);
+        }
         let conversation = PhaseOneConversation {
             id: Uuid::now_v7().to_string(),
             agent_id: agent_id.into(),
@@ -615,17 +720,16 @@ impl Database {
             model_override_ref: None,
             is_pinned: false,
         };
-        let connection = self.open()?;
         let now = now_millis();
         let empty_expires_at = now.saturating_add(EMPTY_CONVERSATION_TTL_MILLIS);
-        connection.execute("INSERT INTO conversations (id, agent_id, owner_user_id, title, kind, is_main, created_at, updated_at, empty_expires_at)
-            VALUES (?1, ?2, ?3, ?4, 'normal', 0, ?5, ?5, ?6)", params![conversation.id, agent_id, OWNER_ID, title, now, empty_expires_at])?;
-        connection.execute(
+        transaction.execute("INSERT INTO conversations (id, agent_id, owner_user_id, title, title_source, kind, is_main, created_at, updated_at, empty_expires_at)
+            VALUES (?1, ?2, ?3, ?4, 'placeholder', 'normal', 0, ?5, ?5, ?6)", params![conversation.id, agent_id, OWNER_ID, title, now, empty_expires_at])?;
+        transaction.execute(
             "INSERT INTO conversation_branches (id, conversation_id, agent_id, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?4)",
             params![format!("{}:main", conversation.id), conversation.id, agent_id, now],
         )?;
-        connection.execute(
+        transaction.execute(
             "INSERT INTO conversation_active_branches (conversation_id, agent_id, branch_id, updated_at)
              VALUES (?1, ?2, ?3, ?4)",
             params![conversation.id, agent_id, format!("{}:main", conversation.id), now],
@@ -644,7 +748,83 @@ impl Database {
             return Err(DatabaseError::InvalidValue);
         }
         let connection = self.open()?;
-        if connection.execute("UPDATE conversations SET title = ?1, updated_at = ?2 WHERE id = ?3 AND agent_id = ?4 AND archived_at IS NULL", params![title, now_millis(), conversation_id, agent_id])? == 1 { Ok(()) } else { Err(DatabaseError::OwnershipMismatch) }
+        if connection.execute("UPDATE conversations SET title = ?1, title_source = 'manual', updated_at = ?2 WHERE id = ?3 AND agent_id = ?4 AND archived_at IS NULL", params![title, now_millis(), conversation_id, agent_id])? == 1 { Ok(()) } else { Err(DatabaseError::OwnershipMismatch) }
+    }
+
+    #[allow(dead_code)]
+    pub fn first_title_context(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+    ) -> Result<Option<(String, String)>, DatabaseError> {
+        let branch_id = self.active_branch_id(agent_id, conversation_id)?;
+        self.first_title_context_for_branch(agent_id, conversation_id, &branch_id)
+    }
+
+    pub fn first_title_context_for_branch(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        branch_id: &str,
+    ) -> Result<Option<(String, String)>, DatabaseError> {
+        let connection = self.open()?;
+        let source = connection
+            .query_row(
+                "SELECT title_source, title_generation_attempted_at FROM conversations
+                 WHERE id = ?1 AND agent_id = ?2 AND archived_at IS NULL",
+                params![conversation_id, agent_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
+            )
+            .optional()?
+            .ok_or(DatabaseError::OwnershipMismatch)?;
+        if source.0 != "placeholder" || source.1.is_some() {
+            return Ok(None);
+        }
+        let messages = self.messages_for_branch(agent_id, conversation_id, branch_id)?;
+        for user in messages.iter().filter(|message| {
+            message.author == MessageAuthor::User && message.status == MessageStatus::Complete
+        }) {
+            if let Some(assistant) = messages.iter().find(|message| {
+                message.author == MessageAuthor::Agent
+                    && message.status == MessageStatus::Complete
+                    && message.turn_group_id == user.turn_group_id
+            }) {
+                return Ok(Some((user.content.clone(), assistant.content.clone())));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn commit_generated_title(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+        title: &str,
+    ) -> Result<bool, DatabaseError> {
+        let title = title.trim();
+        if title.is_empty() || title.chars().count() > 64 {
+            return Err(DatabaseError::InvalidValue);
+        }
+        let connection = self.open()?;
+        Ok(connection.execute(
+            "UPDATE conversations SET title = ?1, title_source = 'auto', updated_at = ?2
+             WHERE id = ?3 AND agent_id = ?4 AND archived_at IS NULL AND title_source = 'placeholder'",
+            params![title, now_millis(), conversation_id, agent_id],
+        )? == 1)
+    }
+
+    pub fn mark_generated_title_attempted(
+        &self,
+        agent_id: &str,
+        conversation_id: &str,
+    ) -> Result<bool, DatabaseError> {
+        let connection = self.open()?;
+        Ok(connection.execute(
+            "UPDATE conversations SET title_generation_attempted_at = ?1, updated_at = ?1
+             WHERE id = ?2 AND agent_id = ?3 AND archived_at IS NULL
+               AND title_source = 'placeholder' AND title_generation_attempted_at IS NULL",
+            params![now_millis(), conversation_id, agent_id],
+        )? == 1)
     }
 
     pub fn set_conversation_pinned(
@@ -716,9 +896,9 @@ impl Database {
                 let id = Uuid::now_v7().to_string();
                 transaction.execute(
                     "INSERT INTO conversations
-                     (id, agent_id, owner_user_id, title, kind, is_main,
+                     (id, agent_id, owner_user_id, title, title_source, kind, is_main,
                       created_at, updated_at, empty_expires_at)
-                     VALUES (?1, ?2, ?3, 'Nova conversa', 'normal', 0, ?4, ?4, NULL)",
+                     VALUES (?1, ?2, ?3, 'Nova conversa', 'placeholder', 'normal', 0, ?4, ?4, NULL)",
                     params![id, agent_id, OWNER_ID, now],
                 )?;
                 transaction.execute(
@@ -1947,15 +2127,30 @@ impl Database {
         request_id: &str,
         chunk: &str,
     ) -> Result<(), DatabaseError> {
-        if chunk.is_empty() {
+        self.append_assistant_chunks(assistant_message_id, request_id, chunk)
+    }
+
+    /// Append one or more already ordered stream chunks in a single SQLite write.
+    ///
+    /// The runtime still delivers every chunk to the UI immediately, but the durable
+    /// message is updated in bounded batches by the coordinator. Keeping the original
+    /// single-chunk entry point above preserves the other write paths (imports, tests,
+    /// and recovery) while avoiding one transaction per streamed token on the hot path.
+    pub fn append_assistant_chunks(
+        &self,
+        assistant_message_id: &str,
+        request_id: &str,
+        content: &str,
+    ) -> Result<(), DatabaseError> {
+        if content.is_empty() {
             return Ok(());
         }
         let connection = self.open()?;
         let changed = connection.execute(
             "UPDATE conversation_messages SET content = content || ?1
              WHERE id = ?2 AND generation_request_id = ?3
-               AND author_type = 'agent' AND status = 'streaming'",
-            params![chunk, assistant_message_id, request_id],
+             AND author_type = 'agent' AND status = 'streaming'",
+            params![content, assistant_message_id, request_id],
         )?;
         if changed == 1 {
             Ok(())
@@ -3203,7 +3398,7 @@ mod tests {
             .unwrap();
         connection
             .execute(
-                "UPDATE conversations SET is_main = 1 WHERE id = ?1",
+                "UPDATE conversations SET is_main = 1, title = 'Meu nome' WHERE id = ?1",
                 params![conversation_id],
             )
             .unwrap();
@@ -3212,6 +3407,14 @@ mod tests {
                 "INSERT INTO conversation_messages
                  (id, conversation_id, agent_id, author_type, content, status, created_at, completed_at, branch_id)
                  VALUES ('legacy-main-message', ?1, ?2, 'user', 'preservar', 'complete', 1, 1, ?1 || ':main')",
+                params![conversation_id, ASTRA_ID],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO conversation_messages
+                 (id, conversation_id, agent_id, author_type, content, status, created_at, completed_at, branch_id)
+                 VALUES ('legacy-main-response', ?1, ?2, 'agent', 'resposta antiga', 'complete', 2, 2, ?1 || ':main')",
                 params![conversation_id, ASTRA_ID],
             )
             .unwrap();
@@ -3230,6 +3433,16 @@ mod tests {
         assert_eq!(
             connection
                 .query_row(
+                    "SELECT title, title_source FROM conversations WHERE id = ?1",
+                    params![conversation_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .unwrap(),
+            ("Meu nome".into(), "manual".into())
+        );
+        assert_eq!(
+            connection
+                .query_row(
                     "SELECT content FROM conversation_messages WHERE id = 'legacy-main-message'",
                     [],
                     |row| row.get::<_, String>(0),
@@ -3241,6 +3454,9 @@ mod tests {
             upgraded.active_conversation(ASTRA_ID).unwrap().id,
             conversation_id
         );
+        assert!(!upgraded
+            .commit_generated_title(ASTRA_ID, &conversation_id, "Título novo")
+            .unwrap());
         drop(connection);
         drop(upgraded);
         cleanup(&path);
@@ -3310,6 +3526,503 @@ mod tests {
             1
         );
         drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn streamed_assistant_content_reconstructs_exactly_after_reload() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let agent = database.agent(ASTRA_ID).unwrap();
+        let conversation = database.main_conversation(&agent.id).unwrap();
+        let mut expected_by_message = Vec::new();
+
+        for chunk_count in [1_usize, 10, 200] {
+            let attempt = database
+                .create_message_attempt(
+                    &agent.id,
+                    &conversation.id,
+                    &format!("Stream {chunk_count}"),
+                    "ollama:test",
+                )
+                .unwrap();
+            database
+                .mark_streaming(&attempt.assistant_message_id, &attempt.request_id)
+                .unwrap();
+            let mut expected = String::new();
+            for index in 0..chunk_count {
+                let chunk = format!("{chunk_count}:{index:03}|é");
+                expected.push_str(&chunk);
+                database
+                    .append_assistant_chunk(
+                        &attempt.assistant_message_id,
+                        &attempt.request_id,
+                        &chunk,
+                    )
+                    .unwrap();
+            }
+            database
+                .finish_assistant(
+                    &attempt.assistant_message_id,
+                    &attempt.request_id,
+                    MessageStatus::Complete,
+                    None,
+                )
+                .unwrap();
+            expected_by_message.push((attempt.assistant_message_id, expected));
+        }
+        drop(database);
+
+        let reopened = Database::initialize(&path).unwrap();
+        let messages = reopened.messages(&agent.id, &conversation.id).unwrap();
+        for (message_id, expected) in expected_by_message {
+            let message = messages
+                .iter()
+                .find(|message| message.id == message_id)
+                .expect("streamed assistant should survive reload");
+            assert_eq!(message.content, expected);
+            assert_eq!(message.status, MessageStatus::Complete);
+        }
+        drop(reopened);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn generated_title_is_one_shot_and_manual_names_win() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let conversation = database
+            .create_conversation(ASTRA_ID, "Nova conversa")
+            .unwrap();
+        let attempt = database
+            .create_message_attempt(
+                ASTRA_ID,
+                &conversation.id,
+                "Planeje uma viagem curta para o litoral",
+                "ollama:test",
+            )
+            .unwrap();
+        database
+            .mark_streaming(&attempt.assistant_message_id, &attempt.request_id)
+            .unwrap();
+        database
+            .append_assistant_chunk(
+                &attempt.assistant_message_id,
+                &attempt.request_id,
+                "Aqui está uma sugestão.",
+            )
+            .unwrap();
+        database
+            .finish_assistant(
+                &attempt.assistant_message_id,
+                &attempt.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            database
+                .first_title_context(ASTRA_ID, &conversation.id)
+                .unwrap(),
+            Some((
+                "Planeje uma viagem curta para o litoral".into(),
+                "Aqui está uma sugestão.".into()
+            ))
+        );
+        assert!(database
+            .mark_generated_title_attempted(ASTRA_ID, &conversation.id)
+            .unwrap());
+        assert_eq!(
+            database
+                .open()
+                .unwrap()
+                .query_row(
+                    "SELECT title_source, title_generation_attempted_at FROM conversations WHERE id = ?1",
+                    params![conversation.id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
+                )
+                .unwrap()
+                .0,
+            "placeholder"
+        );
+        assert!(database
+            .commit_generated_title(ASTRA_ID, &conversation.id, "Planejamento litoral")
+            .unwrap());
+        let updated_at = database
+            .open()
+            .unwrap()
+            .query_row(
+                "SELECT updated_at FROM conversations WHERE id = ?1",
+                params![conversation.id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(
+            database
+                .first_title_context(ASTRA_ID, &conversation.id)
+                .unwrap(),
+            None
+        );
+        assert!(!database
+            .commit_generated_title(ASTRA_ID, &conversation.id, "Outro título")
+            .unwrap());
+        assert_eq!(
+            database
+                .open()
+                .unwrap()
+                .query_row(
+                    "SELECT updated_at FROM conversations WHERE id = ?1",
+                    params![conversation.id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            updated_at
+        );
+        database
+            .rename_conversation(ASTRA_ID, &conversation.id, "Meu roteiro")
+            .unwrap();
+        assert!(!database
+            .commit_generated_title(ASTRA_ID, &conversation.id, "Título tardio")
+            .unwrap());
+        assert_eq!(
+            database
+                .conversations(ASTRA_ID)
+                .unwrap()
+                .into_iter()
+                .find(|item| item.id == conversation.id)
+                .unwrap()
+                .title,
+            "Meu roteiro"
+        );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn generated_title_attempt_marker_is_one_shot_and_commit_safe() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let conversation = database
+            .create_conversation(ASTRA_ID, "Nova conversa")
+            .unwrap();
+        let attempt = database
+            .create_message_attempt(ASTRA_ID, &conversation.id, "Primeira", "ollama:test")
+            .unwrap();
+        database
+            .mark_streaming(&attempt.assistant_message_id, &attempt.request_id)
+            .unwrap();
+        database
+            .append_assistant_chunk(
+                &attempt.assistant_message_id,
+                &attempt.request_id,
+                "Resposta",
+            )
+            .unwrap();
+        database
+            .finish_assistant(
+                &attempt.assistant_message_id,
+                &attempt.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+
+        assert!(database
+            .mark_generated_title_attempted(ASTRA_ID, &conversation.id)
+            .unwrap());
+        assert_eq!(
+            database
+                .open()
+                .unwrap()
+                .query_row(
+                    "SELECT title_source FROM conversations WHERE id = ?1",
+                    params![conversation.id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "placeholder"
+        );
+        assert_eq!(
+            database
+                .first_title_context(ASTRA_ID, &conversation.id)
+                .unwrap(),
+            None
+        );
+        assert!(database
+            .commit_generated_title(ASTRA_ID, &conversation.id, "Título tardio")
+            .unwrap());
+        assert!(!database
+            .commit_generated_title(ASTRA_ID, &conversation.id, "Outro título tardio")
+            .unwrap());
+        cleanup(&path);
+    }
+
+    #[test]
+    fn title_context_skips_incomplete_earlier_turns() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let conversation = database
+            .create_conversation(ASTRA_ID, "Nova conversa")
+            .unwrap();
+        let failed = database
+            .create_message_attempt(
+                ASTRA_ID,
+                &conversation.id,
+                "Primeira tentativa que falhou",
+                "ollama:test",
+            )
+            .unwrap();
+        database
+            .finish_assistant(
+                &failed.assistant_message_id,
+                &failed.request_id,
+                MessageStatus::Failed,
+                Some("provider_failed"),
+            )
+            .unwrap();
+
+        let completed = database
+            .create_message_attempt(
+                ASTRA_ID,
+                &conversation.id,
+                "Segundo pedido concluído",
+                "ollama:test",
+            )
+            .unwrap();
+        database
+            .mark_streaming(&completed.assistant_message_id, &completed.request_id)
+            .unwrap();
+        database
+            .append_assistant_chunk(
+                &completed.assistant_message_id,
+                &completed.request_id,
+                "Resposta concluída",
+            )
+            .unwrap();
+        database
+            .finish_assistant(
+                &completed.assistant_message_id,
+                &completed.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            database
+                .first_title_context(ASTRA_ID, &conversation.id)
+                .unwrap(),
+            Some((
+                "Segundo pedido concluído".into(),
+                "Resposta concluída".into()
+            ))
+        );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn new_conversation_becomes_authoritative_active_without_importing_messages() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let previous = database.active_conversation(ASTRA_ID).unwrap();
+        let created = database
+            .create_conversation_and_activate(ASTRA_ID, "Nova conversa")
+            .unwrap();
+        assert_ne!(created.id, previous.id);
+        assert_eq!(
+            database.active_conversation(ASTRA_ID).unwrap().id,
+            created.id
+        );
+        assert!(database.messages(ASTRA_ID, &created.id).unwrap().is_empty());
+        let connection = database.open().unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM conversation_messages WHERE content IN ('Mensagem privada', 'Resposta privada')",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn create_and_activate_rolls_back_when_activation_fails() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let previous = database.active_conversation(ASTRA_ID).unwrap();
+        let before_count: i64 = database
+            .open()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM conversations WHERE agent_id = ?1",
+                params![ASTRA_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let before_branch_count: (i64, i64) = database
+            .open()
+            .unwrap()
+            .query_row(
+                "SELECT
+                    (SELECT count(*) FROM conversation_branches WHERE agent_id = ?1),
+                    (SELECT count(*) FROM conversation_active_branches WHERE agent_id = ?1)",
+                params![ASTRA_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        database
+            .open()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_conversation_activation
+                 BEFORE UPDATE OF active_conversation_id ON agent_phase3_settings
+                 WHEN NEW.agent_id = 'agt_astra_provisional'
+                   AND NEW.active_conversation_id <> OLD.active_conversation_id
+                 BEGIN
+                   SELECT RAISE(ABORT, 'simulated activation failure');
+                 END;",
+            )
+            .unwrap();
+
+        assert_eq!(
+            database.create_conversation_and_activate(ASTRA_ID, "Não deve persistir"),
+            Err(DatabaseError::Unavailable)
+        );
+        let connection = database.open().unwrap();
+        let after_count: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM conversations WHERE agent_id = ?1",
+                params![ASTRA_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after_count, before_count);
+        let after_branch_count: (i64, i64) = connection
+            .query_row(
+                "SELECT
+                    (SELECT count(*) FROM conversation_branches WHERE agent_id = ?1),
+                    (SELECT count(*) FROM conversation_active_branches WHERE agent_id = ?1)",
+                params![ASTRA_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(after_branch_count, before_branch_count);
+        assert_eq!(
+            database.active_conversation(ASTRA_ID).unwrap().id,
+            previous.id
+        );
+        drop(connection);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn title_context_can_read_the_completed_branch_when_another_is_active() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let agent = database.agent(ASTRA_ID).unwrap();
+        let conversation = database.main_conversation(ASTRA_ID).unwrap();
+        let original = database
+            .create_message_attempt(&agent.id, &conversation.id, "hello", "ollama:model-a")
+            .unwrap();
+        database
+            .mark_streaming(&original.assistant_message_id, &original.request_id)
+            .unwrap();
+        database
+            .append_assistant_chunk(
+                &original.assistant_message_id,
+                &original.request_id,
+                "original answer",
+            )
+            .unwrap();
+        database
+            .finish_assistant(
+                &original.assistant_message_id,
+                &original.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+        let alternative = database
+            .create_regeneration_attempt(
+                &agent.id,
+                &conversation.id,
+                &original.assistant_message_id,
+                "ollama:model-b",
+                &Uuid::now_v7().to_string(),
+            )
+            .unwrap();
+        database
+            .mark_streaming(&alternative.assistant_message_id, &alternative.request_id)
+            .unwrap();
+        database
+            .append_assistant_chunk(
+                &alternative.assistant_message_id,
+                &alternative.request_id,
+                "alternative answer",
+            )
+            .unwrap();
+        database
+            .finish_assistant(
+                &alternative.assistant_message_id,
+                &alternative.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+        database
+            .set_active_branch(&agent.id, &conversation.id, &original.branch_id)
+            .unwrap();
+
+        assert_eq!(
+            database
+                .first_title_context_for_branch(
+                    &agent.id,
+                    &conversation.id,
+                    &alternative.branch_id,
+                )
+                .unwrap(),
+            Some(("hello".into(), "alternative answer".into()))
+        );
+        cleanup(&path);
+    }
+
+    #[test]
+    fn generated_title_uses_unicode_character_limit() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let accented = database
+            .create_conversation(ASTRA_ID, "Título Unicode")
+            .unwrap();
+        let title = "á".repeat(64);
+        assert!(title.len() > 64);
+        assert!(database
+            .commit_generated_title(ASTRA_ID, &accented.id, &title)
+            .unwrap());
+        assert_eq!(
+            database
+                .conversations(ASTRA_ID)
+                .unwrap()
+                .into_iter()
+                .find(|conversation| conversation.id == accented.id)
+                .unwrap()
+                .title,
+            title
+        );
+
+        let invalid = database
+            .create_conversation(ASTRA_ID, "Limite Unicode")
+            .unwrap();
+        assert_eq!(
+            database.commit_generated_title(ASTRA_ID, &invalid.id, &"x".repeat(65)),
+            Err(DatabaseError::InvalidValue)
+        );
+        assert_eq!(
+            database.commit_generated_title(ASTRA_ID, &invalid.id, " \n\t"),
+            Err(DatabaseError::InvalidValue)
+        );
         cleanup(&path);
     }
 

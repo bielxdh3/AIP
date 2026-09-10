@@ -72,6 +72,7 @@ describe("ConversationDraftSurface", () => {
     hookState.error = false;
     hookState.load.mockReset();
     invoke.mockReset();
+    localStorage.removeItem("aip.settings.models");
   });
 
   function renderDraft(onPersisted = vi.fn(), onCreated = vi.fn()) {
@@ -121,7 +122,7 @@ describe("ConversationDraftSurface", () => {
     await act(async () =>
       container
         ?.querySelector<HTMLButtonElement>(
-          ".conversation-draft-surface .composer-footer > button",
+          ".conversation-draft-surface .composer-submit",
         )
         ?.click(),
     );
@@ -150,6 +151,108 @@ describe("ConversationDraftSurface", () => {
     expect(textarea.value).toBe("");
   });
 
+  it("locks the model picker while the first send is pending", async () => {
+    hookState.phase = loadedPhase;
+    const created = {
+      ...loadedPhase.conversation,
+      id: "created",
+      title: "Nova conversa",
+    };
+    let resolveCreated: ((value: typeof created) => void) | undefined;
+    invoke.mockImplementation((command: string) =>
+      command === "create_agent_conversation"
+        ? new Promise<typeof created>((resolve) => {
+            resolveCreated = resolve;
+          })
+        : Promise.resolve(undefined),
+    );
+    renderDraft();
+    const textarea = container?.querySelector<HTMLTextAreaElement>(
+      ".conversation-draft-surface .composer textarea",
+    );
+    const picker = container?.querySelector<HTMLButtonElement>(
+      '.model-picker-trigger[aria-label^="Selecionar modelo"]',
+    );
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    if (textarea === null || textarea === undefined)
+      throw new Error("Missing draft composer");
+    if (
+      picker === null ||
+      picker === undefined ||
+      submit === null ||
+      submit === undefined
+    )
+      throw new Error("Missing draft controls");
+    change(textarea, "primeira mensagem");
+
+    await act(async () => {
+      submit.click();
+      await Promise.resolve();
+    });
+    expect(picker.disabled).toBe(true);
+
+    await act(async () => {
+      resolveCreated?.(created);
+      await Promise.resolve();
+    });
+    expect(picker.disabled).toBe(false);
+  });
+
+  it("ignores a synchronous duplicate first-send click", async () => {
+    hookState.phase = loadedPhase;
+    const created = {
+      ...loadedPhase.conversation,
+      id: "created",
+      title: "Nova conversa",
+    };
+    let resolveCreated: ((value: typeof created) => void) | undefined;
+    invoke.mockImplementation((command: string) =>
+      command === "create_agent_conversation"
+        ? new Promise<typeof created>((resolve) => {
+            resolveCreated = resolve;
+          })
+        : Promise.resolve(undefined),
+    );
+    renderDraft();
+    const textarea = container?.querySelector<HTMLTextAreaElement>(
+      ".conversation-draft-surface .composer textarea",
+    );
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    if (
+      textarea === null ||
+      textarea === undefined ||
+      submit === null ||
+      submit === undefined
+    )
+      throw new Error("Missing draft controls");
+    change(textarea, "primeira mensagem");
+
+    await act(async () => {
+      submit.click();
+      submit.click();
+      await Promise.resolve();
+    });
+    expect(
+      invoke.mock.calls.filter(
+        ([command]) => command === "create_agent_conversation",
+      ),
+    ).toHaveLength(1);
+
+    await act(async () => {
+      resolveCreated?.(created);
+      await Promise.resolve();
+    });
+    expect(
+      invoke.mock.calls.filter(
+        ([command]) => command === "send_phase_one_message",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("can be abandoned without creating a persisted conversation or fake history", () => {
     hookState.phase = loadedPhase;
     renderDraft();
@@ -157,6 +260,12 @@ describe("ConversationDraftSurface", () => {
     expect(container?.querySelector(".message-history")?.textContent).toContain(
       "Rascunho ainda não persistido",
     );
+    expect(container?.querySelector(".message-history")?.textContent).toContain(
+      "Envie a primeira mensagem para começar",
+    );
+    expect(
+      container?.querySelector(".message-history")?.textContent,
+    ).not.toContain("Salve um nome");
     expect(container?.querySelectorAll(".chat-message")).toHaveLength(0);
     act(() => root?.unmount());
     expect(invoke).not.toHaveBeenCalledWith(
@@ -187,7 +296,7 @@ describe("ConversationDraftSurface", () => {
     await act(async () =>
       container
         ?.querySelector<HTMLButtonElement>(
-          ".conversation-draft-surface .composer-footer > button",
+          ".conversation-draft-surface .composer-submit",
         )
         ?.click(),
     );
@@ -214,42 +323,397 @@ describe("ConversationDraftSurface", () => {
     expect(onPersisted).toHaveBeenCalledOnce();
   });
 
-  it("persists an explicitly named empty conversation without sending", async () => {
+  it("keeps naming out of the draft and exposes compact header controls", async () => {
+    hookState.phase = loadedPhase;
+    const onToggleTemporary = vi.fn();
+    renderDraft(vi.fn(), vi.fn());
+    expect(container?.querySelector(".draft-title-field")).toBeNull();
+    expect(
+      container?.querySelector<HTMLButtonElement>(
+        '.conversation-header-action[aria-label="Atualizar modelos"]',
+      ),
+    ).not.toBeNull();
+    const temporary = container?.querySelector<HTMLButtonElement>(
+      '.conversation-header-action[aria-label="Iniciar conversa temporária"]',
+    );
+    expect(temporary).toBeNull();
+
+    act(() => {
+      root?.unmount();
+      container?.remove();
+      container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+      root.render(
+        <ConversationDraftSurface
+          agentId="agent"
+          onCreated={vi.fn()}
+          onPersisted={vi.fn()}
+          onToggleTemporary={onToggleTemporary}
+        />,
+      );
+    });
+    expect(
+      container?.querySelector<HTMLButtonElement>(
+        '.conversation-header-action[aria-label="Iniciar conversa temporária"]',
+      ),
+    ).not.toBeNull();
+  });
+
+  it("allows choosing a model before the first send", async () => {
     hookState.phase = loadedPhase;
     const created = {
       ...loadedPhase.conversation,
-      id: "named",
-      title: "Notas",
+      id: "created",
+      title: "Nova conversa",
     };
     invoke.mockImplementation((command: string) =>
       command === "create_agent_conversation"
         ? Promise.resolve(created)
         : Promise.resolve(undefined),
     );
-    const onPersisted = renderDraft();
-    const title = container?.querySelector<HTMLInputElement>(
-      ".draft-title-field input",
+    renderDraft();
+    const picker = container?.querySelector<HTMLButtonElement>(
+      '.model-picker-trigger[aria-label^="Selecionar modelo"]',
     );
-    if (title === null || title === undefined) throw new Error("Missing title");
-    change(title, "Notas");
+    if (picker === null || picker === undefined)
+      throw new Error("Missing model picker");
+    await act(async () => picker.click());
+    const options = document.querySelectorAll<HTMLElement>('[role="option"]');
+    expect(options.length).toBeGreaterThan(1);
+    await act(async () => options[1]?.click());
+
+    const textarea = container?.querySelector<HTMLTextAreaElement>(
+      ".conversation-draft-surface .composer textarea",
+    );
+    if (textarea === null || textarea === undefined)
+      throw new Error("Missing draft composer");
+    change(textarea, "primeira mensagem");
     await act(async () =>
-      Array.from(container?.querySelectorAll("button") ?? [])
-        .find((button) => button.textContent === "Salvar nome")
+      container
+        ?.querySelector<HTMLButtonElement>(
+          ".conversation-draft-surface .composer-submit",
+        )
         ?.click(),
     );
 
-    expect(invoke).toHaveBeenCalledWith("create_agent_conversation", {
+    expect(invoke).toHaveBeenCalledWith("set_conversation_model_override", {
       agentId: "agent",
-      title: "Notas",
+      conversationId: "created",
+      modelRef: "ollama:test",
     });
-    expect(invoke).toHaveBeenCalledWith("set_active_agent_conversation", {
-      agentId: "agent",
-      conversationId: "named",
+    expect(invoke).toHaveBeenCalledWith(
+      "send_phase_one_message",
+      expect.objectContaining({
+        conversationId: "created",
+        content: "primeira mensagem",
+      }),
+    );
+  });
+
+  it("blocks a selected draft model that disappears before the first send", async () => {
+    hookState.phase = loadedPhase;
+    renderDraft();
+    const picker = container?.querySelector<HTMLButtonElement>(
+      '.model-picker-trigger[aria-label^="Selecionar modelo"]',
+    );
+    if (picker === null || picker === undefined)
+      throw new Error("Missing model picker");
+    await act(async () => picker.click());
+    const options = document.querySelectorAll<HTMLElement>('[role="option"]');
+    await act(async () => options[1]?.click());
+
+    hookState.phase = {
+      ...loadedPhase,
+      provider: { ...loadedPhase.provider, models: [] },
+    } as unknown as PhaseOneState;
+    await act(async () => {
+      root?.render(
+        <ConversationDraftSurface
+          agentId="agent"
+          onCreated={vi.fn()}
+          onPersisted={vi.fn()}
+        />,
+      );
+      await Promise.resolve();
     });
+
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    expect(submit?.disabled).toBe(true);
+    expect(container?.textContent).toContain("Modelo selecionado indisponível");
     expect(invoke).not.toHaveBeenCalledWith(
       "send_phase_one_message",
       expect.anything(),
     );
-    expect(onPersisted).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a no-candidate block when the selected draft model is available", async () => {
+    hookState.phase = {
+      ...loadedPhase,
+      sendBlockedCode: "no_candidate",
+    } as unknown as PhaseOneState;
+    renderDraft();
+
+    const picker = container?.querySelector<HTMLButtonElement>(
+      '.model-picker-trigger[aria-label^="Selecionar modelo"]',
+    );
+    if (picker === null || picker === undefined)
+      throw new Error("Missing model picker");
+    await act(async () => picker.click());
+    const options = document.querySelectorAll<HTMLElement>('[role="option"]');
+    await act(async () => options[1]?.click());
+
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    expect(submit?.disabled).toBe(true);
+    expect(container?.textContent).toContain(
+      "Nenhum dispositivo disponível para este modelo.",
+    );
+  });
+
+  it("routes an automatic draft independently of an unavailable active override", async () => {
+    hookState.phase = {
+      ...loadedPhase,
+      conversation: {
+        ...loadedPhase.conversation,
+        modelOverrideRef: "ollama:missing",
+      },
+      modelOverrideRef: "ollama:missing",
+      selectedModelRef: "ollama:missing",
+      selectedModelAvailable: false,
+      canSend: false,
+      sendBlockedCode: "selected_model_unavailable",
+    } as unknown as PhaseOneState;
+    invoke.mockImplementation((command: string) =>
+      command === "create_agent_conversation"
+        ? Promise.resolve({
+            ...loadedPhase.conversation,
+            id: "created",
+            title: "Nova conversa",
+          })
+        : Promise.resolve(undefined),
+    );
+    renderDraft();
+
+    const textarea = container?.querySelector<HTMLTextAreaElement>(
+      ".conversation-draft-surface .composer textarea",
+    );
+    if (textarea === null || textarea === undefined)
+      throw new Error("Missing draft composer");
+    change(textarea, "mensagem automática");
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    expect(submit?.disabled).toBe(false);
+    await act(async () => submit?.click());
+    expect(invoke).toHaveBeenCalledWith(
+      "send_phase_one_message",
+      expect.objectContaining({ content: "mensagem automática" }),
+    );
+  });
+
+  it("blocks automatic drafts when the active routing policy excludes every model", () => {
+    localStorage.setItem(
+      "aip.settings.models",
+      JSON.stringify({
+        excludedModelRefs: ["ollama:test"],
+        fallbackOnlyModelRefs: [],
+        hiddenModelRefs: [],
+        preferredModelRef: null,
+        policyMode: "auto",
+      }),
+    );
+    hookState.phase = {
+      ...loadedPhase,
+      conversation: {
+        ...loadedPhase.conversation,
+        modelOverrideRef: "ollama:missing",
+      },
+      modelOverrideRef: "ollama:missing",
+      selectedModelRef: "ollama:missing",
+      selectedModelAvailable: false,
+      canSend: false,
+      sendBlockedCode: "selected_model_unavailable",
+    } as unknown as PhaseOneState;
+    renderDraft();
+
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    expect(submit?.disabled).toBe(true);
+    localStorage.removeItem("aip.settings.models");
+  });
+
+  it("keeps an otherwise sendable draft blocked when policy has no candidate", () => {
+    localStorage.setItem(
+      "aip.settings.models",
+      JSON.stringify({
+        excludedModelRefs: ["ollama:test"],
+        fallbackOnlyModelRefs: [],
+        hiddenModelRefs: [],
+        preferredModelRef: null,
+        policyMode: "auto",
+      }),
+    );
+    hookState.phase = {
+      ...loadedPhase,
+      conversation: { ...loadedPhase.conversation, modelOverrideRef: null },
+      modelOverrideRef: null,
+      selectedModelRef: "ollama:test",
+      selectedModelAvailable: true,
+      canSend: true,
+      sendBlockedCode: null,
+    } as unknown as PhaseOneState;
+    renderDraft();
+
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    expect(submit?.disabled).toBe(true);
+    localStorage.removeItem("aip.settings.models");
+  });
+
+  it("requires a selected or inherited model for manual drafts", () => {
+    localStorage.setItem(
+      "aip.settings.models",
+      JSON.stringify({
+        excludedModelRefs: [],
+        fallbackOnlyModelRefs: [],
+        hiddenModelRefs: [],
+        preferredModelRef: null,
+        policyMode: "manual",
+      }),
+    );
+    hookState.phase = {
+      ...loadedPhase,
+      selectedModelRef: null,
+      defaultModelRef: null,
+      selectedModelAvailable: false,
+      canSend: false,
+      sendBlockedCode: "model_not_selected",
+    } as unknown as PhaseOneState;
+    renderDraft();
+
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    expect(submit?.disabled).toBe(true);
+    expect(container?.textContent).toContain("Selecione um modelo");
+    localStorage.removeItem("aip.settings.models");
+  });
+
+  it("blocks manual drafts when the inherited default is no longer available", () => {
+    localStorage.setItem(
+      "aip.settings.models",
+      JSON.stringify({
+        excludedModelRefs: [],
+        fallbackOnlyModelRefs: [],
+        hiddenModelRefs: [],
+        preferredModelRef: null,
+        policyMode: "manual",
+      }),
+    );
+    hookState.phase = {
+      ...loadedPhase,
+      provider: { ...loadedPhase.provider, models: [{ ref: "ollama:other" }] },
+      defaultModelRef: "ollama:missing",
+      selectedModelRef: "ollama:missing",
+      selectedModelAvailable: false,
+      canSend: true,
+      sendBlockedCode: null,
+    } as unknown as PhaseOneState;
+    renderDraft();
+
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    expect(submit?.disabled).toBe(true);
+    expect(container?.textContent).toContain("Selecione um modelo");
+    localStorage.removeItem("aip.settings.models");
+  });
+
+  it("allows manual drafts to use an available default despite an active override error", () => {
+    localStorage.setItem(
+      "aip.settings.models",
+      JSON.stringify({
+        excludedModelRefs: [],
+        fallbackOnlyModelRefs: [],
+        hiddenModelRefs: [],
+        preferredModelRef: null,
+        policyMode: "manual",
+      }),
+    );
+    hookState.phase = {
+      ...loadedPhase,
+      conversation: {
+        ...loadedPhase.conversation,
+        modelOverrideRef: "ollama:missing",
+      },
+      selectedModelRef: "ollama:missing",
+      selectedModelAvailable: false,
+      canSend: false,
+      sendBlockedCode: "selected_model_unavailable",
+    } as unknown as PhaseOneState;
+    renderDraft();
+
+    const textarea = container?.querySelector<HTMLTextAreaElement>(
+      ".conversation-draft-surface .composer textarea",
+    );
+    if (textarea === null || textarea === undefined)
+      throw new Error("Missing draft composer");
+    change(textarea, "mensagem com default herdado");
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    expect(submit?.disabled).toBe(false);
+    localStorage.removeItem("aip.settings.models");
+  });
+
+  it("blocks manual drafts when the inherited default is excluded by policy", () => {
+    localStorage.setItem(
+      "aip.settings.models",
+      JSON.stringify({
+        excludedModelRefs: ["ollama:test"],
+        fallbackOnlyModelRefs: [],
+        hiddenModelRefs: [],
+        preferredModelRef: null,
+        policyMode: "manual",
+      }),
+    );
+    hookState.phase = {
+      ...loadedPhase,
+      canSend: true,
+      sendBlockedCode: null,
+    } as unknown as PhaseOneState;
+    renderDraft();
+
+    const submit = container?.querySelector<HTMLButtonElement>(
+      ".conversation-draft-surface .composer-submit",
+    );
+    expect(submit?.disabled).toBe(true);
+    expect(container?.textContent).toContain("Selecione um modelo");
+    localStorage.removeItem("aip.settings.models");
+  });
+
+  it("shows one unavailable-provider error inside the draft composer", () => {
+    hookState.phase = {
+      ...loadedPhase,
+      provider: { ...loadedPhase.provider, state: "unavailable" },
+      canSend: false,
+      sendBlockedCode: "provider_unavailable",
+    } as unknown as PhaseOneState;
+    renderDraft();
+
+    expect(
+      container?.querySelector(".composer .provider-state")?.textContent,
+    ).toBe("Servidor de IA indisponível.");
+    expect(container?.querySelectorAll(".provider-state")).toHaveLength(1);
+    expect(container?.querySelectorAll(".provider-recovery")).toHaveLength(0);
+    expect(
+      container?.textContent?.match(/Servidor de IA indisponível\./g),
+    ).toHaveLength(1);
   });
 });

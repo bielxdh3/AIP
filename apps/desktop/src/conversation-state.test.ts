@@ -16,6 +16,7 @@ import {
   modelSourceCopy,
   providerRecoveryCopy,
   providerStatusCopy,
+  providerUnavailableCopy,
   requestTerminalState,
   requestForAgent,
 } from "./conversation-state";
@@ -194,6 +195,22 @@ describe("conversation event reducer", () => {
     expect(second.phase.messages[0]?.content).toBe("Olá mundo");
   });
 
+  it("keeps the accumulated content when terminal payload is empty", () => {
+    const initial = createConversationViewState(phase());
+    const first = applyPhaseOneEvent(
+      initial,
+      event("generation.chunk", 1, "A"),
+    );
+    const second = applyPhaseOneEvent(first, event("generation.chunk", 2, "B"));
+    const third = applyPhaseOneEvent(second, event("generation.chunk", 3, "C"));
+    const terminal = applyPhaseOneEvent(third, {
+      ...event("generation.complete", 3, ""),
+      content: "",
+    });
+    expect(terminal.phase.messages[0]?.content).toBe("ABC");
+    expect(terminal.phase.messages[0]?.status).toBe("complete");
+  });
+
   it("ignores another agent and keeps terminal state idempotent", () => {
     const initial = createConversationViewState(phase());
     const wrongAgent = {
@@ -214,6 +231,38 @@ describe("conversation event reducer", () => {
     expect(
       applyPhaseOneEvent(complete, event("generation.cancelled", 0, null)),
     ).toBe(complete);
+  });
+
+  it("does not apply an old assistant response to the next request", () => {
+    const current = phase();
+    current.messages[0] = {
+      ...current.messages[0]!,
+      content: "Oi",
+      status: "complete",
+    };
+    current.messages.push({
+      ...current.messages[0]!,
+      id: "assistant-next",
+      content: "",
+      status: "pending",
+      turnGroupId: "user-next",
+    });
+    current.queue = [
+      {
+        ...current.queue[0]!,
+        requestId: "request-next",
+        assistantMessageId: "assistant-next",
+      },
+    ];
+    const initial = createConversationViewState(current);
+    const stale = applyPhaseOneEvent(initial, {
+      ...event("generation.complete", 0, null),
+      requestId: "request",
+      assistantMessageId: "assistant",
+    });
+    expect(stale).toBe(initial);
+    expect(stale.phase.messages[1]?.content).toBe("");
+    expect(stale.phase.messages[1]?.status).toBe("pending");
   });
 
   it("rejects a terminal event whose sequence does not match accepted chunks", () => {
@@ -293,7 +342,7 @@ describe("conversation event reducer", () => {
 
   it("exposes provider, model, cancel and compact bubble states", () => {
     const current = phase();
-    expect(providerStatusCopy(current)).toBe("Ollama disponível");
+    expect(providerStatusCopy(current)).toBe("");
     expect(blockedSendCopy("selected_model_unavailable")).toContain(
       "indisponível",
     );
@@ -339,9 +388,24 @@ describe("conversation event reducer", () => {
   it("explains how to recover when the local Ollama service is unavailable", () => {
     const current = phase();
     current.provider.state = "unavailable";
-    expect(providerRecoveryCopy(current)).toContain("Ollama não está ativo");
+    expect(providerRecoveryCopy(current)).toContain("Ollama indisponível");
     current.provider.state = "available";
     expect(providerRecoveryCopy(current)).toBeNull();
+  });
+
+  it("collapses runtime and provider outages to one composer error", () => {
+    const current = phase();
+    current.provider.state = "unavailable";
+    expect(providerUnavailableCopy(current)).toBe(
+      "Servidor de IA indisponível.",
+    );
+    current.provider.state = "available";
+    current.sendBlockedCode = "runtime_unavailable";
+    expect(providerUnavailableCopy(current)).toBe(
+      "Servidor de IA indisponível.",
+    );
+    current.sendBlockedCode = "selected_model_unavailable";
+    expect(providerUnavailableCopy(current)).toBeNull();
   });
 
   it("derives compact, expanded and cancel controls from authoritative state", () => {
