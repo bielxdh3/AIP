@@ -136,8 +136,9 @@ the Owner's local environment; remote endpoints are rejected.
 
 Ollama is optional at application startup. A healthy external loopback service is reused;
 managed startup is permitted only from an explicit, bounded Owner-provided executable
-configuration. Remote and wildcard endpoints are rejected, and the UI must show an
-unavailable status without failing when neither policy path is ready.
+configuration. Remote endpoints are rejected; wildcard inputs (`0.0.0.0` and `[::]`) are
+normalized to `127.0.0.1` before probing or managed launch, so no wildcard bind occurs. The
+UI must show an unavailable status without failing when neither policy path is ready.
 
 ## 4. Inter-process communication
 
