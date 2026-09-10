@@ -640,6 +640,9 @@ impl GenerationQueue {
 
     fn expired_request(&self, now: Instant) -> Option<(String, &'static str)> {
         let active = self.active.as_ref()?;
+        if active.cancellation_requested {
+            return None;
+        }
         let code = if !active.runtime_accepted
             && now.duration_since(active.dispatched_at) >= RUNTIME_ACCEPT_TIMEOUT
         {
@@ -3578,6 +3581,22 @@ mod tests {
             queue.expired_request(Instant::now()),
             Some(("timeout".into(), "generation_response_timeout"))
         );
+    }
+
+    #[test]
+    fn queue_watchdog_defers_timeout_while_cancellation_is_pending() {
+        let mut queue = GenerationQueue::default();
+        queue.enqueue(job("cancel", "astra")).unwrap();
+        queue.activate_next();
+
+        let active = queue.active.as_mut().unwrap();
+        active.cancellation_requested = true;
+        active.runtime_accepted = true;
+        active.generation_started = true;
+        active.last_progress_at =
+            Instant::now() - GENERATION_RESPONSE_TIMEOUT - Duration::from_secs(1);
+
+        assert_eq!(queue.expired_request(Instant::now()), None);
     }
 
     #[test]
