@@ -180,6 +180,9 @@ struct RequestTraceStore {
     order: VecDeque<String>,
     entries: HashMap<String, VecDeque<RequestTraceEntry>>,
     metadata: HashMap<String, RequestTraceMetadata>,
+    // Monotonically increases for each persistable snapshot. The async persistence worker uses
+    // it to discard an older snapshot that was delayed behind a newer one.
+    revision: u64,
     // Events that arrive before enqueue/register are kept separately. They become part of the
     // bounded request trace if registration succeeds, but transient failures cannot evict a
     // durable request from `order`.
@@ -198,8 +201,13 @@ impl TracePersistence {
     fn new(path: PathBuf) -> Self {
         let (sender, receiver) = mpsc::channel::<RequestTraceStore>();
         thread::spawn(move || {
+            let mut last_revision = None;
             while let Ok(snapshot) = receiver.recv() {
+                if last_revision.is_some_and(|revision| snapshot.revision <= revision) {
+                    continue;
+                }
                 snapshot.persist(&path);
+                last_revision = Some(snapshot.revision);
             }
         });
         Self { sender }
@@ -2745,7 +2753,12 @@ impl ChatCoordinator {
         let snapshot = {
             let mut traces = lock(&self.inner.request_traces);
             traces.record(request_id, code, sequence, terminal_code);
-            should_persist_trace_code(code).then(|| traces.clone())
+            if should_persist_trace_code(code) {
+                traces.revision = traces.revision.wrapping_add(1);
+                Some(traces.clone())
+            } else {
+                None
+            }
         };
         let Some(snapshot) = snapshot else {
             return;
@@ -4033,6 +4046,54 @@ mod tests {
         assert!(fs::read_to_string(&path)
             .unwrap()
             .contains("async-trace-request"));
+        drop(persistence);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn request_trace_persistence_discards_stale_snapshots() {
+        let path = std::env::temp_dir().join(format!(
+            "aip-ordered-generation-trace-{}.ndjson",
+            Uuid::now_v7()
+        ));
+        let persistence = TracePersistence::new(path.clone());
+
+        let mut newer = RequestTraceStore {
+            revision: 2,
+            ..RequestTraceStore::default()
+        };
+        let newer_job = job("newer-trace-request", "astra");
+        newer.register(&newer_job);
+        newer.record(&newer_job.request_id, "generation.complete", Some(2), None);
+
+        let mut stale = RequestTraceStore {
+            revision: 1,
+            ..RequestTraceStore::default()
+        };
+        let stale_job = job("stale-trace-request", "astra");
+        stale.register(&stale_job);
+        stale.record(&stale_job.request_id, "generation.failed", Some(1), None);
+
+        // Simulate the newer snapshot reaching the worker before an older clone that was
+        // delayed after releasing the trace-store lock.
+        persistence.enqueue(newer);
+        persistence.enqueue(stale);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(contents) = fs::read_to_string(&path) {
+                if contents.contains("newer-trace-request") {
+                    break;
+                }
+            }
+            if Instant::now() >= deadline {
+                panic!("timed out waiting for ordered trace persistence");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        thread::sleep(Duration::from_millis(50));
+        let persisted = fs::read_to_string(&path).unwrap();
+        assert!(persisted.contains("newer-trace-request"));
+        assert!(!persisted.contains("stale-trace-request"));
         drop(persistence);
         let _ = fs::remove_file(path);
     }
