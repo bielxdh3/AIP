@@ -74,6 +74,20 @@ function targetsAssistantMessage(selector: string) {
 }
 
 describe("App.css semantic foreground contract", () => {
+  it("keeps authorship screen-reader-only and the conversation cascade canonical", () => {
+    expect(
+      appCss.match(/\/\* Canonical final conversation QA block\. \*\//g),
+    ).toHaveLength(1);
+    expect(appCss).not.toContain("Final chat QA cascade");
+    expect(rulesForSelector(".message-author-label")).toHaveLength(0);
+
+    const visuallyHidden = rulesForSelector(".visually-hidden");
+    expect(visuallyHidden).toHaveLength(1);
+    expect(visuallyHidden[0]?.body).toMatch(
+      /position:\s*absolute[\s\S]*width:\s*1px[\s\S]*height:\s*1px[\s\S]*overflow:\s*hidden[\s\S]*clip:\s*rect\(0, 0, 0, 0\)/,
+    );
+  });
+
   it("keeps neutral hover states readable and primary fills intentional", () => {
     const neutralSelectors = [
       ".memory-card-actions button:hover",

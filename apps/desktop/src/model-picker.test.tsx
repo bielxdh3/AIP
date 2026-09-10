@@ -179,6 +179,23 @@ describe("ModelPicker", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+  it("exposes the compact selection and provider status to assistive technology", () => {
+    renderPicker(vi.fn(), {
+      compact: true,
+      ariaLabel: "Selecionar modelo",
+      value: "ollama:llama3",
+      statusText: "Modelo local selecionado",
+    });
+    const trigger = container?.querySelector<HTMLButtonElement>(
+      '[aria-haspopup="listbox"]',
+    );
+    if (trigger === null || trigger === undefined)
+      throw new Error("Missing trigger");
+    expect(trigger.getAttribute("aria-label")).toBe(
+      "Selecionar modelo · Llama 3 local · Ollama · 8B · Q4_K_M · llama · 2.0 GB · completion · Modelo local selecionado",
+    );
+  });
+
   it("supports Arrow, Enter and Escape from the search field", async () => {
     const onSelect = vi.fn().mockResolvedValue(undefined);
     renderPicker(onSelect);

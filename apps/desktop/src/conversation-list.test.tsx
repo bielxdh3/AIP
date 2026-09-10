@@ -197,6 +197,51 @@ describe("ConversationList regressions", () => {
     expect(container.textContent).toContain("Conversa arquivada");
   });
 
+  it("discards a superseded active-list response", async () => {
+    const resolvers: Array<(value: typeof current) => void> = [];
+    invoke.mockImplementation((command: string) => {
+      if (command === "list_agent_conversations") {
+        return new Promise<typeof current>((resolve) => resolvers.push(resolve));
+      }
+      return Promise.resolve(undefined);
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <ConversationList
+          agentId="agent"
+          changed={vi.fn()}
+          refreshRevision={0}
+        />,
+      );
+      await Promise.resolve();
+    });
+    expect(resolvers).toHaveLength(1);
+
+    await act(async () => {
+      root?.render(
+        <ConversationList
+          agentId="agent"
+          changed={vi.fn()}
+          refreshRevision={1}
+        />,
+      );
+      await Promise.resolve();
+    });
+    expect(resolvers).toHaveLength(2);
+
+    await act(async () =>
+      resolvers[1]?.([{ id: "main", title: "Atualizada", isPinned: true }]),
+    );
+    expect(container.textContent).toContain("Atualizada");
+    await act(async () => resolvers[0]?.(current));
+    expect(container.textContent).not.toContain("Conversa secundária");
+    expect(container.textContent).toContain("Atualizada");
+  });
+
   it("notifies the parent only after selecting an existing conversation", async () => {
     invoke.mockImplementation((command: string) =>
       command === "list_agent_conversations"

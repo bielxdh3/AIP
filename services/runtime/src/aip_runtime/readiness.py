@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 from collections.abc import Callable, Mapping
 from contextlib import suppress
@@ -12,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .ollama import OllamaClient, ProviderError
+from .ollama import OllamaClient, ProviderError, _ollama_endpoint
 
 MAX_CONFIG_BYTES = 16_384
 MAX_PATH_LENGTH = 260
@@ -61,12 +62,17 @@ class OllamaRuntimeManager:
         self._readiness_timeout = max(0.0, readiness_timeout)
         self._process: ProcessLike | None = None
         self._started_process = False
+        self._readiness_lock = threading.Lock()
 
     def discover(self) -> list[dict[str, object]]:
         self.ensure_ready()
         return self._client.discover()
 
     def ensure_ready(self) -> ProviderReadiness:
+        with self._readiness_lock:
+            return self._ensure_ready_locked()
+
+    def _ensure_ready_locked(self) -> ProviderReadiness:
         first_error = self._probe_health()
         if first_error is None:
             source = "started" if self._started_process else "existing"
@@ -80,19 +86,24 @@ class OllamaRuntimeManager:
         config = _load_config(self._environ)
         if config is None:
             raise first_error
+        _ollama_endpoint(self._environ.get("OLLAMA_HOST", ""))
         try:
             process = self._process_factory(config)
-        except (OSError, ValueError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError, ProviderError, subprocess.SubprocessError) as error:
             raise ProviderError("provider_start_failed") from error
         self._process = process
         self._started_process = True
         try:
             return self._wait_for_health(first_error, "started")
         except ProviderError:
-            self.shutdown()
+            self._shutdown_locked()
             raise
 
     def shutdown(self) -> None:
+        with self._readiness_lock:
+            self._shutdown_locked()
+
+    def _shutdown_locked(self) -> None:
         if not self._started_process or self._process is None:
             return
         process = self._process
@@ -145,12 +156,19 @@ class OllamaRuntimeManager:
 
 
 def _start_ollama(executable: Path) -> ProcessLike:
+    host, port = _ollama_endpoint()
+    environment = os.environ.copy()
+    # The child must receive the validated loopback bind too; normalizing only
+    # the client endpoint would leave a managed Ollama inheriting a wildcard.
+    child_host = f"[{host}]" if ":" in host else host
+    environment["OLLAMA_HOST"] = f"{child_host}:{port}"
     return subprocess.Popen(
         [str(executable), "serve"],
         shell=False,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=environment,
     )
 
 

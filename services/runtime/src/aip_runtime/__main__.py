@@ -11,6 +11,13 @@ from .server import RuntimeServer
 
 
 def _serve_stdio() -> int:
+    # PyInstaller inherits the Windows console code page even when the parent sets
+    # PYTHONIOENCODING. The Rust sidecar reader is intentionally UTF-8 only, so make
+    # the packaged protocol encoding explicit before any JSON/event is written.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="strict", newline="\n", write_through=True)
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="strict", newline="\n", write_through=True)
     return RuntimeServer(sys.stdout).serve(sys.stdin.buffer)
 
 

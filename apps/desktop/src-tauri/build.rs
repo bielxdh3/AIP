@@ -1,10 +1,23 @@
 use std::{
+    path::PathBuf,
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 fn build_value(name: &str, fallback: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| fallback.to_string())
+}
+
+fn build_revision() -> String {
+    if let Ok(value) = std::env::var("AIP_BUILD_REVISION") {
+        return value;
+    }
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../build-revision.txt");
+    std::fs::read_to_string(path)
+        .map(|value| value.trim().to_string())
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "0.2.3.5".to_string())
 }
 
 #[cfg(windows)]
@@ -45,6 +58,8 @@ fn main() {
             .map(|value| value.as_secs())
             .unwrap_or(0)
     );
+    println!("cargo:rustc-env=AIP_BUILD_REVISION={}", build_revision());
+    println!("cargo:rerun-if-changed=../../../build-revision.txt");
     println!(
         "cargo:rustc-env=AIP_RUNTIME_PACKAGING_MODE={}",
         build_value(

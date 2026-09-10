@@ -53,6 +53,7 @@ export type ProvisionalAgent = {
 
 export type AppSnapshot = {
   appVersion: string;
+  buildRevision: string;
   buildSha: string;
   buildTimestamp: string;
   runtimePackagingMode: string;
@@ -4402,6 +4403,7 @@ export type PhaseOneEvent = {
   protocolVersion: typeof PROTOCOL_VERSION;
   eventType:
     | "state.changed"
+    | "conversation-list.changed"
     | "generation.started"
     | "generation.chunk"
     | "generation.complete"

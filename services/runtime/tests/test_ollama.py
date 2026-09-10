@@ -5,6 +5,7 @@ import socket
 import threading
 import unittest
 from typing import Any, cast
+from unittest.mock import patch
 
 from aip_runtime.ollama import (
     CancelledError,
@@ -13,6 +14,7 @@ from aip_runtime.ollama import (
     ProviderError,
     ResponseLike,
     _InterruptibleHttpConnection,
+    _ollama_endpoint,
 )
 from aip_runtime.protocol import MAX_ASSISTANT_OUTPUT_BYTES, MAX_DISCOVERED_MODELS
 
@@ -91,6 +93,17 @@ def client_for(response: ResponseLike) -> tuple[OllamaClient, FakeConnection]:
 
 
 class OllamaDiscoveryTests(unittest.TestCase):
+    def test_ollama_host_override_is_loopback_only(self) -> None:
+        with patch.dict("os.environ", {"OLLAMA_HOST": "http://127.0.0.1:11435"}):
+            self.assertEqual(_ollama_endpoint(), ("127.0.0.1", 11435))
+        with patch.dict("os.environ", {"OLLAMA_HOST": "0.0.0.0:11436"}):
+            self.assertEqual(_ollama_endpoint(), ("127.0.0.1", 11436))
+        with (
+            patch.dict("os.environ", {"OLLAMA_HOST": "http://example.invalid:11434"}),
+            self.assertRaisesRegex(ProviderError, "provider_config_invalid"),
+        ):
+            _ollama_endpoint()
+
     def test_discovery_normalizes_bounded_metadata(self) -> None:
         payload = json.dumps(
             {
@@ -212,6 +225,20 @@ class OllamaStreamingTests(unittest.TestCase):
         self.assertEqual(body["keep_alive"], "15m")
         self.assertEqual(body["messages"][0]["content"], "Synthetic input")
 
+    def test_chat_body_reconstructs_more_than_one_hundred_chunks_in_order(self) -> None:
+        expected_chunks = [f"chunk-{index:03d}|" for index in range(128)]
+        lines = [
+            json.dumps(
+                {"message": {"role": "assistant", "content": content}, "done": False}
+            ).encode()
+            + b"\n"
+            for content in expected_chunks
+        ]
+        lines.append(b'{"done":true}\n')
+        chunks, _ = self.run_chat(lines)
+        self.assertEqual([sequence for sequence, _ in chunks], list(range(1, 129)))
+        self.assertEqual("".join(content for _, content in chunks), "".join(expected_chunks))
+
     def test_llama_model_uses_the_chat_endpoint(self) -> None:
         _, connection = self.run_chat(
             [b'{"message":{"content":"OK"},"done":false}\n', b'{"done":true}\n'],
@@ -220,6 +247,35 @@ class OllamaStreamingTests(unittest.TestCase):
         body = json.loads(connection.requests[0][2] or "{}")
         self.assertEqual(connection.requests[0][0:2], ("POST", "/api/chat"))
         self.assertEqual(body["model"], "llama3.2:1b")
+
+    def test_current_prompt_and_model_are_forwarded_without_canned_content(self) -> None:
+        bodies: list[dict[str, Any]] = []
+        for prompt, model in [
+            ("Planeje uma viagem", "llama3.2:1b"),
+            ("Explique este erro", "qwen2.5:7b"),
+        ]:
+            client, connection = client_for(
+                FakeResponse(
+                    [b'{"message":{"content":"resposta real"},"done":false}\n', b'{"done":true}\n']
+                )
+            )
+            client.stream_chat(
+                model_id=model,
+                messages=[
+                    {"role": "system", "content": "Responda em português"},
+                    {"role": "user", "content": prompt},
+                ],
+                keep_alive_minutes=15,
+                cancel_event=threading.Event(),
+                observe_connection=lambda _connection: None,
+                emit_chunk=lambda _sequence, _content: None,
+            )
+            bodies.append(json.loads(cast(bytes, connection.requests[0][2]).decode("utf-8")))
+        self.assertNotEqual(
+            bodies[0]["messages"][-1]["content"], bodies[1]["messages"][-1]["content"]
+        )
+        self.assertNotEqual(bodies[0]["model"], bodies[1]["model"])
+        self.assertNotIn("Oi", bodies[0]["messages"][-1]["content"])
 
     def test_chat_body_is_utf8_bytes_before_http_dispatch(self) -> None:
         client, connection = client_for(

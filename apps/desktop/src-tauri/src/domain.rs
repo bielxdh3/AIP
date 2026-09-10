@@ -160,6 +160,7 @@ impl RuntimeStatus {
 #[serde(rename_all = "camelCase")]
 pub struct AppSnapshot {
     pub app_version: String,
+    pub build_revision: String,
     pub build_sha: String,
     pub build_timestamp: String,
     pub runtime_packaging_mode: String,

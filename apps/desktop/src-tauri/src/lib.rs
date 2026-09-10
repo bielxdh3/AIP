@@ -30,6 +30,9 @@ use std::{
     },
 };
 
+#[cfg(any(test, not(debug_assertions)))]
+use std::path::Path;
+
 use chat::ChatCoordinator;
 use cognitive::{
     CognitiveGoal, CognitiveOpinion, FictionalActivity, FictionalActivityRequest,
@@ -2463,15 +2466,17 @@ fn set_safe_mode(
         .ok_or("operation_unavailable")?
         .set_safe_mode(enabled)
         .map_err(|_| "operation_failed")?;
-    state.safe_mode.store(enabled, Ordering::SeqCst);
     if enabled {
         if let Some(chat) = &state.chat {
-            chat.cancel_all("safe_mode_active");
+            chat.enter_safe_mode("safe_mode_active");
+        } else {
+            state.safe_mode.store(true, Ordering::SeqCst);
         }
         overlays::clear_native_regions(&app, &state.overlay_input);
         state.runtime.enter_safe_mode();
         overlays::set_visible(&app, &state.overlay_input, false);
     } else {
+        state.safe_mode.store(false, Ordering::SeqCst);
         state.runtime.leave_safe_mode();
         overlays::set_visible(&app, &state.overlay_input, true);
     }
@@ -2500,6 +2505,19 @@ fn get_temporary_phase_one_state(
         .as_ref()
         .ok_or("operation_unavailable")?
         .temporary_state(&agent_id)
+}
+
+#[tauri::command]
+fn phase_one_heartbeat(
+    state: State<'_, AppState>,
+    agent_id: String,
+    latency_ms: Option<u64>,
+) -> Result<chat::PhaseOneLiveness, &'static str> {
+    // The heartbeat is intentionally a content-free, lock-light read. The UI uses its
+    // round-trip latency as the Owner-visible liveness signal while this snapshot records the
+    // active request, Rust sequence, watchdog phase, and managed runtime PID for diagnostics.
+    let chat = state.chat.as_ref().ok_or("operation_unavailable")?;
+    Ok(chat.heartbeat(&agent_id, latency_ms))
 }
 
 #[tauri::command]
@@ -2718,6 +2736,30 @@ fn close_temporary_phase_one_chat(
         .as_ref()
         .ok_or("operation_unavailable")?
         .reset_temporary(&agent_id)
+}
+
+#[tauri::command]
+fn start_temporary_phase_one_chat(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<(), &'static str> {
+    state
+        .chat
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .start_temporary(&agent_id)
+}
+
+#[tauri::command]
+fn continue_temporary_phase_one_chat(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<PhaseOneConversation, &'static str> {
+    state
+        .chat
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .continue_temporary(&agent_id)
 }
 
 #[tauri::command]
@@ -3165,6 +3207,7 @@ fn snapshot(state: &AppState) -> Result<AppSnapshot, &'static str> {
     let Some(database) = state.database.as_ref() else {
         return Ok(AppSnapshot {
             app_version: env!("CARGO_PKG_VERSION").to_string(),
+            build_revision: env!("AIP_BUILD_REVISION").to_string(),
             build_sha: env!("AIP_BUILD_SHA").to_string(),
             build_timestamp: env!("AIP_BUILD_TIMESTAMP").to_string(),
             runtime_packaging_mode: env!("AIP_RUNTIME_PACKAGING_MODE").to_string(),
@@ -3179,6 +3222,7 @@ fn snapshot(state: &AppState) -> Result<AppSnapshot, &'static str> {
     let stored = database.snapshot().map_err(|_| "operation_failed")?;
     Ok(AppSnapshot {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
+        build_revision: env!("AIP_BUILD_REVISION").to_string(),
         build_sha: env!("AIP_BUILD_SHA").to_string(),
         build_timestamp: env!("AIP_BUILD_TIMESTAMP").to_string(),
         runtime_packaging_mode: env!("AIP_RUNTIME_PACKAGING_MODE").to_string(),
@@ -3191,22 +3235,54 @@ fn snapshot(state: &AppState) -> Result<AppSnapshot, &'static str> {
     })
 }
 
-fn runtime_source_root(_app: &AppHandle) -> PathBuf {
+fn runtime_source_root(app: &AppHandle) -> PathBuf {
     #[cfg(debug_assertions)]
     {
+        let _ = app;
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../services/runtime/src")
     }
     #[cfg(not(debug_assertions))]
     {
-        _app.path()
-            .resource_dir()
-            .map(|path| path.join("aip-runtime.exe"))
-            .unwrap_or_else(|_| PathBuf::from("aip-runtime.exe"))
+        let resource_dir = app.path().resource_dir().ok();
+        let executable_dir = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(PathBuf::from));
+        runtime_binary_candidates(resource_dir.as_deref(), executable_dir.as_deref())
+            .into_iter()
+            .find(|path| path.is_file())
+            .or_else(|| {
+                app.path()
+                    .resource_dir()
+                    .ok()
+                    .map(|path| path.join("aip-runtime.exe"))
+            })
+            .unwrap_or_else(|| PathBuf::from("aip-runtime.exe"))
     }
+}
+
+#[cfg(any(test, not(debug_assertions)))]
+fn runtime_binary_candidates(
+    resource_dir: Option<&Path>,
+    executable_dir: Option<&Path>,
+) -> Vec<PathBuf> {
+    [
+        resource_dir.map(|path| path.join("aip-runtime.exe")),
+        resource_dir.map(|path| path.join("aip-runtime-x86_64-pc-windows-msvc.exe")),
+        executable_dir.map(|path| path.join("aip-runtime.exe")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if std::env::args_os()
+        .any(|argument| argument == std::ffi::OsStr::new("--print-build-identity"))
+    {
+        println!("{}", env!("AIP_BUILD_REVISION"));
+        return;
+    }
     let app = tauri::Builder::default()
         .setup(|app| {
             let data_directory = app
@@ -3398,6 +3474,7 @@ pub fn run() {
             set_safe_mode,
             get_phase_one_state,
             get_temporary_phase_one_state,
+            phase_one_heartbeat,
             load_phase_one_messages,
             list_agent_conversations,
             list_archived_agent_conversations,
@@ -3413,6 +3490,8 @@ pub fn run() {
             create_agent_memory,
             send_temporary_phase_one_message,
             close_temporary_phase_one_chat,
+            start_temporary_phase_one_chat,
+            continue_temporary_phase_one_chat,
             set_temporary_phase_one_model,
             get_agent_simulated_state,
             set_agent_simulated_mode,
@@ -3489,7 +3568,7 @@ mod conversation_command_tests {
     use super::{
         append_public_conversation_turn_for_state, companion_transport_handler,
         complete_resource_job_for_state, emit_cognitive_candidate_for_state,
-        reserve_heavy_generation_for_state, routing_policy_or_default,
+        reserve_heavy_generation_for_state, routing_policy_or_default, runtime_binary_candidates,
         set_custom_voice_consent_for_state, start_agent_conversation_for_state,
         update_voice_settings_for_state, AppState, CompanionTransportState, GatewayTransportState,
         RoutingPolicy,
@@ -3546,6 +3625,21 @@ mod conversation_command_tests {
     #[test]
     fn omitted_chat_routing_policy_keeps_auto_default() {
         assert_eq!(routing_policy_or_default(None), RoutingPolicy::default());
+    }
+
+    #[test]
+    fn packaged_runtime_candidates_include_installed_sibling_layout() {
+        let resource = Path::new(r"C:\Program Files\A.I.P.\resources");
+        let executable = Path::new(r"C:\Program Files\A.I.P.");
+        let candidates = runtime_binary_candidates(Some(resource), Some(executable));
+        assert_eq!(
+            candidates,
+            vec![
+                resource.join("aip-runtime.exe"),
+                resource.join("aip-runtime-x86_64-pc-windows-msvc.exe"),
+                executable.join("aip-runtime.exe"),
+            ]
+        );
     }
 
     #[test]

@@ -114,7 +114,7 @@ Linux, macOS, and iOS are not supported by the current stable release. Phase 12 
 
 [Download the current stable v0.1.0 MSI](https://github.com/bielxdh3/AIP/releases/download/v0.1.0/A.I.P._0.1.0_x64_en-US.msi)
 
-The active 0.2.2 line is unreleased development. The stable download above remains the reviewed v0.1.0 release asset.
+The active 0.2.3 line is unreleased development. The stable download above remains the reviewed v0.1.0 release asset.
 
 ## Quick start
 
@@ -148,7 +148,8 @@ pnpm check
 
 ### 5. Start the desktop app
 
-Start Ollama separately, then run:
+Start Ollama separately (or configure an explicit local Ollama executable for AIP's
+managed-start policy), then run:
 
 ```powershell
 pnpm dev
@@ -194,7 +195,9 @@ Useful focused commands:
 | `pnpm tauri:check` | Validate the Tauri/Rust desktop core |
 
 > [!WARNING]
-> CI cannot honestly prove Windows overlay behavior, installer behavior, GPU/model compatibility, or installed-runtime behavior. Those areas require real Windows validation.
+> CI exercises the MSI's installed runtime path with a deterministic localhost fixture,
+> but cannot prove Windows overlay behavior, GPU/model compatibility, or real Ollama
+> quality. Those areas require real Windows/Owner validation.
 
 ## Privacy and security model
 
@@ -212,7 +215,9 @@ See [SECURITY.md](SECURITY.md) and [docs/SECURITY_AND_PERMISSIONS.md](docs/SECUR
 
 ## Current limitations
 
-- Ollama must currently be started separately;
+- A healthy external Ollama is reused; AIP only starts Ollama when the Owner supplies
+  an explicit `AIP_OLLAMA_EXECUTABLE` or bounded `AIP_OLLAMA_CONFIG` path, and all
+  provider traffic remains loopback-only;
 - installers are unsigned;
 - the visual design is still being refined;
 - no production model is downloaded automatically;

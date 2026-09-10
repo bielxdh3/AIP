@@ -1,13 +1,18 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    fs,
+    io::{BufRead, BufReader, Seek, SeekFrom, Write},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        mpsc, Arc, Mutex,
     },
     thread,
+    time::{Duration, Instant},
 };
 
-use tauri::{AppHandle, Emitter};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
     database::{now_millis, ContextMessage, Database, MessageAttempt},
@@ -32,8 +37,19 @@ use crate::{
 const EVENT_NAME: &str = "phase-one-event";
 const MAX_REQUEST_TRACE_ENTRIES: usize = 24;
 const MAX_RETAINED_REQUEST_TRACES: usize = 16;
+const MAX_PENDING_REQUEST_TRACES: usize = 16;
+const MAX_IGNORED_TEMPORARY_REQUESTS: usize = 32;
+const MAX_TRACE_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_TRACE_CODE_BYTES: usize = 128;
 const CANCELLATION_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 const DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+const RUNTIME_ACCEPT_TIMEOUT: Duration = Duration::from_secs(15);
+const GENERATION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(90);
+const GENERATION_WATCHDOG_INTERVAL: Duration = Duration::from_millis(250);
+const MAX_TITLE_OUTPUT_BYTES: usize = 512;
+const MAX_TITLE_CONTEXT_CHARS: usize = 2_000;
+const STREAM_PERSIST_BATCH_CHUNKS: usize = 16;
+const STREAM_PERSIST_BATCH_BYTES: usize = 4 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GenerationJob {
@@ -49,6 +65,9 @@ struct GenerationJob {
 #[derive(Debug, Default)]
 struct TemporaryChatStore {
     conversations: HashMap<String, TemporaryConversation>,
+    // Conversion removes the in-memory conversation while the React surface may still be
+    // mounted. Keep a tombstone so a late temporary-state read cannot silently recreate it.
+    converted_agents: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -58,12 +77,51 @@ struct TemporaryConversation {
     model_override_ref: Option<String>,
 }
 
+#[derive(Debug)]
+struct TitleGeneration {
+    agent_id: String,
+    conversation_id: String,
+    assistant_message_id: String,
+    output: String,
+    last_sequence: u64,
+    output_bytes: usize,
+    cancellation_requested: bool,
+    dispatched_at: Instant,
+    last_progress_at: Instant,
+    runtime_accepted: bool,
+    generation_started: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ActiveGeneration {
     job: GenerationJob,
     last_sequence: u64,
     output_bytes: usize,
+    output_characters: usize,
+    pending_content: String,
+    pending_bytes: usize,
+    pending_characters: usize,
+    pending_chunks: usize,
+    persisted_batches: u64,
     cancellation_requested: bool,
+    dispatched_at: Instant,
+    last_progress_at: Instant,
+    runtime_accepted: bool,
+    generation_started: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhaseOneLiveness {
+    pub active_request_id: Option<String>,
+    pub runtime_pid: Option<u32>,
+    pub runtime_state: RuntimeState,
+    pub runtime_detail_code: &'static str,
+    pub active_sequence: Option<u64>,
+    pub last_progress_age_ms: Option<u64>,
+    pub last_heartbeat_ms: Option<i64>,
+    pub max_heartbeat_latency_ms: Option<u64>,
+    pub watchdog_state: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,34 +168,286 @@ fn is_provider_error_code(code: &str) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RequestTraceEntry {
-    code: &'static str,
+    code: String,
     sequence: Option<u64>,
     terminal_code: Option<String>,
+    counters: BTreeMap<String, u64>,
+    timestamp_ms: i64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedTraceRecord {
+    request_id: String,
+    agent_id: String,
+    conversation_id: String,
+    branch_id: String,
+    model_ref: String,
+    code: String,
+    sequence: Option<u64>,
+    terminal_code: Option<String>,
+    #[serde(default)]
+    counters: BTreeMap<String, u64>,
+    timestamp_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+struct RequestTraceMetadata {
+    agent_id: String,
+    conversation_id: String,
+    branch_id: String,
+    model_ref: String,
+    temporary: bool,
+}
+
+#[derive(Debug, Clone, Default)]
 struct RequestTraceStore {
     order: VecDeque<String>,
     entries: HashMap<String, VecDeque<RequestTraceEntry>>,
+    metadata: HashMap<String, RequestTraceMetadata>,
+    // Monotonically increases for each persistable snapshot. The async persistence worker uses
+    // it to discard an older snapshot that was delayed behind a newer one.
+    revision: u64,
+    // Events that arrive before enqueue/register are kept separately. They become part of the
+    // bounded request trace if registration succeeds, but transient failures cannot evict a
+    // durable request from `order`.
+    pending_order: VecDeque<String>,
+    pending_entries: HashMap<String, VecDeque<RequestTraceEntry>>,
+    ignored_temporary_order: VecDeque<String>,
+    ignored_temporary_requests: HashSet<String>,
+}
+
+#[derive(Clone)]
+struct TracePersistence {
+    sender: mpsc::Sender<RequestTraceStore>,
+}
+
+impl TracePersistence {
+    fn new(path: PathBuf) -> Self {
+        let (sender, receiver) = mpsc::channel::<RequestTraceStore>();
+        thread::spawn(move || {
+            let mut last_revision = None;
+            while let Ok(snapshot) = receiver.recv() {
+                if last_revision.is_some_and(|revision| snapshot.revision <= revision) {
+                    continue;
+                }
+                snapshot.persist(&path);
+                last_revision = Some(snapshot.revision);
+            }
+        });
+        Self { sender }
+    }
+
+    fn enqueue(&self, snapshot: RequestTraceStore) {
+        let _ = self.sender.send(snapshot);
+    }
+}
+
+fn should_persist_trace_code(code: &str) -> bool {
+    !matches!(
+        code,
+        "chunk_persisted"
+            | "generation.chunk"
+            | "chunk_ignored"
+            | "provider.chunk.received"
+            | "rust.chunk.received"
+            | "rust.chunk.persisted"
+    )
 }
 
 impl RequestTraceStore {
+    #[cfg(test)]
     fn record(
         &mut self,
         request_id: &str,
-        code: &'static str,
+        code: &str,
         sequence: Option<u64>,
         terminal_code: Option<&str>,
     ) {
-        if !self.entries.contains_key(request_id) {
+        self.record_with_counters(request_id, code, sequence, terminal_code, None);
+    }
+
+    fn record_with_counters(
+        &mut self,
+        request_id: &str,
+        code: &str,
+        sequence: Option<u64>,
+        terminal_code: Option<&str>,
+        counters: Option<&BTreeMap<String, u64>>,
+    ) {
+        if self.ignored_temporary_requests.contains(request_id) {
+            return;
+        }
+        let entry = RequestTraceEntry {
+            code: code.to_string(),
+            sequence,
+            terminal_code: terminal_code.map(str::to_string),
+            counters: counters.cloned().unwrap_or_default(),
+            timestamp_ms: now_millis(),
+        };
+        if self.metadata.contains_key(request_id) {
+            self.ensure_registered_slot(request_id);
+            self.append_entry(request_id, entry);
+        } else {
+            self.append_pending(request_id, entry);
+        }
+    }
+
+    fn load(path: &PathBuf) -> Self {
+        let Ok(file) = fs::File::open(path) else {
+            return Self::default();
+        };
+        let Ok(file_length) = file.metadata().map(|metadata| metadata.len()) else {
+            return Self::default();
+        };
+        let mut reader = BufReader::new(file);
+        if file_length > MAX_TRACE_FILE_BYTES {
+            let offset = file_length.saturating_sub(MAX_TRACE_FILE_BYTES);
+            if reader.seek(SeekFrom::Start(offset)).is_err() {
+                return Self::default();
+            }
+            // The seek may land in the middle of a record. Discard that partial line and
+            // retain the newest bounded suffix, which is the only part that can survive the
+            // store's request/entry retention limits.
+            let mut partial = String::new();
+            let _ = reader.read_line(&mut partial);
+        }
+
+        let mut store = Self::default();
+        for line in reader.lines() {
+            let Ok(line) = line else {
+                continue;
+            };
+            if line.len() > MAX_TRACE_CODE_BYTES * 8 {
+                continue;
+            }
+            let Ok(record) = serde_json::from_str::<PersistedTraceRecord>(&line) else {
+                continue;
+            };
+            store.record_loaded(record);
+        }
+        store
+    }
+
+    fn record_loaded(&mut self, record: PersistedTraceRecord) {
+        if !valid_trace_field(&record.request_id, 200)
+            || !valid_trace_field(&record.agent_id, 200)
+            || !valid_trace_field(&record.conversation_id, 200)
+            || !valid_trace_field(&record.branch_id, 200)
+            || !valid_trace_field(&record.model_ref, 200)
+            || !valid_trace_code(&record.code)
+            || !record
+                .terminal_code
+                .as_deref()
+                .is_none_or(valid_trace_field_value)
+            || !valid_trace_counters(&record.counters)
+        {
+            return;
+        }
+        if !self.entries.contains_key(&record.request_id) {
             if self.order.len() == MAX_RETAINED_REQUEST_TRACES {
                 if let Some(oldest) = self.order.pop_front() {
                     self.entries.remove(&oldest);
+                    self.metadata.remove(&oldest);
                 }
             }
-            self.order.push_back(request_id.to_string());
-            self.entries.insert(request_id.to_string(), VecDeque::new());
+            self.order.push_back(record.request_id.clone());
+            self.entries
+                .insert(record.request_id.clone(), VecDeque::new());
+            self.metadata.insert(
+                record.request_id.clone(),
+                RequestTraceMetadata {
+                    agent_id: record.agent_id.clone(),
+                    conversation_id: record.conversation_id.clone(),
+                    branch_id: record.branch_id.clone(),
+                    model_ref: record.model_ref.clone(),
+                    // Temporary traces are never written, so every record read from disk is
+                    // safe to retain as a non-temporary historical trace.
+                    temporary: false,
+                },
+            );
+        } else if self
+            .metadata
+            .get(&record.request_id)
+            .is_none_or(|metadata| {
+                metadata.agent_id != record.agent_id
+                    || metadata.conversation_id != record.conversation_id
+                    || metadata.branch_id != record.branch_id
+                    || metadata.model_ref != record.model_ref
+            })
+        {
+            // A request id is the correlation key. Reject records that try to change its
+            // immutable metadata instead of mixing unrelated content into one trace.
+            return;
         }
+
+        let trace = self
+            .entries
+            .get_mut(&record.request_id)
+            .expect("loaded request trace exists");
+        if trace.len() == MAX_REQUEST_TRACE_ENTRIES {
+            trace.pop_front();
+        }
+        trace.push_back(RequestTraceEntry {
+            code: record.code,
+            sequence: record.sequence,
+            terminal_code: record.terminal_code,
+            counters: record.counters,
+            timestamp_ms: record.timestamp_ms,
+        });
+    }
+
+    fn register(&mut self, job: &GenerationJob) {
+        if job.temporary {
+            self.pending_entries.remove(&job.request_id);
+            self.pending_order
+                .retain(|request_id| request_id != &job.request_id);
+            if self.ignored_temporary_order.len() == MAX_IGNORED_TEMPORARY_REQUESTS {
+                if let Some(oldest) = self.ignored_temporary_order.pop_front() {
+                    self.ignored_temporary_requests.remove(&oldest);
+                }
+            }
+            self.ignored_temporary_order
+                .push_back(job.request_id.clone());
+            self.ignored_temporary_requests
+                .insert(job.request_id.clone());
+            return;
+        }
+        self.metadata.insert(
+            job.request_id.clone(),
+            RequestTraceMetadata {
+                agent_id: job.agent_id.clone(),
+                conversation_id: job.conversation_id.clone(),
+                branch_id: job.branch_id.clone(),
+                model_ref: job.model_ref.clone(),
+                temporary: job.temporary,
+            },
+        );
+        if let Some(entries) = self.pending_entries.remove(&job.request_id) {
+            self.pending_order
+                .retain(|request_id| request_id != &job.request_id);
+            self.ensure_registered_slot(&job.request_id);
+            for entry in entries {
+                self.append_entry(&job.request_id, entry);
+            }
+        }
+    }
+
+    fn ensure_registered_slot(&mut self, request_id: &str) {
+        if self.entries.contains_key(request_id) {
+            return;
+        }
+        if self.order.len() == MAX_RETAINED_REQUEST_TRACES {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+                self.metadata.remove(&oldest);
+            }
+        }
+        self.order.push_back(request_id.to_string());
+        self.entries.insert(request_id.to_string(), VecDeque::new());
+    }
+
+    fn append_entry(&mut self, request_id: &str, entry: RequestTraceEntry) {
         let trace = self
             .entries
             .get_mut(request_id)
@@ -145,11 +455,73 @@ impl RequestTraceStore {
         if trace.len() == MAX_REQUEST_TRACE_ENTRIES {
             trace.pop_front();
         }
-        trace.push_back(RequestTraceEntry {
-            code,
-            sequence,
-            terminal_code: terminal_code.map(str::to_string),
-        });
+        trace.push_back(entry);
+    }
+
+    fn append_pending(&mut self, request_id: &str, entry: RequestTraceEntry) {
+        if !self.pending_entries.contains_key(request_id) {
+            if self.pending_order.len() == MAX_PENDING_REQUEST_TRACES {
+                if let Some(oldest) = self.pending_order.pop_front() {
+                    self.pending_entries.remove(&oldest);
+                }
+            }
+            self.pending_order.push_back(request_id.to_string());
+            self.pending_entries
+                .insert(request_id.to_string(), VecDeque::new());
+        }
+        let trace = self
+            .pending_entries
+            .get_mut(request_id)
+            .expect("pending request trace exists");
+        if trace.len() == MAX_REQUEST_TRACE_ENTRIES {
+            trace.pop_front();
+        }
+        trace.push_back(entry);
+    }
+
+    fn persist(&self, path: &PathBuf) {
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        if fs::create_dir_all(parent).is_err() {
+            return;
+        }
+        let temporary = path.with_extension("ndjson.tmp");
+        let Ok(mut file) = fs::File::create(&temporary) else {
+            return;
+        };
+        for request_id in &self.order {
+            let Some(entries) = self.entries.get(request_id) else {
+                continue;
+            };
+            let Some(metadata) = self.metadata.get(request_id) else {
+                continue;
+            };
+            if metadata.temporary {
+                continue;
+            }
+            for entry in entries {
+                let record = serde_json::json!({
+                    "requestId": request_id,
+                    "agentId": metadata.agent_id,
+                    "conversationId": metadata.conversation_id,
+                    "branchId": metadata.branch_id,
+                    "modelRef": metadata.model_ref,
+                    "code": entry.code,
+                    "sequence": entry.sequence,
+                    "terminalCode": entry.terminal_code,
+                    "counters": entry.counters,
+                    "timestampMs": entry.timestamp_ms,
+                });
+                if serde_json::to_writer(&mut file, &record).is_err()
+                    || file.write_all(b"\n").is_err()
+                {
+                    return;
+                }
+            }
+        }
+        let _ = fs::remove_file(path);
+        let _ = fs::rename(temporary, path);
     }
 
     #[cfg(test)]
@@ -161,10 +533,64 @@ impl RequestTraceStore {
     }
 }
 
+fn valid_trace_field(value: &str, maximum: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= maximum
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || "_-.".contains(character)
+                || character == ':'
+                || character == '/'
+        })
+}
+
+fn valid_trace_field_value(value: &str) -> bool {
+    valid_trace_field(value, MAX_TRACE_CODE_BYTES)
+}
+
+fn valid_trace_code(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_TRACE_CODE_BYTES
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
+}
+
+fn valid_trace_counters(counters: &BTreeMap<String, u64>) -> bool {
+    counters.len() <= 16
+        && counters.iter().all(|(key, value)| {
+            matches!(
+                key.as_str(),
+                "provider_chunks"
+                    | "provider_bytes"
+                    | "provider_characters"
+                    | "runtime_chunks"
+                    | "runtime_bytes"
+                    | "runtime_characters"
+                    | "runtime_terminal_events"
+                    | "rust_chunks"
+                    | "rust_bytes"
+                    | "rust_characters"
+                    | "persisted_bytes"
+                    | "persisted_chars"
+                    | "persisted_batches"
+                    | "heartbeat_max_latency_ms"
+            ) && *value <= 2_147_483_647
+        })
+}
+
 #[derive(Debug, Default)]
 struct GenerationQueue {
     pending: VecDeque<GenerationJob>,
     active: Option<ActiveGeneration>,
+}
+
+#[derive(Debug)]
+struct PendingStreamBatch {
+    content: String,
+    bytes: usize,
+    characters: usize,
+    chunks: usize,
 }
 
 impl GenerationQueue {
@@ -188,7 +614,17 @@ impl GenerationQueue {
             job: job.clone(),
             last_sequence: 0,
             output_bytes: 0,
+            output_characters: 0,
+            pending_content: String::new(),
+            pending_bytes: 0,
+            pending_characters: 0,
+            pending_chunks: 0,
+            persisted_batches: 0,
             cancellation_requested: false,
+            dispatched_at: Instant::now(),
+            last_progress_at: Instant::now(),
+            runtime_accepted: false,
+            generation_started: false,
         });
         Some(job)
     }
@@ -266,6 +702,54 @@ impl GenerationQueue {
         self.matches_event(event) && event.sequence == Some(0)
     }
 
+    fn mark_runtime_accepted(&mut self, request_id: &str) -> bool {
+        let Some(active) = self.active.as_mut() else {
+            return false;
+        };
+        if active.job.request_id != request_id {
+            return false;
+        }
+        active.runtime_accepted = true;
+        active.last_progress_at = Instant::now();
+        true
+    }
+
+    fn mark_generation_started(&mut self, event: &PhaseOneEvent) -> bool {
+        if !self.accepts_started(event) {
+            return false;
+        }
+        let active = self
+            .active
+            .as_mut()
+            .expect("started event has active generation");
+        // The event is authoritative even if the response envelope is delivered later.
+        active.runtime_accepted = true;
+        active.generation_started = true;
+        active.last_progress_at = Instant::now();
+        true
+    }
+
+    fn expired_request(&self, now: Instant) -> Option<(String, &'static str)> {
+        let active = self.active.as_ref()?;
+        if active.cancellation_requested {
+            return None;
+        }
+        let code = if !active.runtime_accepted
+            && now.duration_since(active.dispatched_at) >= RUNTIME_ACCEPT_TIMEOUT
+        {
+            "runtime_accept_timeout"
+        } else if now.duration_since(active.last_progress_at) >= GENERATION_RESPONSE_TIMEOUT {
+            if active.generation_started {
+                "generation_response_timeout"
+            } else {
+                "generation_start_timeout"
+            }
+        } else {
+            return None;
+        };
+        Some((active.job.request_id.clone(), code))
+    }
+
     fn accepts_terminal(&self, event: &PhaseOneEvent) -> bool {
         self.active.as_ref().is_some_and(|active| {
             if !self.matches_event(event) {
@@ -282,11 +766,22 @@ impl GenerationQueue {
         })
     }
 
+    #[cfg(test)]
     fn accept_chunk(
         &mut self,
         request_id: &str,
         sequence: u64,
         content_bytes: usize,
+    ) -> ChunkDecision {
+        self.accept_chunk_with_characters(request_id, sequence, content_bytes, content_bytes)
+    }
+
+    fn accept_chunk_with_characters(
+        &mut self,
+        request_id: &str,
+        sequence: u64,
+        content_bytes: usize,
+        content_characters: usize,
     ) -> ChunkDecision {
         let Some(active) = self.active.as_mut() else {
             return ChunkDecision::Ignored;
@@ -307,7 +802,97 @@ impl GenerationQueue {
         }
         active.last_sequence = sequence;
         active.output_bytes = next_size;
+        active.output_characters = active.output_characters.saturating_add(content_characters);
+        active.last_progress_at = Instant::now();
         ChunkDecision::Accepted(active.job.clone())
+    }
+
+    fn append_pending_content(&mut self, request_id: &str, content: &str) -> bool {
+        let Some(active) = self.active.as_mut() else {
+            return false;
+        };
+        if active.job.request_id != request_id || content.is_empty() {
+            return false;
+        }
+        active.pending_content.push_str(content);
+        active.pending_bytes = active.pending_bytes.saturating_add(content.len());
+        active.pending_characters = active
+            .pending_characters
+            .saturating_add(content.chars().count());
+        active.pending_chunks = active.pending_chunks.saturating_add(1);
+        true
+    }
+
+    fn pending_content_ready(&self, request_id: &str) -> bool {
+        self.active.as_ref().is_some_and(|active| {
+            active.job.request_id == request_id
+                && (active.pending_chunks >= STREAM_PERSIST_BATCH_CHUNKS
+                    || active.pending_bytes >= STREAM_PERSIST_BATCH_BYTES)
+        })
+    }
+
+    fn take_pending_content(&mut self, request_id: &str) -> Option<PendingStreamBatch> {
+        let active = self.active.as_mut()?;
+        if active.job.request_id != request_id || active.pending_content.is_empty() {
+            return None;
+        }
+        Some(PendingStreamBatch {
+            content: std::mem::take(&mut active.pending_content),
+            bytes: std::mem::take(&mut active.pending_bytes),
+            characters: std::mem::take(&mut active.pending_characters),
+            chunks: std::mem::take(&mut active.pending_chunks),
+        })
+    }
+
+    fn restore_pending_content(&mut self, request_id: &str, batch: PendingStreamBatch) -> bool {
+        let Some(active) = self.active.as_mut() else {
+            return false;
+        };
+        if active.job.request_id != request_id {
+            return false;
+        }
+        // No other stream event can enter while the coordinator's persistence guard is held,
+        // so restoring the batch at the front preserves the provider order after a transient
+        // SQLite failure.
+        let mut content = batch.content;
+        content.push_str(&active.pending_content);
+        active.pending_content = content;
+        active.pending_bytes = batch.bytes.saturating_add(active.pending_bytes);
+        active.pending_characters = batch.characters.saturating_add(active.pending_characters);
+        active.pending_chunks = batch.chunks.saturating_add(active.pending_chunks);
+        true
+    }
+
+    fn mark_persisted(&mut self, request_id: &str) -> Option<u64> {
+        let active = self.active.as_mut()?;
+        if active.job.request_id != request_id {
+            return None;
+        }
+        active.persisted_batches = active.persisted_batches.saturating_add(1);
+        Some(active.persisted_batches)
+    }
+
+    fn active_counters(&self, request_id: &str) -> Option<BTreeMap<String, u64>> {
+        let active = self.active.as_ref()?;
+        if active.job.request_id != request_id {
+            return None;
+        }
+        let mut counters = BTreeMap::new();
+        counters.insert("rust_chunks".into(), active.last_sequence);
+        counters.insert("rust_bytes".into(), active.output_bytes as u64);
+        counters.insert("rust_characters".into(), active.output_characters as u64);
+        counters.insert(
+            "persisted_bytes".into(),
+            active.output_bytes.saturating_sub(active.pending_bytes) as u64,
+        );
+        counters.insert(
+            "persisted_chars".into(),
+            active
+                .output_characters
+                .saturating_sub(active.pending_characters) as u64,
+        );
+        counters.insert("persisted_batches".into(), active.persisted_batches);
+        Some(counters)
     }
 
     fn contains(&self, request_id: &str) -> bool {
@@ -372,7 +957,7 @@ fn snapshot(
 }
 
 struct ChatInner {
-    app: AppHandle,
+    events: Arc<dyn ChatEventSink>,
     database: Database,
     runtime: RuntimeController,
     orchestration: Arc<Mutex<OrchestrationManager>>,
@@ -381,10 +966,52 @@ struct ChatInner {
     discovery_requests: Mutex<HashSet<String>>,
     model_detail_requests: Mutex<HashMap<String, String>>,
     send_lock: Mutex<()>,
+    scheduler_lock: Mutex<()>,
+    stream_persist_lock: Mutex<()>,
+    dispatch_in_flight: AtomicBool,
+    last_heartbeat_ms: Mutex<Option<i64>>,
+    max_heartbeat_latency_ms: Mutex<Option<u64>>,
+    last_heartbeat_trace_ms: Mutex<Option<i64>>,
     queue: Mutex<GenerationQueue>,
+    title_generations: Mutex<HashMap<String, TitleGeneration>>,
+    deferred_title_generations: Mutex<VecDeque<GenerationJob>>,
     request_traces: Mutex<RequestTraceStore>,
+    request_trace_path: Option<PathBuf>,
+    trace_persistence: Option<TracePersistence>,
     temporary_chats: Mutex<TemporaryChatStore>,
     cancellation_recovery: AtomicBool,
+}
+
+trait ChatEventSink: Send + Sync {
+    fn emit(&self, event: PhaseOneEvent);
+}
+
+struct TauriEventSink {
+    app: AppHandle,
+}
+
+impl ChatEventSink for TauriEventSink {
+    fn emit(&self, event: PhaseOneEvent) {
+        if let Some(agent_id) = event.agent_id.as_deref() {
+            let _ = self.app.emit_to("main", EVENT_NAME, event.clone());
+            if let Some(label) = overlays::window_label(agent_id) {
+                let _ = self.app.emit_to(label, EVENT_NAME, event.clone());
+            }
+            if let Some(label) = overlays::bubble_window_label(agent_id) {
+                let _ = self.app.emit_to(label, EVENT_NAME, event);
+            }
+        } else {
+            let _ = self.app.emit(EVENT_NAME, event);
+        }
+    }
+}
+
+#[cfg(test)]
+struct NoopEventSink;
+
+#[cfg(test)]
+impl ChatEventSink for NoopEventSink {
+    fn emit(&self, _event: PhaseOneEvent) {}
 }
 
 #[derive(Clone)]
@@ -400,10 +1027,38 @@ impl ChatCoordinator {
         safe_mode: Arc<AtomicBool>,
         orchestration: Arc<Mutex<OrchestrationManager>>,
     ) -> Self {
+        let request_trace_path = app
+            .path()
+            .app_local_data_dir()
+            .ok()
+            .map(|path| path.join("diagnostics/generation-trace.ndjson"));
+        Self::new_with_sink(
+            Arc::new(TauriEventSink { app }),
+            database,
+            runtime,
+            safe_mode,
+            orchestration,
+            request_trace_path,
+        )
+    }
+
+    fn new_with_sink(
+        events: Arc<dyn ChatEventSink>,
+        database: Database,
+        runtime: RuntimeController,
+        safe_mode: Arc<AtomicBool>,
+        orchestration: Arc<Mutex<OrchestrationManager>>,
+        request_trace_path: Option<PathBuf>,
+    ) -> Self {
         let receiver = runtime.subscribe();
+        let request_traces = request_trace_path
+            .as_ref()
+            .map(RequestTraceStore::load)
+            .unwrap_or_default();
+        let trace_persistence = request_trace_path.clone().map(TracePersistence::new);
         let coordinator = Self {
             inner: Arc::new(ChatInner {
-                app,
+                events,
                 database,
                 runtime,
                 orchestration,
@@ -412,8 +1067,18 @@ impl ChatCoordinator {
                 discovery_requests: Mutex::new(HashSet::new()),
                 model_detail_requests: Mutex::new(HashMap::new()),
                 send_lock: Mutex::new(()),
+                scheduler_lock: Mutex::new(()),
+                stream_persist_lock: Mutex::new(()),
+                dispatch_in_flight: AtomicBool::new(false),
+                last_heartbeat_ms: Mutex::new(None),
+                max_heartbeat_latency_ms: Mutex::new(None),
+                last_heartbeat_trace_ms: Mutex::new(None),
                 queue: Mutex::new(GenerationQueue::default()),
-                request_traces: Mutex::new(RequestTraceStore::default()),
+                title_generations: Mutex::new(HashMap::new()),
+                deferred_title_generations: Mutex::new(VecDeque::new()),
+                request_traces: Mutex::new(request_traces),
+                request_trace_path,
+                trace_persistence,
                 temporary_chats: Mutex::new(TemporaryChatStore::default()),
                 cancellation_recovery: AtomicBool::new(false),
             }),
@@ -424,7 +1089,26 @@ impl ChatCoordinator {
                 listener.handle_notice(notice);
             }
         });
+        let watchdog = coordinator.clone();
+        thread::spawn(move || watchdog.generation_watchdog_loop());
         coordinator
+    }
+
+    #[cfg(test)]
+    fn new_for_test(
+        database: Database,
+        runtime: RuntimeController,
+        safe_mode: Arc<AtomicBool>,
+        orchestration: Arc<Mutex<OrchestrationManager>>,
+    ) -> Self {
+        Self::new_with_sink(
+            Arc::new(NoopEventSink),
+            database,
+            runtime,
+            safe_mode,
+            orchestration,
+            None,
+        )
     }
 
     pub fn state(&self, agent_id: &str) -> Result<PhaseOneState, &'static str> {
@@ -492,6 +1176,7 @@ impl ChatCoordinator {
             &provider,
             selected_model_ref.as_deref(),
             selected_model_available,
+            model_override_ref.is_some(),
             queue.len(),
             simulated_state.suspended,
             auto_candidate_available,
@@ -563,18 +1248,101 @@ impl ChatCoordinator {
         lock(&self.inner.provider).clone()
     }
 
+    fn liveness_for_agent(&self, agent_id: Option<&str>) -> PhaseOneLiveness {
+        let runtime = self.inner.runtime.snapshot();
+        let (active_request_id, active_sequence, last_progress_age_ms, watchdog_state) = {
+            let queue = lock(&self.inner.queue);
+            match queue
+                .active
+                .as_ref()
+                .filter(|active| agent_id.is_none_or(|id| active.job.agent_id == id))
+            {
+                None => (None, None, None, "idle"),
+                Some(active) => {
+                    let age_ms = Instant::now()
+                        .saturating_duration_since(active.last_progress_at)
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64;
+                    let state = if active.cancellation_requested {
+                        "cancelling"
+                    } else if active.generation_started {
+                        "streaming"
+                    } else if active.runtime_accepted {
+                        "accepted"
+                    } else {
+                        "awaiting_runtime"
+                    };
+                    (
+                        Some(active.job.request_id.clone()),
+                        Some(active.last_sequence),
+                        Some(age_ms),
+                        state,
+                    )
+                }
+            }
+        };
+        PhaseOneLiveness {
+            active_request_id,
+            runtime_pid: self.inner.runtime.process_id(),
+            runtime_state: runtime.state,
+            runtime_detail_code: runtime.detail_code,
+            active_sequence,
+            last_progress_age_ms,
+            last_heartbeat_ms: *lock(&self.inner.last_heartbeat_ms),
+            max_heartbeat_latency_ms: *lock(&self.inner.max_heartbeat_latency_ms),
+            watchdog_state,
+        }
+    }
+
+    pub fn heartbeat(&self, agent_id: &str, latency_ms: Option<u64>) -> PhaseOneLiveness {
+        let now = now_millis();
+        *lock(&self.inner.last_heartbeat_ms) = Some(now);
+        if let Some(latency_ms) = latency_ms {
+            let mut maximum = lock(&self.inner.max_heartbeat_latency_ms);
+            if maximum.is_none_or(|current| latency_ms > current) {
+                *maximum = Some(latency_ms);
+            }
+        }
+        let (request_id, counters, trace_due) = {
+            let queue = lock(&self.inner.queue);
+            let request_id = queue
+                .active
+                .as_ref()
+                .filter(|active| active.job.agent_id == agent_id)
+                .map(|active| active.job.request_id.clone());
+            let counters = request_id
+                .as_deref()
+                .and_then(|request_id| queue.active_counters(request_id));
+            let mut last_trace = lock(&self.inner.last_heartbeat_trace_ms);
+            let trace_due = last_trace.is_none_or(|previous| now.saturating_sub(previous) >= 2_000);
+            if trace_due {
+                *last_trace = Some(now);
+            }
+            (request_id, counters, trace_due)
+        };
+        if trace_due {
+            if let Some(request_id) = request_id {
+                let mut counters = counters.unwrap_or_default();
+                if let Some(maximum) = *lock(&self.inner.max_heartbeat_latency_ms) {
+                    counters.insert("heartbeat_max_latency_ms".into(), maximum);
+                }
+                self.trace_with_counters(
+                    &request_id,
+                    "liveness.heartbeat",
+                    None,
+                    None,
+                    Some(&counters),
+                );
+            }
+        }
+        self.liveness_for_agent(Some(agent_id))
+    }
+
     pub fn temporary_state(&self, agent_id: &str) -> Result<PhaseOneState, &'static str> {
         let mut state = self.state(agent_id)?;
         let conversation = {
             let mut chats = lock(&self.inner.temporary_chats);
-            chats
-                .conversations
-                .entry(agent_id.to_string())
-                .or_insert_with(|| TemporaryConversation {
-                    conversation: temporary_conversation(agent_id),
-                    messages: Vec::new(),
-                    model_override_ref: None,
-                })
+            ensure_temporary_chat(&mut chats, agent_id)?
                 .conversation
                 .clone()
         };
@@ -615,6 +1383,7 @@ impl ChatCoordinator {
                 &state.provider,
                 state.selected_model_ref.as_deref(),
                 state.selected_model_available,
+                state.model_override_ref.is_some(),
                 state.queue.len(),
                 simulated_state.suspended,
                 self.auto_candidate_available(),
@@ -622,6 +1391,14 @@ impl ChatCoordinator {
             .map(str::to_string);
         state.can_send = state.send_blocked_code.is_none();
         Ok(state)
+    }
+
+    pub fn start_temporary(&self, agent_id: &str) -> Result<(), &'static str> {
+        let _send_guard = lock(&self.inner.send_lock);
+        let mut chats = lock(&self.inner.temporary_chats);
+        chats.converted_agents.remove(agent_id);
+        let _ = ensure_temporary_chat(&mut chats, agent_id)?;
+        Ok(())
     }
 
     pub fn select_model(&self, agent_id: &str, model_ref: &str) -> Result<(), &'static str> {
@@ -738,7 +1515,7 @@ impl ChatCoordinator {
             let auto_can_resolve = matches!(
                 policy.mode,
                 RoutingMode::Auto | RoutingMode::Quality | RoutingMode::Speed
-            );
+            ) && state.model_override_ref.is_none();
             if !auto_can_resolve
                 || !matches!(
                     code,
@@ -756,8 +1533,14 @@ impl ChatCoordinator {
             }
         }
         let request_id = uuid::Uuid::now_v7().to_string();
-        let model_ref =
-            self.reserve_route(&request_id, state.selected_model_ref.as_deref(), &policy)?;
+        self.trace(&request_id, "chat.send.received", None, None);
+        let model_ref = self.reserve_route(
+            &request_id,
+            state.selected_model_ref.as_deref(),
+            state.model_override_ref.as_deref(),
+            &policy,
+        )?;
+        self.trace(&request_id, "chat.route.reserved", None, None);
         let attempt = self
             .inner
             .database
@@ -773,11 +1556,13 @@ impl ChatCoordinator {
                 "operation_failed"
             })?;
         let job = job_from_attempt(agent_id, conversation_id, &model_ref, &attempt);
-        if let Err(code) = lock(&self.inner.queue).enqueue(job.clone()) {
+        let enqueue_result = self.enqueue_job(&job);
+        if let Err(code) = enqueue_result {
             let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
             return Err(code);
         }
         self.trace(&attempt.request_id, "request_enqueued", None, None);
+        self.trace(&attempt.request_id, "chat.queue.enqueued", None, None);
         let result = SendMessageResult {
             request_id: attempt.request_id,
             conversation_id: conversation_id.to_string(),
@@ -785,6 +1570,7 @@ impl ChatCoordinator {
             assistant_message_id: attempt.assistant_message_id,
         };
         self.emit_refresh(Some(agent_id));
+        drop(_send_guard);
         self.dispatch_next();
         Ok(result)
     }
@@ -872,11 +1658,17 @@ impl ChatCoordinator {
         if state.conversation.id != conversation_id {
             return Err("operation_unavailable");
         }
-        if state.send_blocked_code.is_some() {
+        let explicit_retry_model_available = explicit_retry_can_bypass_selection_block(
+            state.send_blocked_code.as_deref(),
+            model_ref,
+            &lock(&self.inner.provider),
+        );
+        if state.send_blocked_code.is_some() && !explicit_retry_model_available {
             return Err("runtime_unavailable");
         }
         self.reserve_route(
             request_id,
+            Some(model_ref),
             Some(model_ref),
             &RoutingPolicy {
                 mode: RoutingMode::Manual,
@@ -891,7 +1683,8 @@ impl ChatCoordinator {
             }
         };
         let job = job_from_attempt(agent_id, conversation_id, model_ref, &attempt);
-        if let Err(code) = lock(&self.inner.queue).enqueue(job.clone()) {
+        let enqueue_result = self.enqueue_job(&job);
+        if let Err(code) = enqueue_result {
             if code == "duplicate_request" {
                 return Ok(SendMessageResult {
                     request_id: attempt.request_id,
@@ -905,6 +1698,7 @@ impl ChatCoordinator {
         }
         self.trace(&attempt.request_id, "request_enqueued", None, None);
         self.emit_refresh(Some(agent_id));
+        drop(_send_guard);
         self.dispatch_next();
         Ok(SendMessageResult {
             request_id: attempt.request_id,
@@ -943,7 +1737,23 @@ impl ChatCoordinator {
         content: &str,
         policy: RoutingPolicy,
     ) -> Result<SendMessageResult, &'static str> {
+        // Capture the session before waiting for the send lock. Conversion takes this same
+        // lock and clears the temporary store; a sender that was already waiting must not
+        // recreate a hidden temporary conversation after conversion succeeds.
+        let temporary_conversation_id = lock(&self.inner.temporary_chats)
+            .conversations
+            .get(agent_id)
+            .map(|chat| chat.conversation.id.clone());
         let _send_guard = lock(&self.inner.send_lock);
+        if let Some(expected_conversation_id) = temporary_conversation_id.as_deref() {
+            if !temporary_session_is_active(
+                &lock(&self.inner.temporary_chats),
+                agent_id,
+                expected_conversation_id,
+            ) {
+                return Err("operation_unavailable");
+            }
+        }
         if content.is_empty() || content.len() > MAX_USER_MESSAGE_BYTES {
             return Err("invalid_message");
         }
@@ -952,7 +1762,7 @@ impl ChatCoordinator {
             let auto_can_resolve = matches!(
                 policy.mode,
                 RoutingMode::Auto | RoutingMode::Quality | RoutingMode::Speed
-            );
+            ) && state.model_override_ref.is_none();
             if !auto_can_resolve
                 || !matches!(
                     code,
@@ -971,8 +1781,14 @@ impl ChatCoordinator {
         }
         let now = now_millis();
         let request_id = uuid::Uuid::now_v7().to_string();
-        let model_ref =
-            self.reserve_route(&request_id, state.selected_model_ref.as_deref(), &policy)?;
+        self.trace(&request_id, "chat.send.received", None, None);
+        let model_ref = self.reserve_route(
+            &request_id,
+            state.selected_model_ref.as_deref(),
+            state.model_override_ref.as_deref(),
+            &policy,
+        )?;
+        self.trace(&request_id, "chat.route.reserved", None, None);
         let user_message_id = uuid::Uuid::now_v7().to_string();
         let assistant_message_id = uuid::Uuid::now_v7().to_string();
         let conversation = state.conversation.clone();
@@ -1020,12 +1836,15 @@ impl ChatCoordinator {
             model_ref,
             temporary: true,
         };
-        if let Err(code) = lock(&self.inner.queue).enqueue(job.clone()) {
+        let enqueue_result = self.enqueue_job(&job);
+        if let Err(code) = enqueue_result {
             let _ = self.finish_temporary(&job, MessageStatus::Failed, Some(code));
             return Err(code);
         }
         self.trace(&request_id, "temporary_request_enqueued", None, None);
+        self.trace(&request_id, "chat.queue.enqueued", None, None);
         self.emit_refresh(Some(agent_id));
+        drop(_send_guard);
         self.dispatch_next();
         Ok(SendMessageResult {
             request_id,
@@ -1068,28 +1887,61 @@ impl ChatCoordinator {
         Ok(())
     }
 
-    pub fn cancel_all(&self, error_code: &'static str) {
-        let mut queue = lock(&self.inner.queue);
-        if let Some(request_id) = queue.active_request().map(str::to_string) {
+    pub fn enter_safe_mode(&self, error_code: &'static str) {
+        self.inner.safe_mode.store(true, Ordering::SeqCst);
+        self.cancel_all(error_code);
+    }
+
+    fn cancel_all(&self, error_code: &'static str) {
+        let active_request_id = lock(&self.inner.queue).active_request().map(str::to_string);
+        if let Some(request_id) = active_request_id {
             let cancel_id = format!("cancel-{}", uuid::Uuid::now_v7());
             if let Ok(request) = cancellation_request(&cancel_id, &request_id) {
                 let _ = self.inner.runtime.send(request);
             }
         }
-        let jobs = queue.clear();
-        drop(queue);
+        let jobs = {
+            let _persist_guard = lock(&self.inner.stream_persist_lock);
+            if let Some(request_id) = lock(&self.inner.queue).active_request().map(str::to_string) {
+                let _ = self.flush_pending_content_locked(&request_id);
+            }
+            lock(&self.inner.queue).clear()
+        };
         for job in jobs {
             let _ = self.finish_job(&job, MessageStatus::Cancelled, Some(error_code));
             self.emit_terminal(&job, "generation.cancelled", Some(error_code));
         }
+
+        // Title generations are metadata work outside the main FIFO. Safe mode shuts down the
+        // runtime without guaranteeing a terminal event, so clear both active and deferred title
+        // state here to prevent a later HealthReady from blocking dispatch forever.
+        let title_request_ids = {
+            let mut requests = lock(&self.inner.title_generations);
+            let ids = requests.keys().cloned().collect::<Vec<_>>();
+            requests.clear();
+            ids
+        };
+        lock(&self.inner.deferred_title_generations).clear();
+        for request_id in title_request_ids {
+            let cancel_id = format!("cancel-{}", uuid::Uuid::now_v7());
+            if let Ok(request) = cancellation_request(&cancel_id, &request_id) {
+                let _ = self.inner.runtime.send(request);
+            }
+            self.trace(
+                &request_id,
+                "title_generation_cancelled",
+                None,
+                Some(error_code),
+            );
+        }
     }
 
     pub fn reset_temporary(&self, agent_id: &str) -> Result<(), &'static str> {
-        let Some(conversation_id) = lock(&self.inner.temporary_chats)
+        let conversation_id = lock(&self.inner.temporary_chats)
             .conversations
             .get(agent_id)
-            .map(|chat| chat.conversation.id.clone())
-        else {
+            .map(|chat| chat.conversation.id.clone());
+        let Some(conversation_id) = conversation_id else {
             return Ok(());
         };
         let mut queue = lock(&self.inner.queue);
@@ -1106,6 +1958,31 @@ impl ChatCoordinator {
         self.emit_refresh(Some(agent_id));
         self.dispatch_next();
         Ok(())
+    }
+
+    pub fn continue_temporary(
+        &self,
+        agent_id: &str,
+    ) -> Result<crate::domain::PhaseOneConversation, &'static str> {
+        let _send_guard = lock(&self.inner.send_lock);
+        let conversation_id = lock(&self.inner.temporary_chats)
+            .conversations
+            .get(agent_id)
+            .map(|chat| chat.conversation.id.clone())
+            .ok_or("operation_unavailable")?;
+        if lock(&self.inner.queue)
+            .snapshots()
+            .iter()
+            .any(|entry| entry.agent_id == agent_id && entry.conversation_id == conversation_id)
+        {
+            return Err("generation_active");
+        }
+        let conversation = continue_temporary_in_database(
+            &self.inner.database,
+            &self.inner.temporary_chats,
+            agent_id,
+        )?;
+        Ok(conversation)
     }
 
     pub fn retry_runtime(&self) {
@@ -1135,13 +2012,12 @@ impl ChatCoordinator {
     }
 
     fn recover_stalled_cancellation(&self, request_id: &str) {
-        let job = {
-            let mut queue = lock(&self.inner.queue);
-            if !queue.cancellation_is_pending(request_id) {
-                return;
-            }
-            queue.finish_active(request_id)
-        };
+        let _persist_guard = lock(&self.inner.stream_persist_lock);
+        if !lock(&self.inner.queue).cancellation_is_pending(request_id) {
+            return;
+        }
+        let _ = self.flush_pending_content_locked(request_id);
+        let job = lock(&self.inner.queue).finish_active(request_id);
         let Some(job) = job else {
             return;
         };
@@ -1169,6 +2045,7 @@ impl ChatCoordinator {
         self.inner.runtime.shutdown();
         self.inner.runtime.start();
         self.emit_refresh(Some(&job.agent_id));
+        self.dispatch_next();
     }
 
     fn auto_candidate_available(&self) -> bool {
@@ -1190,17 +2067,16 @@ impl ChatCoordinator {
         &self,
         request_id: &str,
         selected_model: Option<&str>,
+        explicit_model: Option<&str>,
         policy: &RoutingPolicy,
     ) -> Result<String, &'static str> {
         if policy.mode == RoutingMode::Manual && selected_model.is_none() {
             return Err("model_unavailable");
         }
-        let policy = routing_policy_with_selection(policy, selected_model);
+        let policy = routing_policy_with_selection(policy, selected_model, explicit_model);
         let request = RoutingRequest {
             request_id: request_id.to_string(),
-            model_ref: (policy.mode == RoutingMode::Manual)
-                .then(|| selected_model.map(str::to_string))
-                .flatten(),
+            model_ref: requested_model_ref(policy.mode, selected_model, explicit_model),
             capability: crate::orchestration::ModelCapability::TextGeneration,
             priority: RequestPriority::ActiveConversation,
             additional_ram_mb: 0,
@@ -1227,11 +2103,13 @@ impl ChatCoordinator {
         let _ = lock(&self.inner.orchestration).sync_local_provider(&model_refs, health, health);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn send_blocked_code(
         &self,
         provider: &ProviderSnapshot,
         selected_model: Option<&str>,
         selected_available: bool,
+        explicit_override: bool,
         queue_length: usize,
         suspended: bool,
         auto_candidate_available: bool,
@@ -1242,6 +2120,7 @@ impl ChatCoordinator {
             provider,
             selected_model,
             selected_available,
+            explicit_override,
             queue_length,
             suspended,
             auto_candidate_available,
@@ -1268,8 +2147,17 @@ impl ChatCoordinator {
                     .remove(&id)
                     .is_none()
                 {
-                    self.trace(&id, "request_error", None, Some(&code));
-                    self.fail_active(&id, &code);
+                    let title_failed = {
+                        let _scheduler_guard = lock(&self.inner.scheduler_lock);
+                        lock(&self.inner.title_generations).remove(&id).is_some()
+                    };
+                    if title_failed {
+                        self.trace(&id, "title_generation_failed", None, Some(&code));
+                        self.dispatch_next();
+                    } else {
+                        self.trace(&id, "request_error", None, Some(&code));
+                        self.fail_active(&id, &code);
+                    }
                 }
             }
             RuntimeNotice::Output(RuntimeOutput::ModelDetails {
@@ -1292,6 +2180,18 @@ impl ChatCoordinator {
             RuntimeNotice::Output(RuntimeOutput::Event(event)) => {
                 self.handle_generation_event(event)
             }
+            RuntimeNotice::Trace {
+                request_id,
+                event,
+                error_code,
+                counters,
+            } => self.trace_with_counters(
+                &request_id,
+                event,
+                None,
+                error_code.as_deref(),
+                Some(&counters),
+            ),
             RuntimeNotice::Disconnected { detail_code } => {
                 lock(&self.inner.discovery_requests).clear();
                 let cancellation_recovery = self
@@ -1318,11 +2218,23 @@ impl ChatCoordinator {
                 let _ = self.refresh_models();
                 self.dispatch_next();
             }
-            RuntimeNotice::Output(RuntimeOutput::Accepted { .. }) => {}
+            RuntimeNotice::Output(RuntimeOutput::Accepted { id }) => {
+                let queue_accepted = lock(&self.inner.queue).mark_runtime_accepted(&id);
+                let title_accepted = self.mark_title_runtime_accepted(&id);
+                if queue_accepted || title_accepted {
+                    self.trace(&id, "runtime_accepted", None, None);
+                    self.trace(&id, "generation.accepted", None, None);
+                } else {
+                    self.trace(&id, "runtime_accepted_ignored", None, None);
+                }
+            }
         }
     }
 
     fn handle_generation_event(&self, event: PhaseOneEvent) {
+        if self.handle_title_event(&event) {
+            return;
+        }
         if !lock(&self.inner.queue).matches_event(&event) {
             if let Some(request_id) = event.request_id.as_deref() {
                 self.trace(
@@ -1339,11 +2251,12 @@ impl ChatCoordinator {
         };
         match event.event_type.as_str() {
             "generation.started" => {
-                if !lock(&self.inner.queue).accepts_started(&event) {
+                if !lock(&self.inner.queue).mark_generation_started(&event) {
                     self.trace(&request_id, "started_ignored", event.sequence, None);
                     return;
                 }
                 self.trace(&request_id, "generation_started", event.sequence, None);
+                self.trace(&request_id, "generation.started", event.sequence, None);
                 self.emit(event)
             }
             "generation.chunk" => {
@@ -1353,8 +2266,14 @@ impl ChatCoordinator {
                 let Some(sequence) = event.sequence else {
                     return;
                 };
+                let _persist_guard = lock(&self.inner.stream_persist_lock);
                 let mut queue = lock(&self.inner.queue);
-                let decision = queue.accept_chunk(&request_id, sequence, content.len());
+                let decision = queue.accept_chunk_with_characters(
+                    &request_id,
+                    sequence,
+                    content.len(),
+                    content.chars().count(),
+                );
                 drop(queue);
                 let job = match decision {
                     ChunkDecision::Accepted(job) => job,
@@ -1363,15 +2282,56 @@ impl ChatCoordinator {
                         return;
                     }
                     ChunkDecision::OutputLimitExceeded => {
+                        drop(_persist_guard);
                         self.fail_active(&request_id, "provider_output_too_large");
                         return;
                     }
                 };
-                if self.append_job_chunk(&job, content).is_ok() {
-                    self.trace(&request_id, "chunk_persisted", Some(sequence), None);
+                let mut persistence_failed = false;
+                let mut flushed = false;
+                if job.temporary {
+                    persistence_failed = self.append_job_chunk(&job, content).is_err();
+                    flushed = !persistence_failed;
+                } else {
+                    let ready = {
+                        let mut queue = lock(&self.inner.queue);
+                        let appended = queue.append_pending_content(&request_id, content);
+                        appended && queue.pending_content_ready(&request_id)
+                    };
+                    if ready {
+                        match self.flush_pending_content_locked(&request_id) {
+                            Ok(was_flushed) => flushed = was_flushed,
+                            Err(_) => persistence_failed = true,
+                        }
+                    }
+                }
+                if !persistence_failed {
+                    if sequence == 1 {
+                        self.trace(&request_id, "first_chunk", Some(sequence), None);
+                        let counters = lock(&self.inner.queue).active_counters(&request_id);
+                        self.trace_with_counters(
+                            &request_id,
+                            "rust.chunk.received",
+                            Some(sequence),
+                            None,
+                            counters.as_ref(),
+                        );
+                    }
+                    self.trace(
+                        &request_id,
+                        if flushed {
+                            "chunk_persisted"
+                        } else {
+                            "chunk_received"
+                        },
+                        Some(sequence),
+                        None,
+                    );
+                    self.trace(&request_id, "generation.chunk", Some(sequence), None);
                     self.emit(event);
                 } else {
                     self.trace(&request_id, "persistence_failed", Some(sequence), None);
+                    drop(_persist_guard);
                     self.fail_active(&request_id, "persistence_failed");
                 }
             }
@@ -1381,6 +2341,7 @@ impl ChatCoordinator {
                     return;
                 }
                 self.trace(&request_id, "terminal_received", event.sequence, None);
+                self.trace(&request_id, "generation.completed", event.sequence, None);
                 self.finish_runtime_terminal(
                     &request_id,
                     RequestTerminalState::Completed,
@@ -1408,6 +2369,12 @@ impl ChatCoordinator {
                     event.sequence,
                     Some(&error_code),
                 );
+                self.trace(
+                    &request_id,
+                    "generation.failed",
+                    event.sequence,
+                    Some(&error_code),
+                );
                 self.finish_runtime_terminal(
                     &request_id,
                     request_terminal_state("generation.failed", Some(&error_code))
@@ -1422,6 +2389,7 @@ impl ChatCoordinator {
                     return;
                 }
                 self.trace(&request_id, "terminal_received", event.sequence, None);
+                self.trace(&request_id, "generation.cancelled", event.sequence, None);
                 self.finish_runtime_terminal(
                     &request_id,
                     RequestTerminalState::Cancelled,
@@ -1433,9 +2401,244 @@ impl ChatCoordinator {
         }
     }
 
+    fn handle_title_event(&self, event: &PhaseOneEvent) -> bool {
+        let Some(request_id) = event.request_id.as_deref() else {
+            return false;
+        };
+        let mut completed = None;
+        let mut failed = false;
+        let mut cancellation_requested = false;
+        let now = Instant::now();
+        {
+            let _scheduler_guard = lock(&self.inner.scheduler_lock);
+            let mut requests = lock(&self.inner.title_generations);
+            let Some(request) = requests.get_mut(request_id) else {
+                return false;
+            };
+            if event.agent_id.as_deref() != Some(request.agent_id.as_str())
+                || event.conversation_id.as_deref() != Some(request.conversation_id.as_str())
+                || event.assistant_message_id.as_deref()
+                    != Some(request.assistant_message_id.as_str())
+            {
+                return true;
+            }
+            if request.cancellation_requested {
+                if matches!(
+                    event.event_type.as_str(),
+                    "generation.complete" | "generation.failed" | "generation.cancelled"
+                ) {
+                    requests.remove(request_id);
+                    failed = true;
+                }
+            } else {
+                match event.event_type.as_str() {
+                    "generation.started" if event.sequence == Some(0) => {
+                        request.generation_started = true;
+                        request.last_progress_at = now;
+                    }
+                    "generation.chunk" => {
+                        if let Some((sequence, content)) =
+                            event.sequence.zip(event.content.as_deref())
+                        {
+                            let next_size = request.output_bytes.saturating_add(content.len());
+                            if sequence != request.last_sequence + 1
+                                || next_size > MAX_TITLE_OUTPUT_BYTES
+                            {
+                                request.cancellation_requested = true;
+                                cancellation_requested = true;
+                            } else {
+                                request.last_sequence = sequence;
+                                request.output_bytes = next_size;
+                                request.output.push_str(content);
+                                request.last_progress_at = now;
+                            }
+                        } else {
+                            request.cancellation_requested = true;
+                            cancellation_requested = true;
+                        }
+                    }
+                    "generation.complete" => {
+                        if event.sequence == Some(request.last_sequence) {
+                            completed = requests.remove(request_id);
+                        } else {
+                            request.cancellation_requested = true;
+                            cancellation_requested = true;
+                        }
+                    }
+                    "generation.failed" | "generation.cancelled" => {
+                        requests.remove(request_id);
+                        failed = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if cancellation_requested {
+            self.cancel_title_generation(request_id);
+        } else if let Some(request) = completed {
+            if let Some(title) = sanitize_generated_title(&request.output) {
+                let committed = self.inner.database.commit_generated_title(
+                    &request.agent_id,
+                    &request.conversation_id,
+                    &title,
+                );
+                if matches!(committed, Ok(true)) {
+                    self.emit_refresh(Some(&request.agent_id));
+                    self.emit_conversation_list_changed(
+                        &request.agent_id,
+                        &request.conversation_id,
+                    );
+                }
+            }
+            self.dispatch_next();
+        } else if failed {
+            self.trace(
+                request_id,
+                "title_generation_failed",
+                event.sequence,
+                event.error_code.as_deref(),
+            );
+            self.dispatch_next();
+        }
+        true
+    }
+
+    fn mark_title_runtime_accepted(&self, request_id: &str) -> bool {
+        let _scheduler_guard = lock(&self.inner.scheduler_lock);
+        let mut requests = lock(&self.inner.title_generations);
+        let Some(request) = requests.get_mut(request_id) else {
+            return false;
+        };
+        request.runtime_accepted = true;
+        request.last_progress_at = Instant::now();
+        true
+    }
+
+    fn cancel_title_generation(&self, request_id: &str) {
+        let cancel_id = format!("cancel-{}", uuid::Uuid::now_v7());
+        let Ok(request) = cancellation_request(&cancel_id, request_id) else {
+            self.recover_stalled_title_cancellation(request_id);
+            return;
+        };
+        if let Err(code) = self.inner.runtime.send(request) {
+            self.trace(
+                request_id,
+                "title_generation_cancel_failed",
+                None,
+                Some(code),
+            );
+            self.recover_stalled_title_cancellation(request_id);
+            return;
+        }
+        self.trace(request_id, "title_generation_cancel_sent", None, None);
+        let coordinator = self.clone();
+        let request_id = request_id.to_string();
+        thread::spawn(move || {
+            thread::sleep(CANCELLATION_GRACE_PERIOD);
+            coordinator.recover_stalled_title_cancellation(&request_id);
+        });
+    }
+
+    fn recover_stalled_title_cancellation(&self, request_id: &str) {
+        let mut requests = lock(&self.inner.title_generations);
+        if !requests
+            .get(request_id)
+            .is_some_and(|request| request.cancellation_requested)
+        {
+            return;
+        }
+        requests.remove(request_id);
+        drop(requests);
+        self.trace(
+            request_id,
+            "title_generation_cancellation_watchdog",
+            None,
+            Some("generation_cancel_timeout"),
+        );
+        self.inner
+            .cancellation_recovery
+            .store(true, Ordering::SeqCst);
+        self.inner.runtime.shutdown();
+        if !self.inner.safe_mode.load(Ordering::SeqCst) {
+            self.inner.runtime.start();
+        }
+    }
+
+    fn expired_title_generation(&self, now: Instant) -> Option<(String, &'static str)> {
+        let _scheduler_guard = lock(&self.inner.scheduler_lock);
+        lock(&self.inner.title_generations)
+            .iter()
+            .find_map(|(request_id, request)| {
+                title_generation_timeout(request, now).map(|code| (request_id.clone(), code))
+            })
+    }
+
+    fn fail_timed_out_title_generation(&self, request_id: &str, code: &'static str) {
+        if lock(&self.inner.title_generations)
+            .remove(request_id)
+            .is_none()
+        {
+            return;
+        }
+        self.trace(
+            request_id,
+            "title_generation_watchdog_timeout",
+            None,
+            Some(code),
+        );
+        self.inner
+            .cancellation_recovery
+            .store(true, Ordering::SeqCst);
+        self.trace(request_id, "runtime_recovery_restart", None, Some(code));
+        self.inner.runtime.shutdown();
+        if self.inner.safe_mode.load(Ordering::SeqCst) {
+            self.inner
+                .cancellation_recovery
+                .store(false, Ordering::SeqCst);
+        } else if !self.inner.safe_mode.load(Ordering::SeqCst) {
+            self.inner.runtime.start();
+        }
+    }
+
+    // Keep the stream guard around only ordered flush/queue removal. Final DB status, event
+    // delivery, and optional title scheduling run after the guard is released.
     fn finish_runtime_terminal(
         &self,
         request_id: &str,
+        terminal: RequestTerminalState,
+        error_code: Option<&str>,
+        event: PhaseOneEvent,
+    ) {
+        let (job, counters) = {
+            let _persist_guard = lock(&self.inner.stream_persist_lock);
+            if self.flush_pending_content_locked(request_id).is_err() {
+                drop(_persist_guard);
+                self.fail_active(request_id, "persistence_failed");
+                return;
+            }
+            let mut queue = lock(&self.inner.queue);
+            let counters = queue.active_counters(request_id);
+            let job = queue.finish_active(request_id);
+            (job, counters)
+        };
+        let Some(job) = job else {
+            return;
+        };
+        self.trace_with_counters(
+            request_id,
+            "rust.terminal.received",
+            event.sequence,
+            error_code,
+            counters.as_ref(),
+        );
+        self.finish_active(request_id, job, counters, terminal, error_code, event);
+    }
+
+    fn finish_active(
+        &self,
+        request_id: &str,
+        job: GenerationJob,
+        counters: Option<BTreeMap<String, u64>>,
         terminal: RequestTerminalState,
         error_code: Option<&str>,
         event: PhaseOneEvent,
@@ -1447,22 +2650,13 @@ impl ChatCoordinator {
                 MessageStatus::Failed
             }
         };
-        self.finish_active(request_id, status, error_code, event);
-    }
-
-    fn finish_active(
-        &self,
-        request_id: &str,
-        status: MessageStatus,
-        error_code: Option<&str>,
-        event: PhaseOneEvent,
-    ) {
-        let Some(job) = lock(&self.inner.queue).finish_active(request_id) else {
-            return;
-        };
         let persisted = self.finish_job(&job, status, error_code);
         if persisted.is_ok() {
-            if status == MessageStatus::Complete && !job.temporary {
+            let terminal_sequence = event.sequence;
+            let title_eligible = status == MessageStatus::Complete
+                && !job.temporary
+                && !self.inner.safe_mode.load(Ordering::SeqCst);
+            if title_eligible {
                 let _ = self.inner.database.refresh_conversation_summary_for_branch(
                     &job.agent_id,
                     &job.conversation_id,
@@ -1479,44 +2673,311 @@ impl ChatCoordinator {
                     );
             }
             self.trace(request_id, "terminal_persisted", event.sequence, error_code);
+            self.trace(request_id, "database.finalized", event.sequence, error_code);
+            self.trace(request_id, "chat.finalized", event.sequence, error_code);
+            self.trace_with_counters(
+                request_id,
+                "rust.message.finalized",
+                terminal_sequence,
+                error_code,
+                counters.as_ref(),
+            );
             self.emit(event);
+            self.trace_with_counters(
+                request_id,
+                "frontend.message.visible",
+                terminal_sequence,
+                error_code,
+                counters.as_ref(),
+            );
+            self.trace(request_id, "frontend.state_changed", None, error_code);
+            if title_eligible {
+                self.schedule_title_generation_or_defer(&job);
+            }
         } else {
             self.trace(request_id, "persistence_failed", event.sequence, None);
+            self.trace(
+                request_id,
+                "chat.finalized.failed",
+                event.sequence,
+                Some("persistence_failed"),
+            );
             self.emit_terminal(&job, "generation.failed", Some("persistence_failed"));
         }
         self.dispatch_next();
     }
 
     fn fail_active(&self, request_id: &str, code: &str) {
-        let Some(job) = lock(&self.inner.queue).finish_active(request_id) else {
+        let (job, flush_failed) = {
+            let _persist_guard = lock(&self.inner.stream_persist_lock);
+            let flush_failed = self.flush_pending_content_locked(request_id).is_err();
+            let job = lock(&self.inner.queue).finish_active(request_id);
+            (job, flush_failed)
+        };
+        let Some(job) = job else {
             return;
         };
+        let code = if flush_failed {
+            "persistence_failed"
+        } else {
+            code
+        };
         self.trace(request_id, "queue_finalized", None, Some(code));
+        self.trace(request_id, "request_failed", None, Some(code));
+        self.trace(request_id, "chat.finalized.failed", None, Some(code));
         let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
         self.emit_terminal(&job, "generation.failed", Some(code));
         self.dispatch_next();
     }
 
+    fn fail_timed_out_generation(&self, request_id: &str, code: &'static str) {
+        let job = {
+            let _persist_guard = lock(&self.inner.stream_persist_lock);
+            let _ = self.flush_pending_content_locked(request_id);
+            lock(&self.inner.queue).finish_active(request_id)
+        };
+        let Some(job) = job else {
+            return;
+        };
+        self.trace(request_id, "queue_finalized", None, Some(code));
+        self.trace(request_id, "request_failed", None, Some(code));
+        self.trace(request_id, "chat.finalized.failed", None, Some(code));
+        let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
+        self.emit_terminal(&job, "generation.failed", Some(code));
+
+        // A timed-out provider call may still be inside the Python worker. Restart the
+        // sidecar before advancing FIFO so the next request cannot receive generation_busy.
+        self.inner
+            .cancellation_recovery
+            .store(true, Ordering::SeqCst);
+        self.trace(request_id, "runtime_recovery_restart", None, Some(code));
+        self.inner.runtime.shutdown();
+        if self.inner.safe_mode.load(Ordering::SeqCst) {
+            self.inner
+                .cancellation_recovery
+                .store(false, Ordering::SeqCst);
+        } else if !self.inner.safe_mode.load(Ordering::SeqCst) {
+            self.inner.runtime.start();
+        }
+    }
+
     fn fail_all(&self, code: &str) {
-        let jobs = lock(&self.inner.queue).clear();
+        let jobs = {
+            let _persist_guard = lock(&self.inner.stream_persist_lock);
+            if let Some(request_id) = lock(&self.inner.queue).active_request().map(str::to_string) {
+                let _ = self.flush_pending_content_locked(&request_id);
+            }
+            lock(&self.inner.queue).clear()
+        };
+        lock(&self.inner.title_generations).clear();
+        lock(&self.inner.deferred_title_generations).clear();
         for job in jobs {
+            self.trace(&job.request_id, "runtime.exited", None, Some(code));
+            self.trace(&job.request_id, "request_failed", None, Some(code));
             let _ = self.finish_job(&job, MessageStatus::Failed, Some(code));
             self.emit_terminal(&job, "generation.failed", Some(code));
         }
     }
 
+    fn schedule_title_generation(&self, job: &GenerationJob) {
+        if self.inner.safe_mode.load(Ordering::SeqCst) {
+            return;
+        }
+        let provider_model_id = match job.model_ref.strip_prefix("ollama:") {
+            Some(model) if valid_provider_model_id(model) => model,
+            _ => return,
+        };
+        let Ok(Some((user_content, assistant_content))) = self
+            .inner
+            .database
+            .first_title_context_for_branch(&job.agent_id, &job.conversation_id, &job.branch_id)
+        else {
+            return;
+        };
+        if lock(&self.inner.title_generations)
+            .values()
+            .any(|request| request.conversation_id == job.conversation_id)
+        {
+            return;
+        }
+        let Ok(settings) = self.inner.database.settings(&job.agent_id) else {
+            return;
+        };
+        let request_id = format!("title-{}", uuid::Uuid::now_v7());
+        let assistant_message_id = format!("title-message-{}", uuid::Uuid::now_v7());
+        let context = format!(
+            "Mensagem do usuário:\n{}\n\nPrimeira resposta do agente:\n{}",
+            bounded_title_context(&user_content),
+            bounded_title_context(&assistant_content),
+        );
+        let messages = [
+            PromptMessage {
+                role: "system",
+                content: "Gere apenas um título curto em português para esta conversa. Use 3 a 7 palavras, sem aspas, sem prefixo e com no máximo 64 caracteres. Não explique nada além do título.".into(),
+            },
+            PromptMessage {
+                role: "user",
+                content: context,
+            },
+        ];
+        let Ok(request) = generation_request(
+            &request_id,
+            &job.agent_id,
+            &job.conversation_id,
+            &assistant_message_id,
+            provider_model_id,
+            settings.keep_alive_minutes,
+            &messages,
+        ) else {
+            return;
+        };
+        let Ok(true) = self
+            .inner
+            .database
+            .mark_generated_title_attempted(&job.agent_id, &job.conversation_id)
+        else {
+            return;
+        };
+        lock(&self.inner.title_generations).insert(
+            request_id.clone(),
+            TitleGeneration {
+                agent_id: job.agent_id.clone(),
+                conversation_id: job.conversation_id.clone(),
+                assistant_message_id,
+                output: String::new(),
+                last_sequence: 0,
+                output_bytes: 0,
+                cancellation_requested: false,
+                dispatched_at: Instant::now(),
+                last_progress_at: Instant::now(),
+                runtime_accepted: false,
+                generation_started: false,
+            },
+        );
+        if self.inner.runtime.send(request).is_err() {
+            lock(&self.inner.title_generations).remove(&request_id);
+            return;
+        }
+        self.trace(&request_id, "title_generation_sent", None, None);
+    }
+
+    fn schedule_title_generation_or_defer(&self, job: &GenerationJob) {
+        if self.inner.safe_mode.load(Ordering::SeqCst) {
+            return;
+        }
+        let should_defer = lock(&self.inner.queue).len() > 0;
+        if should_defer {
+            let mut deferred = lock(&self.inner.deferred_title_generations);
+            if !deferred
+                .iter()
+                .any(|candidate| candidate.conversation_id == job.conversation_id)
+            {
+                deferred.push_back(job.clone());
+            }
+            return;
+        }
+        self.schedule_title_generation(job);
+    }
+
+    fn cancel_title_generations_for_pending_work(&self) -> bool {
+        if lock(&self.inner.queue).pending.is_empty() {
+            return false;
+        }
+        let request_ids = {
+            let mut requests = lock(&self.inner.title_generations);
+            requests
+                .iter_mut()
+                .filter_map(|(request_id, request)| {
+                    if request.cancellation_requested {
+                        None
+                    } else {
+                        request.cancellation_requested = true;
+                        Some(request_id.clone())
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        for request_id in &request_ids {
+            self.cancel_title_generation(request_id);
+        }
+        !request_ids.is_empty()
+    }
+
     fn dispatch_next(&self) {
+        if self
+            .inner
+            .dispatch_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        self.dispatch_next_loop();
+        self.inner
+            .dispatch_in_flight
+            .store(false, Ordering::Release);
+        // A sender can enqueue in the small window while the dispatcher is clearing its
+        // in-flight flag. Re-check once after release so that enqueue is never stranded behind
+        // a dispatcher that observed an empty queue just before the enqueue.
+        let queue_ready = {
+            let queue = lock(&self.inner.queue);
+            queue.active.is_none() && !queue.pending.is_empty()
+        };
+        let deferred_title_ready = !lock(&self.inner.deferred_title_generations).is_empty();
+        let retry = self.inner.runtime.snapshot().state == RuntimeState::Ready
+            && !self.inner.safe_mode.load(Ordering::SeqCst)
+            && lock(&self.inner.title_generations).is_empty()
+            && (queue_ready || deferred_title_ready);
+        if retry {
+            self.dispatch_next();
+        }
+    }
+
+    fn enqueue_job(&self, job: &GenerationJob) -> Result<(), &'static str> {
+        let _scheduler_guard = lock(&self.inner.scheduler_lock);
+        if self.inner.safe_mode.load(Ordering::SeqCst) {
+            return Err("safe_mode_active");
+        }
+        let result = lock(&self.inner.queue).enqueue(job.clone());
+        if result.is_ok() {
+            lock(&self.inner.request_traces).register(job);
+        }
+        result
+    }
+
+    fn dispatch_next_loop(&self) {
         loop {
+            if !lock(&self.inner.title_generations).is_empty() {
+                // User generations have priority over metadata-only title work. A title request
+                // already occupying the single runtime is cancelled as soon as FIFO work waits.
+                self.cancel_title_generations_for_pending_work();
+                return;
+            }
             if self.inner.runtime.snapshot().state != RuntimeState::Ready
                 || self.inner.safe_mode.load(Ordering::SeqCst)
             {
                 return;
             }
-            let Some(job) = lock(&self.inner.queue).activate_next() else {
+            let queue_has_active_generation = {
+                let queue = lock(&self.inner.queue);
+                queue.active.is_some()
+            };
+            if queue_has_active_generation {
                 return;
+            }
+            let Some(job) = lock(&self.inner.queue).activate_next() else {
+                let Some(title_job) = lock(&self.inner.deferred_title_generations).pop_front()
+                else {
+                    return;
+                };
+                self.schedule_title_generation(&title_job);
+                continue;
             };
             self.trace(&job.request_id, "queue_activated", None, None);
+            self.trace(&job.request_id, "chat.queue.activated", None, None);
+            self.trace(&job.request_id, "runtime_ready", None, None);
             let dispatch = self.build_generation_request(&job).and_then(|request| {
+                self.trace(&job.request_id, "dispatching", None, None);
                 self.mark_job_streaming(&job)?;
                 self.inner.runtime.send(request)
             });
@@ -1528,6 +2989,13 @@ impl ChatCoordinator {
                 continue;
             }
             self.trace(&job.request_id, "request_written", None, None);
+            self.trace(&job.request_id, "generation.start.sent", None, None);
+            self.trace(
+                &job.request_id,
+                "protocol.generation_start_written",
+                None,
+                None,
+            );
             self.emit_refresh(Some(&job.agent_id));
             return;
         }
@@ -1594,6 +3062,52 @@ impl ChatCoordinator {
             .database
             .mark_streaming(&job.assistant_message_id, &job.request_id)
             .map_err(|_| "persistence_failed")
+    }
+
+    /// Flush the bounded durable stream buffer. The caller must hold
+    /// `stream_persist_lock`; this keeps a watchdog/terminal transition from overtaking a
+    /// chunk write without holding the scheduler lock across SQLite I/O.
+    fn flush_pending_content_locked(&self, request_id: &str) -> Result<bool, &'static str> {
+        let Some(batch) = lock(&self.inner.queue).take_pending_content(request_id) else {
+            return Ok(false);
+        };
+        let job = {
+            let queue = lock(&self.inner.queue);
+            queue
+                .active
+                .as_ref()
+                .filter(|active| active.job.request_id == request_id)
+                .map(|active| active.job.clone())
+        };
+        let Some(job) = job else {
+            return Ok(false);
+        };
+        let persisted = self.inner.database.append_assistant_chunks(
+            &job.assistant_message_id,
+            &job.request_id,
+            &batch.content,
+        );
+        if persisted.is_err() {
+            let _ = lock(&self.inner.queue).restore_pending_content(request_id, batch);
+            return Err("persistence_failed");
+        }
+        let (sequence, counters) = {
+            let mut queue = lock(&self.inner.queue);
+            queue.mark_persisted(request_id);
+            (
+                queue.active.as_ref().map(|active| active.last_sequence),
+                queue.active_counters(request_id),
+            )
+        };
+        self.trace(request_id, "chunk_persisted", sequence, None);
+        self.trace_with_counters(
+            request_id,
+            "rust.chunk.persisted",
+            sequence,
+            None,
+            counters.as_ref(),
+        );
+        Ok(true)
     }
 
     fn append_job_chunk(&self, job: &GenerationJob, content: &str) -> Result<(), &'static str> {
@@ -1706,29 +3220,128 @@ impl ChatCoordinator {
         });
     }
 
+    fn emit_conversation_list_changed(&self, agent_id: &str, conversation_id: &str) {
+        self.emit(PhaseOneEvent {
+            protocol_version: PROTOCOL_VERSION,
+            event_type: "conversation-list.changed".into(),
+            request_id: None,
+            agent_id: Some(agent_id.to_string()),
+            conversation_id: Some(conversation_id.to_string()),
+            assistant_message_id: None,
+            sequence: None,
+            content: None,
+            error_code: None,
+        });
+    }
+
     fn emit(&self, event: PhaseOneEvent) {
-        if let Some(agent_id) = event.agent_id.as_deref() {
-            let _ = self.inner.app.emit_to("main", EVENT_NAME, event.clone());
-            if let Some(label) = overlays::window_label(agent_id) {
-                let _ = self.inner.app.emit_to(label, EVENT_NAME, event.clone());
-            }
-            if let Some(label) = overlays::bubble_window_label(agent_id) {
-                let _ = self.inner.app.emit_to(label, EVENT_NAME, event);
-            }
-        } else {
-            let _ = self.inner.app.emit(EVENT_NAME, event);
-        }
+        self.inner.events.emit(event);
     }
 
     fn trace(
         &self,
         request_id: &str,
-        code: &'static str,
+        code: &str,
         sequence: Option<u64>,
         terminal_code: Option<&str>,
     ) {
-        lock(&self.inner.request_traces).record(request_id, code, sequence, terminal_code);
+        self.trace_with_counters(request_id, code, sequence, terminal_code, None);
     }
+
+    fn trace_with_counters(
+        &self,
+        request_id: &str,
+        code: &str,
+        sequence: Option<u64>,
+        terminal_code: Option<&str>,
+        counters: Option<&BTreeMap<String, u64>>,
+    ) {
+        let snapshot = {
+            let mut traces = lock(&self.inner.request_traces);
+            traces.record_with_counters(request_id, code, sequence, terminal_code, counters);
+            if should_persist_trace_code(code) {
+                traces.revision = traces.revision.wrapping_add(1);
+                Some(traces.clone())
+            } else {
+                None
+            }
+        };
+        let Some(snapshot) = snapshot else {
+            return;
+        };
+        if let Some(persistence) = self.inner.trace_persistence.as_ref() {
+            persistence.enqueue(snapshot);
+        } else if let Some(path) = self.inner.request_trace_path.as_ref() {
+            snapshot.persist(path);
+        }
+    }
+
+    fn generation_watchdog_loop(&self) {
+        loop {
+            thread::sleep(GENERATION_WATCHDOG_INTERVAL);
+            if let Some((request_id, code)) = self.expired_title_generation(Instant::now()) {
+                self.fail_timed_out_title_generation(&request_id, code);
+                continue;
+            }
+            let expired = lock(&self.inner.queue).expired_request(Instant::now());
+            let Some((request_id, code)) = expired else {
+                continue;
+            };
+            self.trace(&request_id, "generation_watchdog_timeout", None, Some(code));
+            self.fail_timed_out_generation(&request_id, code);
+        }
+    }
+}
+
+fn title_generation_timeout(request: &TitleGeneration, now: Instant) -> Option<&'static str> {
+    if request.cancellation_requested {
+        return None;
+    }
+    let (last_progress_at, timeout, code) =
+        if request.runtime_accepted || request.generation_started {
+            (
+                request.last_progress_at,
+                GENERATION_RESPONSE_TIMEOUT,
+                "generation_response_timeout",
+            )
+        } else {
+            (
+                request.dispatched_at,
+                RUNTIME_ACCEPT_TIMEOUT,
+                "runtime_accept_timeout",
+            )
+        };
+    (now.duration_since(last_progress_at) >= timeout).then_some(code)
+}
+
+fn bounded_title_context(content: &str) -> String {
+    content.chars().take(MAX_TITLE_CONTEXT_CHARS).collect()
+}
+
+fn sanitize_generated_title(raw: &str) -> Option<String> {
+    let mut title = raw.trim().replace(['\r', '\n', '\t'], " ");
+    if let Some(stripped) = title
+        .strip_prefix("Título:")
+        .or_else(|| title.strip_prefix("título:"))
+    {
+        title = stripped.trim().into();
+    }
+    let title_chars = title.chars().collect::<Vec<_>>();
+    if title_chars.len() >= 2
+        && ((title_chars.first() == Some(&'"') && title_chars.last() == Some(&'"'))
+            || (title_chars.first() == Some(&'“') && title_chars.last() == Some(&'”')))
+    {
+        title = title_chars[1..title_chars.len() - 1]
+            .iter()
+            .collect::<String>()
+            .trim()
+            .into();
+    }
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() {
+        return None;
+    }
+    Some(title.chars().take(64).collect())
 }
 
 fn build_generation_request_from_database(
@@ -1798,6 +3411,51 @@ fn clear_temporary_chat(store: &mut TemporaryChatStore, agent_id: &str) {
     store.conversations.remove(agent_id);
 }
 
+fn ensure_temporary_chat<'a>(
+    store: &'a mut TemporaryChatStore,
+    agent_id: &str,
+) -> Result<&'a mut TemporaryConversation, &'static str> {
+    if store.converted_agents.contains(agent_id) {
+        return Err("operation_unavailable");
+    }
+    Ok(store
+        .conversations
+        .entry(agent_id.to_string())
+        .or_insert_with(|| TemporaryConversation {
+            conversation: temporary_conversation(agent_id),
+            messages: Vec::new(),
+            model_override_ref: None,
+        }))
+}
+
+fn temporary_session_is_active(
+    store: &TemporaryChatStore,
+    agent_id: &str,
+    conversation_id: &str,
+) -> bool {
+    store
+        .conversations
+        .get(agent_id)
+        .is_some_and(|chat| chat.conversation.id == conversation_id)
+}
+
+fn continue_temporary_in_database(
+    database: &Database,
+    temporary_chats: &Mutex<TemporaryChatStore>,
+    agent_id: &str,
+) -> Result<crate::domain::PhaseOneConversation, &'static str> {
+    let mut chats = lock(temporary_chats);
+    if !chats.conversations.contains_key(agent_id) {
+        return Err("operation_unavailable");
+    }
+    let conversation = database
+        .create_conversation_and_activate(agent_id, "Nova conversa")
+        .map_err(|error| error.code())?;
+    chats.converted_agents.insert(agent_id.to_string());
+    clear_temporary_chat(&mut chats, agent_id);
+    Ok(conversation)
+}
+
 fn assemble_context(
     agent: &crate::domain::ProvisionalAgent,
     messages: Vec<ContextMessage>,
@@ -1849,12 +3507,49 @@ fn assemble_context(
 fn routing_policy_with_selection(
     policy: &RoutingPolicy,
     selected_model: Option<&str>,
+    explicit_model: Option<&str>,
 ) -> RoutingPolicy {
     let mut policy = policy.clone();
-    if policy.mode != RoutingMode::Manual && policy.preferred_model_ref.is_none() {
-        policy.preferred_model_ref = selected_model.map(str::to_string);
+    if let Some(explicit_model) = explicit_model {
+        // An explicit conversation/temporary selection takes precedence over global routing
+        // preferences, including exclusions and fallback-only hints.
+        policy
+            .excluded_model_refs
+            .retain(|model_ref| model_ref != explicit_model);
+        policy
+            .fallback_only_model_refs
+            .retain(|model_ref| model_ref != explicit_model);
+        if policy.mode != RoutingMode::Manual {
+            policy.preferred_model_ref = Some(explicit_model.to_string());
+        }
+    } else if let Some(selected_model) = selected_model {
+        // An inherited agent default is only a soft preference. It must not bypass explicit
+        // exclusions/fallback-only hints or replace a stronger policy preference.
+        let eligible = !policy
+            .excluded_model_refs
+            .iter()
+            .any(|model_ref| model_ref == selected_model)
+            && !policy
+                .fallback_only_model_refs
+                .iter()
+                .any(|model_ref| model_ref == selected_model);
+        if policy.mode != RoutingMode::Manual && policy.preferred_model_ref.is_none() && eligible {
+            policy.preferred_model_ref = Some(selected_model.to_string());
+        }
     }
     policy
+}
+
+fn requested_model_ref(
+    mode: RoutingMode,
+    selected_model: Option<&str>,
+    explicit_model: Option<&str>,
+) -> Option<String> {
+    explicit_model.map(str::to_string).or_else(|| {
+        (mode == RoutingMode::Manual)
+            .then(|| selected_model.map(str::to_string))
+            .flatten()
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1864,6 +3559,7 @@ fn send_blocked_code_for_state(
     provider: &ProviderSnapshot,
     selected_model: Option<&str>,
     selected_available: bool,
+    explicit_override: bool,
     queue_length: usize,
     suspended: bool,
     auto_candidate_available: bool,
@@ -1883,16 +3579,28 @@ fn send_blocked_code_for_state(
     } else if provider.state != ProviderState::Available {
         Some("provider_unavailable")
     } else if selected_model.is_none() || !selected_available {
-        if auto_candidate_available {
-            None
-        } else if selected_model.is_none() {
-            Some("no_candidate")
-        } else {
+        if explicit_override && selected_model.is_some() && !selected_available {
             Some("selected_model_unavailable")
+        } else if auto_candidate_available {
+            None
+        } else {
+            Some("no_candidate")
         }
     } else {
         None
     }
+}
+
+fn explicit_retry_can_bypass_selection_block(
+    blocked_code: Option<&str>,
+    model_ref: &str,
+    provider: &ProviderSnapshot,
+) -> bool {
+    blocked_code == Some("selected_model_unavailable")
+        && provider
+            .models
+            .iter()
+            .any(|candidate| candidate.model_ref == model_ref)
 }
 
 fn provider_error_snapshot(code: &str) -> ProviderSnapshot {
@@ -1972,11 +3680,12 @@ mod tests {
     use std::{
         fs,
         path::PathBuf,
-        sync::mpsc,
+        sync::{atomic::AtomicBool, mpsc, Arc, Mutex},
+        thread,
         time::{Duration, Instant},
     };
 
-    use crate::domain::ConversationMessage;
+    use crate::domain::{ConversationMessage, OllamaModel, ProviderState};
     use uuid::Uuid;
 
     use super::*;
@@ -2027,6 +3736,7 @@ mod tests {
                 &provider,
                 None,
                 false,
+                false,
                 0,
                 true,
                 true,
@@ -2040,6 +3750,7 @@ mod tests {
                 &provider,
                 None,
                 false,
+                false,
                 MAX_QUEUE_LENGTH,
                 false,
                 true,
@@ -2049,9 +3760,86 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_explicit_override_never_falls_back_to_auto() {
+        let provider = available_provider();
+        assert_eq!(
+            send_blocked_code_for_state(
+                false,
+                RuntimeState::Ready,
+                &provider,
+                Some("ollama:missing"),
+                false,
+                true,
+                0,
+                false,
+                true,
+            ),
+            Some("selected_model_unavailable")
+        );
+        assert_eq!(
+            send_blocked_code_for_state(
+                false,
+                RuntimeState::Ready,
+                &provider,
+                Some("ollama:default"),
+                false,
+                false,
+                0,
+                false,
+                true,
+            ),
+            None
+        );
+        assert_eq!(
+            send_blocked_code_for_state(
+                false,
+                RuntimeState::Ready,
+                &provider,
+                Some("ollama:default"),
+                false,
+                false,
+                0,
+                false,
+                false,
+            ),
+            Some("no_candidate")
+        );
+    }
+
+    #[test]
+    fn explicit_retry_bypasses_only_a_selection_block_for_an_available_model() {
+        let mut provider = available_provider();
+        provider.models.push(OllamaModel {
+            model_ref: "ollama:installed".into(),
+            provider_model_id: "installed".into(),
+            display_name: "Installed".into(),
+            size: 1,
+            family: None,
+            parameter_size: None,
+            quantization: None,
+            capabilities: Vec::new(),
+        });
+        assert!(explicit_retry_can_bypass_selection_block(
+            Some("selected_model_unavailable"),
+            "ollama:installed",
+            &provider,
+        ));
+        assert!(!explicit_retry_can_bypass_selection_block(
+            Some("runtime_unavailable"),
+            "ollama:installed",
+            &provider,
+        ));
+        assert!(!explicit_retry_can_bypass_selection_block(
+            Some("selected_model_unavailable"),
+            "ollama:missing",
+            &provider,
+        ));
+    }
+
+    #[test]
     fn auto_selection_preserves_selected_model_as_preference() {
         let policy =
-            routing_policy_with_selection(&RoutingPolicy::default(), Some("ollama:selected"));
+            routing_policy_with_selection(&RoutingPolicy::default(), Some("ollama:selected"), None);
         assert_eq!(
             policy.preferred_model_ref.as_deref(),
             Some("ollama:selected")
@@ -2063,8 +3851,182 @@ mod tests {
                 ..RoutingPolicy::default()
             },
             Some("ollama:selected"),
+            None,
         );
         assert_eq!(manual.preferred_model_ref, None);
+    }
+
+    #[test]
+    fn explicit_model_selection_overrides_global_routing_hints() {
+        let policy = routing_policy_with_selection(
+            &RoutingPolicy {
+                excluded_model_refs: vec!["ollama:selected".into()],
+                fallback_only_model_refs: vec!["ollama:selected".into()],
+                preferred_model_ref: Some("ollama:global".into()),
+                ..RoutingPolicy::default()
+            },
+            Some("ollama:selected"),
+            Some("ollama:selected"),
+        );
+        assert_eq!(
+            policy.preferred_model_ref.as_deref(),
+            Some("ollama:selected")
+        );
+        assert!(!policy
+            .excluded_model_refs
+            .iter()
+            .any(|model_ref| model_ref == "ollama:selected"));
+        assert!(!policy
+            .fallback_only_model_refs
+            .iter()
+            .any(|model_ref| model_ref == "ollama:selected"));
+    }
+
+    #[test]
+    fn inherited_default_preserves_exclusion_and_is_not_forced() {
+        let policy = routing_policy_with_selection(
+            &RoutingPolicy {
+                excluded_model_refs: vec!["ollama:default".into()],
+                ..RoutingPolicy::default()
+            },
+            Some("ollama:default"),
+            None,
+        );
+        assert_eq!(policy.excluded_model_refs, vec!["ollama:default"]);
+        assert_eq!(policy.preferred_model_ref, None);
+        assert_eq!(
+            requested_model_ref(RoutingMode::Auto, Some("ollama:default"), None),
+            None
+        );
+    }
+
+    #[test]
+    fn inherited_default_preserves_fallback_only_restriction() {
+        let policy = routing_policy_with_selection(
+            &RoutingPolicy {
+                fallback_only_model_refs: vec!["ollama:default".into()],
+                ..RoutingPolicy::default()
+            },
+            Some("ollama:default"),
+            None,
+        );
+        assert_eq!(policy.fallback_only_model_refs, vec!["ollama:default"]);
+        assert_eq!(policy.preferred_model_ref, None);
+        assert_eq!(
+            requested_model_ref(RoutingMode::Quality, Some("ollama:default"), None),
+            None
+        );
+    }
+
+    #[test]
+    fn inherited_default_does_not_replace_stronger_policy_preference() {
+        let policy = routing_policy_with_selection(
+            &RoutingPolicy {
+                preferred_model_ref: Some("ollama:preferred".into()),
+                ..RoutingPolicy::default()
+            },
+            Some("ollama:default"),
+            None,
+        );
+        assert_eq!(
+            policy.preferred_model_ref.as_deref(),
+            Some("ollama:preferred")
+        );
+        assert_eq!(
+            requested_model_ref(RoutingMode::Speed, Some("ollama:default"), None),
+            None
+        );
+    }
+
+    #[test]
+    fn inherited_default_is_only_a_soft_preference_without_stronger_hints() {
+        let policy =
+            routing_policy_with_selection(&RoutingPolicy::default(), Some("ollama:default"), None);
+        assert_eq!(
+            policy.preferred_model_ref.as_deref(),
+            Some("ollama:default")
+        );
+        for mode in [RoutingMode::Auto, RoutingMode::Quality, RoutingMode::Speed] {
+            assert_eq!(
+                requested_model_ref(mode, Some("ollama:default"), None),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn coordinator_route_precedence_separates_inherited_defaults_from_overrides() {
+        let inherited = routing_policy_with_selection(
+            &RoutingPolicy {
+                excluded_model_refs: vec!["ollama:default".into()],
+                preferred_model_ref: Some("ollama:preferred".into()),
+                ..RoutingPolicy::default()
+            },
+            Some("ollama:default"),
+            None,
+        );
+        assert_eq!(
+            inherited.preferred_model_ref.as_deref(),
+            Some("ollama:preferred")
+        );
+        assert_eq!(inherited.excluded_model_refs, vec!["ollama:default"]);
+        assert_eq!(
+            requested_model_ref(RoutingMode::Auto, Some("ollama:default"), None),
+            None
+        );
+
+        let explicit = routing_policy_with_selection(
+            &RoutingPolicy {
+                excluded_model_refs: vec!["ollama:selected".into()],
+                fallback_only_model_refs: vec!["ollama:selected".into()],
+                preferred_model_ref: Some("ollama:preferred".into()),
+                ..RoutingPolicy::default()
+            },
+            Some("ollama:selected"),
+            Some("ollama:selected"),
+        );
+        assert_eq!(
+            explicit.preferred_model_ref.as_deref(),
+            Some("ollama:selected")
+        );
+        assert!(explicit.excluded_model_refs.is_empty());
+        assert!(explicit.fallback_only_model_refs.is_empty());
+        assert_eq!(
+            requested_model_ref(
+                RoutingMode::Auto,
+                Some("ollama:selected"),
+                Some("ollama:selected"),
+            ),
+            Some("ollama:selected".into())
+        );
+    }
+
+    #[test]
+    fn explicit_conversation_model_constrains_auto_routing() {
+        assert_eq!(
+            requested_model_ref(
+                RoutingMode::Auto,
+                Some("ollama:default"),
+                Some("ollama:selected"),
+            ),
+            Some("ollama:selected".into())
+        );
+        assert_eq!(
+            requested_model_ref(RoutingMode::Quality, Some("ollama:default"), None),
+            None
+        );
+        assert_eq!(
+            requested_model_ref(RoutingMode::Manual, Some("ollama:selected"), None),
+            Some("ollama:selected".into())
+        );
+        assert_eq!(
+            requested_model_ref(
+                RoutingMode::Manual,
+                Some("ollama:default"),
+                Some("ollama:selected"),
+            ),
+            Some("ollama:selected".into())
+        );
     }
 
     #[test]
@@ -2118,6 +4080,74 @@ mod tests {
     }
 
     #[test]
+    fn queue_watchdog_distinguishes_acceptance_and_response_timeouts() {
+        let mut queue = GenerationQueue::default();
+        queue.enqueue(job("timeout", "astra")).unwrap();
+        queue.activate_next();
+
+        let acceptance_deadline = Instant::now() + RUNTIME_ACCEPT_TIMEOUT + Duration::from_secs(1);
+        assert_eq!(
+            queue.expired_request(acceptance_deadline),
+            Some(("timeout".into(), "runtime_accept_timeout"))
+        );
+
+        let active = queue.active.as_mut().unwrap();
+        active.runtime_accepted = true;
+        active.generation_started = true;
+        active.last_progress_at =
+            Instant::now() - GENERATION_RESPONSE_TIMEOUT - Duration::from_secs(1);
+        assert_eq!(
+            queue.expired_request(Instant::now()),
+            Some(("timeout".into(), "generation_response_timeout"))
+        );
+    }
+
+    #[test]
+    fn queue_watchdog_defers_timeout_while_cancellation_is_pending() {
+        let mut queue = GenerationQueue::default();
+        queue.enqueue(job("cancel", "astra")).unwrap();
+        queue.activate_next();
+
+        let active = queue.active.as_mut().unwrap();
+        active.cancellation_requested = true;
+        active.runtime_accepted = true;
+        active.generation_started = true;
+        active.last_progress_at =
+            Instant::now() - GENERATION_RESPONSE_TIMEOUT - Duration::from_secs(1);
+
+        assert_eq!(queue.expired_request(Instant::now()), None);
+    }
+
+    #[test]
+    fn title_watchdog_distinguishes_acceptance_and_response_timeouts() {
+        let now = Instant::now();
+        let mut request = TitleGeneration {
+            agent_id: "astra".into(),
+            conversation_id: "conversation-astra".into(),
+            assistant_message_id: "title-message".into(),
+            output: String::new(),
+            last_sequence: 0,
+            output_bytes: 0,
+            cancellation_requested: false,
+            dispatched_at: now - RUNTIME_ACCEPT_TIMEOUT - Duration::from_secs(1),
+            last_progress_at: now,
+            runtime_accepted: false,
+            generation_started: false,
+        };
+        assert_eq!(
+            title_generation_timeout(&request, now),
+            Some("runtime_accept_timeout")
+        );
+
+        request.runtime_accepted = true;
+        request.last_progress_at = now - GENERATION_RESPONSE_TIMEOUT - Duration::from_secs(1);
+        assert_eq!(
+            title_generation_timeout(&request, now),
+            Some("generation_response_timeout")
+        );
+    }
+
+    #[test]
     fn temporary_conversations_are_distinct_from_persisted_conversation_ids() {
         let astra = temporary_conversation("astra");
         let luma = temporary_conversation("luma");
@@ -2125,6 +4155,112 @@ mod tests {
         assert!(luma.id.starts_with("temporary-luma-"));
         assert_ne!(astra.id, luma.id);
         assert_eq!(astra.model_override_ref, None);
+    }
+
+    #[test]
+    fn conversion_invalidates_a_waiting_temporary_send_session() {
+        let mut store = TemporaryChatStore::default();
+        let conversation = temporary_conversation("astra");
+        let conversation_id = conversation.id.clone();
+        store.conversations.insert(
+            "astra".into(),
+            TemporaryConversation {
+                conversation,
+                messages: Vec::new(),
+                model_override_ref: None,
+            },
+        );
+        assert!(temporary_session_is_active(
+            &store,
+            "astra",
+            &conversation_id
+        ));
+
+        clear_temporary_chat(&mut store, "astra");
+
+        assert!(!temporary_session_is_active(
+            &store,
+            "astra",
+            &conversation_id
+        ));
+    }
+
+    #[test]
+    fn failed_temporary_conversion_keeps_the_in_memory_chat() {
+        let path = std::env::temp_dir()
+            .join(format!("aip-temporary-conversion-{}", Uuid::now_v7()))
+            .join("aip.sqlite3");
+        let database = Database::initialize(&path).unwrap();
+        database
+            .open()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_conversation_activation
+                 BEFORE UPDATE OF active_conversation_id ON agent_phase3_settings
+                 WHEN NEW.agent_id = 'agt_astra_provisional'
+                   AND NEW.active_conversation_id <> OLD.active_conversation_id
+                 BEGIN
+                   SELECT RAISE(ABORT, 'simulated activation failure');
+                 END;",
+            )
+            .unwrap();
+        let mut temporary = TemporaryChatStore::default();
+        let temporary_conversation = temporary_conversation(crate::database::ASTRA_ID);
+        temporary.conversations.insert(
+            crate::database::ASTRA_ID.into(),
+            TemporaryConversation {
+                conversation: temporary_conversation,
+                messages: Vec::new(),
+                model_override_ref: None,
+            },
+        );
+        let temporary_chats = Mutex::new(temporary);
+
+        assert_eq!(
+            continue_temporary_in_database(&database, &temporary_chats, crate::database::ASTRA_ID,),
+            Err("persistence_failed")
+        );
+        assert!(lock(&temporary_chats)
+            .conversations
+            .contains_key(crate::database::ASTRA_ID));
+        drop(temporary_chats);
+        drop(database);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn successful_temporary_conversion_marks_the_session_as_converted() {
+        let path = std::env::temp_dir()
+            .join(format!(
+                "aip-temporary-conversion-success-{}",
+                Uuid::now_v7()
+            ))
+            .join("aip.sqlite3");
+        let database = Database::initialize(&path).unwrap();
+        let mut temporary = TemporaryChatStore::default();
+        temporary.conversations.insert(
+            crate::database::ASTRA_ID.into(),
+            TemporaryConversation {
+                conversation: temporary_conversation(crate::database::ASTRA_ID),
+                messages: Vec::new(),
+                model_override_ref: None,
+            },
+        );
+        let temporary_chats = Mutex::new(temporary);
+
+        continue_temporary_in_database(&database, &temporary_chats, crate::database::ASTRA_ID)
+            .unwrap();
+        let mut chats = lock(&temporary_chats);
+        assert!(!chats.conversations.contains_key(crate::database::ASTRA_ID));
+        assert!(chats.converted_agents.contains(crate::database::ASTRA_ID));
+        assert_eq!(
+            ensure_temporary_chat(&mut chats, crate::database::ASTRA_ID).map(|_| ()),
+            Err("operation_unavailable")
+        );
+        drop(chats);
+        drop(temporary_chats);
+        drop(database);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
@@ -2337,8 +4473,39 @@ mod tests {
     }
 
     #[test]
+    fn queue_reconstructs_a_long_ordered_stream_without_overwrite() {
+        let mut queue = GenerationQueue::default();
+        queue.enqueue(job("long", "astra")).unwrap();
+        queue.activate_next();
+        for sequence in 1..=128 {
+            assert!(matches!(
+                queue.accept_chunk_with_characters("long", sequence, 1, 1),
+                ChunkDecision::Accepted(_)
+            ));
+        }
+        let counters = queue.active_counters("long").unwrap();
+        assert_eq!(counters.get("rust_chunks"), Some(&128));
+        assert_eq!(counters.get("rust_bytes"), Some(&128));
+        assert_eq!(counters.get("persisted_chars"), Some(&128));
+        let active = queue.active.as_ref().unwrap().job.clone();
+        let terminal = PhaseOneEvent {
+            protocol_version: PROTOCOL_VERSION,
+            event_type: "generation.complete".into(),
+            request_id: Some(active.request_id),
+            agent_id: Some(active.agent_id),
+            conversation_id: Some(active.conversation_id),
+            assistant_message_id: Some(active.assistant_message_id),
+            sequence: Some(128),
+            content: None,
+            error_code: None,
+        };
+        assert!(queue.accepts_terminal(&terminal));
+    }
+
+    #[test]
     fn request_trace_is_bounded_and_content_free() {
         let mut traces = RequestTraceStore::default();
+        traces.register(&job("request", "astra"));
         for index in 0..(MAX_REQUEST_TRACE_ENTRIES + 3) {
             traces.record("request", "chunk_persisted", Some(index as u64), None);
         }
@@ -2347,9 +4514,257 @@ mod tests {
         assert_eq!(entries[0].sequence, Some(3));
         assert!(entries.iter().all(|entry| entry.code == "chunk_persisted"));
         for index in 0..(MAX_RETAINED_REQUEST_TRACES + 2) {
-            traces.record(&format!("request-{index}"), "request_enqueued", None, None);
+            let request_id = format!("request-{index}");
+            traces.register(&job(&request_id, "astra"));
+            traces.record(&request_id, "request_enqueued", None, None);
         }
         assert!(traces.entries("request").is_empty());
+    }
+
+    #[test]
+    fn unregistered_trace_events_do_not_evict_persistable_history() {
+        let path = std::env::temp_dir().join(format!(
+            "aip-generation-trace-unregistered-{}.ndjson",
+            Uuid::now_v7()
+        ));
+        let mut traces = RequestTraceStore::default();
+        let durable = job("durable-trace-request", "astra");
+        traces.register(&durable);
+        traces.record(&durable.request_id, "database.finalized", None, None);
+        for index in 0..(MAX_RETAINED_REQUEST_TRACES + 4) {
+            let request_id = format!("unregistered-{index}");
+            traces.record(&request_id, "chat.send.received", None, None);
+        }
+        for index in 0..(MAX_RETAINED_REQUEST_TRACES + 4) {
+            let mut temporary = job(&format!("temporary-{index}"), "astra");
+            temporary.temporary = true;
+            traces.register(&temporary);
+            traces.record(&temporary.request_id, "chat.send.received", None, None);
+        }
+
+        assert!(traces
+            .entries(&durable.request_id)
+            .iter()
+            .any(|entry| { entry.code == "database.finalized" }));
+        traces.persist(&path);
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("durable-trace-request"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn request_trace_skips_streaming_chunks_until_a_milestone() {
+        assert!(!should_persist_trace_code("chunk_persisted"));
+        assert!(!should_persist_trace_code("generation.chunk"));
+        assert!(!should_persist_trace_code("chunk_ignored"));
+        assert!(!should_persist_trace_code("provider.chunk.received"));
+        assert!(!should_persist_trace_code("rust.chunk.received"));
+        assert!(!should_persist_trace_code("rust.chunk.persisted"));
+        assert!(should_persist_trace_code("generation.accepted"));
+        assert!(should_persist_trace_code("terminal_persisted"));
+    }
+
+    #[test]
+    fn request_trace_persistence_is_serialized_off_the_calling_thread() {
+        let path = std::env::temp_dir().join(format!(
+            "aip-async-generation-trace-{}.ndjson",
+            Uuid::now_v7()
+        ));
+        let persistence = TracePersistence::new(path.clone());
+        let mut traces = RequestTraceStore::default();
+        let generation = job("async-trace-request", "astra");
+        traces.register(&generation);
+        traces.record("async-trace-request", "database.finalized", None, None);
+        persistence.enqueue(traces);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !path.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(path.exists());
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("async-trace-request"));
+        drop(persistence);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn request_trace_persistence_discards_stale_snapshots() {
+        let path = std::env::temp_dir().join(format!(
+            "aip-ordered-generation-trace-{}.ndjson",
+            Uuid::now_v7()
+        ));
+        let persistence = TracePersistence::new(path.clone());
+
+        let mut newer = RequestTraceStore {
+            revision: 2,
+            ..RequestTraceStore::default()
+        };
+        let newer_job = job("newer-trace-request", "astra");
+        newer.register(&newer_job);
+        newer.record(&newer_job.request_id, "generation.complete", Some(2), None);
+
+        let mut stale = RequestTraceStore {
+            revision: 1,
+            ..RequestTraceStore::default()
+        };
+        let stale_job = job("stale-trace-request", "astra");
+        stale.register(&stale_job);
+        stale.record(&stale_job.request_id, "generation.failed", Some(1), None);
+
+        // Simulate the newer snapshot reaching the worker before an older clone that was
+        // delayed after releasing the trace-store lock.
+        persistence.enqueue(newer);
+        persistence.enqueue(stale);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Ok(contents) = fs::read_to_string(&path) {
+                if contents.contains("newer-trace-request") {
+                    break;
+                }
+            }
+            if Instant::now() >= deadline {
+                panic!("timed out waiting for ordered trace persistence");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        thread::sleep(Duration::from_millis(50));
+        let persisted = fs::read_to_string(&path).unwrap();
+        assert!(persisted.contains("newer-trace-request"));
+        assert!(!persisted.contains("stale-trace-request"));
+        drop(persistence);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn request_trace_persists_safe_correlated_metadata() {
+        let path =
+            std::env::temp_dir().join(format!("aip-generation-trace-{}.ndjson", Uuid::now_v7()));
+        let mut traces = RequestTraceStore::default();
+        let generation = job("trace-request", "astra");
+        traces.register(&generation);
+        traces.record("trace-request", "chat.finalized", Some(2), None);
+        traces.persist(&path);
+        let persisted = fs::read_to_string(&path).unwrap();
+        assert!(persisted.contains("trace-request"));
+        assert!(persisted.contains("conversation-astra"));
+        assert!(persisted.contains("ollama:test"));
+        assert!(!persisted.contains("Synthetic input"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn request_trace_persists_bounded_return_path_counters() {
+        let path = std::env::temp_dir().join(format!(
+            "aip-generation-trace-counters-{}.ndjson",
+            Uuid::now_v7()
+        ));
+        let mut traces = RequestTraceStore::default();
+        let generation = job("counter-trace-request", "astra");
+        traces.register(&generation);
+        let counters = BTreeMap::from([
+            ("provider_chunks".into(), 128),
+            ("runtime_chunks".into(), 128),
+            ("rust_chunks".into(), 128),
+            ("persisted_chars".into(), 512),
+        ]);
+        traces.record_with_counters(
+            &generation.request_id,
+            "rust.message.finalized",
+            Some(128),
+            None,
+            Some(&counters),
+        );
+        traces.persist(&path);
+        let persisted = fs::read_to_string(&path).unwrap();
+        assert!(persisted.contains("provider_chunks"));
+        assert!(persisted.contains("persisted_chars"));
+        let loaded = RequestTraceStore::load(&path);
+        assert_eq!(loaded.entries(&generation.request_id)[0].counters, counters);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn request_trace_persistence_retains_records_across_restarts() {
+        let path = std::env::temp_dir().join(format!(
+            "aip-generation-trace-restart-{}.ndjson",
+            Uuid::now_v7()
+        ));
+        let previous = job("previous-trace-request", "astra");
+        let mut first_session = RequestTraceStore::default();
+        first_session.register(&previous);
+        first_session.record(&previous.request_id, "database.finalized", Some(1), None);
+        first_session.persist(&path);
+
+        let mut restarted = RequestTraceStore::load(&path);
+        assert_eq!(
+            restarted.entries(&previous.request_id)[0].code,
+            "database.finalized"
+        );
+        let current = job("current-trace-request", "astra");
+        restarted.register(&current);
+        restarted.record(&current.request_id, "database.finalized", Some(2), None);
+        restarted.persist(&path);
+
+        let persisted = fs::read_to_string(&path).unwrap();
+        assert!(persisted.contains("previous-trace-request"));
+        assert!(persisted.contains("current-trace-request"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn request_trace_does_not_persist_temporary_chat_metadata() {
+        let path = std::env::temp_dir().join(format!(
+            "aip-temporary-generation-trace-{}.ndjson",
+            Uuid::now_v7()
+        ));
+        let mut traces = RequestTraceStore::default();
+        let mut generation = job("temporary-trace-request", "astra");
+        generation.temporary = true;
+        traces.register(&generation);
+        traces.record("temporary-trace-request", "chat.finalized", Some(2), None);
+        traces.persist(&path);
+        assert!(!path.exists() || fs::read_to_string(&path).unwrap().is_empty());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn request_trace_does_not_persist_unregistered_requests() {
+        let path = std::env::temp_dir().join(format!(
+            "aip-unregistered-generation-trace-{}.ndjson",
+            Uuid::now_v7()
+        ));
+        let mut traces = RequestTraceStore::default();
+        traces.record("unregistered-request", "chat.send.received", None, None);
+        traces.persist(&path);
+        assert!(!path.exists() || fs::read_to_string(&path).unwrap().is_empty());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn converted_temporary_session_is_tombstoned_until_explicit_restart() {
+        let mut store = TemporaryChatStore::default();
+        store.conversations.insert(
+            "astra".into(),
+            TemporaryConversation {
+                conversation: temporary_conversation("astra"),
+                messages: Vec::new(),
+                model_override_ref: None,
+            },
+        );
+        store.converted_agents.insert("astra".into());
+        clear_temporary_chat(&mut store, "astra");
+        assert!(store.converted_agents.contains("astra"));
+
+        assert_eq!(
+            ensure_temporary_chat(&mut store, "astra").map(|_| ()),
+            Err("operation_unavailable")
+        );
+
+        store.converted_agents.remove("astra");
+        assert!(ensure_temporary_chat(&mut store, "astra").is_ok());
+        assert!(store.conversations.contains_key("astra"));
     }
 
     #[test]
@@ -2733,20 +5148,461 @@ mod tests {
     }
 
     #[test]
+    fn different_current_prompts_produce_different_runtime_payloads() {
+        let agent = crate::domain::ProvisionalAgent {
+            id: "agent".into(),
+            name: "Astra".into(),
+            profile_key: "owner".into(),
+            sprite_key: "astra".into(),
+            position: crate::domain::AgentPosition { x: 0.0, y: 0.0 },
+            birthday: "2000-01-01".into(),
+            fictive_age: 18,
+            age_category: "adult".into(),
+            species: "agent".into(),
+            pronouns: "they/them".into(),
+            personality_summary: String::new(),
+            traits_json: "{}".into(),
+            gender: None,
+            sexuality: None,
+            appearance_preset: "astra".into(),
+        };
+        let first = assemble_context(
+            &agent,
+            vec![ContextMessage {
+                author: MessageAuthor::User,
+                content: "Planeje uma viagem".into(),
+            }],
+        );
+        let second = assemble_context(
+            &agent,
+            vec![ContextMessage {
+                author: MessageAuthor::User,
+                content: "Explique este erro".into(),
+            }],
+        );
+        assert_ne!(
+            first.last().map(|message| message.content.as_str()),
+            second.last().map(|message| message.content.as_str())
+        );
+    }
+
+    #[test]
+    fn desktop_generation_requests_forward_distinct_current_prompts() {
+        let path = std::env::temp_dir()
+            .join(format!("aip-phase1-prompt-probe-{}", Uuid::now_v7()))
+            .join("aip.sqlite3");
+        let database = Database::initialize(&path).unwrap();
+        let agent = database.snapshot().unwrap().agents.remove(0);
+        let mut payloads = Vec::new();
+        for prompt in [
+            "Responda apenas com: AZUL-17",
+            "Responda apenas com: VERDE-93",
+        ] {
+            let conversation = database
+                .create_conversation(&agent.id, "Nova conversa")
+                .unwrap();
+            let attempt = database
+                .create_message_attempt(&agent.id, &conversation.id, prompt, "ollama:llama3.2:1b")
+                .unwrap();
+            let job = job_from_attempt(&agent.id, &conversation.id, "ollama:llama3.2:1b", &attempt);
+            let request = build_generation_request_from_database(&database, &job).unwrap();
+            let body: serde_json::Value = serde_json::from_str(&request).unwrap();
+            payloads.push(
+                body["params"]["messages"]
+                    .as_array()
+                    .unwrap()
+                    .last()
+                    .unwrap()["content"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+            );
+        }
+        assert_eq!(
+            payloads,
+            [
+                "Responda apenas com: AZUL-17",
+                "Responda apenas com: VERDE-93",
+            ]
+        );
+        assert_ne!(payloads[0], payloads[1]);
+        drop(database);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn coordinator_runtime_dispatch_isolates_sequential_prompts() {
+        let _runtime_guard = crate::runtime::RUNTIME_TEST_LOCK.lock().unwrap();
+        let path = std::env::temp_dir()
+            .join(format!("aip-coordinator-runtime-{}", Uuid::now_v7()))
+            .join("aip.sqlite3");
+        let database = Database::initialize(&path).unwrap();
+        let agent = database.agent(crate::database::ASTRA_ID).unwrap();
+        let conversation = database.main_conversation(&agent.id).unwrap();
+        database
+            .set_selected_model(&agent.id, "ollama:test")
+            .unwrap();
+
+        let source_root = coordinator_fixture_source_root();
+        let runtime = RuntimeController::new(source_root.clone(), false);
+        let coordinator = ChatCoordinator::new_for_test(
+            database.clone(),
+            runtime.clone(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(OrchestrationManager::default())),
+        );
+        let provider = ProviderSnapshot {
+            state: ProviderState::Checking,
+            detail_code: "provider_checking".into(),
+            models: vec![OllamaModel {
+                model_ref: "ollama:test".into(),
+                provider_model_id: "test".into(),
+                display_name: "Test".into(),
+                size: 1,
+                family: None,
+                parameter_size: None,
+                quantization: None,
+                capabilities: vec![],
+            }],
+            refreshed_at: Some(now_millis()),
+        };
+        coordinator.sync_orchestration(&provider);
+        *lock(&coordinator.inner.provider) = provider;
+        runtime.start();
+        wait_for_runtime_state(&runtime, RuntimeState::Ready);
+        // HealthReady triggers provider discovery; the initial Checking state makes
+        // completion observable without depending on the transient state timing.
+        wait_for_provider_state(&coordinator, ProviderState::Available);
+
+        let first = coordinator
+            .send_message(&agent.id, &conversation.id, "Responda apenas com AZUL-17")
+            .unwrap_or_else(|error| {
+                panic!(
+                    "first dispatch failed: {error}; runtime={:?}; diagnostics={:?}; provider={:?}",
+                    runtime.snapshot(),
+                    runtime.diagnostics(),
+                    coordinator.provider_snapshot(),
+                )
+            });
+        wait_for_message_status(
+            &database,
+            &agent.id,
+            &conversation.id,
+            &first.assistant_message_id,
+            MessageStatus::Complete,
+        );
+        wait_for_request_trace(&coordinator, &first.request_id, "terminal_persisted");
+        let first_message = database
+            .messages(&agent.id, &conversation.id)
+            .unwrap()
+            .into_iter()
+            .find(|message| message.id == first.assistant_message_id)
+            .unwrap();
+        assert_eq!(first_message.content, "AZUL-17");
+
+        let second = coordinator
+            .send_message(&agent.id, &conversation.id, "Responda apenas com VERDE-93")
+            .unwrap();
+        wait_for_message_status(
+            &database,
+            &agent.id,
+            &conversation.id,
+            &second.assistant_message_id,
+            MessageStatus::Complete,
+        );
+        let second_message = database
+            .messages(&agent.id, &conversation.id)
+            .unwrap()
+            .into_iter()
+            .find(|message| message.id == second.assistant_message_id)
+            .unwrap();
+        assert_eq!(second_message.content, "VERDE-93");
+        assert_ne!(first_message.content, second_message.content);
+
+        let partial = coordinator
+            .send_message(&agent.id, &conversation.id, "Responda com PARTIAL-FAIL")
+            .unwrap();
+        wait_for_message_status(
+            &database,
+            &agent.id,
+            &conversation.id,
+            &partial.assistant_message_id,
+            MessageStatus::Failed,
+        );
+        let partial_message = database
+            .messages(&agent.id, &conversation.id)
+            .unwrap()
+            .into_iter()
+            .find(|message| message.id == partial.assistant_message_id)
+            .unwrap();
+        assert_eq!(partial_message.content, "partial-prefix");
+        assert_eq!(
+            partial_message.error_code.as_deref(),
+            Some("provider_stream_failed")
+        );
+        wait_for_request_trace(&coordinator, &partial.request_id, "terminal_persisted");
+
+        let many = coordinator
+            .send_message(&agent.id, &conversation.id, "Responda com MANY-CHUNKS")
+            .unwrap();
+        wait_for_message_status_with_timeout(
+            &database,
+            &agent.id,
+            &conversation.id,
+            &many.assistant_message_id,
+            MessageStatus::Complete,
+            Duration::from_secs(30),
+        );
+        let many_message = database
+            .messages(&agent.id, &conversation.id)
+            .unwrap()
+            .into_iter()
+            .find(|message| message.id == many.assistant_message_id)
+            .unwrap();
+        assert_eq!(many_message.content, "x".repeat(1_000));
+        wait_for_request_trace(&coordinator, &many.request_id, "terminal_persisted");
+        let many_trace = lock(&coordinator.inner.request_traces).entries(&many.request_id);
+        let many_finalized = many_trace
+            .iter()
+            .find(|entry| entry.code == "rust.message.finalized")
+            .expect("long stream finalization milestone should be traced");
+        assert_eq!(many_finalized.counters.get("rust_chunks"), Some(&1_000));
+        assert_eq!(many_finalized.counters.get("persisted_chars"), Some(&1_000));
+        assert_eq!(many_finalized.counters.get("persisted_batches"), Some(&63));
+
+        for request_id in [&first.request_id, &second.request_id] {
+            wait_for_request_trace(&coordinator, request_id, "runtime_accepted");
+            wait_for_request_trace(&coordinator, request_id, "terminal_persisted");
+            let trace = lock(&coordinator.inner.request_traces).entries(request_id);
+            let codes = trace
+                .iter()
+                .map(|entry| entry.code.as_str())
+                .collect::<Vec<_>>();
+            assert!(codes.contains(&"request_written"));
+            assert!(codes.contains(&"runtime_accepted"));
+            assert!(codes.contains(&"generation_started"));
+            assert!(codes.contains(&"terminal_persisted"));
+            let finalized = trace
+                .iter()
+                .find(|entry| entry.code == "rust.message.finalized")
+                .expect("finalization milestone should be traced");
+            assert_eq!(finalized.counters.get("rust_chunks"), Some(&1));
+            let expected_chars = if request_id == &first.request_id {
+                7
+            } else {
+                8
+            };
+            assert_eq!(
+                finalized.counters.get("persisted_chars"),
+                Some(&(expected_chars as u64))
+            );
+            let finalized_index = trace
+                .iter()
+                .position(|entry| entry.code == "rust.message.finalized")
+                .unwrap();
+            let visible_index = trace
+                .iter()
+                .position(|entry| entry.code == "frontend.message.visible")
+                .unwrap();
+            assert!(finalized_index < visible_index);
+        }
+
+        runtime.shutdown();
+        drop(database);
+        let _ = fs::remove_dir_all(path.parent().unwrap());
+        let _ = fs::remove_dir_all(source_root);
+    }
+
+    fn coordinator_fixture_source_root() -> PathBuf {
+        const RUNTIME: &str = r#"
+import json
+import sys
+
+def write(value):
+    sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+def event(request, kind, sequence, content=None, error_code=None):
+    value = {
+        "protocolVersion": 1,
+        "event": kind,
+        "requestId": request["id"],
+        "agentId": request["params"]["agentId"],
+        "conversationId": request["params"]["conversationId"],
+        "assistantMessageId": request["params"]["assistantMessageId"],
+        "sequence": sequence,
+    }
+    if content is not None:
+        value["content"] = content
+    if error_code is not None:
+        value["errorCode"] = error_code
+    write(value)
+
+for raw in sys.stdin:
+    request = json.loads(raw)
+    method = request["method"]
+    if method == "runtime.health":
+        write({"protocolVersion": 1, "id": request["id"], "result": {"name": "aip-runtime", "status": "ready", "protocolVersion": 1}})
+    elif method == "runtime.shutdown":
+        write({"protocolVersion": 1, "id": request["id"], "result": {"status": "stopping"}})
+        raise SystemExit(0)
+    elif method == "provider.discover":
+        write({"protocolVersion": 1, "id": request["id"], "result": {"provider": "ollama", "state": "available", "models": [{"ref": "ollama:test", "providerModelId": "test", "displayName": "Test", "size": 1, "capabilities": []}]}})
+    elif method == "generation.start":
+        write({"protocolVersion": 1, "id": request["id"], "result": {"status": "accepted"}})
+        event(request, "generation.started", 0)
+        prompt = request["params"]["messages"][-1]["content"]
+        if "PARTIAL-FAIL" in prompt:
+            event(request, "generation.chunk", 1, "partial-")
+            event(request, "generation.chunk", 2, "prefix")
+            event(request, "generation.failed", 2, error_code="provider_stream_failed")
+        elif "MANY-CHUNKS" in prompt:
+            for sequence in range(1, 1001):
+                event(request, "generation.chunk", sequence, "x")
+            event(request, "generation.complete", 1000)
+        else:
+            marker = "AZUL-17" if "AZUL-17" in prompt else ("VERDE-93" if "VERDE-93" in prompt else "TITULO")
+            event(request, "generation.chunk", 1, marker)
+            event(request, "generation.complete", 1)
+    elif method == "generation.cancel":
+        write({"protocolVersion": 1, "id": request["id"], "error": {"code": "generation_not_active"}})
+"#;
+        let root = std::env::temp_dir().join(format!(
+            "aip-coordinator-runtime-fixture-{}",
+            Uuid::now_v7()
+        ));
+        let package = root.join("aip_runtime");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("__init__.py"), "").unwrap();
+        fs::write(package.join("__main__.py"), RUNTIME).unwrap();
+        root
+    }
+
+    fn wait_for_runtime_state(runtime: &RuntimeController, expected: RuntimeState) {
+        // CI Windows runners can cold-start the Python runtime well beyond the
+        // interactive local path; keep this assertion bounded without making
+        // the test sensitive to that startup variance.
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            if runtime.snapshot().state == expected {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!("runtime did not reach expected state");
+    }
+
+    fn wait_for_message_status(
+        database: &Database,
+        agent_id: &str,
+        conversation_id: &str,
+        message_id: &str,
+        expected: MessageStatus,
+    ) {
+        wait_for_message_status_with_timeout(
+            database,
+            agent_id,
+            conversation_id,
+            message_id,
+            expected,
+            Duration::from_secs(10),
+        );
+    }
+
+    fn wait_for_message_status_with_timeout(
+        database: &Database,
+        agent_id: &str,
+        conversation_id: &str,
+        message_id: &str,
+        expected: MessageStatus,
+        timeout: Duration,
+    ) {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if database
+                .messages(agent_id, conversation_id)
+                .unwrap()
+                .iter()
+                .any(|message| message.id == message_id && message.status == expected)
+            {
+                return;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        panic!("message did not reach expected status");
+    }
+
+    fn wait_for_provider_state(coordinator: &ChatCoordinator, expected: ProviderState) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if coordinator.provider_snapshot().state == expected {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!(
+            "provider did not reach expected state {expected:?}; actual={:?}",
+            coordinator.provider_snapshot().state
+        );
+    }
+
+    fn wait_for_request_trace(
+        coordinator: &ChatCoordinator,
+        request_id: &str,
+        expected_code: &'static str,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if lock(&coordinator.inner.request_traces)
+                .entries(request_id)
+                .iter()
+                .any(|entry| entry.code == expected_code)
+            {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!("request trace did not reach expected state");
+    }
+
+    #[test]
+    fn generated_title_output_is_bounded_and_plain() {
+        assert_eq!(
+            sanitize_generated_title(" Título: \"Planejamento do litoral\"\n"),
+            Some("Planejamento do litoral".into())
+        );
+        assert_eq!(
+            sanitize_generated_title("“Planejamento do litoral”"),
+            Some("Planejamento do litoral".into())
+        );
+        assert_eq!(sanitize_generated_title("\n\t"), None);
+        assert!(
+            sanitize_generated_title(&"x".repeat(100))
+                .unwrap()
+                .chars()
+                .count()
+                <= 64
+        );
+    }
+
+    #[test]
     #[ignore = "requires a local Ollama llama3.2:1b model"]
     fn desktop_equivalent_persisted_generation_reaches_runtime_and_persists() {
+        let _runtime_guard = crate::runtime::RUNTIME_TEST_LOCK.lock().unwrap();
         let path = std::env::temp_dir()
             .join(format!("aip-phase1-provider-probe-{}", Uuid::now_v7()))
             .join("aip.sqlite3");
         let database = Database::initialize(&path).unwrap();
         let agent = database.snapshot().unwrap().agents.remove(0);
         let conversation = database.main_conversation(&agent.id).unwrap();
+        let model = std::env::var("AIP_OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2:1b".into());
+        let model_ref = format!("ollama:{model}");
         let completed = database
             .create_message_attempt(
                 &agent.id,
                 &conversation.id,
                 "Synthetic completed user",
-                "ollama:llama3.2:1b",
+                &model_ref,
             )
             .unwrap();
         database
@@ -2773,7 +5629,7 @@ mod tests {
                     &agent.id,
                     &conversation.id,
                     "Synthetic terminal user",
-                    "ollama:llama3.2:1b",
+                    &model_ref,
                 )
                 .unwrap();
             database
@@ -2786,9 +5642,9 @@ mod tests {
                 .unwrap();
         }
         let fresh = database
-            .create_message_attempt(&agent.id, &conversation.id, "ping", "ollama:llama3.2:1b")
+            .create_message_attempt(&agent.id, &conversation.id, "ping", &model_ref)
             .unwrap();
-        let job = job_from_attempt(&agent.id, &conversation.id, "ollama:llama3.2:1b", &fresh);
+        let job = job_from_attempt(&agent.id, &conversation.id, &model_ref, &fresh);
         let request = build_generation_request_from_database(&database, &job).unwrap();
         database
             .mark_streaming(&fresh.assistant_message_id, &fresh.request_id)
@@ -2803,7 +5659,7 @@ mod tests {
         runtime.send(request).unwrap();
 
         let mut chunks = 0;
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(120);
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let notice = receiver.recv_timeout(remaining).unwrap();
