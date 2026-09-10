@@ -1571,9 +1571,6 @@ impl ChatCoordinator {
             .get(agent_id)
             .map(|chat| chat.conversation.id.clone());
         let Some(conversation_id) = conversation_id else {
-            lock(&self.inner.temporary_chats)
-                .converted_agents
-                .remove(agent_id);
             return Ok(());
         };
         let mut queue = lock(&self.inner.queue);
@@ -4002,7 +3999,8 @@ mod tests {
             },
         );
         store.converted_agents.insert("astra".into());
-        store.conversations.remove("astra");
+        clear_temporary_chat(&mut store, "astra");
+        assert!(store.converted_agents.contains("astra"));
 
         assert_eq!(
             ensure_temporary_chat(&mut store, "astra").map(|_| ()),
