@@ -52,7 +52,7 @@ before the new manual test. It:
 
 ## Native generation diagnostic trace
 
-Build `0.2.3.2` keeps a bounded, content-free NDJSON trace for the next Owner smoke at
+Build `0.2.3.3` keeps a bounded, content-free NDJSON trace for the next Owner smoke at
 `%LOCALAPPDATA%\br.dev.biel.aip\diagnostics\generation-trace.ndjson` (the exact parent may
 follow the installed identifier). Each record carries the request ID, conversation/branch/model
 metadata when known, a lifecycle code, sequence, terminal error code, and timestamp. Prompt bodies,
