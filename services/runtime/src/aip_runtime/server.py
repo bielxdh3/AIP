@@ -299,9 +299,7 @@ class RuntimeServer:
                     counters=self._stream_counters(active),
                 )
             finally:
-                with self._active_lock:
-                    if self._active is active:
-                        self._active = None
+                terminal_emitted = False
                 try:
                     self._event(
                         active,
@@ -310,25 +308,38 @@ class RuntimeServer:
                         error_code=error_code,
                     )
                     active.runtime_terminal_emitted += 1
-                    self._trace(
-                        "runtime.terminal.emitted",
-                        request_id=active.request_id,
-                        model=str(params.get("model", "")),
-                        error_code=error_code,
-                        counters=self._stream_counters(active),
-                    )
-                    if terminal == "generation.complete":
-                        self._trace(
-                            "ollama.request.completed",
-                            request_id=active.request_id,
-                            model=str(params.get("model", "")),
-                            counters=self._stream_counters(active),
-                        )
+                    terminal_emitted = True
                 except Exception:
                     self._diagnostic("runtime_stdout_write_failed")
                 finally:
-                    with self._generation_lock:
-                        self._generation_workers.discard(threading.current_thread())
+                    # The terminal event is the handoff boundary. Clear the slot immediately
+                    # after that write so a following generation is not stranded behind the
+                    # lower-priority stderr/trace accounting work.
+                    with self._active_lock:
+                        if self._active is active:
+                            self._active = None
+                if terminal_emitted:
+                    try:
+                        self._trace(
+                            "runtime.terminal.emitted",
+                            request_id=active.request_id,
+                            model=str(params.get("model", "")),
+                            error_code=error_code,
+                            counters=self._stream_counters(active),
+                        )
+                        if terminal == "generation.complete":
+                            self._trace(
+                                "ollama.request.completed",
+                                request_id=active.request_id,
+                                model=str(params.get("model", "")),
+                                counters=self._stream_counters(active),
+                            )
+                    except Exception:
+                        self._diagnostic("runtime_stdout_write_failed")
+                else:
+                    self._diagnostic("runtime_terminal_event_failed")
+                with self._generation_lock:
+                    self._generation_workers.discard(threading.current_thread())
 
         worker = threading.Thread(target=run, name="aip-generation", daemon=False)
         active.thread = worker

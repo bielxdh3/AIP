@@ -89,6 +89,8 @@ const TRACE_COUNTER_KEYS: &[&str] = &[
     "rust_characters",
     "persisted_bytes",
     "persisted_chars",
+    "persisted_batches",
+    "heartbeat_max_latency_ms",
 ];
 
 enum RuntimeCommand {
@@ -110,6 +112,7 @@ pub struct RuntimeController {
     command_sender: Arc<Mutex<Option<mpsc::Sender<RuntimeCommand>>>>,
     subscribers: Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
     diagnostics: Arc<Mutex<RuntimeDiagnostics>>,
+    process_id: Arc<Mutex<Option<u32>>>,
     source_root: PathBuf,
 }
 
@@ -131,12 +134,17 @@ impl RuntimeController {
             command_sender: Arc::new(Mutex::new(None)),
             subscribers: Arc::new(Mutex::new(Vec::new())),
             diagnostics: Arc::new(Mutex::new(RuntimeDiagnostics::default())),
+            process_id: Arc::new(Mutex::new(None)),
             source_root,
         }
     }
 
     pub fn snapshot(&self) -> RuntimeStatus {
         lock(&self.status).clone()
+    }
+
+    pub(crate) fn process_id(&self) -> Option<u32> {
+        *lock(&self.process_id)
     }
 
     pub fn subscribe(&self) -> mpsc::Receiver<RuntimeNotice> {
@@ -186,6 +194,7 @@ impl RuntimeController {
         let source_root = self.source_root.clone();
         let subscribers = Arc::clone(&self.subscribers);
         let diagnostics = Arc::clone(&self.diagnostics);
+        let process_id = Arc::clone(&self.process_id);
         let stored_sender = Arc::clone(&self.command_sender);
         *worker = Some(thread::spawn(move || {
             run_runtime_process(
@@ -195,6 +204,7 @@ impl RuntimeController {
                 command_receiver,
                 subscribers,
                 diagnostics,
+                process_id,
             );
             *lock(&stored_sender) = None;
         }));
@@ -238,6 +248,7 @@ fn run_runtime_process(
     command_receiver: mpsc::Receiver<RuntimeCommand>,
     subscribers: Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
     diagnostics: Arc<Mutex<RuntimeDiagnostics>>,
+    process_id: Arc<Mutex<Option<u32>>>,
 ) {
     let packaged_runtime = !cfg!(debug_assertions)
         || source_root
@@ -295,6 +306,7 @@ fn run_runtime_process(
         unavailable(&status, &subscribers, "python_unavailable");
         return;
     };
+    let _process_id_guard = ProcessIdGuard::set(&process_id, child.id());
     let Some(mut stdin) = child.stdin.take() else {
         let _ = child.kill();
         unavailable(&status, &subscribers, "runtime_stdio_unavailable");
@@ -507,6 +519,25 @@ fn handshake_timeout(packaged_runtime: bool) -> Duration {
         PACKAGED_HANDSHAKE_TIMEOUT
     } else {
         DEVELOPMENT_HANDSHAKE_TIMEOUT
+    }
+}
+
+struct ProcessIdGuard {
+    target: Arc<Mutex<Option<u32>>>,
+}
+
+impl ProcessIdGuard {
+    fn set(target: &Arc<Mutex<Option<u32>>>, process_id: u32) -> Self {
+        *lock(target) = Some(process_id);
+        Self {
+            target: Arc::clone(target),
+        }
+    }
+}
+
+impl Drop for ProcessIdGuard {
+    fn drop(&mut self) {
+        *lock(&self.target) = None;
     }
 }
 

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { PhaseOneState } from "@aip/contracts";
-import { createConversationViewState } from "./conversation-state";
+import {
+  applyPhaseOneEvent,
+  createConversationViewState,
+} from "./conversation-state";
 import { loadIsCurrent, mergeLoadedPhase } from "./use-phase-one";
 
 describe("Phase One load revisions", () => {
@@ -97,5 +100,80 @@ describe("Phase One load revisions", () => {
     expect(terminal.phase.messages[0]?.status).toBe("complete");
     expect(terminal.phase.queue).toEqual([]);
     expect(terminal.lastSequenceByRequest).toEqual({});
+  });
+
+  it("keeps the event order monotonic across interleaved stale snapshots", () => {
+    const baseMessage = {
+      id: "assistant",
+      conversationId: "conversation",
+      agentId: "agent",
+      author: "agent",
+      content: "",
+      status: "streaming",
+    };
+    const baseQueueEntry = {
+      agentId: "agent",
+      requestId: "request",
+      conversationId: "conversation",
+      assistantMessageId: "assistant",
+      active: true,
+      cancellationRequested: false,
+    };
+    const makePhase = (content: string, status = "streaming") =>
+      ({
+        agent: { id: "agent" },
+        conversation: { id: "conversation" },
+        messages: [{ ...baseMessage, content, status }],
+        queue: status === "streaming" ? [baseQueueEntry] : [],
+      }) as unknown as PhaseOneState;
+    const makeChunk = (sequence: number) => ({
+      protocolVersion: 1 as const,
+      eventType: "generation.chunk" as const,
+      requestId: "request",
+      agentId: "agent",
+      conversationId: "conversation",
+      assistantMessageId: "assistant",
+      sequence,
+      content: "x",
+      errorCode: null,
+    });
+
+    let current = createConversationViewState(makePhase(""));
+    for (let sequence = 1; sequence <= 10; sequence += 1) {
+      current = applyPhaseOneEvent(current, makeChunk(sequence));
+    }
+
+    current = mergeLoadedPhase(current, makePhase("x".repeat(5)));
+    expect(current.phase.messages[0]?.content).toHaveLength(10);
+    expect(current.lastSequenceByRequest.request).toBe(10);
+
+    for (let sequence = 11; sequence <= 20; sequence += 1) {
+      current = applyPhaseOneEvent(current, makeChunk(sequence));
+    }
+    current = mergeLoadedPhase(current, makePhase("x".repeat(15)));
+    expect(current.phase.messages[0]?.content).toHaveLength(20);
+    expect(current.lastSequenceByRequest.request).toBe(20);
+
+    current = applyPhaseOneEvent(current, {
+      ...makeChunk(20),
+      eventType: "generation.complete",
+      content: "",
+    });
+
+    const staleGenerating = mergeLoadedPhase(
+      current,
+      makePhase("x".repeat(15), "streaming"),
+    );
+    expect(staleGenerating.phase.messages[0]?.content).toHaveLength(20);
+    expect(staleGenerating.phase.messages[0]?.status).toBe("complete");
+    expect(staleGenerating.phase.queue).toEqual([]);
+    expect(staleGenerating.lastSequenceByRequest).toEqual({});
+
+    const staleTerminal = mergeLoadedPhase(
+      current,
+      makePhase("x".repeat(15), "complete"),
+    );
+    expect(staleTerminal.phase.messages[0]?.content).toHaveLength(20);
+    expect(staleTerminal.phase.messages[0]?.status).toBe("complete");
   });
 });

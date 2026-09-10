@@ -4903,6 +4903,17 @@ input[type="radio"] {
   gap: var(--space-2);
 }
 
+.conversation-liveness {
+  align-self: center;
+  color: var(--color-accent);
+  font-size: var(--type-meta);
+  white-space: nowrap;
+}
+
+.conversation-liveness[data-stalled="true"] {
+  color: var(--color-danger, #c2410c);
+}
+
 .conversation-header-action {
   min-height: var(--control-height);
   padding: var(--space-2) var(--space-3);

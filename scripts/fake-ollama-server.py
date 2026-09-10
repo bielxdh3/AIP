@@ -13,7 +13,7 @@ MARKER = re.compile(r"marker-[A-Za-z0-9_-]{1,64}")
 
 
 class FixtureHandler(BaseHTTPRequestHandler):
-    server_version = "AIPFakeOllama/0.2.3.4"
+    server_version = "AIPFakeOllama/0.2.3.5"
 
     def log_message(self, _format: str, *_args: object) -> None:
         return

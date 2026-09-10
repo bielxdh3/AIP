@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
@@ -48,6 +48,8 @@ const GENERATION_RESPONSE_TIMEOUT: Duration = Duration::from_secs(90);
 const GENERATION_WATCHDOG_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_TITLE_OUTPUT_BYTES: usize = 512;
 const MAX_TITLE_CONTEXT_CHARS: usize = 2_000;
+const STREAM_PERSIST_BATCH_CHUNKS: usize = 16;
+const STREAM_PERSIST_BATCH_BYTES: usize = 4 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GenerationJob {
@@ -96,11 +98,30 @@ struct ActiveGeneration {
     last_sequence: u64,
     output_bytes: usize,
     output_characters: usize,
+    pending_content: String,
+    pending_bytes: usize,
+    pending_characters: usize,
+    pending_chunks: usize,
+    persisted_batches: u64,
     cancellation_requested: bool,
     dispatched_at: Instant,
     last_progress_at: Instant,
     runtime_accepted: bool,
     generation_started: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhaseOneLiveness {
+    pub active_request_id: Option<String>,
+    pub runtime_pid: Option<u32>,
+    pub runtime_state: RuntimeState,
+    pub runtime_detail_code: &'static str,
+    pub active_sequence: Option<u64>,
+    pub last_progress_age_ms: Option<u64>,
+    pub last_heartbeat_ms: Option<i64>,
+    pub max_heartbeat_latency_ms: Option<u64>,
+    pub watchdog_state: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -552,6 +573,8 @@ fn valid_trace_counters(counters: &BTreeMap<String, u64>) -> bool {
                     | "rust_characters"
                     | "persisted_bytes"
                     | "persisted_chars"
+                    | "persisted_batches"
+                    | "heartbeat_max_latency_ms"
             ) && *value <= 2_147_483_647
         })
 }
@@ -560,6 +583,14 @@ fn valid_trace_counters(counters: &BTreeMap<String, u64>) -> bool {
 struct GenerationQueue {
     pending: VecDeque<GenerationJob>,
     active: Option<ActiveGeneration>,
+}
+
+#[derive(Debug)]
+struct PendingStreamBatch {
+    content: String,
+    bytes: usize,
+    characters: usize,
+    chunks: usize,
 }
 
 impl GenerationQueue {
@@ -584,6 +615,11 @@ impl GenerationQueue {
             last_sequence: 0,
             output_bytes: 0,
             output_characters: 0,
+            pending_content: String::new(),
+            pending_bytes: 0,
+            pending_characters: 0,
+            pending_chunks: 0,
+            persisted_batches: 0,
             cancellation_requested: false,
             dispatched_at: Instant::now(),
             last_progress_at: Instant::now(),
@@ -771,6 +807,71 @@ impl GenerationQueue {
         ChunkDecision::Accepted(active.job.clone())
     }
 
+    fn append_pending_content(&mut self, request_id: &str, content: &str) -> bool {
+        let Some(active) = self.active.as_mut() else {
+            return false;
+        };
+        if active.job.request_id != request_id || content.is_empty() {
+            return false;
+        }
+        active.pending_content.push_str(content);
+        active.pending_bytes = active.pending_bytes.saturating_add(content.len());
+        active.pending_characters = active
+            .pending_characters
+            .saturating_add(content.chars().count());
+        active.pending_chunks = active.pending_chunks.saturating_add(1);
+        true
+    }
+
+    fn pending_content_ready(&self, request_id: &str) -> bool {
+        self.active.as_ref().is_some_and(|active| {
+            active.job.request_id == request_id
+                && (active.pending_chunks >= STREAM_PERSIST_BATCH_CHUNKS
+                    || active.pending_bytes >= STREAM_PERSIST_BATCH_BYTES)
+        })
+    }
+
+    fn take_pending_content(&mut self, request_id: &str) -> Option<PendingStreamBatch> {
+        let active = self.active.as_mut()?;
+        if active.job.request_id != request_id || active.pending_content.is_empty() {
+            return None;
+        }
+        Some(PendingStreamBatch {
+            content: std::mem::take(&mut active.pending_content),
+            bytes: std::mem::take(&mut active.pending_bytes),
+            characters: std::mem::take(&mut active.pending_characters),
+            chunks: std::mem::take(&mut active.pending_chunks),
+        })
+    }
+
+    fn restore_pending_content(&mut self, request_id: &str, batch: PendingStreamBatch) -> bool {
+        let Some(active) = self.active.as_mut() else {
+            return false;
+        };
+        if active.job.request_id != request_id {
+            return false;
+        }
+        // No other stream event can enter while the coordinator's persistence guard is held,
+        // so restoring the batch at the front preserves the provider order after a transient
+        // SQLite failure.
+        let mut content = batch.content;
+        content.push_str(&active.pending_content);
+        active.pending_content = content;
+        active.pending_bytes = batch.bytes.saturating_add(active.pending_bytes);
+        active.pending_characters = batch.characters.saturating_add(active.pending_characters);
+        active.pending_chunks = batch.chunks.saturating_add(active.pending_chunks);
+        true
+    }
+
+    fn mark_persisted(&mut self, request_id: &str) -> Option<u64> {
+        let active = self.active.as_mut()?;
+        if active.job.request_id != request_id {
+            return None;
+        }
+        active.persisted_batches = active.persisted_batches.saturating_add(1);
+        Some(active.persisted_batches)
+    }
+
     fn active_counters(&self, request_id: &str) -> Option<BTreeMap<String, u64>> {
         let active = self.active.as_ref()?;
         if active.job.request_id != request_id {
@@ -780,8 +881,17 @@ impl GenerationQueue {
         counters.insert("rust_chunks".into(), active.last_sequence);
         counters.insert("rust_bytes".into(), active.output_bytes as u64);
         counters.insert("rust_characters".into(), active.output_characters as u64);
-        counters.insert("persisted_bytes".into(), active.output_bytes as u64);
-        counters.insert("persisted_chars".into(), active.output_characters as u64);
+        counters.insert(
+            "persisted_bytes".into(),
+            active.output_bytes.saturating_sub(active.pending_bytes) as u64,
+        );
+        counters.insert(
+            "persisted_chars".into(),
+            active
+                .output_characters
+                .saturating_sub(active.pending_characters) as u64,
+        );
+        counters.insert("persisted_batches".into(), active.persisted_batches);
         Some(counters)
     }
 
@@ -857,6 +967,11 @@ struct ChatInner {
     model_detail_requests: Mutex<HashMap<String, String>>,
     send_lock: Mutex<()>,
     scheduler_lock: Mutex<()>,
+    stream_persist_lock: Mutex<()>,
+    dispatch_in_flight: AtomicBool,
+    last_heartbeat_ms: Mutex<Option<i64>>,
+    max_heartbeat_latency_ms: Mutex<Option<u64>>,
+    last_heartbeat_trace_ms: Mutex<Option<i64>>,
     queue: Mutex<GenerationQueue>,
     title_generations: Mutex<HashMap<String, TitleGeneration>>,
     deferred_title_generations: Mutex<VecDeque<GenerationJob>>,
@@ -953,6 +1068,11 @@ impl ChatCoordinator {
                 model_detail_requests: Mutex::new(HashMap::new()),
                 send_lock: Mutex::new(()),
                 scheduler_lock: Mutex::new(()),
+                stream_persist_lock: Mutex::new(()),
+                dispatch_in_flight: AtomicBool::new(false),
+                last_heartbeat_ms: Mutex::new(None),
+                max_heartbeat_latency_ms: Mutex::new(None),
+                last_heartbeat_trace_ms: Mutex::new(None),
                 queue: Mutex::new(GenerationQueue::default()),
                 title_generations: Mutex::new(HashMap::new()),
                 deferred_title_generations: Mutex::new(VecDeque::new()),
@@ -1126,6 +1246,96 @@ impl ChatCoordinator {
 
     pub fn provider_snapshot(&self) -> ProviderSnapshot {
         lock(&self.inner.provider).clone()
+    }
+
+    fn liveness_for_agent(&self, agent_id: Option<&str>) -> PhaseOneLiveness {
+        let runtime = self.inner.runtime.snapshot();
+        let (active_request_id, active_sequence, last_progress_age_ms, watchdog_state) = {
+            let queue = lock(&self.inner.queue);
+            match queue
+                .active
+                .as_ref()
+                .filter(|active| agent_id.is_none_or(|id| active.job.agent_id == id))
+            {
+                None => (None, None, None, "idle"),
+                Some(active) => {
+                    let age_ms = Instant::now()
+                        .saturating_duration_since(active.last_progress_at)
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64;
+                    let state = if active.cancellation_requested {
+                        "cancelling"
+                    } else if active.generation_started {
+                        "streaming"
+                    } else if active.runtime_accepted {
+                        "accepted"
+                    } else {
+                        "awaiting_runtime"
+                    };
+                    (
+                        Some(active.job.request_id.clone()),
+                        Some(active.last_sequence),
+                        Some(age_ms),
+                        state,
+                    )
+                }
+            }
+        };
+        PhaseOneLiveness {
+            active_request_id,
+            runtime_pid: self.inner.runtime.process_id(),
+            runtime_state: runtime.state,
+            runtime_detail_code: runtime.detail_code,
+            active_sequence,
+            last_progress_age_ms,
+            last_heartbeat_ms: *lock(&self.inner.last_heartbeat_ms),
+            max_heartbeat_latency_ms: *lock(&self.inner.max_heartbeat_latency_ms),
+            watchdog_state,
+        }
+    }
+
+    pub fn heartbeat(&self, agent_id: &str, latency_ms: Option<u64>) -> PhaseOneLiveness {
+        let now = now_millis();
+        *lock(&self.inner.last_heartbeat_ms) = Some(now);
+        if let Some(latency_ms) = latency_ms {
+            let mut maximum = lock(&self.inner.max_heartbeat_latency_ms);
+            if maximum.is_none_or(|current| latency_ms > current) {
+                *maximum = Some(latency_ms);
+            }
+        }
+        let (request_id, counters, trace_due) = {
+            let queue = lock(&self.inner.queue);
+            let request_id = queue
+                .active
+                .as_ref()
+                .filter(|active| active.job.agent_id == agent_id)
+                .map(|active| active.job.request_id.clone());
+            let counters = request_id
+                .as_deref()
+                .and_then(|request_id| queue.active_counters(request_id));
+            let mut last_trace = lock(&self.inner.last_heartbeat_trace_ms);
+            let trace_due = last_trace.is_none_or(|previous| now.saturating_sub(previous) >= 2_000);
+            if trace_due {
+                *last_trace = Some(now);
+            }
+            (request_id, counters, trace_due)
+        };
+        if trace_due {
+            if let Some(request_id) = request_id {
+                let mut counters = counters.unwrap_or_default();
+                if let Some(maximum) = *lock(&self.inner.max_heartbeat_latency_ms) {
+                    counters.insert("heartbeat_max_latency_ms".into(), maximum);
+                }
+                self.trace_with_counters(
+                    &request_id,
+                    "liveness.heartbeat",
+                    None,
+                    None,
+                    Some(&counters),
+                );
+            }
+        }
+        self.liveness_for_agent(Some(agent_id))
     }
 
     pub fn temporary_state(&self, agent_id: &str) -> Result<PhaseOneState, &'static str> {
@@ -1360,6 +1570,7 @@ impl ChatCoordinator {
             assistant_message_id: attempt.assistant_message_id,
         };
         self.emit_refresh(Some(agent_id));
+        drop(_send_guard);
         self.dispatch_next();
         Ok(result)
     }
@@ -1487,6 +1698,7 @@ impl ChatCoordinator {
         }
         self.trace(&attempt.request_id, "request_enqueued", None, None);
         self.emit_refresh(Some(agent_id));
+        drop(_send_guard);
         self.dispatch_next();
         Ok(SendMessageResult {
             request_id: attempt.request_id,
@@ -1632,6 +1844,7 @@ impl ChatCoordinator {
         self.trace(&request_id, "temporary_request_enqueued", None, None);
         self.trace(&request_id, "chat.queue.enqueued", None, None);
         self.emit_refresh(Some(agent_id));
+        drop(_send_guard);
         self.dispatch_next();
         Ok(SendMessageResult {
             request_id,
@@ -1676,20 +1889,24 @@ impl ChatCoordinator {
 
     pub fn enter_safe_mode(&self, error_code: &'static str) {
         self.inner.safe_mode.store(true, Ordering::SeqCst);
-        let _scheduler_guard = lock(&self.inner.scheduler_lock);
-        self.cancel_all_locked(error_code);
+        self.cancel_all(error_code);
     }
 
-    fn cancel_all_locked(&self, error_code: &'static str) {
-        let mut queue = lock(&self.inner.queue);
-        if let Some(request_id) = queue.active_request().map(str::to_string) {
+    fn cancel_all(&self, error_code: &'static str) {
+        let active_request_id = lock(&self.inner.queue).active_request().map(str::to_string);
+        if let Some(request_id) = active_request_id {
             let cancel_id = format!("cancel-{}", uuid::Uuid::now_v7());
             if let Ok(request) = cancellation_request(&cancel_id, &request_id) {
                 let _ = self.inner.runtime.send(request);
             }
         }
-        let jobs = queue.clear();
-        drop(queue);
+        let jobs = {
+            let _persist_guard = lock(&self.inner.stream_persist_lock);
+            if let Some(request_id) = lock(&self.inner.queue).active_request().map(str::to_string) {
+                let _ = self.flush_pending_content_locked(&request_id);
+            }
+            lock(&self.inner.queue).clear()
+        };
         for job in jobs {
             let _ = self.finish_job(&job, MessageStatus::Cancelled, Some(error_code));
             self.emit_terminal(&job, "generation.cancelled", Some(error_code));
@@ -1795,13 +2012,12 @@ impl ChatCoordinator {
     }
 
     fn recover_stalled_cancellation(&self, request_id: &str) {
-        let job = {
-            let mut queue = lock(&self.inner.queue);
-            if !queue.cancellation_is_pending(request_id) {
-                return;
-            }
-            queue.finish_active(request_id)
-        };
+        let _persist_guard = lock(&self.inner.stream_persist_lock);
+        if !lock(&self.inner.queue).cancellation_is_pending(request_id) {
+            return;
+        }
+        let _ = self.flush_pending_content_locked(request_id);
+        let job = lock(&self.inner.queue).finish_active(request_id);
         let Some(job) = job else {
             return;
         };
@@ -2050,6 +2266,7 @@ impl ChatCoordinator {
                 let Some(sequence) = event.sequence else {
                     return;
                 };
+                let _persist_guard = lock(&self.inner.stream_persist_lock);
                 let mut queue = lock(&self.inner.queue);
                 let decision = queue.accept_chunk_with_characters(
                     &request_id,
@@ -2057,9 +2274,6 @@ impl ChatCoordinator {
                     content.len(),
                     content.chars().count(),
                 );
-                let first_chunk_counters = (sequence == 1)
-                    .then(|| queue.active_counters(&request_id))
-                    .flatten();
                 drop(queue);
                 let job = match decision {
                     ChunkDecision::Accepted(job) => job,
@@ -2068,33 +2282,56 @@ impl ChatCoordinator {
                         return;
                     }
                     ChunkDecision::OutputLimitExceeded => {
+                        drop(_persist_guard);
                         self.fail_active(&request_id, "provider_output_too_large");
                         return;
                     }
                 };
-                if self.append_job_chunk(&job, content).is_ok() {
+                let mut persistence_failed = false;
+                let mut flushed = false;
+                if job.temporary {
+                    persistence_failed = self.append_job_chunk(&job, content).is_err();
+                    flushed = !persistence_failed;
+                } else {
+                    let ready = {
+                        let mut queue = lock(&self.inner.queue);
+                        let appended = queue.append_pending_content(&request_id, content);
+                        appended && queue.pending_content_ready(&request_id)
+                    };
+                    if ready {
+                        match self.flush_pending_content_locked(&request_id) {
+                            Ok(was_flushed) => flushed = was_flushed,
+                            Err(_) => persistence_failed = true,
+                        }
+                    }
+                }
+                if !persistence_failed {
                     if sequence == 1 {
                         self.trace(&request_id, "first_chunk", Some(sequence), None);
+                        let counters = lock(&self.inner.queue).active_counters(&request_id);
                         self.trace_with_counters(
                             &request_id,
                             "rust.chunk.received",
                             Some(sequence),
                             None,
-                            first_chunk_counters.as_ref(),
-                        );
-                        self.trace_with_counters(
-                            &request_id,
-                            "rust.chunk.persisted",
-                            Some(sequence),
-                            None,
-                            first_chunk_counters.as_ref(),
+                            counters.as_ref(),
                         );
                     }
-                    self.trace(&request_id, "chunk_persisted", Some(sequence), None);
+                    self.trace(
+                        &request_id,
+                        if flushed {
+                            "chunk_persisted"
+                        } else {
+                            "chunk_received"
+                        },
+                        Some(sequence),
+                        None,
+                    );
                     self.trace(&request_id, "generation.chunk", Some(sequence), None);
                     self.emit(event);
                 } else {
                     self.trace(&request_id, "persistence_failed", Some(sequence), None);
+                    drop(_persist_guard);
                     self.fail_active(&request_id, "persistence_failed");
                 }
             }
@@ -2303,7 +2540,6 @@ impl ChatCoordinator {
     }
 
     fn recover_stalled_title_cancellation(&self, request_id: &str) {
-        let _scheduler_guard = lock(&self.inner.scheduler_lock);
         let mut requests = lock(&self.inner.title_generations);
         if !requests
             .get(request_id)
@@ -2338,7 +2574,6 @@ impl ChatCoordinator {
     }
 
     fn fail_timed_out_title_generation(&self, request_id: &str, code: &'static str) {
-        let _scheduler_guard = lock(&self.inner.scheduler_lock);
         if lock(&self.inner.title_generations)
             .remove(request_id)
             .is_none()
@@ -2365,9 +2600,45 @@ impl ChatCoordinator {
         }
     }
 
+    // Keep the stream guard around only ordered flush/queue removal. Final DB status, event
+    // delivery, and optional title scheduling run after the guard is released.
     fn finish_runtime_terminal(
         &self,
         request_id: &str,
+        terminal: RequestTerminalState,
+        error_code: Option<&str>,
+        event: PhaseOneEvent,
+    ) {
+        let (job, counters) = {
+            let _persist_guard = lock(&self.inner.stream_persist_lock);
+            if self.flush_pending_content_locked(request_id).is_err() {
+                drop(_persist_guard);
+                self.fail_active(request_id, "persistence_failed");
+                return;
+            }
+            let mut queue = lock(&self.inner.queue);
+            let counters = queue.active_counters(request_id);
+            let job = queue.finish_active(request_id);
+            (job, counters)
+        };
+        let Some(job) = job else {
+            return;
+        };
+        self.trace_with_counters(
+            request_id,
+            "rust.terminal.received",
+            event.sequence,
+            error_code,
+            counters.as_ref(),
+        );
+        self.finish_active(request_id, job, counters, terminal, error_code, event);
+    }
+
+    fn finish_active(
+        &self,
+        request_id: &str,
+        job: GenerationJob,
+        counters: Option<BTreeMap<String, u64>>,
         terminal: RequestTerminalState,
         error_code: Option<&str>,
         event: PhaseOneEvent,
@@ -2379,30 +2650,6 @@ impl ChatCoordinator {
                 MessageStatus::Failed
             }
         };
-        let counters = lock(&self.inner.queue).active_counters(request_id);
-        self.trace_with_counters(
-            request_id,
-            "rust.terminal.received",
-            event.sequence,
-            error_code,
-            counters.as_ref(),
-        );
-        self.finish_active(request_id, status, error_code, event);
-    }
-
-    fn finish_active(
-        &self,
-        request_id: &str,
-        status: MessageStatus,
-        error_code: Option<&str>,
-        event: PhaseOneEvent,
-    ) {
-        let mut queue = lock(&self.inner.queue);
-        let counters = queue.active_counters(request_id);
-        let Some(job) = queue.finish_active(request_id) else {
-            return;
-        };
-        drop(queue);
         let persisted = self.finish_job(&job, status, error_code);
         if persisted.is_ok() {
             let terminal_sequence = event.sequence;
@@ -2461,8 +2708,19 @@ impl ChatCoordinator {
     }
 
     fn fail_active(&self, request_id: &str, code: &str) {
-        let Some(job) = lock(&self.inner.queue).finish_active(request_id) else {
+        let (job, flush_failed) = {
+            let _persist_guard = lock(&self.inner.stream_persist_lock);
+            let flush_failed = self.flush_pending_content_locked(request_id).is_err();
+            let job = lock(&self.inner.queue).finish_active(request_id);
+            (job, flush_failed)
+        };
+        let Some(job) = job else {
             return;
+        };
+        let code = if flush_failed {
+            "persistence_failed"
+        } else {
+            code
         };
         self.trace(request_id, "queue_finalized", None, Some(code));
         self.trace(request_id, "request_failed", None, Some(code));
@@ -2473,8 +2731,12 @@ impl ChatCoordinator {
     }
 
     fn fail_timed_out_generation(&self, request_id: &str, code: &'static str) {
-        let _scheduler_guard = lock(&self.inner.scheduler_lock);
-        let Some(job) = lock(&self.inner.queue).finish_active(request_id) else {
+        let job = {
+            let _persist_guard = lock(&self.inner.stream_persist_lock);
+            let _ = self.flush_pending_content_locked(request_id);
+            lock(&self.inner.queue).finish_active(request_id)
+        };
+        let Some(job) = job else {
             return;
         };
         self.trace(request_id, "queue_finalized", None, Some(code));
@@ -2500,8 +2762,13 @@ impl ChatCoordinator {
     }
 
     fn fail_all(&self, code: &str) {
-        let _scheduler_guard = lock(&self.inner.scheduler_lock);
-        let jobs = lock(&self.inner.queue).clear();
+        let jobs = {
+            let _persist_guard = lock(&self.inner.stream_persist_lock);
+            if let Some(request_id) = lock(&self.inner.queue).active_request().map(str::to_string) {
+                let _ = self.flush_pending_content_locked(&request_id);
+            }
+            lock(&self.inner.queue).clear()
+        };
         lock(&self.inner.title_generations).clear();
         lock(&self.inner.deferred_title_generations).clear();
         for job in jobs {
@@ -2595,11 +2862,11 @@ impl ChatCoordinator {
     }
 
     fn schedule_title_generation_or_defer(&self, job: &GenerationJob) {
-        let _scheduler_guard = lock(&self.inner.scheduler_lock);
         if self.inner.safe_mode.load(Ordering::SeqCst) {
             return;
         }
-        if lock(&self.inner.queue).len() > 0 {
+        let should_defer = lock(&self.inner.queue).len() > 0;
+        if should_defer {
             let mut deferred = lock(&self.inner.deferred_title_generations);
             if !deferred
                 .iter()
@@ -2612,9 +2879,58 @@ impl ChatCoordinator {
         self.schedule_title_generation(job);
     }
 
+    fn cancel_title_generations_for_pending_work(&self) -> bool {
+        if lock(&self.inner.queue).pending.is_empty() {
+            return false;
+        }
+        let request_ids = {
+            let mut requests = lock(&self.inner.title_generations);
+            requests
+                .iter_mut()
+                .filter_map(|(request_id, request)| {
+                    if request.cancellation_requested {
+                        None
+                    } else {
+                        request.cancellation_requested = true;
+                        Some(request_id.clone())
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        for request_id in &request_ids {
+            self.cancel_title_generation(request_id);
+        }
+        !request_ids.is_empty()
+    }
+
     fn dispatch_next(&self) {
-        let _scheduler_guard = lock(&self.inner.scheduler_lock);
-        self.dispatch_next_locked();
+        if self
+            .inner
+            .dispatch_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        self.dispatch_next_loop();
+        self.inner
+            .dispatch_in_flight
+            .store(false, Ordering::Release);
+        // A sender can enqueue in the small window while the dispatcher is clearing its
+        // in-flight flag. Re-check once after release so that enqueue is never stranded behind
+        // a dispatcher that observed an empty queue just before the enqueue.
+        let queue_ready = {
+            let queue = lock(&self.inner.queue);
+            queue.active.is_none() && !queue.pending.is_empty()
+        };
+        let deferred_title_ready = !lock(&self.inner.deferred_title_generations).is_empty();
+        let retry = self.inner.runtime.snapshot().state == RuntimeState::Ready
+            && !self.inner.safe_mode.load(Ordering::SeqCst)
+            && lock(&self.inner.title_generations).is_empty()
+            && (queue_ready || deferred_title_ready);
+        if retry {
+            self.dispatch_next();
+        }
     }
 
     fn enqueue_job(&self, job: &GenerationJob) -> Result<(), &'static str> {
@@ -2629,9 +2945,12 @@ impl ChatCoordinator {
         result
     }
 
-    fn dispatch_next_locked(&self) {
+    fn dispatch_next_loop(&self) {
         loop {
             if !lock(&self.inner.title_generations).is_empty() {
+                // User generations have priority over metadata-only title work. A title request
+                // already occupying the single runtime is cancelled as soon as FIFO work waits.
+                self.cancel_title_generations_for_pending_work();
                 return;
             }
             if self.inner.runtime.snapshot().state != RuntimeState::Ready
@@ -2743,6 +3062,52 @@ impl ChatCoordinator {
             .database
             .mark_streaming(&job.assistant_message_id, &job.request_id)
             .map_err(|_| "persistence_failed")
+    }
+
+    /// Flush the bounded durable stream buffer. The caller must hold
+    /// `stream_persist_lock`; this keeps a watchdog/terminal transition from overtaking a
+    /// chunk write without holding the scheduler lock across SQLite I/O.
+    fn flush_pending_content_locked(&self, request_id: &str) -> Result<bool, &'static str> {
+        let Some(batch) = lock(&self.inner.queue).take_pending_content(request_id) else {
+            return Ok(false);
+        };
+        let job = {
+            let queue = lock(&self.inner.queue);
+            queue
+                .active
+                .as_ref()
+                .filter(|active| active.job.request_id == request_id)
+                .map(|active| active.job.clone())
+        };
+        let Some(job) = job else {
+            return Ok(false);
+        };
+        let persisted = self.inner.database.append_assistant_chunks(
+            &job.assistant_message_id,
+            &job.request_id,
+            &batch.content,
+        );
+        if persisted.is_err() {
+            let _ = lock(&self.inner.queue).restore_pending_content(request_id, batch);
+            return Err("persistence_failed");
+        }
+        let (sequence, counters) = {
+            let mut queue = lock(&self.inner.queue);
+            queue.mark_persisted(request_id);
+            (
+                queue.active.as_ref().map(|active| active.last_sequence),
+                queue.active_counters(request_id),
+            )
+        };
+        self.trace(request_id, "chunk_persisted", sequence, None);
+        self.trace_with_counters(
+            request_id,
+            "rust.chunk.persisted",
+            sequence,
+            None,
+            counters.as_ref(),
+        );
+        Ok(true)
     }
 
     fn append_job_chunk(&self, job: &GenerationJob, content: &str) -> Result<(), &'static str> {
@@ -4954,6 +5319,57 @@ mod tests {
         assert_eq!(second_message.content, "VERDE-93");
         assert_ne!(first_message.content, second_message.content);
 
+        let partial = coordinator
+            .send_message(&agent.id, &conversation.id, "Responda com PARTIAL-FAIL")
+            .unwrap();
+        wait_for_message_status(
+            &database,
+            &agent.id,
+            &conversation.id,
+            &partial.assistant_message_id,
+            MessageStatus::Failed,
+        );
+        let partial_message = database
+            .messages(&agent.id, &conversation.id)
+            .unwrap()
+            .into_iter()
+            .find(|message| message.id == partial.assistant_message_id)
+            .unwrap();
+        assert_eq!(partial_message.content, "partial-prefix");
+        assert_eq!(
+            partial_message.error_code.as_deref(),
+            Some("provider_stream_failed")
+        );
+        wait_for_request_trace(&coordinator, &partial.request_id, "terminal_persisted");
+
+        let many = coordinator
+            .send_message(&agent.id, &conversation.id, "Responda com MANY-CHUNKS")
+            .unwrap();
+        wait_for_message_status_with_timeout(
+            &database,
+            &agent.id,
+            &conversation.id,
+            &many.assistant_message_id,
+            MessageStatus::Complete,
+            Duration::from_secs(30),
+        );
+        let many_message = database
+            .messages(&agent.id, &conversation.id)
+            .unwrap()
+            .into_iter()
+            .find(|message| message.id == many.assistant_message_id)
+            .unwrap();
+        assert_eq!(many_message.content, "x".repeat(1_000));
+        wait_for_request_trace(&coordinator, &many.request_id, "terminal_persisted");
+        let many_trace = lock(&coordinator.inner.request_traces).entries(&many.request_id);
+        let many_finalized = many_trace
+            .iter()
+            .find(|entry| entry.code == "rust.message.finalized")
+            .expect("long stream finalization milestone should be traced");
+        assert_eq!(many_finalized.counters.get("rust_chunks"), Some(&1_000));
+        assert_eq!(many_finalized.counters.get("persisted_chars"), Some(&1_000));
+        assert_eq!(many_finalized.counters.get("persisted_batches"), Some(&63));
+
         for request_id in [&first.request_id, &second.request_id] {
             wait_for_request_trace(&coordinator, request_id, "runtime_accepted");
             wait_for_request_trace(&coordinator, request_id, "terminal_persisted");
@@ -5006,7 +5422,7 @@ def write(value):
     sys.stdout.write(json.dumps(value, separators=(",", ":")) + "\n")
     sys.stdout.flush()
 
-def event(request, kind, sequence, content=None):
+def event(request, kind, sequence, content=None, error_code=None):
     value = {
         "protocolVersion": 1,
         "event": kind,
@@ -5018,6 +5434,8 @@ def event(request, kind, sequence, content=None):
     }
     if content is not None:
         value["content"] = content
+    if error_code is not None:
+        value["errorCode"] = error_code
     write(value)
 
 for raw in sys.stdin:
@@ -5034,9 +5452,18 @@ for raw in sys.stdin:
         write({"protocolVersion": 1, "id": request["id"], "result": {"status": "accepted"}})
         event(request, "generation.started", 0)
         prompt = request["params"]["messages"][-1]["content"]
-        marker = "AZUL-17" if "AZUL-17" in prompt else ("VERDE-93" if "VERDE-93" in prompt else "TITULO")
-        event(request, "generation.chunk", 1, marker)
-        event(request, "generation.complete", 1)
+        if "PARTIAL-FAIL" in prompt:
+            event(request, "generation.chunk", 1, "partial-")
+            event(request, "generation.chunk", 2, "prefix")
+            event(request, "generation.failed", 2, error_code="provider_stream_failed")
+        elif "MANY-CHUNKS" in prompt:
+            for sequence in range(1, 1001):
+                event(request, "generation.chunk", sequence, "x")
+            event(request, "generation.complete", 1000)
+        else:
+            marker = "AZUL-17" if "AZUL-17" in prompt else ("VERDE-93" if "VERDE-93" in prompt else "TITULO")
+            event(request, "generation.chunk", 1, marker)
+            event(request, "generation.complete", 1)
     elif method == "generation.cancel":
         write({"protocolVersion": 1, "id": request["id"], "error": {"code": "generation_not_active"}})
 "#;
@@ -5072,7 +5499,25 @@ for raw in sys.stdin:
         message_id: &str,
         expected: MessageStatus,
     ) {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        wait_for_message_status_with_timeout(
+            database,
+            agent_id,
+            conversation_id,
+            message_id,
+            expected,
+            Duration::from_secs(10),
+        );
+    }
+
+    fn wait_for_message_status_with_timeout(
+        database: &Database,
+        agent_id: &str,
+        conversation_id: &str,
+        message_id: &str,
+        expected: MessageStatus,
+        timeout: Duration,
+    ) {
+        let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if database
                 .messages(agent_id, conversation_id)
