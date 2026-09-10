@@ -37,6 +37,8 @@ use crate::{
 const EVENT_NAME: &str = "phase-one-event";
 const MAX_REQUEST_TRACE_ENTRIES: usize = 24;
 const MAX_RETAINED_REQUEST_TRACES: usize = 16;
+const MAX_PENDING_REQUEST_TRACES: usize = 16;
+const MAX_IGNORED_TEMPORARY_REQUESTS: usize = 32;
 const MAX_TRACE_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_TRACE_CODE_BYTES: usize = 128;
 const CANCELLATION_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
@@ -178,6 +180,13 @@ struct RequestTraceStore {
     order: VecDeque<String>,
     entries: HashMap<String, VecDeque<RequestTraceEntry>>,
     metadata: HashMap<String, RequestTraceMetadata>,
+    // Events that arrive before enqueue/register are kept separately. They become part of the
+    // bounded request trace if registration succeeds, but transient failures cannot evict a
+    // durable request from `order`.
+    pending_order: VecDeque<String>,
+    pending_entries: HashMap<String, VecDeque<RequestTraceEntry>>,
+    ignored_temporary_order: VecDeque<String>,
+    ignored_temporary_requests: HashSet<String>,
 }
 
 #[derive(Clone)]
@@ -216,29 +225,21 @@ impl RequestTraceStore {
         sequence: Option<u64>,
         terminal_code: Option<&str>,
     ) {
-        if !self.entries.contains_key(request_id) {
-            if self.order.len() == MAX_RETAINED_REQUEST_TRACES {
-                if let Some(oldest) = self.order.pop_front() {
-                    self.entries.remove(&oldest);
-                    self.metadata.remove(&oldest);
-                }
-            }
-            self.order.push_back(request_id.to_string());
-            self.entries.insert(request_id.to_string(), VecDeque::new());
+        if self.ignored_temporary_requests.contains(request_id) {
+            return;
         }
-        let trace = self
-            .entries
-            .get_mut(request_id)
-            .expect("request trace exists");
-        if trace.len() == MAX_REQUEST_TRACE_ENTRIES {
-            trace.pop_front();
-        }
-        trace.push_back(RequestTraceEntry {
+        let entry = RequestTraceEntry {
             code: code.to_string(),
             sequence,
             terminal_code: terminal_code.map(str::to_string),
             timestamp_ms: now_millis(),
-        });
+        };
+        if self.metadata.contains_key(request_id) {
+            self.ensure_registered_slot(request_id);
+            self.append_entry(request_id, entry);
+        } else {
+            self.append_pending(request_id, entry);
+        }
     }
 
     fn load(path: &PathBuf) -> Self {
@@ -344,6 +345,21 @@ impl RequestTraceStore {
     }
 
     fn register(&mut self, job: &GenerationJob) {
+        if job.temporary {
+            self.pending_entries.remove(&job.request_id);
+            self.pending_order
+                .retain(|request_id| request_id != &job.request_id);
+            if self.ignored_temporary_order.len() == MAX_IGNORED_TEMPORARY_REQUESTS {
+                if let Some(oldest) = self.ignored_temporary_order.pop_front() {
+                    self.ignored_temporary_requests.remove(&oldest);
+                }
+            }
+            self.ignored_temporary_order
+                .push_back(job.request_id.clone());
+            self.ignored_temporary_requests
+                .insert(job.request_id.clone());
+            return;
+        }
         self.metadata.insert(
             job.request_id.clone(),
             RequestTraceMetadata {
@@ -354,6 +370,60 @@ impl RequestTraceStore {
                 temporary: job.temporary,
             },
         );
+        if let Some(entries) = self.pending_entries.remove(&job.request_id) {
+            self.pending_order
+                .retain(|request_id| request_id != &job.request_id);
+            self.ensure_registered_slot(&job.request_id);
+            for entry in entries {
+                self.append_entry(&job.request_id, entry);
+            }
+        }
+    }
+
+    fn ensure_registered_slot(&mut self, request_id: &str) {
+        if self.entries.contains_key(request_id) {
+            return;
+        }
+        if self.order.len() == MAX_RETAINED_REQUEST_TRACES {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+                self.metadata.remove(&oldest);
+            }
+        }
+        self.order.push_back(request_id.to_string());
+        self.entries.insert(request_id.to_string(), VecDeque::new());
+    }
+
+    fn append_entry(&mut self, request_id: &str, entry: RequestTraceEntry) {
+        let trace = self
+            .entries
+            .get_mut(request_id)
+            .expect("request trace exists");
+        if trace.len() == MAX_REQUEST_TRACE_ENTRIES {
+            trace.pop_front();
+        }
+        trace.push_back(entry);
+    }
+
+    fn append_pending(&mut self, request_id: &str, entry: RequestTraceEntry) {
+        if !self.pending_entries.contains_key(request_id) {
+            if self.pending_order.len() == MAX_PENDING_REQUEST_TRACES {
+                if let Some(oldest) = self.pending_order.pop_front() {
+                    self.pending_entries.remove(&oldest);
+                }
+            }
+            self.pending_order.push_back(request_id.to_string());
+            self.pending_entries
+                .insert(request_id.to_string(), VecDeque::new());
+        }
+        let trace = self
+            .pending_entries
+            .get_mut(request_id)
+            .expect("pending request trace exists");
+        if trace.len() == MAX_REQUEST_TRACE_ENTRIES {
+            trace.pop_front();
+        }
+        trace.push_back(entry);
     }
 
     fn persist(&self, path: &PathBuf) {
@@ -3867,6 +3937,7 @@ mod tests {
     #[test]
     fn request_trace_is_bounded_and_content_free() {
         let mut traces = RequestTraceStore::default();
+        traces.register(&job("request", "astra"));
         for index in 0..(MAX_REQUEST_TRACE_ENTRIES + 3) {
             traces.record("request", "chunk_persisted", Some(index as u64), None);
         }
@@ -3875,9 +3946,43 @@ mod tests {
         assert_eq!(entries[0].sequence, Some(3));
         assert!(entries.iter().all(|entry| entry.code == "chunk_persisted"));
         for index in 0..(MAX_RETAINED_REQUEST_TRACES + 2) {
-            traces.record(&format!("request-{index}"), "request_enqueued", None, None);
+            let request_id = format!("request-{index}");
+            traces.register(&job(&request_id, "astra"));
+            traces.record(&request_id, "request_enqueued", None, None);
         }
         assert!(traces.entries("request").is_empty());
+    }
+
+    #[test]
+    fn unregistered_trace_events_do_not_evict_persistable_history() {
+        let path = std::env::temp_dir().join(format!(
+            "aip-generation-trace-unregistered-{}.ndjson",
+            Uuid::now_v7()
+        ));
+        let mut traces = RequestTraceStore::default();
+        let durable = job("durable-trace-request", "astra");
+        traces.register(&durable);
+        traces.record(&durable.request_id, "database.finalized", None, None);
+        for index in 0..(MAX_RETAINED_REQUEST_TRACES + 4) {
+            let request_id = format!("unregistered-{index}");
+            traces.record(&request_id, "chat.send.received", None, None);
+        }
+        for index in 0..(MAX_RETAINED_REQUEST_TRACES + 4) {
+            let mut temporary = job(&format!("temporary-{index}"), "astra");
+            temporary.temporary = true;
+            traces.register(&temporary);
+            traces.record(&temporary.request_id, "chat.send.received", None, None);
+        }
+
+        assert!(traces
+            .entries(&durable.request_id)
+            .iter()
+            .any(|entry| { entry.code == "database.finalized" }));
+        traces.persist(&path);
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("durable-trace-request"));
+        let _ = fs::remove_file(path);
     }
 
     #[test]
