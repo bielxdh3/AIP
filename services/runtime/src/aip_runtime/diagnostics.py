@@ -52,6 +52,8 @@ TRACE_COUNTER_KEYS = frozenset(
         "rust_characters",
         "persisted_bytes",
         "persisted_chars",
+        "persisted_batches",
+        "heartbeat_max_latency_ms",
     }
 )
 MAX_TRACE_COUNTER = 2_147_483_647

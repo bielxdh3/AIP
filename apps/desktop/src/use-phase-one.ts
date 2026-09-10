@@ -53,12 +53,24 @@ export function mergeLoadedPhase(
     current.phase.queue.map((entry) => [entry.assistantMessageId, entry]),
   );
   const preservedRequestIds = new Set<string>();
+  const preservedTerminalMessageIds = new Set<string>();
   const mergedMessages = phase.messages.map((loadedMessage) => {
     const currentMessage = current.phase.messages.find(
       (candidate) => candidate.id === loadedMessage.id,
     );
     const currentEntry = currentQueueByMessage.get(loadedMessage.id);
     if (currentMessage === undefined || currentEntry === undefined) {
+      // A terminal event removes the queue entry immediately. A reload that
+      // began before that event can therefore only be recognized by the
+      // message status; never let its older streaming snapshot resurrect the
+      // request or rewind the completed/failed/cancelled message.
+      if (
+        currentMessage !== undefined &&
+        terminalStatuses.has(currentMessage.status)
+      ) {
+        preservedTerminalMessageIds.add(loadedMessage.id);
+        return currentMessage;
+      }
       return loadedMessage;
     }
     const contentIsMonotonic =
@@ -76,13 +88,17 @@ export function mergeLoadedPhase(
     }
     return loadedMessage;
   });
-  const mergedQueue = phase.queue.map((entry) =>
-    preservedRequestIds.has(entry.requestId)
-      ? (current.phase.queue.find(
-          (candidate) => candidate.requestId === entry.requestId,
-        ) ?? entry)
-      : entry,
-  );
+  const mergedQueue = phase.queue
+    .filter(
+      (entry) => !preservedTerminalMessageIds.has(entry.assistantMessageId),
+    )
+    .map((entry) =>
+      preservedRequestIds.has(entry.requestId)
+        ? (current.phase.queue.find(
+            (candidate) => candidate.requestId === entry.requestId,
+          ) ?? entry)
+        : entry,
+    );
   for (const entry of current.phase.queue) {
     if (
       preservedRequestIds.has(entry.requestId) &&

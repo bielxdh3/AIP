@@ -198,6 +198,10 @@ import {
   type OpenAgentConversationsPayload,
 } from "./agent-navigation";
 import { usePhaseOne } from "./use-phase-one";
+import {
+  GENERATION_HEARTBEAT_INTERVAL_MS,
+  measureGenerationHeartbeat,
+} from "./generation-liveness";
 import { createListenerRegistration } from "./listener-lifecycle";
 import { ThemeControls } from "./theme";
 import { AipSelect, FilePicker, naturalMenuHeight } from "./shared-controls";
@@ -1435,9 +1439,19 @@ export function ConversationSurface({
     null,
   );
   const historyRef = useRef<HTMLDivElement>(null);
+  const scrollFrameRef = useRef<number | null>(null);
   const conversationIdRef = useRef<string | null>(null);
   const followsBottomRef = useRef(true);
   const phaseConversationId = phase?.conversation.id;
+  const activeRequestId =
+    phase?.queue.find(
+      (entry) => entry.agentId === phase.agent.id && entry.active,
+    )?.requestId ?? null;
+  const [heartbeatLatencyMs, setHeartbeatLatencyMs] = useState<number | null>(
+    null,
+  );
+  const [heartbeatStalled, setHeartbeatStalled] = useState(false);
+  const heartbeatLatencyRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (refreshRevision > 0) void load();
@@ -1460,11 +1474,31 @@ export function ConversationSurface({
         followsBottomRef.current,
       )
     ) {
-      history.scrollTop = history.scrollHeight;
-      followsBottomRef.current = true;
+      // Streamed chunks can arrive much faster than React paints. Coalesce scroll writes
+      // into one frame so each chunk does not force a synchronous scrollHeight/layout pass.
+      if (scrollFrameRef.current === null) {
+        scrollFrameRef.current = window.requestAnimationFrame(() => {
+          scrollFrameRef.current = null;
+          const currentHistory = historyRef.current;
+          if (currentHistory !== null) {
+            currentHistory.scrollTop = currentHistory.scrollHeight;
+            followsBottomRef.current = true;
+          }
+        });
+      }
     }
     conversationIdRef.current = conversationId;
   }, [phase?.conversation.id, phase?.messages]);
+
+  useEffect(
+    () => () => {
+      if (scrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = null;
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     const activeRequest = phase
@@ -1477,6 +1511,49 @@ export function ConversationSurface({
       setCancellingRequestId(null);
     }
   }, [cancellingRequestId, phase]);
+
+  useEffect(() => {
+    if (activeRequestId === null) {
+      setHeartbeatLatencyMs(null);
+      setHeartbeatStalled(false);
+      heartbeatLatencyRef.current = null;
+      return;
+    }
+    let disposed = false;
+    let heartbeatInFlight = false;
+    async function heartbeat() {
+      if (disposed || heartbeatInFlight) return;
+      heartbeatInFlight = true;
+      const startedAt = performance.now();
+      try {
+        await invoke("phase_one_heartbeat", {
+          agentId,
+          latencyMs: heartbeatLatencyRef.current,
+        });
+        if (disposed) return;
+        const measurement = measureGenerationHeartbeat(
+          startedAt,
+          performance.now(),
+        );
+        setHeartbeatLatencyMs(measurement.latencyMs);
+        setHeartbeatStalled(measurement.stalled);
+        heartbeatLatencyRef.current = measurement.latencyMs;
+      } catch {
+        if (!disposed) setHeartbeatStalled(true);
+      } finally {
+        heartbeatInFlight = false;
+      }
+    }
+    void heartbeat();
+    const timer = window.setInterval(
+      () => void heartbeat(),
+      GENERATION_HEARTBEAT_INTERVAL_MS,
+    );
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [activeRequestId, agentId]);
 
   if (error) {
     return (
@@ -1598,6 +1675,21 @@ export function ConversationSurface({
           <span className="conversation-title">{phase.conversation.title}</span>
         </div>
         <div className="conversation-header-actions">
+          {activeRequestId !== null ? (
+            <span
+              className="conversation-liveness"
+              role="status"
+              aria-live="polite"
+              data-stalled={heartbeatStalled}
+              title={
+                heartbeatLatencyMs === null
+                  ? "Verificando responsividade local"
+                  : `Responsividade local: ${heartbeatLatencyMs} ms`
+              }
+            >
+              {heartbeatStalled ? "Runtime sem resposta" : "Runtime ativo"}
+            </span>
+          ) : null}
           <button
             type="button"
             className="conversation-header-action"

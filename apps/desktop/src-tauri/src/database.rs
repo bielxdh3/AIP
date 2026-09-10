@@ -2127,15 +2127,30 @@ impl Database {
         request_id: &str,
         chunk: &str,
     ) -> Result<(), DatabaseError> {
-        if chunk.is_empty() {
+        self.append_assistant_chunks(assistant_message_id, request_id, chunk)
+    }
+
+    /// Append one or more already ordered stream chunks in a single SQLite write.
+    ///
+    /// The runtime still delivers every chunk to the UI immediately, but the durable
+    /// message is updated in bounded batches by the coordinator. Keeping the original
+    /// single-chunk entry point above preserves the other write paths (imports, tests,
+    /// and recovery) while avoiding one transaction per streamed token on the hot path.
+    pub fn append_assistant_chunks(
+        &self,
+        assistant_message_id: &str,
+        request_id: &str,
+        content: &str,
+    ) -> Result<(), DatabaseError> {
+        if content.is_empty() {
             return Ok(());
         }
         let connection = self.open()?;
         let changed = connection.execute(
             "UPDATE conversation_messages SET content = content || ?1
              WHERE id = ?2 AND generation_request_id = ?3
-               AND author_type = 'agent' AND status = 'streaming'",
-            params![chunk, assistant_message_id, request_id],
+             AND author_type = 'agent' AND status = 'streaming'",
+            params![content, assistant_message_id, request_id],
         )?;
         if changed == 1 {
             Ok(())

@@ -7,7 +7,7 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $bundleRoot = Join-Path $root "apps\desktop\src-tauri\target\release\bundle"
-$expectedMsiName = "A.I.P._0.2.3.4_x64_en-US.msi"
+$expectedMsiName = "A.I.P._0.2.3.5_x64_en-US.msi"
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("aip-installed-smoke-" + [guid]::NewGuid().ToString("N"))
 $readyFile = Join-Path $tempRoot "fixture-port.txt"
 $receiptFile = Join-Path $tempRoot "fixture-receipts.ndjson"
@@ -86,9 +86,31 @@ function Wait-Generation {
   $chunks = [Collections.Generic.List[string]]::new()
   $sequences = [Collections.Generic.List[int]]::new()
   $terminal = $null
+  $heartbeatPendingId = $null
+  $heartbeatStartedAt = $null
+  $heartbeatSequence = 0
+  $heartbeatMaxLatencyMs = 0
+  $heartbeatFrequency = [Diagnostics.Stopwatch]::Frequency
+  $nextHeartbeatAt = [Diagnostics.Stopwatch]::GetTimestamp()
   $deadline = [Diagnostics.Stopwatch]::StartNew()
   while ($deadline.Elapsed.TotalSeconds -lt 30) {
+    if ($null -eq $terminal -and $null -eq $heartbeatPendingId -and [Diagnostics.Stopwatch]::GetTimestamp() -ge $nextHeartbeatAt) {
+      $heartbeatSequence++
+      $heartbeatPendingId = "heartbeat-$RequestId-$heartbeatSequence"
+      $heartbeatStartedAt = [Diagnostics.Stopwatch]::GetTimestamp()
+      Send-Json $Process @{ protocolVersion = 1; id = $heartbeatPendingId; method = "runtime.health"; params = @{} }
+      $nextHeartbeatAt = [Diagnostics.Stopwatch]::GetTimestamp() + [int64]($heartbeatFrequency / 2)
+    }
     $message = Read-JsonLine -Process $Process -TimeoutMs 5000
+    if ($null -ne $heartbeatPendingId -and $message.id -eq $heartbeatPendingId) {
+      $latencyMs = [int](($([Diagnostics.Stopwatch]::GetTimestamp()) - $heartbeatStartedAt) * 1000 / $heartbeatFrequency)
+      if ($latencyMs -gt $heartbeatMaxLatencyMs) { $heartbeatMaxLatencyMs = $latencyMs }
+      if ($latencyMs -ge 2000) { throw "Installed runtime liveness heartbeat stalled at ${latencyMs}ms" }
+      $heartbeatPendingId = $null
+      $heartbeatStartedAt = $null
+      if ($null -ne $terminal) { break }
+      continue
+    }
     if ($message.id -eq $RequestId -and $message.result.status -eq "accepted") {
       $accepted = $true
       continue
@@ -101,7 +123,7 @@ function Wait-Generation {
     }
     if ($message.event -in @("generation.complete", "generation.failed", "generation.cancelled")) {
       $terminal = [string]$message.event
-      break
+      if ($null -eq $heartbeatPendingId) { break }
     }
   }
   if (-not $accepted -or -not $started -or $terminal -ne "generation.complete") {
@@ -117,7 +139,7 @@ function Wait-Generation {
   }
   $output = $chunks -join ""
   if ($output -ne $ExpectedOutput) { throw "Installed generation $RequestId returned an unexpected fixture output" }
-  return [pscustomobject]@{ RequestId = $RequestId; Output = $output; ChunkCount = $chunks.Count }
+  return [pscustomobject]@{ RequestId = $RequestId; Output = $output; ChunkCount = $chunks.Count; HeartbeatMaxLatencyMs = $heartbeatMaxLatencyMs }
 }
 
 function Read-TraceEvents {
@@ -197,7 +219,7 @@ try {
   }
 
   $identity = (& $installedDesktop --print-build-identity 2>&1 | Out-String).Trim()
-  if ($LASTEXITCODE -ne 0 -or $identity -ne "0.2.3.4") { throw "Installed desktop reported build identity '$identity' instead of 0.2.3.4" }
+  if ($LASTEXITCODE -ne 0 -or $identity -ne "0.2.3.5") { throw "Installed desktop reported build identity '$identity' instead of 0.2.3.5" }
 
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.FileName = $installedRuntime
@@ -303,6 +325,7 @@ try {
   Write-Output "Installed MSI smoke OK: $installedMsi (SHA256 $msiHash)"
   Write-Output "Installed binaries: $installedDesktop; $installedRuntime"
   Write-Output "Fixture receipts: $($receipts.Count); chunks: $(($outputs | ForEach-Object ChunkCount) -join ', ')"
+  Write-Output "Heartbeat max latency (ms): $(($outputs | ForEach-Object HeartbeatMaxLatencyMs | Measure-Object -Maximum).Maximum)"
 }
 finally {
   if ($runtime -and -not $runtime.HasExited) {

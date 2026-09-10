@@ -2508,6 +2508,19 @@ fn get_temporary_phase_one_state(
 }
 
 #[tauri::command]
+fn phase_one_heartbeat(
+    state: State<'_, AppState>,
+    agent_id: String,
+    latency_ms: Option<u64>,
+) -> Result<chat::PhaseOneLiveness, &'static str> {
+    // The heartbeat is intentionally a content-free, lock-light read. The UI uses its
+    // round-trip latency as the Owner-visible liveness signal while this snapshot records the
+    // active request, Rust sequence, watchdog phase, and managed runtime PID for diagnostics.
+    let chat = state.chat.as_ref().ok_or("operation_unavailable")?;
+    Ok(chat.heartbeat(&agent_id, latency_ms))
+}
+
+#[tauri::command]
 fn load_phase_one_messages(
     state: State<'_, AppState>,
     agent_id: String,
@@ -3461,6 +3474,7 @@ pub fn run() {
             set_safe_mode,
             get_phase_one_state,
             get_temporary_phase_one_state,
+            phase_one_heartbeat,
             load_phase_one_messages,
             list_agent_conversations,
             list_archived_agent_conversations,
