@@ -117,7 +117,26 @@ function Wait-Generation {
   }
   $output = $chunks -join ""
   if ($output -ne $ExpectedOutput) { throw "Installed generation $RequestId returned an unexpected fixture output" }
-  return [pscustomobject]@{ Output = $output; ChunkCount = $chunks.Count }
+  return [pscustomobject]@{ RequestId = $RequestId; Output = $output; ChunkCount = $chunks.Count }
+}
+
+function Read-TraceEvents {
+  param([string]$Stderr)
+  $prefix = "AIP_RUNTIME_TRACE "
+  $events = [Collections.Generic.List[object]]::new()
+  foreach ($line in ($Stderr -split "\r?\n")) {
+    if (-not $line.StartsWith($prefix, [StringComparison]::Ordinal)) { continue }
+    try {
+      $event = $line.Substring($prefix.Length) | ConvertFrom-Json -Depth 12
+    } catch {
+      throw "Installed runtime emitted malformed trace JSON"
+    }
+    if (-not $event.requestId -or -not $event.event) {
+      throw "Installed runtime emitted an uncorrelated trace event"
+    }
+    [void]$events.Add($event)
+  }
+  return @($events)
 }
 
 function Get-FixtureExpectedOutput {
@@ -243,9 +262,41 @@ try {
   if (-not $runtime.WaitForExit(10000)) { throw "Installed runtime shutdown timed out" }
   if ($runtime.ExitCode -ne 0) { throw "Installed runtime exited with code $($runtime.ExitCode)" }
   $stderr = $stderrTask.Result
-  foreach ($traceEvent in @("generation.accepted", "ollama.request.started", "provider.stream.started", "ollama.connected", "ollama.first_chunk", "provider.stream.completed", "runtime.terminal.emitted", "ollama.request.completed")) {
-    if ($stderr -notmatch ('"event":"' + [regex]::Escape($traceEvent) + '"')) {
-      throw "Installed runtime trace is missing $traceEvent"
+  $traceEvents = @(Read-TraceEvents $stderr)
+  $requiredTraceEvents = @("generation.accepted", "ollama.request.started", "provider.stream.started", "ollama.connected", "ollama.first_chunk", "provider.stream.completed", "runtime.terminal.emitted", "ollama.request.completed")
+  $accountingTraceEvents = @("provider.stream.completed", "runtime.terminal.emitted", "ollama.request.completed")
+  foreach ($result in $outputs) {
+    $requestTrace = @($traceEvents | Where-Object { $_.requestId -eq $result.RequestId })
+    if ($requestTrace.Count -eq 0) {
+      throw "Installed runtime emitted no trace events for $($result.RequestId)"
+    }
+    foreach ($traceEvent in $requiredTraceEvents) {
+      if (@($requestTrace | Where-Object { $_.event -eq $traceEvent }).Count -eq 0) {
+        throw "Installed runtime trace for $($result.RequestId) is missing $traceEvent"
+      }
+    }
+    $expectedBytes = [Text.Encoding]::UTF8.GetByteCount([string]$result.Output)
+    $expectedCharacters = ([string]$result.Output).Length
+    foreach ($traceEvent in $accountingTraceEvents) {
+      $accounted = @($requestTrace | Where-Object { $_.event -eq $traceEvent }) | Select-Object -Last 1
+      $counters = $accounted.counters
+      if ($null -eq $counters) {
+        throw "Installed runtime trace for $($result.RequestId) is missing counters on $traceEvent"
+      }
+      foreach ($counterName in @("provider_chunks", "provider_bytes", "provider_characters", "runtime_chunks", "runtime_bytes", "runtime_characters", "runtime_terminal_events")) {
+        if ($null -eq $counters.$counterName) {
+          throw "Installed runtime trace for $($result.RequestId) is missing $counterName on $traceEvent"
+        }
+      }
+      if ([int64]$counters.provider_chunks -ne [int64]$result.ChunkCount -or
+        [int64]$counters.runtime_chunks -ne [int64]$result.ChunkCount -or
+        [int64]$counters.provider_bytes -ne [int64]$expectedBytes -or
+        [int64]$counters.runtime_bytes -ne [int64]$expectedBytes -or
+        [int64]$counters.provider_characters -ne [int64]$expectedCharacters -or
+        [int64]$counters.runtime_characters -ne [int64]$expectedCharacters -or
+        [int64]$counters.runtime_terminal_events -ne 1) {
+        throw "Installed runtime trace counters for $($result.RequestId) do not match the reconstructed response"
+      }
     }
   }
   Write-Output "Installed MSI smoke OK: $installedMsi (SHA256 $msiHash)"

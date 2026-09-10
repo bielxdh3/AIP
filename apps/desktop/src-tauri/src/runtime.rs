@@ -25,7 +25,10 @@ use crate::{
 const HANDSHAKE_ID: &str = "phase1-health";
 const DIAGNOSTIC_PREFIX: &str = "AIP_RUNTIME_DIAGNOSTIC ";
 const TRACE_PREFIX: &str = "AIP_RUNTIME_TRACE ";
-const MAX_DIAGNOSTIC_LINE_BYTES: usize = 512;
+// Trace lines include a bounded model identifier plus the full allowlisted
+// accounting map. Keep the reader limit comfortably above the largest valid
+// content-free payload so valid evidence is never split before parsing.
+const MAX_DIAGNOSTIC_LINE_BYTES: usize = 4096;
 const MAX_DIAGNOSTIC_CODES: usize = 16;
 const DEVELOPMENT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(3);
 const PACKAGED_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -1185,6 +1188,12 @@ for raw in sys.stdin:
             ),
             None
         );
+        let long_model = "m".repeat(200);
+        let long_trace = format!(
+            "AIP_RUNTIME_TRACE {{\"event\":\"runtime.terminal.emitted\",\"requestId\":\"request-1\",\"model\":\"{long_model}\",\"counters\":{{\"provider_chunks\":128,\"provider_bytes\":128,\"provider_characters\":128,\"runtime_chunks\":128,\"runtime_bytes\":128,\"runtime_characters\":128,\"runtime_terminal_events\":1}}}}"
+        );
+        assert!(long_trace.len() <= super::MAX_DIAGNOSTIC_LINE_BYTES);
+        assert!(super::parse_trace_line(long_trace.as_bytes()).is_some());
         let diagnostics = Arc::new(Mutex::new(super::RuntimeDiagnostics::default()));
         for _ in 0..(super::MAX_DIAGNOSTIC_CODES + 5) {
             super::record_stderr_code(&diagnostics, "runtime_worker_exception");
