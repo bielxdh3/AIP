@@ -7,7 +7,7 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $bundleRoot = Join-Path $root "apps\desktop\src-tauri\target\release\bundle"
-$expectedMsiName = "A.I.P._0.2.3.3_x64_en-US.msi"
+$expectedMsiName = "A.I.P._0.2.3.4_x64_en-US.msi"
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("aip-installed-smoke-" + [guid]::NewGuid().ToString("N"))
 $readyFile = Join-Path $tempRoot "fixture-port.txt"
 $receiptFile = Join-Path $tempRoot "fixture-receipts.ndjson"
@@ -20,6 +20,7 @@ $installCompleted = $false
 $oldOllamaHost = [Environment]::GetEnvironmentVariable("OLLAMA_HOST", "Process")
 $oldOllamaExecutable = [Environment]::GetEnvironmentVariable("AIP_OLLAMA_EXECUTABLE", "Process")
 $oldOllamaConfig = [Environment]::GetEnvironmentVariable("AIP_OLLAMA_CONFIG", "Process")
+$oldPythonIoEncoding = [Environment]::GetEnvironmentVariable("PYTHONIOENCODING", "Process")
 
 function Invoke-CheckedProcess {
   param([string]$FilePath, [string[]]$ArgumentList, [int[]]$AllowedExitCodes = @(0))
@@ -74,10 +75,16 @@ function Send-Json {
 }
 
 function Wait-Generation {
-  param([Diagnostics.Process]$Process, [string]$RequestId, [string]$ExpectedMarker)
+  param(
+    [Diagnostics.Process]$Process,
+    [string]$RequestId,
+    [string]$ExpectedOutput,
+    [int]$MinimumChunks = 1
+  )
   $accepted = $false
   $started = $false
   $chunks = [Collections.Generic.List[string]]::new()
+  $sequences = [Collections.Generic.List[int]]::new()
   $terminal = $null
   $deadline = [Diagnostics.Stopwatch]::StartNew()
   while ($deadline.Elapsed.TotalSeconds -lt 30) {
@@ -88,7 +95,10 @@ function Wait-Generation {
     }
     if ($message.requestId -ne $RequestId) { continue }
     if ($message.event -eq "generation.started") { $started = $true }
-    if ($message.event -eq "generation.chunk") { [void]$chunks.Add([string]$message.content) }
+    if ($message.event -eq "generation.chunk") {
+      [void]$chunks.Add([string]$message.content)
+      [void]$sequences.Add([int]$message.sequence)
+    }
     if ($message.event -in @("generation.complete", "generation.failed", "generation.cancelled")) {
       $terminal = [string]$message.event
       break
@@ -97,10 +107,27 @@ function Wait-Generation {
   if (-not $accepted -or -not $started -or $terminal -ne "generation.complete") {
     throw "Installed generation $RequestId did not complete (accepted=$accepted started=$started terminal=$terminal)"
   }
+  if ($chunks.Count -lt $MinimumChunks) {
+    throw "Installed generation $RequestId returned only $($chunks.Count) chunks; expected at least $MinimumChunks"
+  }
+  if ($sequences.Count -gt 0) {
+    for ($index = 0; $index -lt $sequences.Count; $index++) {
+      if ($sequences[$index] -ne ($index + 1)) { throw "Installed generation $RequestId emitted a non-contiguous chunk sequence" }
+    }
+  }
   $output = $chunks -join ""
-  $expected = "fixture-response:$ExpectedMarker"
-  if ($output -ne $expected) { throw "Installed generation $RequestId returned an unexpected fixture output" }
-  return $output
+  if ($output -ne $ExpectedOutput) { throw "Installed generation $RequestId returned an unexpected fixture output" }
+  return [pscustomobject]@{ Output = $output; ChunkCount = $chunks.Count }
+}
+
+function Get-FixtureExpectedOutput {
+  param([string]$Marker)
+  if ($Marker -eq "marker-one") { return "AIP-STREAM-TEST-OK" }
+  if ($Marker -in @("marker-two", "marker-three")) {
+    $suffix = (0..127 | ForEach-Object { "{0:D3}," -f $_ }) -join ""
+    return "fixture-response:$Marker|$suffix"
+  }
+  return "fixture-response:$Marker"
 }
 
 try {
@@ -122,6 +149,7 @@ try {
   if (-not (Test-Path -LiteralPath $readyFile)) { throw "Fake Ollama fixture did not become ready" }
   $port = [int](Get-Content -LiteralPath $readyFile -Raw)
   $env:OLLAMA_HOST = "127.0.0.1:$port"
+  $env:PYTHONIOENCODING = "utf-8"
   Remove-Item Env:AIP_OLLAMA_EXECUTABLE -ErrorAction SilentlyContinue
   Remove-Item Env:AIP_OLLAMA_CONFIG -ErrorAction SilentlyContinue
 
@@ -150,7 +178,7 @@ try {
   }
 
   $identity = (& $installedDesktop --print-build-identity 2>&1 | Out-String).Trim()
-  if ($LASTEXITCODE -ne 0 -or $identity -ne "0.2.3.3") { throw "Installed desktop reported build identity '$identity' instead of 0.2.3.3" }
+  if ($LASTEXITCODE -ne 0 -or $identity -ne "0.2.3.4") { throw "Installed desktop reported build identity '$identity' instead of 0.2.3.4" }
 
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.FileName = $installedRuntime
@@ -173,7 +201,12 @@ try {
   if ($discover.id -ne "smoke-discover" -or $discover.result.models[0].providerModelId -ne "fixture:latest") { throw "Installed provider discovery did not reach the fixture" }
 
   $outputs = @()
-  foreach ($item in @(@("generation-one", "marker-one"), @("generation-two", "marker-two"))) {
+  $requests = @(
+    @("generation-one", "marker-one", 1),
+    @("generation-two", "marker-two", 100),
+    @("generation-three", "marker-three", 100)
+  )
+  foreach ($item in $requests) {
     $requestId = $item[0]
     $marker = $item[1]
     Send-Json $runtime @{
@@ -189,25 +222,35 @@ try {
         messages = @(@{ role = "user"; content = "installed $marker" })
       }
     }
-    $outputs += Wait-Generation $runtime $requestId $marker
+    $expected = Get-FixtureExpectedOutput $marker
+    $result = Wait-Generation $runtime $requestId $expected ([int]$item[2])
+    $outputs += $result
+    Send-Json $runtime @{ protocolVersion = 1; id = "health-$requestId"; method = "runtime.health"; params = @{} }
+    $health = Read-JsonLine $runtime
+    if ($health.id -ne "health-$requestId" -or $health.result.status -ne "ready") {
+      throw "Installed runtime liveness check failed after $requestId"
+    }
   }
   $receipts = @(Get-Content -LiteralPath $receiptFile | ForEach-Object { $_ | ConvertFrom-Json })
-  if ($receipts.Count -ne 2 -or $receipts.marker -notcontains "marker-one" -or $receipts.marker -notcontains "marker-two") {
-    throw "Fake Ollama did not receive exactly the two distinct generation requests"
+  if ($receipts.Count -ne 3 -or $receipts.marker -notcontains "marker-one" -or $receipts.marker -notcontains "marker-two" -or $receipts.marker -notcontains "marker-three") {
+    throw "Fake Ollama did not receive exactly the three distinct generation requests"
+  }
+  if (($receipts | Where-Object marker -eq "marker-two").chunkCount -lt 100 -or ($receipts | Where-Object marker -eq "marker-three").chunkCount -lt 100) {
+    throw "Fake Ollama did not emit the required 100-plus chunk streams"
   }
 
   Send-Json $runtime @{ protocolVersion = 1; id = "smoke-shutdown"; method = "runtime.shutdown"; params = @{} }
   if (-not $runtime.WaitForExit(10000)) { throw "Installed runtime shutdown timed out" }
   if ($runtime.ExitCode -ne 0) { throw "Installed runtime exited with code $($runtime.ExitCode)" }
   $stderr = $stderrTask.Result
-  foreach ($traceEvent in @("generation.accepted", "ollama.request.started", "ollama.connected", "ollama.first_chunk", "ollama.request.completed")) {
+  foreach ($traceEvent in @("generation.accepted", "ollama.request.started", "provider.stream.started", "ollama.connected", "ollama.first_chunk", "provider.stream.completed", "runtime.terminal.emitted", "ollama.request.completed")) {
     if ($stderr -notmatch ('"event":"' + [regex]::Escape($traceEvent) + '"')) {
       throw "Installed runtime trace is missing $traceEvent"
     }
   }
   Write-Output "Installed MSI smoke OK: $installedMsi (SHA256 $msiHash)"
   Write-Output "Installed binaries: $installedDesktop; $installedRuntime"
-  Write-Output "Fixture receipts: $($receipts.Count); outputs: $($outputs -join ', ')"
+  Write-Output "Fixture receipts: $($receipts.Count); chunks: $(($outputs | ForEach-Object ChunkCount) -join ', ')"
 }
 finally {
   if ($runtime -and -not $runtime.HasExited) {
@@ -221,6 +264,7 @@ finally {
   [Environment]::SetEnvironmentVariable("OLLAMA_HOST", $oldOllamaHost, "Process")
   [Environment]::SetEnvironmentVariable("AIP_OLLAMA_EXECUTABLE", $oldOllamaExecutable, "Process")
   [Environment]::SetEnvironmentVariable("AIP_OLLAMA_CONFIG", $oldOllamaConfig, "Process")
+  [Environment]::SetEnvironmentVariable("PYTHONIOENCODING", $oldPythonIoEncoding, "Process")
   if ($installCompleted -and $installedMsi -and -not $KeepArtifacts -and (Test-Path -LiteralPath $installedMsi)) {
     try { Invoke-CheckedProcess "msiexec.exe" @("/x", $installedMsi, "/qn", "/norestart") @(0, 3010) | Out-Null } catch { Write-Warning "MSI cleanup failed: $_" }
   }

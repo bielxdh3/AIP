@@ -308,6 +308,45 @@ class RuntimeServerTests(unittest.TestCase):
         self.assertEqual(events[-1]["sequence"], 1)
         self.assertTrue(all(line.get("error") is None for line in lines))
 
+    def test_stream_accounting_matches_provider_and_runtime_chunks(self) -> None:
+        output = LockedOutput()
+        traces: list[dict[str, object]] = []
+
+        def trace(event: object, **kwargs: object) -> None:
+            traces.append({"event": event, **kwargs})
+
+        server = RuntimeServer(
+            output,  # type: ignore[arg-type]
+            FakeClient(),  # type: ignore[arg-type]
+            trace=trace,
+        )
+        server._start_generation("accounted", generation_params())
+        output.wait_for(
+            lambda line: (
+                line.get("event") == "generation.complete" and line.get("requestId") == "accounted"
+            ),
+            timeout=5.0,
+        )
+        server.shutdown()
+
+        lines = output.decoded()
+        chunks = [line for line in lines if line.get("event") == "generation.chunk"]
+        self.assertEqual("".join(str(line["content"]) for line in chunks), "Synthetic reply")
+        self.assertEqual(len(chunks), 2)
+        completed = next(item for item in traces if item["event"] == "runtime.terminal.emitted")
+        counters = cast(dict[str, int], completed["counters"])
+        self.assertIsInstance(counters, dict)
+        self.assertEqual(counters["provider_chunks"], 2)
+        self.assertEqual(counters["runtime_chunks"], 2)
+        self.assertEqual(counters["runtime_terminal_events"], 1)
+        provider_completed = next(
+            item for item in traces if item["event"] == "provider.stream.completed"
+        )
+        provider_counters = cast(dict[str, int], provider_completed["counters"])
+        self.assertEqual(provider_counters["provider_chunks"], counters["provider_chunks"])
+        self.assertEqual(provider_counters["runtime_chunks"], counters["runtime_chunks"])
+        self.assertEqual(provider_counters["runtime_terminal_events"], 0)
+
     def test_only_one_generation_can_be_active(self) -> None:
         output = io.StringIO()
         client = FakeClient()

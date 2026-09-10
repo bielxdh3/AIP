@@ -3515,6 +3515,64 @@ mod tests {
     }
 
     #[test]
+    fn streamed_assistant_content_reconstructs_exactly_after_reload() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let agent = database.agent(ASTRA_ID).unwrap();
+        let conversation = database.main_conversation(&agent.id).unwrap();
+        let mut expected_by_message = Vec::new();
+
+        for chunk_count in [1_usize, 10, 200] {
+            let attempt = database
+                .create_message_attempt(
+                    &agent.id,
+                    &conversation.id,
+                    &format!("Stream {chunk_count}"),
+                    "ollama:test",
+                )
+                .unwrap();
+            database
+                .mark_streaming(&attempt.assistant_message_id, &attempt.request_id)
+                .unwrap();
+            let mut expected = String::new();
+            for index in 0..chunk_count {
+                let chunk = format!("{chunk_count}:{index:03}|é");
+                expected.push_str(&chunk);
+                database
+                    .append_assistant_chunk(
+                        &attempt.assistant_message_id,
+                        &attempt.request_id,
+                        &chunk,
+                    )
+                    .unwrap();
+            }
+            database
+                .finish_assistant(
+                    &attempt.assistant_message_id,
+                    &attempt.request_id,
+                    MessageStatus::Complete,
+                    None,
+                )
+                .unwrap();
+            expected_by_message.push((attempt.assistant_message_id, expected));
+        }
+        drop(database);
+
+        let reopened = Database::initialize(&path).unwrap();
+        let messages = reopened.messages(&agent.id, &conversation.id).unwrap();
+        for (message_id, expected) in expected_by_message {
+            let message = messages
+                .iter()
+                .find(|message| message.id == message_id)
+                .expect("streamed assistant should survive reload");
+            assert_eq!(message.content, expected);
+            assert_eq!(message.status, MessageStatus::Complete);
+        }
+        drop(reopened);
+        cleanup(&path);
+    }
+
+    #[test]
     fn generated_title_is_one_shot_and_manual_names_win() {
         let path = test_path();
         let database = Database::initialize(&path).unwrap();

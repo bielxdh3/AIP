@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs,
     io::{BufRead, BufReader, Seek, SeekFrom, Write},
     path::PathBuf,
@@ -95,6 +95,7 @@ struct ActiveGeneration {
     job: GenerationJob,
     last_sequence: u64,
     output_bytes: usize,
+    output_characters: usize,
     cancellation_requested: bool,
     dispatched_at: Instant,
     last_progress_at: Instant,
@@ -149,6 +150,7 @@ struct RequestTraceEntry {
     code: String,
     sequence: Option<u64>,
     terminal_code: Option<String>,
+    counters: BTreeMap<String, u64>,
     timestamp_ms: i64,
 }
 
@@ -163,6 +165,8 @@ struct PersistedTraceRecord {
     code: String,
     sequence: Option<u64>,
     terminal_code: Option<String>,
+    #[serde(default)]
+    counters: BTreeMap<String, u64>,
     timestamp_ms: i64,
 }
 
@@ -221,17 +225,34 @@ impl TracePersistence {
 fn should_persist_trace_code(code: &str) -> bool {
     !matches!(
         code,
-        "chunk_persisted" | "generation.chunk" | "chunk_ignored"
+        "chunk_persisted"
+            | "generation.chunk"
+            | "chunk_ignored"
+            | "provider.chunk.received"
+            | "rust.chunk.received"
+            | "rust.chunk.persisted"
     )
 }
 
 impl RequestTraceStore {
+    #[cfg(test)]
     fn record(
         &mut self,
         request_id: &str,
         code: &str,
         sequence: Option<u64>,
         terminal_code: Option<&str>,
+    ) {
+        self.record_with_counters(request_id, code, sequence, terminal_code, None);
+    }
+
+    fn record_with_counters(
+        &mut self,
+        request_id: &str,
+        code: &str,
+        sequence: Option<u64>,
+        terminal_code: Option<&str>,
+        counters: Option<&BTreeMap<String, u64>>,
     ) {
         if self.ignored_temporary_requests.contains(request_id) {
             return;
@@ -240,6 +261,7 @@ impl RequestTraceStore {
             code: code.to_string(),
             sequence,
             terminal_code: terminal_code.map(str::to_string),
+            counters: counters.cloned().unwrap_or_default(),
             timestamp_ms: now_millis(),
         };
         if self.metadata.contains_key(request_id) {
@@ -297,6 +319,7 @@ impl RequestTraceStore {
                 .terminal_code
                 .as_deref()
                 .is_none_or(valid_trace_field_value)
+            || !valid_trace_counters(&record.counters)
         {
             return;
         }
@@ -348,6 +371,7 @@ impl RequestTraceStore {
             code: record.code,
             sequence: record.sequence,
             terminal_code: record.terminal_code,
+            counters: record.counters,
             timestamp_ms: record.timestamp_ms,
         });
     }
@@ -465,6 +489,7 @@ impl RequestTraceStore {
                     "code": entry.code,
                     "sequence": entry.sequence,
                     "terminalCode": entry.terminal_code,
+                    "counters": entry.counters,
                     "timestampMs": entry.timestamp_ms,
                 });
                 if serde_json::to_writer(&mut file, &record).is_err()
@@ -510,6 +535,27 @@ fn valid_trace_code(value: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || "._-".contains(character))
 }
 
+fn valid_trace_counters(counters: &BTreeMap<String, u64>) -> bool {
+    counters.len() <= 16
+        && counters.iter().all(|(key, value)| {
+            matches!(
+                key.as_str(),
+                "provider_chunks"
+                    | "provider_bytes"
+                    | "provider_characters"
+                    | "runtime_chunks"
+                    | "runtime_bytes"
+                    | "runtime_characters"
+                    | "runtime_terminal_events"
+                    | "rust_chunks"
+                    | "rust_bytes"
+                    | "rust_characters"
+                    | "persisted_bytes"
+                    | "persisted_chars"
+            ) && *value <= 2_147_483_647
+        })
+}
+
 #[derive(Debug, Default)]
 struct GenerationQueue {
     pending: VecDeque<GenerationJob>,
@@ -537,6 +583,7 @@ impl GenerationQueue {
             job: job.clone(),
             last_sequence: 0,
             output_bytes: 0,
+            output_characters: 0,
             cancellation_requested: false,
             dispatched_at: Instant::now(),
             last_progress_at: Instant::now(),
@@ -683,11 +730,22 @@ impl GenerationQueue {
         })
     }
 
+    #[cfg(test)]
     fn accept_chunk(
         &mut self,
         request_id: &str,
         sequence: u64,
         content_bytes: usize,
+    ) -> ChunkDecision {
+        self.accept_chunk_with_characters(request_id, sequence, content_bytes, content_bytes)
+    }
+
+    fn accept_chunk_with_characters(
+        &mut self,
+        request_id: &str,
+        sequence: u64,
+        content_bytes: usize,
+        content_characters: usize,
     ) -> ChunkDecision {
         let Some(active) = self.active.as_mut() else {
             return ChunkDecision::Ignored;
@@ -708,8 +766,23 @@ impl GenerationQueue {
         }
         active.last_sequence = sequence;
         active.output_bytes = next_size;
+        active.output_characters = active.output_characters.saturating_add(content_characters);
         active.last_progress_at = Instant::now();
         ChunkDecision::Accepted(active.job.clone())
+    }
+
+    fn active_counters(&self, request_id: &str) -> Option<BTreeMap<String, u64>> {
+        let active = self.active.as_ref()?;
+        if active.job.request_id != request_id {
+            return None;
+        }
+        let mut counters = BTreeMap::new();
+        counters.insert("rust_chunks".into(), active.last_sequence);
+        counters.insert("rust_bytes".into(), active.output_bytes as u64);
+        counters.insert("rust_characters".into(), active.output_characters as u64);
+        counters.insert("persisted_bytes".into(), active.output_bytes as u64);
+        counters.insert("persisted_chars".into(), active.output_characters as u64);
+        Some(counters)
     }
 
     fn contains(&self, request_id: &str) -> bool {
@@ -1895,7 +1968,14 @@ impl ChatCoordinator {
                 request_id,
                 event,
                 error_code,
-            } => self.trace(&request_id, event, None, error_code.as_deref()),
+                counters,
+            } => self.trace_with_counters(
+                &request_id,
+                event,
+                None,
+                error_code.as_deref(),
+                Some(&counters),
+            ),
             RuntimeNotice::Disconnected { detail_code } => {
                 lock(&self.inner.discovery_requests).clear();
                 let cancellation_recovery = self
@@ -1971,7 +2051,15 @@ impl ChatCoordinator {
                     return;
                 };
                 let mut queue = lock(&self.inner.queue);
-                let decision = queue.accept_chunk(&request_id, sequence, content.len());
+                let decision = queue.accept_chunk_with_characters(
+                    &request_id,
+                    sequence,
+                    content.len(),
+                    content.chars().count(),
+                );
+                let first_chunk_counters = (sequence == 1)
+                    .then(|| queue.active_counters(&request_id))
+                    .flatten();
                 drop(queue);
                 let job = match decision {
                     ChunkDecision::Accepted(job) => job,
@@ -1987,6 +2075,20 @@ impl ChatCoordinator {
                 if self.append_job_chunk(&job, content).is_ok() {
                     if sequence == 1 {
                         self.trace(&request_id, "first_chunk", Some(sequence), None);
+                        self.trace_with_counters(
+                            &request_id,
+                            "rust.chunk.received",
+                            Some(sequence),
+                            None,
+                            first_chunk_counters.as_ref(),
+                        );
+                        self.trace_with_counters(
+                            &request_id,
+                            "rust.chunk.persisted",
+                            Some(sequence),
+                            None,
+                            first_chunk_counters.as_ref(),
+                        );
                     }
                     self.trace(&request_id, "chunk_persisted", Some(sequence), None);
                     self.trace(&request_id, "generation.chunk", Some(sequence), None);
@@ -2277,6 +2379,14 @@ impl ChatCoordinator {
                 MessageStatus::Failed
             }
         };
+        let counters = lock(&self.inner.queue).active_counters(request_id);
+        self.trace_with_counters(
+            request_id,
+            "rust.terminal.received",
+            event.sequence,
+            error_code,
+            counters.as_ref(),
+        );
         self.finish_active(request_id, status, error_code, event);
     }
 
@@ -2287,15 +2397,19 @@ impl ChatCoordinator {
         error_code: Option<&str>,
         event: PhaseOneEvent,
     ) {
-        let Some(job) = lock(&self.inner.queue).finish_active(request_id) else {
+        let mut queue = lock(&self.inner.queue);
+        let counters = queue.active_counters(request_id);
+        let Some(job) = queue.finish_active(request_id) else {
             return;
         };
+        drop(queue);
         let persisted = self.finish_job(&job, status, error_code);
         if persisted.is_ok() {
-            if status == MessageStatus::Complete
+            let terminal_sequence = event.sequence;
+            let title_eligible = status == MessageStatus::Complete
                 && !job.temporary
-                && !self.inner.safe_mode.load(Ordering::SeqCst)
-            {
+                && !self.inner.safe_mode.load(Ordering::SeqCst);
+            if title_eligible {
                 let _ = self.inner.database.refresh_conversation_summary_for_branch(
                     &job.agent_id,
                     &job.conversation_id,
@@ -2310,13 +2424,29 @@ impl ChatCoordinator {
                         &job.branch_id,
                         &job.assistant_message_id,
                     );
-                self.schedule_title_generation_or_defer(&job);
             }
             self.trace(request_id, "terminal_persisted", event.sequence, error_code);
             self.trace(request_id, "database.finalized", event.sequence, error_code);
             self.trace(request_id, "chat.finalized", event.sequence, error_code);
+            self.trace_with_counters(
+                request_id,
+                "rust.message.finalized",
+                terminal_sequence,
+                error_code,
+                counters.as_ref(),
+            );
             self.emit(event);
+            self.trace_with_counters(
+                request_id,
+                "frontend.message.visible",
+                terminal_sequence,
+                error_code,
+                counters.as_ref(),
+            );
             self.trace(request_id, "frontend.state_changed", None, error_code);
+            if title_eligible {
+                self.schedule_title_generation_or_defer(&job);
+            }
         } else {
             self.trace(request_id, "persistence_failed", event.sequence, None);
             self.trace(
@@ -2750,9 +2880,20 @@ impl ChatCoordinator {
         sequence: Option<u64>,
         terminal_code: Option<&str>,
     ) {
+        self.trace_with_counters(request_id, code, sequence, terminal_code, None);
+    }
+
+    fn trace_with_counters(
+        &self,
+        request_id: &str,
+        code: &str,
+        sequence: Option<u64>,
+        terminal_code: Option<&str>,
+        counters: Option<&BTreeMap<String, u64>>,
+    ) {
         let snapshot = {
             let mut traces = lock(&self.inner.request_traces);
-            traces.record(request_id, code, sequence, terminal_code);
+            traces.record_with_counters(request_id, code, sequence, terminal_code, counters);
             if should_persist_trace_code(code) {
                 traces.revision = traces.revision.wrapping_add(1);
                 Some(traces.clone())
@@ -3967,6 +4108,36 @@ mod tests {
     }
 
     #[test]
+    fn queue_reconstructs_a_long_ordered_stream_without_overwrite() {
+        let mut queue = GenerationQueue::default();
+        queue.enqueue(job("long", "astra")).unwrap();
+        queue.activate_next();
+        for sequence in 1..=128 {
+            assert!(matches!(
+                queue.accept_chunk_with_characters("long", sequence, 1, 1),
+                ChunkDecision::Accepted(_)
+            ));
+        }
+        let counters = queue.active_counters("long").unwrap();
+        assert_eq!(counters.get("rust_chunks"), Some(&128));
+        assert_eq!(counters.get("rust_bytes"), Some(&128));
+        assert_eq!(counters.get("persisted_chars"), Some(&128));
+        let active = queue.active.as_ref().unwrap().job.clone();
+        let terminal = PhaseOneEvent {
+            protocol_version: PROTOCOL_VERSION,
+            event_type: "generation.complete".into(),
+            request_id: Some(active.request_id),
+            agent_id: Some(active.agent_id),
+            conversation_id: Some(active.conversation_id),
+            assistant_message_id: Some(active.assistant_message_id),
+            sequence: Some(128),
+            content: None,
+            error_code: None,
+        };
+        assert!(queue.accepts_terminal(&terminal));
+    }
+
+    #[test]
     fn request_trace_is_bounded_and_content_free() {
         let mut traces = RequestTraceStore::default();
         traces.register(&job("request", "astra"));
@@ -4022,6 +4193,9 @@ mod tests {
         assert!(!should_persist_trace_code("chunk_persisted"));
         assert!(!should_persist_trace_code("generation.chunk"));
         assert!(!should_persist_trace_code("chunk_ignored"));
+        assert!(!should_persist_trace_code("provider.chunk.received"));
+        assert!(!should_persist_trace_code("rust.chunk.received"));
+        assert!(!should_persist_trace_code("rust.chunk.persisted"));
         assert!(should_persist_trace_code("generation.accepted"));
         assert!(should_persist_trace_code("terminal_persisted"));
     }
@@ -4112,6 +4286,37 @@ mod tests {
         assert!(persisted.contains("conversation-astra"));
         assert!(persisted.contains("ollama:test"));
         assert!(!persisted.contains("Synthetic input"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn request_trace_persists_bounded_return_path_counters() {
+        let path = std::env::temp_dir().join(format!(
+            "aip-generation-trace-counters-{}.ndjson",
+            Uuid::now_v7()
+        ));
+        let mut traces = RequestTraceStore::default();
+        let generation = job("counter-trace-request", "astra");
+        traces.register(&generation);
+        let counters = BTreeMap::from([
+            ("provider_chunks".into(), 128),
+            ("runtime_chunks".into(), 128),
+            ("rust_chunks".into(), 128),
+            ("persisted_chars".into(), 512),
+        ]);
+        traces.record_with_counters(
+            &generation.request_id,
+            "rust.message.finalized",
+            Some(128),
+            None,
+            Some(&counters),
+        );
+        traces.persist(&path);
+        let persisted = fs::read_to_string(&path).unwrap();
+        assert!(persisted.contains("provider_chunks"));
+        assert!(persisted.contains("persisted_chars"));
+        let loaded = RequestTraceStore::load(&path);
+        assert_eq!(loaded.entries(&generation.request_id)[0].counters, counters);
         let _ = fs::remove_file(path);
     }
 
@@ -4761,6 +4966,29 @@ mod tests {
             assert!(codes.contains(&"runtime_accepted"));
             assert!(codes.contains(&"generation_started"));
             assert!(codes.contains(&"terminal_persisted"));
+            let finalized = trace
+                .iter()
+                .find(|entry| entry.code == "rust.message.finalized")
+                .expect("finalization milestone should be traced");
+            assert_eq!(finalized.counters.get("rust_chunks"), Some(&1));
+            let expected_chars = if request_id == &first.request_id {
+                7
+            } else {
+                8
+            };
+            assert_eq!(
+                finalized.counters.get("persisted_chars"),
+                Some(&(expected_chars as u64))
+            );
+            let finalized_index = trace
+                .iter()
+                .position(|entry| entry.code == "rust.message.finalized")
+                .unwrap();
+            let visible_index = trace
+                .iter()
+                .position(|entry| entry.code == "frontend.message.visible")
+                .unwrap();
+            assert!(finalized_index < visible_index);
         }
 
         runtime.shutdown();

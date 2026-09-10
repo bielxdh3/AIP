@@ -225,6 +225,20 @@ class OllamaStreamingTests(unittest.TestCase):
         self.assertEqual(body["keep_alive"], "15m")
         self.assertEqual(body["messages"][0]["content"], "Synthetic input")
 
+    def test_chat_body_reconstructs_more_than_one_hundred_chunks_in_order(self) -> None:
+        expected_chunks = [f"chunk-{index:03d}|" for index in range(128)]
+        lines = [
+            json.dumps(
+                {"message": {"role": "assistant", "content": content}, "done": False}
+            ).encode()
+            + b"\n"
+            for content in expected_chunks
+        ]
+        lines.append(b'{"done":true}\n')
+        chunks, _ = self.run_chat(lines)
+        self.assertEqual([sequence for sequence, _ in chunks], list(range(1, 129)))
+        self.assertEqual("".join(content for _, content in chunks), "".join(expected_chunks))
+
     def test_llama_model_uses_the_chat_endpoint(self) -> None:
         _, connection = self.run_chat(
             [b'{"message":{"content":"OK"},"done":false}\n', b'{"done":true}\n'],

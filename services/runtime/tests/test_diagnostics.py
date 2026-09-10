@@ -56,6 +56,38 @@ class RuntimeDiagnosticTests(unittest.TestCase):
         )
         self.assertNotIn("private conversation", "".join(output))
 
+    def test_trace_carries_only_bounded_stream_counters(self) -> None:
+        output: list[str] = []
+        emit_trace(
+            "runtime.terminal.emitted",
+            request_id="request-1",
+            model="fixture:latest",
+            counters={
+                "provider_chunks": 128,
+                "provider_bytes": 2_048,
+                "runtime_chunks": 128,
+                "runtime_terminal_events": 1,
+            },
+            write=output.append,
+        )
+        self.assertEqual(
+            output,
+            [
+                f'{TRACE_PREFIX}{{"event":"runtime.terminal.emitted","requestId":"request-1","model":"fixture:latest","counters":{{"provider_chunks":128,"provider_bytes":2048,"runtime_chunks":128,"runtime_terminal_events":1}}}}\n'
+            ],
+        )
+        self.assertNotIn("content", output[0])
+
+    def test_invalid_trace_counter_is_rejected_without_writing(self) -> None:
+        output: list[str] = []
+        emit_trace(
+            "runtime.terminal.emitted",
+            request_id="request-1",
+            counters={"private_counter": 1},
+            write=output.append,
+        )
+        self.assertEqual(output, [])
+
 
 if __name__ == "__main__":
     unittest.main()

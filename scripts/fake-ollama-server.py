@@ -13,7 +13,7 @@ MARKER = re.compile(r"marker-[A-Za-z0-9_-]{1,64}")
 
 
 class FixtureHandler(BaseHTTPRequestHandler):
-    server_version = "AIPFakeOllama/0.2.3.3"
+    server_version = "AIPFakeOllama/0.2.3.4"
 
     def log_message(self, _format: str, *_args: object) -> None:
         return
@@ -58,12 +58,19 @@ class FixtureHandler(BaseHTTPRequestHandler):
             return
         marker = MARKER.search(json.dumps(messages, ensure_ascii=True))
         marker_text = marker.group(0) if marker else "marker-missing"
-        self._append_receipt({"model": model, "marker": marker_text})
-        response = f"fixture-response:{marker_text}"
+        response, chunks = fixture_response(marker_text)
+        self._append_receipt(
+            {
+                "model": model,
+                "marker": marker_text,
+                "chunkCount": len(chunks),
+                "responseBytes": len(response.encode("utf-8")),
+            }
+        )
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
         self.end_headers()
-        for content in (response[: len(response) // 2], response[len(response) // 2 :]):
+        for content in chunks:
             self.wfile.write(
                 (json.dumps({"message": {"content": content}, "done": False}) + "\n").encode()
             )
@@ -92,6 +99,22 @@ class FixtureHandler(BaseHTTPRequestHandler):
         with self.server.receipt_lock:  # type: ignore[attr-defined]
             with receipt.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(value, separators=(",", ":")) + "\n")
+
+
+def fixture_response(marker: str) -> tuple[str, list[str]]:
+    """Return deterministic content and a deliberately long stream for installed smoke."""
+
+    if marker == "marker-one":
+        response = "AIP-STREAM-TEST-OK"
+        return response, [response[:4], response[4:11], response[11:16], response[16:]]
+    if marker in {"marker-two", "marker-three"}:
+        response = f"fixture-response:{marker}|" + "".join(
+            f"{index:03d}," for index in range(128)
+        )
+        return response, list(response)
+    response = f"fixture-response:{marker}"
+    midpoint = max(1, len(response) // 2)
+    return response, [response[:midpoint], response[midpoint:]]
 
 
 def main() -> int:
