@@ -13,6 +13,6 @@
 9. `scripts/installed-windows-smoke.ps1` installs the exact `A.I.P._0.2.3.3_x64_en-US.msi` into a clean test directory, launches the installed `aip-runtime.exe`, exercises discovery plus two distinct streaming generations against `scripts/fake-ollama-server.py`, verifies terminal success and stderr trace milestones, then uninstalls and cleans up.
 10. The durable trace is at `%LOCALAPPDATA%\br.dev.biel.aip\diagnostics\generation-trace.ndjson` on Windows (the path is resolved from Tauri's app-local-data directory). Temporary-chat entries are filtered before durable serialization.
 
-The external/managed Ollama policy is deterministic: AIP first reuses a healthy validated loopback service; it starts a managed process only from the explicit Owner-provided `AIP_OLLAMA_EXECUTABLE` or bounded `AIP_OLLAMA_CONFIG`; it never guesses or downloads an executable, and rejects remote or wildcard endpoints.
+The external/managed Ollama policy is deterministic: AIP first reuses a healthy validated loopback service; it starts a managed process only from the explicit Owner-provided `AIP_OLLAMA_EXECUTABLE` or bounded `AIP_OLLAMA_CONFIG`; it never guesses or downloads an executable, rejects remote endpoints, and normalizes wildcard inputs to `127.0.0.1` before probing or managed launch.
 
 This report records the evidence boundary rather than attributing the Owner's two PCs to an unobserved root cause. The next Owner smoke must use the exact 0.2.3.3 MSI and retain the trace if either generation stalls or fails.
