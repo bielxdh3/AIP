@@ -115,7 +115,19 @@ Rust observation.
 - The local release build produced the internal-SemVer MSI and NSIS bundles. Local
   installed smoke was blocked by a pre-existing per-machine A.I.P. registration that
   requires Administrator elevation (`Error 1730`/`1603`); this is not claimed as an
-  installed-pass result. Clean Windows CI is the installation proof gate.
+  installed-pass result. Clean Windows CI run `34496733666` at head
+  `ed2d0647d185f23eeea69414955f5da3b95c502a` passed Android, phase-zero, package, and
+  installed-windows-smoke. Its artifact is
+  `aip-windows-0.2.3.4-ed2d0647d185f23eeea69414955f5da3b95c502a` (ID `10161152568`,
+  digest `sha256:687010976513ff28e7e7975cf6362e748d36d9e965d4e7e4ace39f1b3b796260`).
+  The installed smoke verified the exact MSI
+  `A.I.P._0.2.3.4_x64_en-US.msi` (SHA256
+  `B271B11497420316B7A6DF13EF9501B2C07CFD276A0C4810BA15F515EDB55EA2`), three
+  same-conversation turns with 4/540/542 chunks, per-request milestones/counters,
+  liveness, and cleanup/uninstall.
+- The two response-return-path review threads were replied to and resolved after the
+  reader-bound and per-request correlation corrections. One unrelated temporary-chat
+  conversion race remains open and is outside this correction's scope.
 
 ## Preserved scope and owner gate
 
@@ -126,6 +138,7 @@ scrollbars, metadata overlap, generation animation, provider styling, and unrela
 visual polish remain deferred.
 
 PR #32 stays open. No merge, auto-merge, release, tag, deploy, or `main` rewrite is part
-of this correction. The next Owner smoke must install the exact `0.2.3.4` MSI and verify
-three full responsive turns; if it fails, retain the generation trace for boundary
-identification.
+of this correction. Clean-admin CI has completed the scripted installation gate; the
+next Owner smoke must install the exact `0.2.3.4` MSI in the Owner environment and
+verify three full responsive turns. If it fails, retain the generation trace for
+boundary identification.
