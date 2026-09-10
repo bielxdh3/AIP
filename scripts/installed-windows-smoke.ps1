@@ -280,6 +280,7 @@ try {
     foreach ($traceEvent in $accountingTraceEvents) {
       $accounted = @($requestTrace | Where-Object { $_.event -eq $traceEvent }) | Select-Object -Last 1
       $counters = $accounted.counters
+      $expectedTerminalEvents = if ($traceEvent -eq "provider.stream.completed") { 0 } else { 1 }
       if ($null -eq $counters) {
         throw "Installed runtime trace for $($result.RequestId) is missing counters on $traceEvent"
       }
@@ -294,7 +295,7 @@ try {
         [int64]$counters.runtime_bytes -ne [int64]$expectedBytes -or
         [int64]$counters.provider_characters -ne [int64]$expectedCharacters -or
         [int64]$counters.runtime_characters -ne [int64]$expectedCharacters -or
-        [int64]$counters.runtime_terminal_events -ne 1) {
+        [int64]$counters.runtime_terminal_events -ne $expectedTerminalEvents) {
         throw "Installed runtime trace counters for $($result.RequestId) do not match the reconstructed response"
       }
     }
