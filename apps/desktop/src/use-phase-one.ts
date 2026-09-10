@@ -9,6 +9,8 @@ import {
 } from "./conversation-state";
 import { createListenerRegistration } from "./listener-lifecycle";
 
+const terminalStatuses = new Set(["complete", "failed", "cancelled"]);
+
 export function loadIsCurrent(
   startedRevision: number,
   currentRevision: number,
@@ -28,9 +30,75 @@ export function mergeLoadedPhase(
   ) {
     return next;
   }
-  const activeRequestIds = new Set(phase.queue.map((entry) => entry.requestId));
+  // Some lightweight callers only provide identity/queue fields. Keep the old sequence
+  // behavior for those snapshots while the real command always supplies full messages.
+  if (
+    !Array.isArray(phase.messages) ||
+    !Array.isArray(current.phase.messages)
+  ) {
+    const activeRequestIds = new Set(
+      phase.queue.map((entry) => entry.requestId),
+    );
+    return {
+      phase,
+      lastSequenceByRequest: Object.fromEntries(
+        Object.entries(current.lastSequenceByRequest).filter(([requestId]) =>
+          activeRequestIds.has(requestId),
+        ),
+      ),
+    };
+  }
+
+  const currentQueueByMessage = new Map(
+    current.phase.queue.map((entry) => [entry.assistantMessageId, entry]),
+  );
+  const preservedRequestIds = new Set<string>();
+  const mergedMessages = phase.messages.map((loadedMessage) => {
+    const currentMessage = current.phase.messages.find(
+      (candidate) => candidate.id === loadedMessage.id,
+    );
+    const currentEntry = currentQueueByMessage.get(loadedMessage.id);
+    if (currentMessage === undefined || currentEntry === undefined) {
+      return loadedMessage;
+    }
+    const contentIsMonotonic =
+      currentMessage.content.length >= loadedMessage.content.length &&
+      currentMessage.content.startsWith(loadedMessage.content);
+    const loadedIsTerminal = terminalStatuses.has(loadedMessage.status);
+    if (
+      !terminalStatuses.has(currentMessage.status) &&
+      contentIsMonotonic &&
+      (!loadedIsTerminal ||
+        currentMessage.content.length > loadedMessage.content.length)
+    ) {
+      preservedRequestIds.add(currentEntry.requestId);
+      return currentMessage;
+    }
+    return loadedMessage;
+  });
+  const mergedQueue = phase.queue.map((entry) =>
+    preservedRequestIds.has(entry.requestId)
+      ? (current.phase.queue.find(
+          (candidate) => candidate.requestId === entry.requestId,
+        ) ?? entry)
+      : entry,
+  );
+  for (const entry of current.phase.queue) {
+    if (
+      preservedRequestIds.has(entry.requestId) &&
+      !mergedQueue.some((candidate) => candidate.requestId === entry.requestId)
+    ) {
+      mergedQueue.push(entry);
+    }
+  }
+  const mergedPhase = {
+    ...phase,
+    messages: mergedMessages,
+    queue: mergedQueue,
+  };
+  const activeRequestIds = new Set(mergedQueue.map((entry) => entry.requestId));
   return {
-    phase,
+    phase: mergedPhase,
     lastSequenceByRequest: Object.fromEntries(
       Object.entries(current.lastSequenceByRequest).filter(([requestId]) =>
         activeRequestIds.has(requestId),

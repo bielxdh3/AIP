@@ -52,4 +52,50 @@ describe("Phase One load revisions", () => {
       }).lastSequenceByRequest,
     ).toEqual({});
   });
+
+  it("does not let a stale reload rewind an active streamed assistant", () => {
+    const message = {
+      id: "assistant",
+      conversationId: "conversation",
+      agentId: "agent",
+      author: "agent",
+      content: "AB",
+      status: "streaming",
+    };
+    const queueEntry = {
+      agentId: "agent",
+      requestId: "request",
+      conversationId: "conversation",
+      assistantMessageId: "assistant",
+      active: true,
+      cancellationRequested: false,
+    };
+    const currentPhase = {
+      agent: { id: "agent" },
+      conversation: { id: "conversation" },
+      messages: [message],
+      queue: [queueEntry],
+    } as unknown as PhaseOneState;
+    const current = createConversationViewState(currentPhase);
+    current.lastSequenceByRequest.request = 2;
+    const stalePhase = {
+      ...currentPhase,
+      messages: [{ ...message, content: "A", status: "streaming" }],
+    } as unknown as PhaseOneState;
+
+    const merged = mergeLoadedPhase(current, stalePhase);
+    expect(merged.phase.messages[0]?.content).toBe("AB");
+    expect(merged.phase.messages[0]?.status).toBe("streaming");
+    expect(merged.lastSequenceByRequest).toEqual({ request: 2 });
+
+    const terminal = mergeLoadedPhase(current, {
+      ...currentPhase,
+      messages: [{ ...message, content: "AB", status: "complete" }],
+      queue: [],
+    } as unknown as PhaseOneState);
+    expect(terminal.phase.messages[0]?.content).toBe("AB");
+    expect(terminal.phase.messages[0]?.status).toBe("complete");
+    expect(terminal.phase.queue).toEqual([]);
+    expect(terminal.lastSequenceByRequest).toEqual({});
+  });
 });

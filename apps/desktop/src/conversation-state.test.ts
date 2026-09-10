@@ -195,6 +195,22 @@ describe("conversation event reducer", () => {
     expect(second.phase.messages[0]?.content).toBe("Olá mundo");
   });
 
+  it("keeps the accumulated content when terminal payload is empty", () => {
+    const initial = createConversationViewState(phase());
+    const first = applyPhaseOneEvent(
+      initial,
+      event("generation.chunk", 1, "A"),
+    );
+    const second = applyPhaseOneEvent(first, event("generation.chunk", 2, "B"));
+    const third = applyPhaseOneEvent(second, event("generation.chunk", 3, "C"));
+    const terminal = applyPhaseOneEvent(third, {
+      ...event("generation.complete", 3, ""),
+      content: "",
+    });
+    expect(terminal.phase.messages[0]?.content).toBe("ABC");
+    expect(terminal.phase.messages[0]?.status).toBe("complete");
+  });
+
   it("ignores another agent and keeps terminal state idempotent", () => {
     const initial = createConversationViewState(phase());
     const wrongAgent = {

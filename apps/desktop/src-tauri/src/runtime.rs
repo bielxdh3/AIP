@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     io::{BufRead, BufReader, Read, Write},
     path::PathBuf,
     process::{ChildStderr, ChildStdout, Command, ExitStatus, Stdio},
@@ -58,6 +58,7 @@ pub enum RuntimeNotice {
         request_id: String,
         event: &'static str,
         error_code: Option<String>,
+        counters: BTreeMap<String, u64>,
     },
     Disconnected {
         detail_code: &'static str,
@@ -69,7 +70,23 @@ struct RuntimeTrace {
     request_id: String,
     event: &'static str,
     error_code: Option<String>,
+    counters: BTreeMap<String, u64>,
 }
+
+const TRACE_COUNTER_KEYS: &[&str] = &[
+    "provider_chunks",
+    "provider_bytes",
+    "provider_characters",
+    "runtime_chunks",
+    "runtime_bytes",
+    "runtime_characters",
+    "runtime_terminal_events",
+    "rust_chunks",
+    "rust_bytes",
+    "rust_characters",
+    "persisted_bytes",
+    "persisted_chars",
+];
 
 enum RuntimeCommand {
     Send(String),
@@ -574,6 +591,7 @@ fn read_runtime_stderr(
                             request_id: trace.request_id,
                             event: trace.event,
                             error_code: trace.error_code,
+                            counters: trace.counters,
                         },
                     );
                 }
@@ -605,6 +623,11 @@ fn parse_trace_line(raw: &[u8]) -> Option<RuntimeTrace> {
             | "ollama.first_chunk"
             | "ollama.request.completed"
             | "ollama.request.failed"
+            | "provider.stream.started"
+            | "provider.chunk.received"
+            | "provider.stream.completed"
+            | "runtime.chunk.emitted"
+            | "runtime.terminal.emitted"
     ) {
         return None;
     }
@@ -626,6 +649,7 @@ fn parse_trace_line(raw: &[u8]) -> Option<RuntimeTrace> {
     if value.get("errorCode").is_some() && error_code.is_none() {
         return None;
     }
+    let counters = parse_trace_counters(value.get("counters"))?;
     Some(RuntimeTrace {
         request_id: request_id.to_string(),
         event: match event {
@@ -635,10 +659,38 @@ fn parse_trace_line(raw: &[u8]) -> Option<RuntimeTrace> {
             "ollama.first_chunk" => "ollama.first_chunk",
             "ollama.request.completed" => "ollama.request.completed",
             "ollama.request.failed" => "ollama.request.failed",
+            "provider.stream.started" => "provider.stream.started",
+            "provider.chunk.received" => "provider.chunk.received",
+            "provider.stream.completed" => "provider.stream.completed",
+            "runtime.chunk.emitted" => "runtime.chunk.emitted",
+            "runtime.terminal.emitted" => "runtime.terminal.emitted",
             _ => return None,
         },
         error_code,
+        counters,
     })
+}
+
+fn parse_trace_counters(value: Option<&serde_json::Value>) -> Option<BTreeMap<String, u64>> {
+    let Some(value) = value else {
+        return Some(BTreeMap::new());
+    };
+    let object = value.as_object()?;
+    if object.len() > TRACE_COUNTER_KEYS.len() {
+        return None;
+    }
+    let mut counters = BTreeMap::new();
+    for (key, value) in object {
+        if !TRACE_COUNTER_KEYS.contains(&key.as_str()) {
+            return None;
+        }
+        let number = value.as_u64()?;
+        if number > 2_147_483_647 {
+            return None;
+        }
+        counters.insert(key.clone(), number);
+    }
+    Some(counters)
 }
 
 fn record_stderr_code(diagnostics: &Arc<Mutex<RuntimeDiagnostics>>, code: &str) {
@@ -775,7 +827,7 @@ pub(crate) static RUNTIME_TEST_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::VecDeque,
+        collections::{BTreeMap, VecDeque},
         fs,
         path::{Path, PathBuf},
         sync::{mpsc, Arc, Mutex},
@@ -1097,6 +1149,7 @@ for raw in sys.stdin:
                 request_id: "request-1".into(),
                 event: "ollama.first_chunk",
                 error_code: None,
+                counters: BTreeMap::new(),
             })
         );
         assert_eq!(
@@ -1107,8 +1160,25 @@ for raw in sys.stdin:
                 request_id: "request-1".into(),
                 event: "ollama.connected",
                 error_code: Some("provider_timeout".into()),
+                counters: BTreeMap::new(),
             })
         );
+        let accounted = super::parse_trace_line(
+            br#"AIP_RUNTIME_TRACE {"event":"runtime.terminal.emitted","requestId":"request-1","counters":{"provider_chunks":128,"runtime_chunks":128,"runtime_terminal_events":1}}"#,
+        )
+        .expect("bounded counters should parse");
+        assert_eq!(
+            accounted.counters,
+            BTreeMap::from([
+                ("provider_chunks".into(), 128),
+                ("runtime_chunks".into(), 128),
+                ("runtime_terminal_events".into(), 1),
+            ])
+        );
+        assert!(super::parse_trace_line(
+            br#"AIP_RUNTIME_TRACE {"event":"runtime.terminal.emitted","requestId":"request-1","counters":{"private":1}}"#,
+        )
+        .is_none());
         assert_eq!(
             super::parse_trace_line(
                 br#"AIP_RUNTIME_TRACE {"event":"ollama.first_chunk","requestId":"private conversation"}"#

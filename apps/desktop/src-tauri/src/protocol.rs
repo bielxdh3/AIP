@@ -411,6 +411,37 @@ mod tests {
     }
 
     #[test]
+    fn sequential_chunks_for_one_request_remain_individually_decodable() {
+        let mut parsed = Vec::new();
+        for (sequence, content) in [(1, "A"), (2, "B"), (3, "C"), (4, "D")] {
+            let line = serde_json::json!({
+                "protocolVersion": 1,
+                "event": "generation.chunk",
+                "requestId": "request",
+                "agentId": "agent",
+                "conversationId": "conversation",
+                "assistantMessageId": "message",
+                "sequence": sequence,
+                "content": content,
+            })
+            .to_string();
+            let RuntimeOutput::Event(event) = parse_runtime_output(&line).unwrap() else {
+                panic!("expected a generation event");
+            };
+            parsed.push((event.sequence.unwrap(), event.content.unwrap()));
+        }
+        assert_eq!(
+            parsed,
+            vec![
+                (1, "A".into()),
+                (2, "B".into()),
+                (3, "C".into()),
+                (4, "D".into())
+            ]
+        );
+    }
+
+    #[test]
     fn malformed_or_mismatched_messages_are_rejected() {
         assert!(parse_runtime_output("not-json").is_err());
         assert!(parse_runtime_output(

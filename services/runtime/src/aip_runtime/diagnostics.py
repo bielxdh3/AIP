@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 DIAGNOSTIC_PREFIX = "AIP_RUNTIME_DIAGNOSTIC "
 TRACE_PREFIX = "AIP_RUNTIME_TRACE "
@@ -31,8 +31,30 @@ TRACE_EVENTS = frozenset(
         "ollama.first_chunk",
         "ollama.request.completed",
         "ollama.request.failed",
+        "provider.stream.started",
+        "provider.chunk.received",
+        "provider.stream.completed",
+        "runtime.chunk.emitted",
+        "runtime.terminal.emitted",
     }
 )
+TRACE_COUNTER_KEYS = frozenset(
+    {
+        "provider_chunks",
+        "provider_bytes",
+        "provider_characters",
+        "runtime_chunks",
+        "runtime_bytes",
+        "runtime_characters",
+        "runtime_terminal_events",
+        "rust_chunks",
+        "rust_bytes",
+        "rust_characters",
+        "persisted_bytes",
+        "persisted_chars",
+    }
+)
+MAX_TRACE_COUNTER = 2_147_483_647
 
 
 def sanitize_diagnostic_code(candidate: object) -> str:
@@ -66,6 +88,7 @@ def emit_trace(
     request_id: object,
     model: object | None = None,
     error_code: object | None = None,
+    counters: Mapping[str, int] | None = None,
     write: Callable[[str], object] | None = None,
 ) -> None:
     """Write bounded, content-free request diagnostics for the native smoke path."""
@@ -82,7 +105,20 @@ def emit_trace(
         )
     ):
         return
-    payload: dict[str, str] = {"event": event, "requestId": request_id}
+    safe_counters: dict[str, int] = {}
+    if counters is not None:
+        for key, value in counters.items():
+            if (
+                not isinstance(key, str)
+                or key not in TRACE_COUNTER_KEYS
+                or not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
+                or value > MAX_TRACE_COUNTER
+            ):
+                return
+            safe_counters[key] = value
+    payload: dict[str, object] = {"event": event, "requestId": request_id}
     if (
         isinstance(model, str)
         and model
@@ -103,6 +139,8 @@ def emit_trace(
         )
     ):
         payload["errorCode"] = error_code
+    if safe_counters:
+        payload["counters"] = safe_counters
     try:
         line = f"{TRACE_PREFIX}{json.dumps(payload, separators=(',', ':'))}\n"
         if write is None:
