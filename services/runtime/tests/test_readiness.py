@@ -166,6 +166,22 @@ class ReadinessTests(unittest.TestCase):
             self.assertEqual(len(paths), 1)
             self.assertTrue(paths[0].samefile(executable))
 
+    def test_opt_in_auto_start_ignores_untrusted_path_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "ollama.exe"
+            executable.touch()
+            client = FakeClient([ProviderError("provider_unavailable")])
+            paths: list[Path] = []
+            manager = OllamaRuntimeManager(
+                as_ollama_client(client),
+                environ={"AIP_OLLAMA_AUTO_START": "true", "PATH": directory},
+                process_factory=recording_factory(paths),
+                readiness_timeout=0,
+            )
+            with self.assertRaisesRegex(ProviderError, "provider_unavailable"):
+                manager.ensure_ready()
+            self.assertFalse(paths)
+
     def test_safe_mode_never_auto_starts_discovered_provider(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / "Programs" / "Ollama" / "ollama.exe"
