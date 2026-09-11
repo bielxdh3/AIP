@@ -585,8 +585,16 @@ export function ThemeControls() {
         value={preferences.mode}
         options={modeOptions}
         onChange={(mode) => {
-          if (THEME_MODES.includes(mode as ThemeMode))
-            updatePreferences({ mode: mode as ThemeMode });
+          if (!THEME_MODES.includes(mode as ThemeMode)) return;
+          const nextMode = mode as ThemeMode;
+          if (nextMode === "custom" && preferences.mode !== "custom") {
+            updatePreferences({
+              mode: nextMode,
+              customColors: { ...activePalette(preferences) },
+            });
+            return;
+          }
+          updatePreferences({ mode: nextMode });
         }}
       />
       <div className="theme-color-grid">

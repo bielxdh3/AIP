@@ -6612,10 +6612,10 @@ input[type="radio"] {
   font-size: var(--type-meta);
 }
 .conversation-batch-bar strong { margin-right: auto; color: var(--color-text-strong); }
-.conversation-list-item { grid-template-columns: minmax(0, 1fr); min-height: 38px; padding: 0; }
+.conversation-list-item { grid-template-columns: minmax(0, 1fr); min-height: 44px; padding: 0; }
 .conversation-list-item[data-selection-mode="true"] { grid-template-columns: auto minmax(0, 1fr) auto; }
 .conversation-list-checkbox { width: 16px; height: 16px; margin: 0 0 0 8px; accent-color: var(--color-accent); }
-.conversation-list-select, .conversation-list-action { min-height: 36px; padding: 6px 8px; }
+.conversation-list-select, .conversation-list-action { min-height: 44px; padding: 6px 8px; }
 .conversation-list-item:not([data-selection-mode="true"]) .conversation-list-select { padding-right: 40px; }
 .conversation-actions { position: absolute; top: 1px; right: 1px; opacity: 0.76; pointer-events: auto; transition: opacity var(--motion-fast) ease; }
 .conversation-list-item:hover .conversation-actions,

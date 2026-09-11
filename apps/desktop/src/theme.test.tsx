@@ -123,6 +123,20 @@ describe("theme foundations", () => {
     expect(document.documentElement.dataset.theme).toBe("dark");
   });
 
+  it("seeds custom colors from the active preset for coordinated edits", async () => {
+    render(<ThemeControls />);
+    if (container === undefined) throw new Error("Missing theme container");
+    await chooseOption(container, "theme-mode", "paper");
+    await chooseOption(container, "theme-mode", "custom");
+    expect(document.documentElement.dataset.theme).toBe("custom");
+    expect(
+      document.documentElement.style.getPropertyValue("--color-surface"),
+    ).toBe(THEME_PRESETS.paper.surface);
+    expect(
+      document.documentElement.style.getPropertyValue("--color-text"),
+    ).toBe(THEME_PRESETS.paper.text);
+  });
+
   it("starts with the safe Times New Roman foundation", () => {
     render(<StateProbe />);
     expect(document.documentElement.style.getPropertyValue("--font-ui")).toBe(
