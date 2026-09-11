@@ -10889,6 +10889,13 @@ function OllamaAutoStartControl({ safeMode }: { safeMode: boolean }) {
     }
   });
   const [status, setStatus] = useState<string | null>(null);
+  useEffect(() => {
+    void invoke<boolean>("get_ollama_auto_start")
+      .then((value) => {
+        if (typeof value === "boolean") setEnabled(value);
+      })
+      .catch(() => undefined);
+  }, []);
   async function toggle(next: boolean) {
     setEnabled(next);
     try {

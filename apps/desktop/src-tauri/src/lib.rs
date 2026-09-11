@@ -2484,6 +2484,16 @@ fn set_safe_mode(
 }
 
 #[tauri::command]
+fn get_ollama_auto_start(state: State<'_, AppState>) -> Result<bool, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .ollama_auto_start()
+        .map_err(|_| "operation_failed")
+}
+
+#[tauri::command]
 fn set_ollama_auto_start(state: State<'_, AppState>, enabled: bool) -> Result<(), &'static str> {
     if state.safe_mode.load(Ordering::SeqCst) {
         return Err("safe_mode_active");
@@ -3492,6 +3502,7 @@ pub fn run() {
             cleanup_screen_vision_job,
             cancel_screen_vision_session,
             set_safe_mode,
+            get_ollama_auto_start,
             set_ollama_auto_start,
             get_phase_one_state,
             get_temporary_phase_one_state,
