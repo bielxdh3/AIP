@@ -116,6 +116,7 @@ describe("theme foundations", () => {
       document.documentElement.style.getPropertyValue("--color-surface"),
     ).toBe("#d7c7b3");
     expect(contrastRatio("#d7c7b3", "#2d241b")).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio("#564333", "#cfbea8")).toBeGreaterThanOrEqual(4.5);
     await chooseOption(container, "theme-mode", "dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
   });

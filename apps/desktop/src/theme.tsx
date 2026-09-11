@@ -138,7 +138,7 @@ const PRESETS: Record<BuiltInThemeMode, ThemePalette> = {
     strongBorder: "#705b47",
     text: "#2d241b",
     mutedText: "#4c3d2e",
-    subtleText: "#665340",
+    subtleText: "#564333",
     success: "#23633e",
     warning: "#704500",
     danger: "#8f3f3a",
