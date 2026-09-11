@@ -17,7 +17,7 @@ fn build_revision() -> String {
         .map(|value| value.trim().to_string())
         .ok()
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "0.2.3.5".to_string())
+        .unwrap_or_else(|| "0.2.4.1".to_string())
 }
 
 #[cfg(windows)]

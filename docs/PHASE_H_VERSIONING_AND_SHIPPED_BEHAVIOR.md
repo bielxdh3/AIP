@@ -1,6 +1,6 @@
 # Phase H versioning and shipped behavior
 
-Status: 0.2.3 is unreleased development. The current public stable installer is
+Status: 0.2.4 is unreleased development. The current public stable installer is
 the v0.1.0 MSI linked from the README. No tag, release, or installer publication
 is implied by the active development metadata.
 
@@ -10,7 +10,7 @@ AIP uses SemVer (`MAJOR.MINOR.PATCH`) for active workspace, desktop, contract,
 runtime, and Tauri package metadata. A coordinated product/runtime change keeps
 the active manifests aligned; the Rust package version is also the source used
 by the desktop application version display. The active development version is
-0.2.3.
+0.2.4.
 
 The v0.1.0 tag, release asset, release notes, and validation records are
 historical evidence and remain unchanged. Fixture snapshots and contract test
@@ -25,9 +25,9 @@ than a fabricated root-importer version field.
 
 ## Theme and shared controls
 
-The desktop theme is local UI state. `ThemeControls` supports concrete dark and
-warm paper modes, primary and secondary colors, compact and soft radius presets,
-interface fonts, and reduced-motion behavior. Legacy `system`, `light`,
+The desktop theme is local UI state. `ThemeControls` supports dark, warm paper,
+graphite, night blue, sepia, and custom palettes, primary and secondary colors,
+compact and soft radius presets, interface fonts, and reduced-motion behavior. Legacy `system`, `light`,
 `standard`, and system-font values are normalized deterministically when read.
 The `ThemeProvider` applies the resolved values to the document and persists them
 locally.
@@ -36,6 +36,11 @@ Shared `AipSelect` and `FilePicker` controls provide the common labeled and
 keyboard-accessible selection and file-input behavior used by the settings and
 desktop surfaces. These controls do not change Rust authority or model state on
 their own.
+
+The local settings surface also exposes opt-in Ollama auto-start. AIP reuses a
+healthy loopback service first, then discovers a validated Windows installation;
+explicit `AIP_OLLAMA_EXECUTABLE`/`AIP_OLLAMA_CONFIG` values take precedence and
+only a process started by AIP is stopped. Safe mode disables this behavior.
 
 ## Auto/Equilibrado model policy
 

@@ -146,6 +146,52 @@ class ReadinessTests(unittest.TestCase):
             manager.ensure_ready()
         self.assertFalse(factory_called)
 
+    def test_opt_in_auto_start_discovers_standard_windows_install(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "Programs" / "Ollama" / "ollama.exe"
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            client = FakeClient([ProviderError("provider_unavailable"), None])
+            paths: list[Path] = []
+            manager = OllamaRuntimeManager(
+                as_ollama_client(client),
+                environ={
+                    "AIP_OLLAMA_AUTO_START": "true",
+                    "LOCALAPPDATA": directory,
+                },
+                process_factory=recording_factory(paths),
+                readiness_timeout=0,
+            )
+            manager.ensure_ready()
+            self.assertEqual(len(paths), 1)
+            self.assertTrue(paths[0].samefile(executable))
+
+    def test_safe_mode_never_auto_starts_discovered_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "Programs" / "Ollama" / "ollama.exe"
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            client = FakeClient([ProviderError("provider_unavailable")])
+            factory_called = False
+
+            def factory(_path: Path) -> FakeProcess:
+                nonlocal factory_called
+                factory_called = True
+                return FakeProcess()
+
+            manager = OllamaRuntimeManager(
+                as_ollama_client(client),
+                environ={
+                    "AIP_OLLAMA_AUTO_START": "true",
+                    "AIP_SAFE_MODE": "1",
+                    "LOCALAPPDATA": directory,
+                },
+                process_factory=factory,
+            )
+            with self.assertRaisesRegex(ProviderError, "provider_unavailable"):
+                manager.ensure_ready()
+            self.assertFalse(factory_called)
+
     def test_timeout_terminates_only_the_started_process(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             executable = Path(directory) / "ollama.exe"
