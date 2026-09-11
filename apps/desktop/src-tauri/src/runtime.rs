@@ -12,7 +12,19 @@ use std::{
 };
 
 #[cfg(target_os = "windows")]
+use std::os::windows::io::AsRawHandle;
+#[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::{
+    Foundation::{CloseHandle, HANDLE},
+    System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    },
+};
 
 use crate::{
     domain::{can_transition_runtime, RuntimeState, RuntimeStatus},
@@ -335,6 +347,16 @@ fn run_runtime_process(
         unavailable(&status, &subscribers, "python_unavailable");
         return;
     };
+    #[cfg(target_os = "windows")]
+    let _runtime_job = match RuntimeJob::assign(&child) {
+        Ok(job) => job,
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            unavailable(&status, &subscribers, "runtime_process_isolation_failed");
+            return;
+        }
+    };
     let _process_id_guard = ProcessIdGuard::set(&process_id, child.id());
     let Some(mut stdin) = child.stdin.take() else {
         let _ = child.kill();
@@ -539,6 +561,45 @@ fn run_runtime_process(
                 },
             );
             return;
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct RuntimeJob(HANDLE);
+
+#[cfg(target_os = "windows")]
+impl RuntimeJob {
+    fn assign(child: &std::process::Child) -> std::io::Result<Self> {
+        unsafe {
+            let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if handle.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let configured = SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                (&mut limits as *mut JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) != 0;
+            let assigned = configured
+                && AssignProcessToJobObject(handle, child.as_raw_handle() as HANDLE) != 0;
+            if !assigned {
+                CloseHandle(handle);
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(Self(handle))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for RuntimeJob {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
         }
     }
 }
