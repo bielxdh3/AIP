@@ -6617,7 +6617,7 @@ input[type="radio"] {
 .conversation-list-checkbox { width: 16px; height: 16px; margin: 0 0 0 8px; accent-color: var(--color-accent); }
 .conversation-list-select, .conversation-list-action { min-height: 36px; padding: 6px 8px; }
 .conversation-list-item:not([data-selection-mode="true"]) .conversation-list-select { padding-right: 40px; }
-.conversation-actions { position: absolute; top: 1px; right: 1px; opacity: 0; pointer-events: none; transition: opacity var(--motion-fast) ease; }
+.conversation-actions { position: absolute; top: 1px; right: 1px; opacity: 0.76; pointer-events: auto; transition: opacity var(--motion-fast) ease; }
 .conversation-list-item:hover .conversation-actions,
 .conversation-list-item:focus-within .conversation-actions,
 .conversation-list-item[data-menu-open="true"] .conversation-actions { opacity: 1; pointer-events: auto; }

@@ -10897,20 +10897,35 @@ function OllamaAutoStartControl({ safeMode }: { safeMode: boolean }) {
       .catch(() => undefined);
   }, []);
   async function toggle(next: boolean) {
-    setEnabled(next);
-    try {
-      window.localStorage.setItem(OLLAMA_AUTO_START_STORAGE_KEY, String(next));
-    } catch {
-      // Local storage is optional; runtime remains authoritative.
-    }
     try {
       await invoke("set_ollama_auto_start", { enabled: next });
+      setEnabled(next);
+      try {
+        window.localStorage.setItem(
+          OLLAMA_AUTO_START_STORAGE_KEY,
+          String(next),
+        );
+      } catch {
+        // Local storage is optional; runtime remains authoritative.
+      }
       setStatus(
         next
           ? "Ativação automática ligada para a próxima inicialização."
           : "Ativação automática desligada.",
       );
     } catch {
+      try {
+        const value = await invoke<boolean>("get_ollama_auto_start");
+        if (typeof value === "boolean") {
+          setEnabled(value);
+          window.localStorage.setItem(
+            OLLAMA_AUTO_START_STORAGE_KEY,
+            String(value),
+          );
+        }
+      } catch {
+        // Keep the last known value when the recovery read is unavailable.
+      }
       setStatus("Não foi possível atualizar agora.");
     }
   }
