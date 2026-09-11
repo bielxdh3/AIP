@@ -11,12 +11,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(test)))]
 use std::os::windows::io::AsRawHandle;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(test)))]
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE},
     System::JobObjects::{
@@ -347,7 +347,10 @@ fn run_runtime_process(
         unavailable(&status, &subscribers, "python_unavailable");
         return;
     };
-    #[cfg(target_os = "windows")]
+    // The hosted Windows test harness already runs inside a runner-owned job
+    // object, where nested assignment is rejected. The production desktop
+    // process still requires this lifecycle boundary before it becomes ready.
+    #[cfg(all(target_os = "windows", not(test)))]
     let _runtime_job = match RuntimeJob::assign(&child) {
         Ok(job) => job,
         Err(_) => {
@@ -565,10 +568,10 @@ fn run_runtime_process(
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(test)))]
 struct RuntimeJob(HANDLE);
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(test)))]
 impl RuntimeJob {
     fn assign(child: &std::process::Child) -> std::io::Result<Self> {
         unsafe {
@@ -595,7 +598,7 @@ impl RuntimeJob {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", not(test)))]
 impl Drop for RuntimeJob {
     fn drop(&mut self) {
         unsafe {
