@@ -120,6 +120,18 @@ describe("theme foundations", () => {
     ).toBe("#d7c7b3");
     expect(contrastRatio("#d7c7b3", "#2d241b")).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio("#564333", "#cfbea8")).toBeGreaterThanOrEqual(4.5);
+    for (const statusColor of [
+      THEME_PRESETS.paper.success,
+      THEME_PRESETS.paper.warning,
+      THEME_PRESETS.paper.danger,
+    ]) {
+      expect(
+        contrastRatio(statusColor, THEME_PRESETS.paper.canvas),
+      ).toBeGreaterThanOrEqual(4.5);
+      expect(
+        contrastRatio(statusColor, THEME_PRESETS.paper.surface),
+      ).toBeGreaterThanOrEqual(4.5);
+    }
     expect(nativeColorScheme(THEME_PRESETS.dark)).toBe("dark");
     expect(nativeColorScheme(THEME_PRESETS.paper)).toBe("light");
     await chooseOption(container, "theme-mode", "dark");
