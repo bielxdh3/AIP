@@ -6612,6 +6612,7 @@ input[type="radio"] {
   font-size: var(--type-meta);
 }
 .conversation-batch-bar strong { margin-right: auto; color: var(--color-text-strong); }
+.conversation-batch-error { margin: 4px 6px; color: var(--color-danger); font-size: var(--type-meta); }
 .conversation-list-item { grid-template-columns: minmax(0, 1fr); min-height: 44px; padding: 0; }
 .conversation-list-item[data-selection-mode="true"] { grid-template-columns: auto minmax(0, 1fr) auto; }
 .conversation-list-checkbox { width: 16px; height: 16px; margin: 0 0 0 8px; accent-color: var(--color-accent); }

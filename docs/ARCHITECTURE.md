@@ -135,10 +135,12 @@ The packaged runtime accepts only an explicitly configured loopback endpoint thr
 the Owner's local environment; remote endpoints are rejected.
 
 Ollama is optional at application startup. A healthy external loopback service is reused;
-managed startup is permitted only from an explicit, bounded Owner-provided executable
-configuration. Remote endpoints are rejected; wildcard inputs (`0.0.0.0` and `[::]`) are
-normalized to `127.0.0.1` before probing or managed launch, so no wildcard bind occurs. The
-UI must show an unavailable status without failing when neither policy path is ready.
+when the Owner enables auto-start, AIP may launch a validated executable from the standard
+Windows installation roots (`LOCALAPPDATA`, `ProgramFiles`, or `ProgramW6432`) or from an
+explicit bounded executable/configuration path. Remote endpoints are rejected; wildcard
+inputs (`0.0.0.0` and `[::]`) are normalized to `127.0.0.1` before probing or managed launch,
+so no wildcard bind occurs. The UI must show an unavailable status without failing when
+neither policy path is ready.
 
 ## 4. Inter-process communication
 

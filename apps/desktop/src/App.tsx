@@ -2988,6 +2988,7 @@ export function ConversationList({
     action: "pin" | "archive" | "delete";
     ids: string[];
   } | null>(null);
+  const [batchError, setBatchError] = useState<string | null>(null);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -3110,6 +3111,7 @@ export function ConversationList({
   }
   function requestBatch(action: "pin" | "archive" | "delete") {
     if (selectedIds.length === 0) return;
+    setBatchError(null);
     if (action === "delete" || selectedIds.length >= 3)
       setPendingBatch({ action, ids: selectedIds });
     else void runBatch(action, selectedIds);
@@ -3117,28 +3119,47 @@ export function ConversationList({
   async function runBatch(action: "pin" | "archive" | "delete", ids: string[]) {
     setPendingBatch(null);
     const selected = items.filter((item) => ids.includes(item.id));
-    for (const item of selected) {
-      if (action === "pin")
-        await invoke("pin_agent_conversation", {
-          agentId,
-          conversationId: item.id,
-          pinned: true,
-        });
-      else if (action === "archive")
-        await invoke("archive_agent_conversation", {
-          agentId,
-          conversationId: item.id,
-        });
-      else
-        await invoke("delete_agent_conversation", {
-          agentId,
-          conversationId: item.id,
-        });
+    let applied = 0;
+    try {
+      for (const item of selected) {
+        if (action === "pin")
+          await invoke("pin_agent_conversation", {
+            agentId,
+            conversationId: item.id,
+            pinned: true,
+          });
+        else if (action === "archive")
+          await invoke("archive_agent_conversation", {
+            agentId,
+            conversationId: item.id,
+          });
+        else
+          await invoke("delete_agent_conversation", {
+            agentId,
+            conversationId: item.id,
+          });
+        applied += 1;
+      }
+      setSelectedIds([]);
+      setSelectionMode(false);
+      await load();
+      changed();
+    } catch {
+      setSelectedIds([]);
+      setSelectionMode(false);
+      try {
+        await load();
+        if (manageArchived) await loadArchived();
+      } catch {
+        /* the next refresh can retry the authoritative list */
+      }
+      changed();
+      setBatchError(
+        applied === 0
+          ? "Não foi possível aplicar a ação em lote. A lista foi atualizada."
+          : `A ação foi aplicada a ${applied} de ${selected.length} conversas antes de uma falha. A lista foi atualizada.`,
+      );
     }
-    setSelectedIds([]);
-    setSelectionMode(false);
-    await load();
-    changed();
   }
   const selectedCount = selectedIds.length;
   const batchLabel =
@@ -3185,6 +3206,7 @@ export function ConversationList({
               onClick={() => {
                 setSelectionMode((value) => !value);
                 setSelectedIds([]);
+                setBatchError(null);
               }}
             >
               {selectionMode ? "Cancelar" : "Selecionar"}
@@ -3215,6 +3237,11 @@ export function ConversationList({
             </div>
           ) : null}
         </>
+      ) : null}
+      {batchError ? (
+        <p className="conversation-batch-error" role="alert">
+          {batchError}
+        </p>
       ) : null}
       {(manageArchived ? visibleArchived : visibleItems).map((item) => (
         <div
