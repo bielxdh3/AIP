@@ -40,7 +40,8 @@ their own.
 The local settings surface also exposes opt-in Ollama auto-start. AIP reuses a
 healthy loopback service first, then discovers a validated Windows installation;
 explicit `AIP_OLLAMA_EXECUTABLE`/`AIP_OLLAMA_CONFIG` values take precedence and
-only a process started by AIP is stopped. Safe mode disables this behavior.
+only a process started by AIP is stopped. The setting takes effect on the next
+runtime startup; safe mode can turn it off but never enables or restarts it.
 
 ## Auto/Equilibrado model policy
 

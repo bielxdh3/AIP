@@ -240,10 +240,6 @@ impl RuntimeController {
 
     pub fn set_ollama_auto_start(&self, enabled: bool) {
         self.ollama_auto_start.store(enabled, Ordering::SeqCst);
-        if self.snapshot().state == RuntimeState::Ready {
-            self.stop_and_join();
-            self.start();
-        }
     }
 
     pub fn shutdown(&self) {
@@ -296,6 +292,8 @@ fn run_runtime_process(
         "TMP",
         "USERPROFILE",
         "LOCALAPPDATA",
+        "ProgramFiles",
+        "ProgramW6432",
         // Keep the managed runtime local-first while allowing the Owner's explicit
         // Ollama configuration to reach the packaged process.
         "OLLAMA_HOST",

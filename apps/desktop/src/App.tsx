@@ -3122,7 +3122,7 @@ export function ConversationList({
         await invoke("pin_agent_conversation", {
           agentId,
           conversationId: item.id,
-          pinned: !item.isPinned,
+          pinned: true,
         });
       else if (action === "archive")
         await invoke("archive_agent_conversation", {
@@ -10906,7 +10906,9 @@ function OllamaAutoStartControl({ safeMode }: { safeMode: boolean }) {
     try {
       await invoke("set_ollama_auto_start", { enabled: next });
       setStatus(
-        next ? "Ativação automática ligada." : "Ativação automática desligada.",
+        next
+          ? "Ativação automática ligada para a próxima inicialização."
+          : "Ativação automática desligada.",
       );
     } catch {
       setStatus("Não foi possível atualizar agora.");
@@ -10918,7 +10920,7 @@ function OllamaAutoStartControl({ safeMode }: { safeMode: boolean }) {
         <input
           type="checkbox"
           checked={enabled}
-          disabled={safeMode}
+          disabled={safeMode && !enabled}
           onChange={(event) => void toggle(event.target.checked)}
         />
         Iniciar Ollama automaticamente

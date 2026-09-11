@@ -2495,7 +2495,7 @@ fn get_ollama_auto_start(state: State<'_, AppState>) -> Result<bool, &'static st
 
 #[tauri::command]
 fn set_ollama_auto_start(state: State<'_, AppState>, enabled: bool) -> Result<(), &'static str> {
-    if state.safe_mode.load(Ordering::SeqCst) {
+    if enabled && state.safe_mode.load(Ordering::SeqCst) {
         return Err("safe_mode_active");
     }
     state
@@ -2504,7 +2504,11 @@ fn set_ollama_auto_start(state: State<'_, AppState>, enabled: bool) -> Result<()
         .ok_or("operation_unavailable")?
         .set_ollama_auto_start(enabled)
         .map_err(|_| "operation_failed")?;
-    state.runtime.set_ollama_auto_start(enabled);
+    // Safe mode may turn an existing opt-in off, but never starts or restarts
+    // the managed runtime. The changed value is picked up on the next launch.
+    if !state.safe_mode.load(Ordering::SeqCst) {
+        state.runtime.set_ollama_auto_start(enabled);
+    }
     Ok(())
 }
 
