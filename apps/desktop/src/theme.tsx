@@ -139,9 +139,9 @@ const PRESETS: Record<BuiltInThemeMode, ThemePalette> = {
     text: "#2d241b",
     mutedText: "#4c3d2e",
     subtleText: "#564333",
-    success: "#23633e",
-    warning: "#704500",
-    danger: "#8f3f3a",
+    success: "#14532d",
+    warning: "#633d00",
+    danger: "#7b2f2f",
   },
   graphite: {
     canvas: "#17191d",
