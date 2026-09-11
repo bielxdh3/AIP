@@ -5,9 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import {
   THEME_STORAGE_KEY,
+  THEME_PRESETS,
   ThemeControls,
   ThemeProvider,
   contrastRatio,
+  hasReadableTextContrast,
   normalizeThemePreferences,
   readableForeground,
   useTheme,
@@ -132,6 +134,26 @@ describe("theme foundations", () => {
     expect(
       document.documentElement.style.getPropertyValue("--color-surface-soft"),
     ).toBe("#292b2f");
+  });
+
+  it("rejects palette overrides that would make text unreadable", async () => {
+    expect(
+      hasReadableTextContrast({ ...THEME_PRESETS.dark, surface: "#ffffff" }),
+    ).toBe(false);
+    render(<ThemeControls />);
+    if (container === undefined) throw new Error("Missing theme container");
+    await chooseOption(container, "theme-mode", "custom");
+    const surface = Array.from(
+      container.querySelectorAll<HTMLInputElement>('input[type="color"]'),
+    ).find((input) => input.getAttribute("aria-label") === "Superfície");
+    if (surface === undefined) throw new Error("Missing surface color input");
+    await act(async () => changeColor(surface, "#ffffff"));
+    expect(
+      document.documentElement.style.getPropertyValue("--color-surface"),
+    ).toBe("#1a1b1d");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "4,5:1",
+    );
   });
 
   it("migrates legacy appearance values and keeps readable custom colors", async () => {
