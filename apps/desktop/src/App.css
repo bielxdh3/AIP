@@ -3621,7 +3621,7 @@ h3 {
 
 @media (max-width: 880px) {
   .app-shell {
-    grid-template-columns: 72px minmax(0, 1fr);
+    grid-template-columns: 216px minmax(0, 1fr);
   }
 
   .sidebar {
