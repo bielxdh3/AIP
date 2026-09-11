@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import threading
 import time
@@ -220,9 +219,6 @@ def _discover_executable(environ: Mapping[str, str]) -> Path | None:
     for root in (program_files, program_w6432):
         if root:
             candidates.append(Path(root) / "Ollama" / "ollama.exe")
-    discovered = shutil.which("ollama.exe") or shutil.which("ollama")
-    if discovered:
-        candidates.append(Path(discovered))
     for candidate in candidates:
         try:
             return _validate_executable(str(candidate))

@@ -2505,10 +2505,8 @@ fn set_ollama_auto_start(state: State<'_, AppState>, enabled: bool) -> Result<()
         .set_ollama_auto_start(enabled)
         .map_err(|_| "operation_failed")?;
     // Safe mode may turn an existing opt-in off, but never starts or restarts
-    // the managed runtime. The changed value is picked up on the next launch.
-    if !state.safe_mode.load(Ordering::SeqCst) {
-        state.runtime.set_ollama_auto_start(enabled);
-    }
+    // the managed runtime. This atomic value is picked up on the next launch.
+    state.runtime.set_ollama_auto_start(enabled);
     Ok(())
 }
 
