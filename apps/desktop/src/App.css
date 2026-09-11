@@ -2605,6 +2605,12 @@ small.readable-helper {
   white-space: nowrap;
 }
 
+.conversation-list-title {
+  display: flex;
+  align-items: center;
+  cursor: default;
+}
+
 .conversation-list-action {
   color: var(--color-text-subtle);
   font-size: 10px;

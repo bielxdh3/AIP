@@ -3268,21 +3268,33 @@ export function ConversationList({
               onChange={() => toggleSelection(item.id)}
             />
           ) : null}
-          <button
-            type="button"
-            className="conversation-list-select"
-            aria-current={activeConversationId === item.id ? "page" : undefined}
-            onClick={() =>
-              manageArchived
-                ? void restore(item)
-                : selectionMode
+          {manageArchived ? (
+            <span
+              className="conversation-list-select conversation-list-title"
+              aria-current={
+                activeConversationId === item.id ? "page" : undefined
+              }
+            >
+              {item.isPinned ? "★ " : ""}
+              {item.title}
+            </span>
+          ) : (
+            <button
+              type="button"
+              className="conversation-list-select"
+              aria-current={
+                activeConversationId === item.id ? "page" : undefined
+              }
+              onClick={() =>
+                selectionMode
                   ? toggleSelection(item.id)
                   : void select(item.id)
-            }
-          >
-            {item.isPinned ? "★ " : ""}
-            {item.title}
-          </button>
+              }
+            >
+              {item.isPinned ? "★ " : ""}
+              {item.title}
+            </button>
+          )}
           {!manageArchived ? (
             <ConversationActionMenu
               item={item}

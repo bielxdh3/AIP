@@ -195,6 +195,44 @@ describe("ConversationList regressions", () => {
     expect(container.textContent).toContain("Conversa arquivada");
   });
 
+  it("keeps archived titles non-mutating and restores only explicitly", async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === "list_agent_conversations")
+        return Promise.resolve(current);
+      if (command === "list_archived_agent_conversations")
+        return Promise.resolve(archived);
+      return Promise.resolve(undefined);
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<ConversationList agentId="agent" changed={vi.fn()} />);
+      await Promise.resolve();
+    });
+    await act(async () =>
+      container?.querySelector<HTMLButtonElement>(".conversation-list-mode")?.click(),
+    );
+
+    const title = container.querySelector(".conversation-list-title");
+    expect(title?.tagName).toBe("SPAN");
+    expect(invoke).not.toHaveBeenCalledWith("restore_agent_conversation", {
+      agentId: "agent",
+      conversationId: "old",
+    });
+
+    const restore = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Restaurar",
+    );
+    if (restore === undefined) throw new Error("Missing restore button");
+    await act(async () => restore.click());
+    expect(invoke).toHaveBeenCalledWith("restore_agent_conversation", {
+      agentId: "agent",
+      conversationId: "old",
+    });
+  });
+
   it("filters conversations and applies a compact batch action", async () => {
     invoke.mockImplementation((command: string) =>
       command === "list_agent_conversations"
