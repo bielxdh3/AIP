@@ -10,6 +10,7 @@ import {
   ThemeProvider,
   contrastRatio,
   hasReadableTextContrast,
+  nativeColorScheme,
   normalizeThemePreferences,
   readableForeground,
   useTheme,
@@ -119,6 +120,8 @@ describe("theme foundations", () => {
     ).toBe("#d7c7b3");
     expect(contrastRatio("#d7c7b3", "#2d241b")).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio("#564333", "#cfbea8")).toBeGreaterThanOrEqual(4.5);
+    expect(nativeColorScheme(THEME_PRESETS.dark)).toBe("dark");
+    expect(nativeColorScheme(THEME_PRESETS.paper)).toBe("light");
     await chooseOption(container, "theme-mode", "dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
   });
@@ -129,6 +132,7 @@ describe("theme foundations", () => {
     await chooseOption(container, "theme-mode", "paper");
     await chooseOption(container, "theme-mode", "custom");
     expect(document.documentElement.dataset.theme).toBe("custom");
+    expect(document.documentElement.style.colorScheme).toBe("light");
     expect(
       document.documentElement.style.getPropertyValue("--color-surface"),
     ).toBe(THEME_PRESETS.paper.surface);

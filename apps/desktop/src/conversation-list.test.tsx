@@ -244,6 +244,58 @@ describe("ConversationList regressions", () => {
     });
   });
 
+  it("refreshes and reports when a batch action partially fails", async () => {
+    let archiveAttempts = 0;
+    const changed = vi.fn();
+    invoke.mockImplementation((command: string) => {
+      if (command === "list_agent_conversations") return Promise.resolve(current);
+      if (command === "archive_agent_conversation") {
+        archiveAttempts += 1;
+        return archiveAttempts === 2
+          ? Promise.reject(new Error("conversation_removed"))
+          : Promise.resolve(undefined);
+      }
+      return Promise.resolve(undefined);
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<ConversationList agentId="agent" changed={changed} />);
+      await Promise.resolve();
+    });
+    await act(async () =>
+      container
+        ?.querySelector<HTMLButtonElement>(".conversation-list-select-mode")
+        ?.click(),
+    );
+    const checkboxes = container.querySelectorAll<HTMLInputElement>(
+      ".conversation-list-checkbox",
+    );
+    expect(checkboxes).toHaveLength(2);
+    await act(async () => {
+      checkboxes.forEach((checkbox) => checkbox.click());
+    });
+    await act(async () => {
+      Array.from(
+        container?.querySelectorAll<HTMLButtonElement>(
+          ".conversation-batch-bar button",
+        ) ?? [],
+      )
+        .find((button) => button.textContent === "Arquivar")
+        ?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "1 de 2",
+    );
+    expect(invoke).toHaveBeenCalledTimes(4);
+    expect(changed).toHaveBeenCalledOnce();
+  });
+
   it("discards a superseded active-list response", async () => {
     const resolvers: Array<(value: typeof current) => void> = [];
     invoke.mockImplementation((command: string) => {

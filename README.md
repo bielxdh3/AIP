@@ -148,8 +148,8 @@ pnpm check
 
 ### 5. Start the desktop app
 
-Start Ollama separately (or configure an explicit local Ollama executable for AIP's
-managed-start policy), then run:
+Start Ollama separately, or enable AIP's opt-in auto-start setting (which discovers a
+validated standard Windows installation or an explicit local executable), then run:
 
 ```powershell
 pnpm dev
@@ -215,9 +215,9 @@ See [SECURITY.md](SECURITY.md) and [docs/SECURITY_AND_PERMISSIONS.md](docs/SECUR
 
 ## Current limitations
 
-- A healthy external Ollama is reused; AIP only starts Ollama when the Owner supplies
-  an explicit `AIP_OLLAMA_EXECUTABLE` or bounded `AIP_OLLAMA_CONFIG` path, and all
-  provider traffic remains loopback-only;
+- A healthy external Ollama is reused; opt-in auto-start can discover a validated standard
+  Windows installation or an explicit `AIP_OLLAMA_EXECUTABLE` / bounded `AIP_OLLAMA_CONFIG`
+  path, and all provider traffic remains loopback-only;
 - installers are unsigned;
 - the visual design is still being refined;
 - no production model is downloaded automatically;

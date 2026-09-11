@@ -295,6 +295,9 @@ export function readableForeground(background: string): string {
     ? DARK_TEXT
     : LIGHT_TEXT;
 }
+export function nativeColorScheme(palette: ThemePalette): "light" | "dark" {
+  return readableForeground(palette.canvas) === DARK_TEXT ? "light" : "dark";
+}
 
 export function normalizeThemePreferences(value: unknown): ThemePreferences {
   if (!isRecord(value)) return DEFAULT_THEME_PREFERENCES;
@@ -467,7 +470,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     root.dataset.theme = resolvedMode;
     root.dataset.themeMode = preferences.mode;
     root.dataset.motion = reducedMotion ? "reduced" : "full";
-    root.style.colorScheme = resolvedMode === "paper" ? "light" : "dark";
+    root.style.colorScheme = nativeColorScheme(activePalette(preferences));
     for (const [name, value] of Object.entries(
       themeCssVariables(preferences, resolvedMode, reducedMotion),
     ))
