@@ -874,6 +874,7 @@ impl Database {
             "DELETE FROM agent_memories
              WHERE agent_id = ?1 AND source_conversation_id = ?2
                AND source_type NOT IN ('manual', 'shared', 'global')
+               AND confirmation_status != 'confirmed'
                AND NOT EXISTS (
                  SELECT 1 FROM cognitive_events
                   WHERE agent_id = ?1 AND source_reference = 'memory:' || agent_memories.id
@@ -4997,6 +4998,41 @@ mod tests {
         let memories = database.memories(ASTRA_ID).unwrap();
         assert!(!memories.iter().any(|memory| memory.id == derived.id));
         assert!(memories.iter().any(|memory| memory.id == manual.id));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn deleting_conversation_preserves_confirmed_owner_memory() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let conversation = database.main_conversation(ASTRA_ID).unwrap();
+        let confirmed_id = Uuid::now_v7().to_string();
+        let connection = database.open().unwrap();
+        connection
+            .execute(
+                "INSERT INTO agent_memories
+                 (id, agent_id, owner_user_id, category, content, status,
+                  confirmation_status, confidence, importance, source_type,
+                  source_conversation_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'fact', 'Confirmed owner fact', 'active',
+                         'confirmed', 1.0, 70, 'explicit_owner_statement', ?4, ?5, ?5)",
+                params![
+                    confirmed_id,
+                    ASTRA_ID,
+                    super::OWNER_ID,
+                    conversation.id,
+                    now_millis()
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        database
+            .delete_conversation(ASTRA_ID, &conversation.id)
+            .unwrap();
+
+        let memories = database.memories(ASTRA_ID).unwrap();
+        assert!(memories.iter().any(|memory| memory.id == confirmed_id));
         cleanup(&path);
     }
 

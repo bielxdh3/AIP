@@ -269,6 +269,23 @@ export function contrastRatio(first: string, second: string): number {
   const dark = Math.min(luminance(first), luminance(second));
   return (light + 0.05) / (dark + 0.05);
 }
+const READABLE_TEXT_KEYS: Array<keyof ThemePalette> = [
+  "text",
+  "mutedText",
+  "subtleText",
+];
+const READABLE_SURFACE_KEYS: Array<keyof ThemePalette> = [
+  "canvas",
+  "surface",
+  "mutedSurface",
+];
+export function hasReadableTextContrast(palette: ThemePalette): boolean {
+  return READABLE_TEXT_KEYS.every((textKey) =>
+    READABLE_SURFACE_KEYS.every(
+      (surfaceKey) => contrastRatio(palette[textKey], palette[surfaceKey]) >= 4.5,
+    ),
+  );
+}
 export function readableForeground(background: string): string {
   const color = normalizeHexColor(
     background,
@@ -499,21 +516,31 @@ export function ThemeControls() {
   const { preferences, updatePreferences, resolvedMode, reducedMotion } =
     useTheme();
   const palette = activePalette(preferences);
-  const setPaletteColor = (key: keyof ThemePalette, value: string) =>
-    preferences.mode === "custom"
-      ? updatePreferences({
-          customColors: { ...preferences.customColors, [key]: value },
-        })
-      : updatePreferences({
-          overrides: {
-            ...preferences.overrides,
-            [preferences.mode]: {
-              ...preferences.overrides[preferences.mode],
-              [key]: value,
-            },
+  const [paletteError, setPaletteError] = useState<string | null>(null);
+  const setPaletteColor = (key: keyof ThemePalette, value: string) => {
+    const nextPalette = { ...palette, [key]: value };
+    if (!hasReadableTextContrast(nextPalette)) {
+      setPaletteError(
+        "Escolha cores de texto e fundo com contraste mínimo de 4,5:1.",
+      );
+      return;
+    }
+    setPaletteError(null);
+    if (preferences.mode === "custom")
+      updatePreferences({ customColors: nextPalette });
+    else
+      updatePreferences({
+        overrides: {
+          ...preferences.overrides,
+          [preferences.mode]: {
+            ...preferences.overrides[preferences.mode],
+            [key]: value,
           },
-        });
+        },
+      });
+  };
   const restore = () => {
+    setPaletteError(null);
     if (preferences.mode === "custom")
       updatePreferences({ customColors: { ...PRESETS.dark } });
     else {
@@ -591,6 +618,11 @@ export function ThemeControls() {
         {colorControl("mutedText", "Texto secundário")}
         {colorControl("border", "Bordas")}
       </div>
+      {paletteError ? (
+        <p className="theme-controls-error" role="alert">
+          {paletteError}
+        </p>
+      ) : null}
       <div className="theme-controls-row">
         <AipSelect
           id="theme-radius"

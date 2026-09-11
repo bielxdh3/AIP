@@ -6562,8 +6562,19 @@ input[type="radio"] {
 .sidebar-navigation, .conversation-list {
   max-height: none;
   min-height: 0;
-  flex: 0 0 auto;
-  overflow: visible;
+}
+.sidebar {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+}
+.sidebar-navigation {
+  max-height: min(240px, 34vh);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.conversation-list {
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 .sidebar-agents .agent-tabs { max-height: none; overflow: visible; }
 .conversation-list { gap: 4px; padding-inline: 0; }
@@ -6630,7 +6641,21 @@ input[type="radio"] {
 .settings-model-details { margin-top: 8px; color: var(--color-text-muted); font-size: var(--type-meta); }
 .settings-model-details summary { cursor: pointer; }
 .settings-model-details dl { margin-top: 8px; }
+.theme-controls-error {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: var(--type-meta);
+}
 @media (max-width: 600px) {
-  .sidebar { max-height: none; overflow-y: auto; }
-  .conversation-list { max-height: none; overflow: visible; }
+  .sidebar {
+    display: flex;
+    flex-direction: row;
+    max-height: none;
+    overflow-y: auto;
+  }
+  .sidebar-navigation {
+    max-height: none;
+    overflow: visible;
+  }
+  .conversation-list { max-height: none; overflow-y: auto; }
 }
