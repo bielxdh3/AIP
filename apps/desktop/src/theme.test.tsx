@@ -114,8 +114,8 @@ describe("theme foundations", () => {
     expect(document.documentElement.dataset.theme).toBe("paper");
     expect(
       document.documentElement.style.getPropertyValue("--color-surface"),
-    ).toBe("#f2ebe0");
-    expect(contrastRatio("#f2ebe0", "#302820")).toBeGreaterThanOrEqual(4.5);
+    ).toBe("#d7c7b3");
+    expect(contrastRatio("#d7c7b3", "#2d241b")).toBeGreaterThanOrEqual(4.5);
     await chooseOption(container, "theme-mode", "dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
   });

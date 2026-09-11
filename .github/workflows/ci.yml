@@ -125,14 +125,14 @@ jobs:
           pnpm --filter @aip/desktop tauri build
           $msiSource = Get-ChildItem apps\desktop\src-tauri\target\release\bundle\msi -Filter *.msi -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $msiSource) { throw "Expected MSI artifact for $env:GITHUB_SHA" }
-          $msiTarget = Join-Path $msiSource.DirectoryName 'A.I.P._0.2.3.5_x64_en-US.msi'
+          $msiTarget = Join-Path $msiSource.DirectoryName 'A.I.P._0.2.4.1_x64_en-US.msi'
           if ($msiSource.FullName -ne $msiTarget) { Copy-Item -LiteralPath $msiSource.FullName -Destination $msiTarget -Force }
           $msiSourceHash = (Get-FileHash -LiteralPath $msiSource.FullName -Algorithm SHA256).Hash
           $msiTargetHash = (Get-FileHash -LiteralPath $msiTarget -Algorithm SHA256).Hash
           if ($msiSourceHash -ne $msiTargetHash) { throw "MSI identity-preserving copy changed its SHA256" }
           $nsisSource = Get-ChildItem apps\desktop\src-tauri\target\release\bundle\nsis -Filter *.exe -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $nsisSource) { throw "Expected NSIS artifact for $env:GITHUB_SHA" }
-          $nsisTarget = Join-Path $nsisSource.DirectoryName 'A.I.P._0.2.3.5_x64-setup.exe'
+          $nsisTarget = Join-Path $nsisSource.DirectoryName 'A.I.P._0.2.4.1_x64-setup.exe'
           if ($nsisSource.FullName -ne $nsisTarget) { Copy-Item -LiteralPath $nsisSource.FullName -Destination $nsisTarget -Force }
           $nsisSourceHash = (Get-FileHash -LiteralPath $nsisSource.FullName -Algorithm SHA256).Hash
           $nsisTargetHash = (Get-FileHash -LiteralPath $nsisTarget -Algorithm SHA256).Hash
@@ -143,10 +143,10 @@ jobs:
       - name: Upload Windows installers
         uses: actions/upload-artifact@v4
         with:
-          name: aip-windows-0.2.3.5-${{ github.event.pull_request.head.sha || github.sha }}
+          name: aip-windows-0.2.4.1-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
-            apps/desktop/src-tauri/target/release/bundle/nsis/A.I.P._0.2.3.5_x64-setup.exe
-            apps/desktop/src-tauri/target/release/bundle/msi/A.I.P._0.2.3.5_x64_en-US.msi
+            apps/desktop/src-tauri/target/release/bundle/nsis/A.I.P._0.2.4.1_x64-setup.exe
+            apps/desktop/src-tauri/target/release/bundle/msi/A.I.P._0.2.4.1_x64_en-US.msi
 
   installed-windows-smoke:
     needs: package
@@ -159,7 +159,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/download-artifact@v4
         with:
-          name: aip-windows-0.2.3.5-${{ github.event.pull_request.head.sha || github.sha }}
+          name: aip-windows-0.2.4.1-${{ github.event.pull_request.head.sha || github.sha }}
           path: artifacts\windows
       - uses: actions/setup-python@v5
         with:
@@ -167,6 +167,6 @@ jobs:
       - name: Run installed MSI generation smoke
         shell: pwsh
         run: |
-          $msi = Get-ChildItem artifacts\windows -Filter 'A.I.P._0.2.3.5_x64_en-US.msi' -File -Recurse | Select-Object -First 1
-          if (-not $msi) { throw 'Exact 0.2.3.5 MSI was not downloaded' }
+          $msi = Get-ChildItem artifacts\windows -Filter 'A.I.P._0.2.4.1_x64_en-US.msi' -File -Recurse | Select-Object -First 1
+          if (-not $msi) { throw 'Exact 0.2.4.1 MSI was not downloaded' }
           .\scripts\installed-windows-smoke.ps1 -MsiPath $msi.FullName

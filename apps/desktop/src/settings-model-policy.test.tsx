@@ -81,7 +81,7 @@ const phases = {
 
 const snapshot: AppSnapshot = {
   appVersion: "0.1.0",
-  buildRevision: "0.2.3.5",
+  buildRevision: "0.2.4.1",
   buildSha: "fixture-build",
   buildTimestamp: "2026-08-31T00:00:00Z",
   runtimePackagingMode: "fixture",
@@ -201,10 +201,7 @@ describe("SettingsSurface model policy", () => {
       ".settings-models-panel .readable-helper",
     );
     expect(helper?.textContent).toContain(
-      "Preferências salvas neste computador orientam o roteamento Auto, qualidade e velocidade",
-    );
-    expect(helper?.textContent).toContain(
-      "não instalam, removem ou carregam modelos.",
+      "Escolha o modelo preferido e como o modo Automático deve alternar",
     );
     const modelCard = container?.querySelector<HTMLElement>(
       `[data-model-ref="${model.ref}"]`,

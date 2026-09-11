@@ -113,6 +113,7 @@ pub struct RuntimeController {
     subscribers: Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
     diagnostics: Arc<Mutex<RuntimeDiagnostics>>,
     process_id: Arc<Mutex<Option<u32>>>,
+    ollama_auto_start: Arc<AtomicBool>,
     source_root: PathBuf,
 }
 
@@ -135,6 +136,16 @@ impl RuntimeController {
             subscribers: Arc::new(Mutex::new(Vec::new())),
             diagnostics: Arc::new(Mutex::new(RuntimeDiagnostics::default())),
             process_id: Arc::new(Mutex::new(None)),
+            ollama_auto_start: Arc::new(AtomicBool::new(
+                std::env::var("AIP_OLLAMA_AUTO_START")
+                    .map(|value| {
+                        matches!(
+                            value.trim().to_ascii_lowercase().as_str(),
+                            "1" | "true" | "yes" | "on"
+                        )
+                    })
+                    .unwrap_or(false),
+            )),
             source_root,
         }
     }
@@ -195,6 +206,7 @@ impl RuntimeController {
         let subscribers = Arc::clone(&self.subscribers);
         let diagnostics = Arc::clone(&self.diagnostics);
         let process_id = Arc::clone(&self.process_id);
+        let ollama_auto_start = Arc::clone(&self.ollama_auto_start);
         let stored_sender = Arc::clone(&self.command_sender);
         *worker = Some(thread::spawn(move || {
             run_runtime_process(
@@ -205,6 +217,7 @@ impl RuntimeController {
                 subscribers,
                 diagnostics,
                 process_id,
+                ollama_auto_start,
             );
             *lock(&stored_sender) = None;
         }));
@@ -225,6 +238,14 @@ impl RuntimeController {
         self.start();
     }
 
+    pub fn set_ollama_auto_start(&self, enabled: bool) {
+        self.ollama_auto_start.store(enabled, Ordering::SeqCst);
+        if self.snapshot().state == RuntimeState::Ready {
+            self.stop_and_join();
+            self.start();
+        }
+    }
+
     pub fn shutdown(&self) {
         self.stop_and_join();
     }
@@ -241,6 +262,7 @@ impl RuntimeController {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_runtime_process(
     status: Arc<Mutex<RuntimeStatus>>,
     stop: Arc<AtomicBool>,
@@ -249,6 +271,7 @@ fn run_runtime_process(
     subscribers: Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
     diagnostics: Arc<Mutex<RuntimeDiagnostics>>,
     process_id: Arc<Mutex<Option<u32>>>,
+    ollama_auto_start: Arc<AtomicBool>,
 ) {
     let packaged_runtime = !cfg!(debug_assertions)
         || source_root
@@ -289,6 +312,14 @@ fn run_runtime_process(
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUNBUFFERED", "1")
+        .env(
+            "AIP_OLLAMA_AUTO_START",
+            if ollama_auto_start.load(Ordering::SeqCst) {
+                "1"
+            } else {
+                "0"
+            },
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

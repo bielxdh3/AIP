@@ -7,7 +7,7 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $bundleRoot = Join-Path $root "apps\desktop\src-tauri\target\release\bundle"
-$expectedMsiName = "A.I.P._0.2.3.5_x64_en-US.msi"
+$expectedMsiName = "A.I.P._0.2.4.1_x64_en-US.msi"
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("aip-installed-smoke-" + [guid]::NewGuid().ToString("N"))
 $readyFile = Join-Path $tempRoot "fixture-port.txt"
 $receiptFile = Join-Path $tempRoot "fixture-receipts.ndjson"
@@ -219,7 +219,7 @@ try {
   }
 
   $identity = (& $installedDesktop --print-build-identity 2>&1 | Out-String).Trim()
-  if ($LASTEXITCODE -ne 0 -or $identity -ne "0.2.3.5") { throw "Installed desktop reported build identity '$identity' instead of 0.2.3.5" }
+  if ($LASTEXITCODE -ne 0 -or $identity -ne "0.2.4.1") { throw "Installed desktop reported build identity '$identity' instead of 0.2.4.1" }
 
   $startInfo = [Diagnostics.ProcessStartInfo]::new()
   $startInfo.FileName = $installedRuntime
