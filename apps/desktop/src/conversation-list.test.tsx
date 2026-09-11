@@ -261,6 +261,9 @@ describe("ConversationList regressions", () => {
         ?.querySelector<HTMLButtonElement>(".conversation-list-select-mode")
         ?.click(),
     );
+    expect(container.querySelectorAll(".conversation-actions")).toHaveLength(
+      0,
+    );
     const checkbox = container.querySelector<HTMLInputElement>(
       ".conversation-list-checkbox",
     );

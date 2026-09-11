@@ -3295,7 +3295,15 @@ export function ConversationList({
               {item.title}
             </button>
           )}
-          {!manageArchived ? (
+          {manageArchived ? (
+            <button
+              type="button"
+              className="conversation-list-action"
+              onClick={() => void restore(item)}
+            >
+              Restaurar
+            </button>
+          ) : selectionMode ? null : (
             <ConversationActionMenu
               item={item}
               open={openMenuId === item.id}
@@ -3308,14 +3316,6 @@ export function ConversationList({
               onArchive={() => void archive(item)}
               onRemove={() => remove(item)}
             />
-          ) : (
-            <button
-              type="button"
-              className="conversation-list-action"
-              onClick={() => void restore(item)}
-            >
-              Restaurar
-            </button>
           )}
           {renamingId === item.id ? (
             <form

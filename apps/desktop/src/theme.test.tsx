@@ -134,6 +134,8 @@ describe("theme foundations", () => {
     }
     expect(nativeColorScheme(THEME_PRESETS.dark)).toBe("dark");
     expect(nativeColorScheme(THEME_PRESETS.paper)).toBe("light");
+    for (const mode of ["dark", "paper", "graphite", "night", "sepia"] as const)
+      expect(hasReadableTextContrast(THEME_PRESETS[mode])).toBe(true);
     await chooseOption(container, "theme-mode", "dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
   });
