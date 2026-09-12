@@ -2484,6 +2484,33 @@ fn set_safe_mode(
 }
 
 #[tauri::command]
+fn get_ollama_auto_start(state: State<'_, AppState>) -> Result<bool, &'static str> {
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .ollama_auto_start()
+        .map_err(|_| "operation_failed")
+}
+
+#[tauri::command]
+fn set_ollama_auto_start(state: State<'_, AppState>, enabled: bool) -> Result<(), &'static str> {
+    if enabled && state.safe_mode.load(Ordering::SeqCst) {
+        return Err("safe_mode_active");
+    }
+    state
+        .database
+        .as_ref()
+        .ok_or("operation_unavailable")?
+        .set_ollama_auto_start(enabled)
+        .map_err(|_| "operation_failed")?;
+    // Safe mode may turn an existing opt-in off, but never starts or restarts
+    // the managed runtime. This atomic value is picked up on the next launch.
+    state.runtime.set_ollama_auto_start(enabled);
+    Ok(())
+}
+
+#[tauri::command]
 fn get_phase_one_state(
     state: State<'_, AppState>,
     agent_id: String,
@@ -3310,6 +3337,11 @@ pub fn run() {
             let safe_mode = Arc::new(AtomicBool::new(stored_safe_mode));
             let runtime =
                 RuntimeController::new(runtime_source_root(app.handle()), stored_safe_mode);
+            if let Some(database) = database.as_ref() {
+                if let Ok(enabled) = database.ollama_auto_start() {
+                    runtime.set_ollama_auto_start(enabled);
+                }
+            }
             let overlay_input = OverlayInputState::default();
             let orchestration = Arc::new(Mutex::new(OrchestrationManager::default()));
             let chat = database.as_ref().map(|database| {
@@ -3472,6 +3504,8 @@ pub fn run() {
             cleanup_screen_vision_job,
             cancel_screen_vision_session,
             set_safe_mode,
+            get_ollama_auto_start,
+            set_ollama_auto_start,
             get_phase_one_state,
             get_temporary_phase_one_state,
             phase_one_heartbeat,

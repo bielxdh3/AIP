@@ -3,8 +3,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const ACTIVE_DEVELOPMENT_VERSION = "0.2.3";
-const EXPECTED_BUILD_REVISION = "0.2.3.5";
+const ACTIVE_DEVELOPMENT_VERSION = "0.2.4";
+const EXPECTED_BUILD_REVISION = "0.2.4.1";
 const SEMVER = /^\d+\.\d+\.\d+$/;
 const BUILD_REVISION = /^\d+\.\d+\.\d+\.\d+$/;
 

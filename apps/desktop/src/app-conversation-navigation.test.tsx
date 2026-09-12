@@ -64,7 +64,7 @@ let listedConversations = conversations;
 
 const snapshot = {
   appVersion: "0.2.2",
-  buildRevision: "0.2.3.5",
+  buildRevision: "0.2.4.1",
   buildSha: "test",
   buildTimestamp: "test",
   runtimePackagingMode: "managed",
@@ -103,6 +103,7 @@ describe("App conversation navigation integration", () => {
     root = undefined;
     container = undefined;
     listeners.clear();
+    window.localStorage.removeItem("aip.ui.sidebar-collapsed");
     vi.clearAllMocks();
   });
 
@@ -173,6 +174,57 @@ describe("App conversation navigation integration", () => {
         ?.querySelector(".conversation-list-select")
         ?.getAttribute("aria-current"),
     ).toBe("page");
+  });
+
+  it("keeps collapsed reopen access separate from the conversation header", async () => {
+    window.localStorage.setItem("aip.ui.sidebar-collapsed", "true");
+    await renderApp();
+
+    const shell = container?.querySelector<HTMLElement>(".app-shell");
+    const reopen =
+      container?.querySelector<HTMLButtonElement>(".sidebar-reopen");
+    const headerTitle = container?.querySelector<HTMLHeadingElement>(
+      ".conversation-header h1",
+    );
+
+    expect(shell?.classList.contains("sidebar-is-collapsed")).toBe(true);
+    expect(reopen?.getAttribute("aria-label")).toBe("Reabrir barra lateral");
+    expect(reopen?.closest(".conversation-main")).not.toBeNull();
+    expect(headerTitle?.textContent).toBe("Astra");
+    expect(reopen?.compareDocumentPosition(headerTitle!)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+
+    await act(async () => {
+      reopen?.click();
+      await Promise.resolve();
+    });
+    expect(container?.querySelector(".sidebar")).not.toBeNull();
+
+    const brand = container?.querySelector<HTMLButtonElement>(".brand-mark");
+    if (brand === null || brand === undefined)
+      throw new Error("Missing brand button");
+    await act(async () => {
+      brand.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container?.querySelector(".settings-surface")).not.toBeNull();
+
+    const collapse =
+      container?.querySelector<HTMLButtonElement>(".sidebar-collapse");
+    if (collapse === null || collapse === undefined)
+      throw new Error("Missing collapse button");
+    await act(async () => {
+      collapse.click();
+      await Promise.resolve();
+    });
+    expect(
+      container?.querySelector(
+        ".app-shell.sidebar-is-collapsed .settings-surface .workspace-heading h1",
+      )?.textContent,
+    ).toBe("Configurações");
+    expect(container?.querySelector(".sidebar-reopen")).not.toBeNull();
   });
 
   it("opens global settings from the brand while conversations stay in the sidebar", async () => {

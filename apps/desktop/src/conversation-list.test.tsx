@@ -128,9 +128,7 @@ describe("ConversationList regressions", () => {
       ".conversation-list-create",
     );
     expect(create?.textContent).toBe("Nova conversa");
-    expect(
-      container.querySelector(".conversation-archive-management"),
-    ).not.toBeNull();
+    expect(container.querySelector(".conversation-list-mode")).not.toBeNull();
     expect(container.querySelectorAll(".conversation-actions")).toHaveLength(2);
     const activeRow = container.querySelector<HTMLElement>(
       '.conversation-list-item[data-active="true"]',
@@ -187,7 +185,7 @@ describe("ConversationList regressions", () => {
     });
 
     const manage = container.querySelector<HTMLButtonElement>(
-      ".conversation-archive-management",
+      ".conversation-list-mode",
     );
     if (manage === null) throw new Error("Missing archive management button");
     await act(async () => manage.click());
@@ -197,11 +195,256 @@ describe("ConversationList regressions", () => {
     expect(container.textContent).toContain("Conversa arquivada");
   });
 
+  it("keeps archived titles non-mutating and restores only explicitly", async () => {
+    invoke.mockImplementation((command: string) => {
+      if (command === "list_agent_conversations")
+        return Promise.resolve(current);
+      if (command === "list_archived_agent_conversations")
+        return Promise.resolve(archived);
+      return Promise.resolve(undefined);
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<ConversationList agentId="agent" changed={vi.fn()} />);
+      await Promise.resolve();
+    });
+    await act(async () =>
+      container
+        ?.querySelector<HTMLButtonElement>(".conversation-list-mode")
+        ?.click(),
+    );
+
+    const title = container.querySelector(".conversation-list-title");
+    expect(title?.tagName).toBe("SPAN");
+    expect(invoke).not.toHaveBeenCalledWith("restore_agent_conversation", {
+      agentId: "agent",
+      conversationId: "old",
+    });
+
+    const restore = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Restaurar",
+    );
+    if (restore === undefined) throw new Error("Missing restore button");
+    await act(async () => restore.click());
+    expect(invoke).toHaveBeenCalledWith("restore_agent_conversation", {
+      agentId: "agent",
+      conversationId: "old",
+    });
+  });
+
+  it("filters conversations and applies a compact batch action", async () => {
+    invoke.mockImplementation((command: string) =>
+      command === "list_agent_conversations"
+        ? Promise.resolve(current)
+        : Promise.resolve(undefined),
+    );
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(
+        <ConversationList
+          agentId="agent"
+          changed={vi.fn()}
+          searchQuery="secundária"
+        />,
+      );
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("Conversa secundária");
+    expect(container.textContent).not.toContain("Conversa inicial");
+
+    await act(async () =>
+      container
+        ?.querySelector<HTMLButtonElement>(".conversation-list-select-mode")
+        ?.click(),
+    );
+    expect(container.querySelectorAll(".conversation-actions")).toHaveLength(0);
+    const checkbox = container.querySelector<HTMLInputElement>(
+      ".conversation-list-checkbox",
+    );
+    if (checkbox === null) throw new Error("Missing selection checkbox");
+    await act(async () => checkbox.click());
+    expect(container.textContent).toContain("1 selecionada");
+    await act(async () =>
+      Array.from(
+        container?.querySelectorAll<HTMLButtonElement>(
+          ".conversation-batch-bar button",
+        ) ?? [],
+      )
+        .find((button) => button.textContent === "Arquivar")
+        ?.click(),
+    );
+    expect(invoke).toHaveBeenCalledWith("archive_agent_conversation", {
+      agentId: "agent",
+      conversationId: "extra",
+    });
+  });
+
+  it("disables batch controls while a mutation is in flight", async () => {
+    let releaseArchive: (() => void) | undefined;
+    invoke.mockImplementation((command: string) => {
+      if (command === "list_agent_conversations")
+        return Promise.resolve(current);
+      if (command === "archive_agent_conversation") {
+        return new Promise<void>((resolve) => {
+          releaseArchive = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<ConversationList agentId="agent" changed={vi.fn()} />);
+      await Promise.resolve();
+    });
+    await act(async () =>
+      container
+        ?.querySelector<HTMLButtonElement>(".conversation-list-select-mode")
+        ?.click(),
+    );
+    const checkbox = container.querySelector<HTMLInputElement>(
+      ".conversation-list-checkbox",
+    );
+    if (checkbox === null) throw new Error("Missing selection checkbox");
+    await act(async () => checkbox.click());
+    const archiveButton = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(
+        ".conversation-batch-bar button",
+      ),
+    ).find((button) => button.textContent === "Arquivar");
+    if (archiveButton === undefined) throw new Error("Missing batch button");
+    await act(async () => {
+      archiveButton.click();
+      await Promise.resolve();
+    });
+
+    expect(archiveButton.disabled).toBe(true);
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        ".conversation-list-select-mode",
+      )?.disabled,
+    ).toBe(true);
+    expect(
+      container.querySelector<HTMLInputElement>(".conversation-list-checkbox")
+        ?.disabled,
+    ).toBe(true);
+
+    await act(async () => {
+      releaseArchive?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.querySelector(".conversation-batch-bar")).toBeNull();
+  });
+
+  it("clears selections hidden by a changed search query", async () => {
+    invoke.mockImplementation((command: string) =>
+      command === "list_agent_conversations"
+        ? Promise.resolve(current)
+        : Promise.resolve(undefined),
+    );
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<ConversationList agentId="agent" changed={vi.fn()} />);
+      await Promise.resolve();
+    });
+    await act(async () =>
+      container
+        ?.querySelector<HTMLButtonElement>(".conversation-list-select-mode")
+        ?.click(),
+    );
+    const checkbox = container.querySelector<HTMLInputElement>(
+      ".conversation-list-checkbox",
+    );
+    if (checkbox === null) throw new Error("Missing selection checkbox");
+    await act(async () => checkbox.click());
+    expect(container.textContent).toContain("1 selecionada");
+
+    await act(async () => {
+      root?.render(
+        <ConversationList
+          agentId="agent"
+          changed={vi.fn()}
+          searchQuery="secundária"
+        />,
+      );
+      await Promise.resolve();
+    });
+    expect(container.textContent).not.toContain("1 selecionada");
+    expect(container.querySelector(".conversation-batch-bar")).toBeNull();
+  });
+
+  it("refreshes and reports when a batch action partially fails", async () => {
+    let archiveAttempts = 0;
+    const changed = vi.fn();
+    invoke.mockImplementation((command: string) => {
+      if (command === "list_agent_conversations")
+        return Promise.resolve(current);
+      if (command === "archive_agent_conversation") {
+        archiveAttempts += 1;
+        return archiveAttempts === 2
+          ? Promise.reject(new Error("conversation_removed"))
+          : Promise.resolve(undefined);
+      }
+      return Promise.resolve(undefined);
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<ConversationList agentId="agent" changed={changed} />);
+      await Promise.resolve();
+    });
+    await act(async () =>
+      container
+        ?.querySelector<HTMLButtonElement>(".conversation-list-select-mode")
+        ?.click(),
+    );
+    const checkboxes = container.querySelectorAll<HTMLInputElement>(
+      ".conversation-list-checkbox",
+    );
+    expect(checkboxes).toHaveLength(2);
+    await act(async () => {
+      checkboxes.forEach((checkbox) => checkbox.click());
+    });
+    await act(async () => {
+      Array.from(
+        container?.querySelectorAll<HTMLButtonElement>(
+          ".conversation-batch-bar button",
+        ) ?? [],
+      )
+        .find((button) => button.textContent === "Arquivar")
+        ?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "1 de 2",
+    );
+    expect(invoke).toHaveBeenCalledTimes(4);
+    expect(changed).toHaveBeenCalledOnce();
+  });
+
   it("discards a superseded active-list response", async () => {
     const resolvers: Array<(value: typeof current) => void> = [];
     invoke.mockImplementation((command: string) => {
       if (command === "list_agent_conversations") {
-        return new Promise<typeof current>((resolve) => resolvers.push(resolve));
+        return new Promise<typeof current>((resolve) =>
+          resolvers.push(resolve),
+        );
       }
       return Promise.resolve(undefined);
     });
