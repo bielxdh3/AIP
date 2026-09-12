@@ -3104,6 +3104,21 @@ export function ConversationList({
         item.title.toLowerCase().includes(normalizedSearch),
       )
     : archived;
+  useEffect(() => {
+    if (!selectionMode || manageArchived) return;
+    const visibleIds = new Set(
+      (normalizedSearch
+        ? items.filter((item) =>
+            item.title.toLowerCase().includes(normalizedSearch),
+          )
+        : items
+      ).map((item) => item.id),
+    );
+    setSelectedIds((current) => {
+      const next = current.filter((id) => visibleIds.has(id));
+      return next.length === current.length ? current : next;
+    });
+  }, [items, manageArchived, normalizedSearch, selectionMode]);
   function toggleSelection(id: string) {
     setSelectedIds((current) =>
       current.includes(id)

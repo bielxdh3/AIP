@@ -345,6 +345,46 @@ describe("ConversationList regressions", () => {
     expect(container.querySelector(".conversation-batch-bar")).toBeNull();
   });
 
+  it("clears selections hidden by a changed search query", async () => {
+    invoke.mockImplementation((command: string) =>
+      command === "list_agent_conversations"
+        ? Promise.resolve(current)
+        : Promise.resolve(undefined),
+    );
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<ConversationList agentId="agent" changed={vi.fn()} />);
+      await Promise.resolve();
+    });
+    await act(async () =>
+      container
+        ?.querySelector<HTMLButtonElement>(".conversation-list-select-mode")
+        ?.click(),
+    );
+    const checkbox = container.querySelector<HTMLInputElement>(
+      ".conversation-list-checkbox",
+    );
+    if (checkbox === null) throw new Error("Missing selection checkbox");
+    await act(async () => checkbox.click());
+    expect(container.textContent).toContain("1 selecionada");
+
+    await act(async () => {
+      root?.render(
+        <ConversationList
+          agentId="agent"
+          changed={vi.fn()}
+          searchQuery="secundária"
+        />,
+      );
+      await Promise.resolve();
+    });
+    expect(container.textContent).not.toContain("1 selecionada");
+    expect(container.querySelector(".conversation-batch-bar")).toBeNull();
+  });
+
   it("refreshes and reports when a batch action partially fails", async () => {
     let archiveAttempts = 0;
     const changed = vi.fn();
