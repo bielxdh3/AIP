@@ -2989,6 +2989,8 @@ export function ConversationList({
     ids: string[];
   } | null>(null);
   const [batchError, setBatchError] = useState<string | null>(null);
+  const [batchInFlight, setBatchInFlight] = useState(false);
+  const batchInFlightRef = useRef(false);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -3110,13 +3112,16 @@ export function ConversationList({
     );
   }
   function requestBatch(action: "pin" | "archive" | "delete") {
-    if (selectedIds.length === 0) return;
+    if (batchInFlightRef.current || selectedIds.length === 0) return;
     setBatchError(null);
     if (action === "delete" || selectedIds.length >= 3)
       setPendingBatch({ action, ids: selectedIds });
     else void runBatch(action, selectedIds);
   }
   async function runBatch(action: "pin" | "archive" | "delete", ids: string[]) {
+    if (batchInFlightRef.current) return;
+    batchInFlightRef.current = true;
+    setBatchInFlight(true);
     setPendingBatch(null);
     const selected = items.filter((item) => ids.includes(item.id));
     let applied = 0;
@@ -3159,6 +3164,9 @@ export function ConversationList({
           ? "Não foi possível aplicar a ação em lote. A lista foi atualizada."
           : `A ação foi aplicada a ${applied} de ${selected.length} conversas antes de uma falha. A lista foi atualizada.`,
       );
+    } finally {
+      batchInFlightRef.current = false;
+      setBatchInFlight(false);
     }
   }
   const selectedCount = selectedIds.length;
@@ -3181,6 +3189,7 @@ export function ConversationList({
         <button
           type="button"
           className="conversation-list-mode"
+          disabled={batchInFlight}
           onClick={() => {
             setManageArchived((value) => !value);
             setSelectedIds([]);
@@ -3203,6 +3212,7 @@ export function ConversationList({
               type="button"
               className="conversation-list-select-mode"
               aria-pressed={selectionMode}
+              disabled={batchInFlight}
               onClick={() => {
                 setSelectionMode((value) => !value);
                 setSelectedIds([]);
@@ -3217,19 +3227,29 @@ export function ConversationList({
               className="conversation-batch-bar"
               role="toolbar"
               aria-label="Ações em lote"
+              aria-busy={batchInFlight}
             >
               <strong>
                 {selectedCount} selecionada{selectedCount === 1 ? "" : "s"}
               </strong>
-              <button type="button" onClick={() => requestBatch("pin")}>
+              <button
+                type="button"
+                disabled={batchInFlight}
+                onClick={() => requestBatch("pin")}
+              >
                 Fixar
               </button>
-              <button type="button" onClick={() => requestBatch("archive")}>
+              <button
+                type="button"
+                disabled={batchInFlight}
+                onClick={() => requestBatch("archive")}
+              >
                 Arquivar
               </button>
               <button
                 type="button"
                 className="danger-action"
+                disabled={batchInFlight}
                 onClick={() => requestBatch("delete")}
               >
                 Excluir
@@ -3264,6 +3284,7 @@ export function ConversationList({
               type="checkbox"
               className="conversation-list-checkbox"
               checked={selectedIds.includes(item.id)}
+              disabled={batchInFlight}
               aria-label={`Selecionar ${item.title}`}
               onChange={() => toggleSelection(item.id)}
             />
@@ -3286,9 +3307,7 @@ export function ConversationList({
                 activeConversationId === item.id ? "page" : undefined
               }
               onClick={() =>
-                selectionMode
-                  ? toggleSelection(item.id)
-                  : void select(item.id)
+                selectionMode ? toggleSelection(item.id) : void select(item.id)
               }
             >
               {item.isPinned ? "★ " : ""}

@@ -212,7 +212,9 @@ describe("ConversationList regressions", () => {
       await Promise.resolve();
     });
     await act(async () =>
-      container?.querySelector<HTMLButtonElement>(".conversation-list-mode")?.click(),
+      container
+        ?.querySelector<HTMLButtonElement>(".conversation-list-mode")
+        ?.click(),
     );
 
     const title = container.querySelector(".conversation-list-title");
@@ -261,9 +263,7 @@ describe("ConversationList regressions", () => {
         ?.querySelector<HTMLButtonElement>(".conversation-list-select-mode")
         ?.click(),
     );
-    expect(container.querySelectorAll(".conversation-actions")).toHaveLength(
-      0,
-    );
+    expect(container.querySelectorAll(".conversation-actions")).toHaveLength(0);
     const checkbox = container.querySelector<HTMLInputElement>(
       ".conversation-list-checkbox",
     );
@@ -285,11 +285,72 @@ describe("ConversationList regressions", () => {
     });
   });
 
+  it("disables batch controls while a mutation is in flight", async () => {
+    let releaseArchive: (() => void) | undefined;
+    invoke.mockImplementation((command: string) => {
+      if (command === "list_agent_conversations")
+        return Promise.resolve(current);
+      if (command === "archive_agent_conversation") {
+        return new Promise<void>((resolve) => {
+          releaseArchive = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => {
+      root?.render(<ConversationList agentId="agent" changed={vi.fn()} />);
+      await Promise.resolve();
+    });
+    await act(async () =>
+      container
+        ?.querySelector<HTMLButtonElement>(".conversation-list-select-mode")
+        ?.click(),
+    );
+    const checkbox = container.querySelector<HTMLInputElement>(
+      ".conversation-list-checkbox",
+    );
+    if (checkbox === null) throw new Error("Missing selection checkbox");
+    await act(async () => checkbox.click());
+    const archiveButton = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(
+        ".conversation-batch-bar button",
+      ),
+    ).find((button) => button.textContent === "Arquivar");
+    if (archiveButton === undefined) throw new Error("Missing batch button");
+    await act(async () => {
+      archiveButton.click();
+      await Promise.resolve();
+    });
+
+    expect(archiveButton.disabled).toBe(true);
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        ".conversation-list-select-mode",
+      )?.disabled,
+    ).toBe(true);
+    expect(
+      container.querySelector<HTMLInputElement>(".conversation-list-checkbox")
+        ?.disabled,
+    ).toBe(true);
+
+    await act(async () => {
+      releaseArchive?.();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.querySelector(".conversation-batch-bar")).toBeNull();
+  });
+
   it("refreshes and reports when a batch action partially fails", async () => {
     let archiveAttempts = 0;
     const changed = vi.fn();
     invoke.mockImplementation((command: string) => {
-      if (command === "list_agent_conversations") return Promise.resolve(current);
+      if (command === "list_agent_conversations")
+        return Promise.resolve(current);
       if (command === "archive_agent_conversation") {
         archiveAttempts += 1;
         return archiveAttempts === 2
