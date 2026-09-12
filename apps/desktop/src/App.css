@@ -6664,5 +6664,8 @@ input[type="radio"] {
     max-height: none;
     overflow: visible;
   }
-  .conversation-list { max-height: none; overflow-y: auto; }
+  .conversation-list {
+    max-height: min(220px, 35vh);
+    overflow-y: auto;
+  }
 }
