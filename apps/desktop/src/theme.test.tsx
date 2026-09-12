@@ -120,17 +120,30 @@ describe("theme foundations", () => {
     ).toBe("#d7c7b3");
     expect(contrastRatio("#d7c7b3", "#2d241b")).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio("#564333", "#cfbea8")).toBeGreaterThanOrEqual(4.5);
-    for (const statusColor of [
-      THEME_PRESETS.paper.success,
-      THEME_PRESETS.paper.warning,
-      THEME_PRESETS.paper.danger,
-    ]) {
-      expect(
-        contrastRatio(statusColor, THEME_PRESETS.paper.canvas),
-      ).toBeGreaterThanOrEqual(4.5);
-      expect(
-        contrastRatio(statusColor, THEME_PRESETS.paper.surface),
-      ).toBeGreaterThanOrEqual(4.5);
+    const surfaceKeys = [
+      "canvas",
+      "surface",
+      "raised",
+      "soft",
+      "mutedSurface",
+    ] as const;
+    for (const mode of [
+      "dark",
+      "paper",
+      "graphite",
+      "night",
+      "sepia",
+    ] as const) {
+      for (const statusColor of [
+        THEME_PRESETS[mode].success,
+        THEME_PRESETS[mode].warning,
+        THEME_PRESETS[mode].danger,
+      ]) {
+        for (const surfaceKey of surfaceKeys)
+          expect(
+            contrastRatio(statusColor, THEME_PRESETS[mode][surfaceKey]),
+          ).toBeGreaterThanOrEqual(4.5);
+      }
     }
     expect(nativeColorScheme(THEME_PRESETS.dark)).toBe("dark");
     expect(nativeColorScheme(THEME_PRESETS.paper)).toBe("light");

@@ -139,9 +139,9 @@ const PRESETS: Record<BuiltInThemeMode, ThemePalette> = {
     text: "#2d241b",
     mutedText: "#4c3d2e",
     subtleText: "#4c392b",
-    success: "#14532d",
-    warning: "#633d00",
-    danger: "#7b2f2f",
+    success: "#0b4725",
+    warning: "#4b2d00",
+    danger: "#661f1f",
   },
   graphite: {
     canvas: "#17191d",
@@ -186,7 +186,7 @@ const PRESETS: Record<BuiltInThemeMode, ThemePalette> = {
     subtleText: "#c8b38f",
     success: "#a5c995",
     warning: "#e1c076",
-    danger: "#e2a29a",
+    danger: "#e5aaa2",
   },
 };
 export const THEME_PRESETS = PRESETS;
@@ -281,10 +281,16 @@ const READABLE_SURFACE_KEYS: Array<keyof ThemePalette> = [
   "soft",
   "mutedSurface",
 ];
+const READABLE_STATUS_KEYS: Array<keyof ThemePalette> = [
+  "success",
+  "warning",
+  "danger",
+];
 export function hasReadableTextContrast(palette: ThemePalette): boolean {
-  return READABLE_TEXT_KEYS.every((textKey) =>
+  return [...READABLE_TEXT_KEYS, ...READABLE_STATUS_KEYS].every((textKey) =>
     READABLE_SURFACE_KEYS.every(
-      (surfaceKey) => contrastRatio(palette[textKey], palette[surfaceKey]) >= 4.5,
+      (surfaceKey) =>
+        contrastRatio(palette[textKey], palette[surfaceKey]) >= 4.5,
     ),
   );
 }
