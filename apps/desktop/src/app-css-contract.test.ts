@@ -88,6 +88,18 @@ describe("App.css semantic foreground contract", () => {
     );
   });
 
+  it("keeps the mobile conversation list bounded and scrollable", () => {
+    const mobileStart = appCss.lastIndexOf("@media (max-width: 600px)");
+    expect(mobileStart).toBeGreaterThanOrEqual(0);
+    const mobileCascade = appCss.slice(mobileStart);
+    const conversationRule = mobileCascade.match(
+      /\.conversation-list\s*\{([\s\S]*?)\}/,
+    )?.[1];
+    expect(conversationRule).toMatch(/max-height:\s*min\(220px, 35vh\)/);
+    expect(conversationRule).toMatch(/overflow-y:\s*auto/);
+    expect(conversationRule).not.toMatch(/max-height:\s*none/);
+  });
+
   it("keeps neutral hover states readable and primary fills intentional", () => {
     const neutralSelectors = [
       ".memory-card-actions button:hover",
