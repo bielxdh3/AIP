@@ -354,6 +354,11 @@ impl Database {
              VALUES ('safe_mode', 'false', ?1)",
             params![now],
         )?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO app_settings (key, value_json, updated_at)
+             VALUES ('ollama_auto_start', 'false', ?1)",
+            params![now],
+        )?;
         transaction.commit()?;
         Ok(())
     }
@@ -862,6 +867,29 @@ impl Database {
             .optional()?
             .flatten()
             .is_some_and(|active_id| active_id == conversation_id);
+        // Conversation-derived memories are removed in the same transaction as
+        // their source conversation. Manual and referenced/shared memories stay
+        // durable, even when the conversation is deleted.
+        transaction.execute(
+            "DELETE FROM agent_memories
+             WHERE agent_id = ?1 AND source_conversation_id = ?2
+               AND source_type NOT IN ('manual', 'shared', 'global')
+               AND confirmation_status != 'confirmed'
+               AND NOT EXISTS (
+                 SELECT 1 FROM cognitive_events
+                  WHERE agent_id = ?1 AND source_reference = 'memory:' || agent_memories.id
+                 UNION ALL
+                 SELECT 1 FROM cognitive_core_events
+                  WHERE agent_id = ?1 AND source_reference = 'memory:' || agent_memories.id
+                 UNION ALL
+                 SELECT 1 FROM opinion_evidence
+                  WHERE agent_id = ?1 AND source_reference = 'memory:' || agent_memories.id
+                 UNION ALL
+                 SELECT 1 FROM relationship_events
+                  WHERE agent_id = ?1 AND source_reference = 'memory:' || agent_memories.id
+               )",
+            params![agent_id, conversation_id],
+        )?;
         if transaction.execute(
             "DELETE FROM conversations WHERE id = ?1 AND agent_id = ?2",
             params![conversation_id, agent_id],
@@ -2219,6 +2247,22 @@ impl Database {
 
     pub fn set_safe_mode(&self, enabled: bool) -> Result<(), DatabaseError> {
         self.set_setting("safe_mode", if enabled { "true" } else { "false" })
+    }
+
+    pub fn ollama_auto_start(&self) -> Result<bool, DatabaseError> {
+        let connection = self.open()?;
+        Ok(connection
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = 'ollama_auto_start'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .is_some_and(|value| value == "true"))
+    }
+
+    pub fn set_ollama_auto_start(&self, enabled: bool) -> Result<(), DatabaseError> {
+        self.set_setting("ollama_auto_start", if enabled { "true" } else { "false" })
     }
 
     fn set_setting(&self, key: &str, value_json: &str) -> Result<(), DatabaseError> {
@@ -4913,6 +4957,177 @@ mod tests {
     }
 
     #[test]
+    fn deleting_conversation_removes_only_exclusive_derived_memory() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let conversation = database.main_conversation(ASTRA_ID).unwrap();
+        let attempt = database
+            .create_message_attempt(
+                ASTRA_ID,
+                &conversation.id,
+                "Lembre que eu gosto de astronomia",
+                "ollama:test",
+            )
+            .unwrap();
+        database
+            .mark_streaming(&attempt.assistant_message_id, &attempt.request_id)
+            .unwrap();
+        database
+            .finish_assistant(
+                &attempt.assistant_message_id,
+                &attempt.request_id,
+                MessageStatus::Complete,
+                None,
+            )
+            .unwrap();
+        let derived = database
+            .create_explicit_memory_candidate_for_branch(
+                ASTRA_ID,
+                &conversation.id,
+                &attempt.branch_id,
+                &attempt.assistant_message_id,
+            )
+            .unwrap()
+            .unwrap();
+        let manual = database
+            .create_memory(ASTRA_ID, "preference", "Preservar esta preferência", true)
+            .unwrap();
+        database
+            .delete_conversation(ASTRA_ID, &conversation.id)
+            .unwrap();
+        let memories = database.memories(ASTRA_ID).unwrap();
+        assert!(!memories.iter().any(|memory| memory.id == derived.id));
+        assert!(memories.iter().any(|memory| memory.id == manual.id));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn deleting_conversation_preserves_confirmed_owner_memory() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let conversation = database.main_conversation(ASTRA_ID).unwrap();
+        let confirmed_id = Uuid::now_v7().to_string();
+        let connection = database.open().unwrap();
+        connection
+            .execute(
+                "INSERT INTO agent_memories
+                 (id, agent_id, owner_user_id, category, content, status,
+                  confirmation_status, confidence, importance, source_type,
+                  source_conversation_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'fact', 'Confirmed owner fact', 'active',
+                         'confirmed', 1.0, 70, 'explicit_owner_statement', ?4, ?5, ?5)",
+                params![
+                    confirmed_id,
+                    ASTRA_ID,
+                    super::OWNER_ID,
+                    conversation.id,
+                    now_millis()
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        database
+            .delete_conversation(ASTRA_ID, &conversation.id)
+            .unwrap();
+
+        let memories = database.memories(ASTRA_ID).unwrap();
+        assert!(memories.iter().any(|memory| memory.id == confirmed_id));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn deleting_conversation_preserves_shared_memory_with_conversation_provenance() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let conversation = database.main_conversation(ASTRA_ID).unwrap();
+        let shared_id = Uuid::now_v7().to_string();
+        let connection = database.open().unwrap();
+        connection
+            .execute(
+                "INSERT INTO agent_memories
+                 (id, agent_id, owner_user_id, category, content, status,
+                  confirmation_status, confidence, importance, source_type,
+                  source_conversation_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'fact', 'Shared owner fact', 'active',
+                         'confirmed', 1.0, 70, 'shared', ?4, ?5, ?5)",
+                params![
+                    shared_id,
+                    ASTRA_ID,
+                    super::OWNER_ID,
+                    conversation.id,
+                    now_millis()
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        database
+            .delete_conversation(ASTRA_ID, &conversation.id)
+            .unwrap();
+
+        let memories = database.memories(ASTRA_ID).unwrap();
+        assert!(memories.iter().any(|memory| memory.id == shared_id));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn deleting_conversation_rolls_back_memory_cleanup_when_conversation_delete_fails() {
+        let path = test_path();
+        let database = Database::initialize(&path).unwrap();
+        let conversation = database.main_conversation(ASTRA_ID).unwrap();
+        let derived_id = Uuid::now_v7().to_string();
+        let connection = database.open().unwrap();
+        connection
+            .execute(
+                "INSERT INTO agent_memories
+                 (id, agent_id, owner_user_id, category, content, status,
+                  confirmation_status, confidence, importance, source_type,
+                  source_conversation_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'fact', 'Rollback fact', 'active',
+                         'confirmed', 1.0, 70, 'conversation_derived', ?4, ?5, ?5)",
+                params![
+                    derived_id,
+                    ASTRA_ID,
+                    super::OWNER_ID,
+                    conversation.id,
+                    now_millis()
+                ],
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_conversation_delete
+                 BEFORE DELETE ON conversations
+                 BEGIN SELECT RAISE(ABORT, 'forced rollback'); END;",
+            )
+            .unwrap();
+        drop(connection);
+
+        assert_eq!(
+            database.delete_conversation(ASTRA_ID, &conversation.id),
+            Err(DatabaseError::Unavailable)
+        );
+
+        let connection = database.open().unwrap();
+        connection
+            .execute_batch("DROP TRIGGER fail_conversation_delete")
+            .unwrap();
+        drop(connection);
+        assert!(database
+            .conversations(ASTRA_ID)
+            .unwrap()
+            .iter()
+            .any(|item| item.id == conversation.id));
+        assert!(database
+            .memories(ASTRA_ID)
+            .unwrap()
+            .iter()
+            .any(|memory| memory.id == derived_id));
+        cleanup(&path);
+    }
+
+    #[test]
     fn summaries_cover_only_completed_turns_and_enter_scoped_context() {
         let path = test_path();
         let database = Database::initialize(&path).unwrap();
@@ -5176,6 +5391,8 @@ mod tests {
         let agent_id = database.snapshot().unwrap().agents[0].id.clone();
         database.update_position(&agent_id, 412.0, 216.0).unwrap();
         database.set_safe_mode(true).unwrap();
+        assert!(!database.ollama_auto_start().unwrap());
+        database.set_ollama_auto_start(true).unwrap();
         drop(database);
         let reopened = Database::initialize(&path).unwrap();
         let snapshot = reopened.snapshot().unwrap();
@@ -5186,6 +5403,7 @@ mod tests {
             .unwrap();
         assert_eq!(updated.position.x, 412.0);
         assert!(snapshot.safe_mode);
+        assert!(reopened.ollama_auto_start().unwrap());
         cleanup(&path);
     }
 

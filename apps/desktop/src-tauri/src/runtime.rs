@@ -11,8 +11,20 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(all(target_os = "windows", not(test)))]
+use std::os::windows::io::AsRawHandle;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+
+#[cfg(all(target_os = "windows", not(test)))]
+use windows_sys::Win32::{
+    Foundation::{CloseHandle, HANDLE},
+    System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    },
+};
 
 use crate::{
     domain::{can_transition_runtime, RuntimeState, RuntimeStatus},
@@ -113,6 +125,7 @@ pub struct RuntimeController {
     subscribers: Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
     diagnostics: Arc<Mutex<RuntimeDiagnostics>>,
     process_id: Arc<Mutex<Option<u32>>>,
+    ollama_auto_start: Arc<AtomicBool>,
     source_root: PathBuf,
 }
 
@@ -135,6 +148,16 @@ impl RuntimeController {
             subscribers: Arc::new(Mutex::new(Vec::new())),
             diagnostics: Arc::new(Mutex::new(RuntimeDiagnostics::default())),
             process_id: Arc::new(Mutex::new(None)),
+            ollama_auto_start: Arc::new(AtomicBool::new(
+                std::env::var("AIP_OLLAMA_AUTO_START")
+                    .map(|value| {
+                        matches!(
+                            value.trim().to_ascii_lowercase().as_str(),
+                            "1" | "true" | "yes" | "on"
+                        )
+                    })
+                    .unwrap_or(false),
+            )),
             source_root,
         }
     }
@@ -195,6 +218,7 @@ impl RuntimeController {
         let subscribers = Arc::clone(&self.subscribers);
         let diagnostics = Arc::clone(&self.diagnostics);
         let process_id = Arc::clone(&self.process_id);
+        let ollama_auto_start = Arc::clone(&self.ollama_auto_start);
         let stored_sender = Arc::clone(&self.command_sender);
         *worker = Some(thread::spawn(move || {
             run_runtime_process(
@@ -205,6 +229,7 @@ impl RuntimeController {
                 subscribers,
                 diagnostics,
                 process_id,
+                ollama_auto_start,
             );
             *lock(&stored_sender) = None;
         }));
@@ -225,6 +250,10 @@ impl RuntimeController {
         self.start();
     }
 
+    pub fn set_ollama_auto_start(&self, enabled: bool) {
+        self.ollama_auto_start.store(enabled, Ordering::SeqCst);
+    }
+
     pub fn shutdown(&self) {
         self.stop_and_join();
     }
@@ -241,6 +270,7 @@ impl RuntimeController {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_runtime_process(
     status: Arc<Mutex<RuntimeStatus>>,
     stop: Arc<AtomicBool>,
@@ -249,6 +279,7 @@ fn run_runtime_process(
     subscribers: Arc<Mutex<Vec<mpsc::Sender<RuntimeNotice>>>>,
     diagnostics: Arc<Mutex<RuntimeDiagnostics>>,
     process_id: Arc<Mutex<Option<u32>>>,
+    ollama_auto_start: Arc<AtomicBool>,
 ) {
     let packaged_runtime = !cfg!(debug_assertions)
         || source_root
@@ -273,6 +304,8 @@ fn run_runtime_process(
         "TMP",
         "USERPROFILE",
         "LOCALAPPDATA",
+        "ProgramFiles",
+        "ProgramW6432",
         // Keep the managed runtime local-first while allowing the Owner's explicit
         // Ollama configuration to reach the packaged process.
         "OLLAMA_HOST",
@@ -289,6 +322,14 @@ fn run_runtime_process(
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUNBUFFERED", "1")
+        .env(
+            "AIP_OLLAMA_AUTO_START",
+            if ollama_auto_start.load(Ordering::SeqCst) {
+                "1"
+            } else {
+                "0"
+            },
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -305,6 +346,19 @@ fn run_runtime_process(
     let Ok(mut child) = command.spawn() else {
         unavailable(&status, &subscribers, "python_unavailable");
         return;
+    };
+    // The hosted Windows test harness already runs inside a runner-owned job
+    // object, where nested assignment is rejected. The production desktop
+    // process still requires this lifecycle boundary before it becomes ready.
+    #[cfg(all(target_os = "windows", not(test)))]
+    let _runtime_job = match RuntimeJob::assign(&child) {
+        Ok(job) => job,
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            unavailable(&status, &subscribers, "runtime_process_isolation_failed");
+            return;
+        }
     };
     let _process_id_guard = ProcessIdGuard::set(&process_id, child.id());
     let Some(mut stdin) = child.stdin.take() else {
@@ -510,6 +564,45 @@ fn run_runtime_process(
                 },
             );
             return;
+        }
+    }
+}
+
+#[cfg(all(target_os = "windows", not(test)))]
+struct RuntimeJob(HANDLE);
+
+#[cfg(all(target_os = "windows", not(test)))]
+impl RuntimeJob {
+    fn assign(child: &std::process::Child) -> std::io::Result<Self> {
+        unsafe {
+            let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if handle.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let configured = SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                (&mut limits as *mut JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) != 0;
+            let assigned = configured
+                && AssignProcessToJobObject(handle, child.as_raw_handle() as HANDLE) != 0;
+            if !assigned {
+                CloseHandle(handle);
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(Self(handle))
+        }
+    }
+}
+
+#[cfg(all(target_os = "windows", not(test)))]
+impl Drop for RuntimeJob {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
         }
     }
 }

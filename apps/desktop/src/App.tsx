@@ -1349,7 +1349,7 @@ function MessageItem({
               </button>
               {advancedRetry ? (
                 <div className="message-advanced" data-advanced-open="true">
-                  <span className="message-advanced-model">
+                  <span className="message-advanced-model visually-hidden">
                     Modelo usado: {message.modelRef ?? "indisponível"}
                   </span>
                   <ModelPicker
@@ -1363,13 +1363,15 @@ function MessageItem({
                       if (modelRef !== null) setRetryModel(modelRef);
                     }}
                   />
-                  <button
-                    type="button"
-                    disabled={retrying || !retryModel}
-                    onClick={() => onRegenerate(message, retryModel)}
-                  >
-                    Tentar com este modelo
-                  </button>
+                  {retryModel ? (
+                    <button
+                      type="button"
+                      disabled={retrying}
+                      onClick={() => onRegenerate(message, retryModel)}
+                    >
+                      Tentar com este modelo
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
             </>
@@ -1826,24 +1828,26 @@ export function ConversationSurface({
             </p>
           ) : null}
         </div>
-        <textarea
-          value={draft}
-          maxLength={16_384}
-          placeholder={blocked ?? `Escreva para ${phase.agent.name}`}
-          disabled={!canDraft || busy}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              void send();
-            }
-          }}
-        />
+        <div className="composer-input-shell">
+          <textarea
+            value={draft}
+            maxLength={16_384}
+            placeholder={blocked ?? `Escreva para ${phase.agent.name}`}
+            disabled={!canDraft || busy}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void send();
+              }
+            }}
+          />
+        </div>
         <div className="composer-footer">
           <span className="composer-helper">
             {blocked ?? "Enter envia · Shift+Enter cria uma linha"}
           </span>
-          <div className="composer-actions">
+          <div className="composer-actions" aria-label="Controles da mensagem">
             <ModelPicker
               label="Modelo"
               ariaLabel="Selecionar modelo"
@@ -1871,23 +1875,25 @@ export function ConversationSurface({
                 await load();
               }}
             />
+            <button
+              type="button"
+              className="composer-submit"
+              aria-label={
+                request === null ? "Enviar mensagem" : "Parar geração"
+              }
+              title={request === null ? "Enviar" : "Parar"}
+              disabled={
+                request === null
+                  ? !canSend || !draft.trim() || busy
+                  : !canRequestCancellation(request, cancellingRequestId)
+              }
+              onClick={() =>
+                request === null ? void send() : void cancelCurrentRequest()
+              }
+            >
+              {request === null ? "↑" : "■"}
+            </button>
           </div>
-          <button
-            type="button"
-            className="composer-submit"
-            aria-label={request === null ? "Enviar mensagem" : "Parar geração"}
-            title={request === null ? "Enviar" : "Parar"}
-            disabled={
-              request === null
-                ? !canSend || !draft.trim() || busy
-                : !canRequestCancellation(request, cancellingRequestId)
-            }
-            onClick={() =>
-              request === null ? void send() : void cancelCurrentRequest()
-            }
-          >
-            {request === null ? "↑" : "■"}
-          </button>
         </div>
       </footer>
     </section>
@@ -2118,65 +2124,71 @@ export function ConversationDraftSurface({
             </span>
           ) : null}
         </div>
-        <textarea
-          value={draft}
-          maxLength={16_384}
-          placeholder={blocked ?? `Escreva para ${currentPhase.agent.name}`}
-          disabled={!canDraft || busy}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              void persist(draft.trim());
-            }
-          }}
-        />
+        <div className="composer-input-shell">
+          <textarea
+            value={draft}
+            maxLength={16_384}
+            placeholder={blocked ?? `Escreva para ${currentPhase.agent.name}`}
+            disabled={!canDraft || busy}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void persist(draft.trim());
+              }
+            }}
+          />
+        </div>
         <div className="composer-footer">
           <span className="composer-helper">
             {blocked ?? "Enter salva e envia · Shift+Enter cria uma linha"}
           </span>
-          <ModelPicker
-            label="Modelo"
-            ariaLabel="Selecionar modelo"
-            compact
-            models={currentPhase.provider.models}
-            value={draftModelRef}
-            providerState={currentPhase.provider.state}
-            disabled={busy || currentPhase.provider.models.length === 0}
-            defaultOption={{
-              label: "Automático",
-              detail: currentPhase.defaultModelRef ?? "Seleção automática",
-            }}
-            onSelect={async (modelRef) => {
-              setDraftModelRef(modelRef);
-              if (persistedConversationId !== null) {
-                await invoke("set_conversation_model_override", {
-                  agentId,
-                  conversationId: persistedConversationId,
-                  modelRef,
-                });
-                await load();
+          <div className="composer-actions" aria-label="Controles da mensagem">
+            <ModelPicker
+              label="Modelo"
+              ariaLabel="Selecionar modelo"
+              compact
+              models={currentPhase.provider.models}
+              value={draftModelRef}
+              providerState={currentPhase.provider.state}
+              disabled={busy || currentPhase.provider.models.length === 0}
+              defaultOption={{
+                label: "Automático",
+                detail: currentPhase.defaultModelRef ?? "Seleção automática",
+              }}
+              onSelect={async (modelRef) => {
+                setDraftModelRef(modelRef);
+                if (persistedConversationId !== null) {
+                  await invoke("set_conversation_model_override", {
+                    agentId,
+                    conversationId: persistedConversationId,
+                    modelRef,
+                  });
+                  await load();
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="composer-submit"
+              aria-label={
+                request === null ? "Enviar mensagem" : "Parar geração"
               }
-            }}
-          />
-          <button
-            type="button"
-            className="composer-submit"
-            aria-label={request === null ? "Enviar mensagem" : "Parar geração"}
-            title={request === null ? "Enviar" : "Parar"}
-            disabled={
-              request === null
-                ? !canSend || !draft.trim() || busy
-                : !canRequestCancellation(request, cancellingRequestId)
-            }
-            onClick={() =>
-              request === null
-                ? void persist(draft.trim())
-                : void cancelCurrentRequest()
-            }
-          >
-            {request === null ? "↑" : "■"}
-          </button>
+              title={request === null ? "Enviar" : "Parar"}
+              disabled={
+                request === null
+                  ? !canSend || !draft.trim() || busy
+                  : !canRequestCancellation(request, cancellingRequestId)
+              }
+              onClick={() =>
+                request === null
+                  ? void persist(draft.trim())
+                  : void cancelCurrentRequest()
+              }
+            >
+              {request === null ? "↑" : "■"}
+            </button>
+          </div>
         </div>
         {errorMessage ? (
           <div className="draft-error" role="alert">
@@ -2534,12 +2546,9 @@ export function ProfileForm({
         aria-labelledby="profile-default-model-heading"
       >
         <h2 id="profile-default-model-heading">Modelo padrão</h2>
-        <p className="readable-helper">
-          Novas conversas deste agente começam com este modelo.
-        </p>
         <ModelPicker
-          label={`Modelo padrão de ${agent.name}`}
-          ariaLabel={`Modelo padrão de ${agent.name}`}
+          label="Modelo padrão"
+          ariaLabel="Modelo padrão"
           models={phase?.provider.models ?? []}
           value={phase?.defaultModelRef ?? null}
           providerState={phase?.provider.state ?? "checking"}
@@ -2554,10 +2563,7 @@ export function ProfileForm({
           }}
         />
         <label className="profile-keep-alive">
-          <span>Manter modelo carregado neste agente</span>
-          <small className="readable-helper">
-            Esta preferência é persistente e também vale para novas conversas.
-          </small>
+          <span>Manter modelo carregado</span>
           <select
             aria-label={`Permanência do modelo de ${agent.name}`}
             value={phase?.keepAliveMinutes ?? 0}
@@ -2963,6 +2969,7 @@ export function ConversationList({
   onNewDraft,
   onSelectExisting,
   activeConversationId,
+  searchQuery = "",
 }: {
   agentId: string;
   changed: () => void;
@@ -2970,10 +2977,20 @@ export function ConversationList({
   onNewDraft?: () => void;
   onSelectExisting?: (conversationId: string) => void;
   activeConversationId?: string | null;
+  searchQuery?: string;
 }) {
   const [items, setItems] = useState<PhaseOneConversation[]>([]);
   const [archived, setArchived] = useState<PhaseOneConversation[]>([]);
   const [manageArchived, setManageArchived] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [pendingBatch, setPendingBatch] = useState<{
+    action: "pin" | "archive" | "delete";
+    ids: string[];
+  } | null>(null);
+  const [batchError, setBatchError] = useState<string | null>(null);
+  const [batchInFlight, setBatchInFlight] = useState(false);
+  const batchInFlightRef = useRef(false);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -3014,13 +3031,16 @@ export function ConversationList({
     onSelectExisting?.(conversationId);
     changed();
   }
-  async function loadArchived() {
+  const loadArchived = useCallback(async () => {
     const previous = await invoke<PhaseOneConversation[]>(
       "list_archived_agent_conversations",
       { agentId },
     );
     setArchived(previous);
-  }
+  }, [agentId]);
+  useEffect(() => {
+    if (manageArchived) void loadArchived();
+  }, [manageArchived, loadArchived]);
   async function rename(item: PhaseOneConversation) {
     if (!renameValue.trim()) return;
     await invoke("rename_agent_conversation", {
@@ -3073,6 +3093,106 @@ export function ConversationList({
     await load();
     changed();
   }
+  const normalizedSearch = searchQuery.trim().toLowerCase();
+  const visibleItems = normalizedSearch
+    ? items.filter((item) =>
+        item.title.toLowerCase().includes(normalizedSearch),
+      )
+    : items;
+  const visibleArchived = normalizedSearch
+    ? archived.filter((item) =>
+        item.title.toLowerCase().includes(normalizedSearch),
+      )
+    : archived;
+  useEffect(() => {
+    if (!selectionMode || manageArchived) return;
+    const visibleIds = new Set(
+      (normalizedSearch
+        ? items.filter((item) =>
+            item.title.toLowerCase().includes(normalizedSearch),
+          )
+        : items
+      ).map((item) => item.id),
+    );
+    setSelectedIds((current) => {
+      const next = current.filter((id) => visibleIds.has(id));
+      return next.length === current.length ? current : next;
+    });
+  }, [items, manageArchived, normalizedSearch, selectionMode]);
+  function toggleSelection(id: string) {
+    setSelectedIds((current) =>
+      current.includes(id)
+        ? current.filter((value) => value !== id)
+        : [...current, id],
+    );
+  }
+  function requestBatch(action: "pin" | "archive" | "delete") {
+    if (batchInFlightRef.current || selectedIds.length === 0) return;
+    setBatchError(null);
+    if (action === "delete" || selectedIds.length >= 3)
+      setPendingBatch({ action, ids: selectedIds });
+    else void runBatch(action, selectedIds);
+  }
+  async function runBatch(action: "pin" | "archive" | "delete", ids: string[]) {
+    if (batchInFlightRef.current) return;
+    batchInFlightRef.current = true;
+    setBatchInFlight(true);
+    setPendingBatch(null);
+    const selected = items.filter((item) => ids.includes(item.id));
+    let applied = 0;
+    try {
+      for (const item of selected) {
+        if (action === "pin")
+          await invoke("pin_agent_conversation", {
+            agentId,
+            conversationId: item.id,
+            pinned: true,
+          });
+        else if (action === "archive")
+          await invoke("archive_agent_conversation", {
+            agentId,
+            conversationId: item.id,
+          });
+        else
+          await invoke("delete_agent_conversation", {
+            agentId,
+            conversationId: item.id,
+          });
+        applied += 1;
+      }
+      setSelectedIds([]);
+      setSelectionMode(false);
+      await load();
+      changed();
+    } catch {
+      setSelectedIds([]);
+      setSelectionMode(false);
+      try {
+        await load();
+        if (manageArchived) await loadArchived();
+      } catch {
+        /* the next refresh can retry the authoritative list */
+      }
+      changed();
+      setBatchError(
+        applied === 0
+          ? "Não foi possível aplicar a ação em lote. A lista foi atualizada."
+          : `A ação foi aplicada a ${applied} de ${selected.length} conversas antes de uma falha. A lista foi atualizada.`,
+      );
+    } finally {
+      batchInFlightRef.current = false;
+      setBatchInFlight(false);
+    }
+  }
+  const selectedCount = selectedIds.length;
+  const batchLabel =
+    pendingBatch === null
+      ? ""
+      : pendingBatch.action === "delete"
+        ? `Excluir ${pendingBatch.ids.length} conversa${pendingBatch.ids.length === 1 ? "" : "s"}?`
+        : pendingBatch.action === "archive"
+          ? `Arquivar ${pendingBatch.ids.length} conversa${pendingBatch.ids.length === 1 ? "" : "s"}?`
+          : `Fixar ${pendingBatch.ids.length} conversa${pendingBatch.ids.length === 1 ? "" : "s"}?`;
   return (
     <div
       className="conversation-list"
@@ -3080,16 +3200,85 @@ export function ConversationList({
       aria-label="Conversas do agente"
     >
       <div className="conversation-list-heading">
-        <span>Conversas recentes</span>
+        <span>{manageArchived ? "Arquivadas" : "Conversas recentes"}</span>
+        <button
+          type="button"
+          className="conversation-list-mode"
+          disabled={batchInFlight}
+          onClick={() => {
+            setManageArchived((value) => !value);
+            setSelectedIds([]);
+          }}
+        >
+          {manageArchived ? "Voltar" : "Arquivadas"}
+        </button>
       </div>
-      <button
-        type="button"
-        className="conversation-list-create"
-        onClick={() => onNewDraft?.()}
-      >
-        Nova conversa
-      </button>
-      {items.map((item) => (
+      {!manageArchived ? (
+        <>
+          <div className="conversation-list-toolbar">
+            <button
+              type="button"
+              className="conversation-list-create"
+              onClick={() => onNewDraft?.()}
+            >
+              Nova conversa
+            </button>
+            <button
+              type="button"
+              className="conversation-list-select-mode"
+              aria-pressed={selectionMode}
+              disabled={batchInFlight}
+              onClick={() => {
+                setSelectionMode((value) => !value);
+                setSelectedIds([]);
+                setBatchError(null);
+              }}
+            >
+              {selectionMode ? "Cancelar" : "Selecionar"}
+            </button>
+          </div>
+          {selectionMode && selectedCount > 0 ? (
+            <div
+              className="conversation-batch-bar"
+              role="toolbar"
+              aria-label="Ações em lote"
+              aria-busy={batchInFlight}
+            >
+              <strong>
+                {selectedCount} selecionada{selectedCount === 1 ? "" : "s"}
+              </strong>
+              <button
+                type="button"
+                disabled={batchInFlight}
+                onClick={() => requestBatch("pin")}
+              >
+                Fixar
+              </button>
+              <button
+                type="button"
+                disabled={batchInFlight}
+                onClick={() => requestBatch("archive")}
+              >
+                Arquivar
+              </button>
+              <button
+                type="button"
+                className="danger-action"
+                disabled={batchInFlight}
+                onClick={() => requestBatch("delete")}
+              >
+                Excluir
+              </button>
+            </div>
+          ) : null}
+        </>
+      ) : null}
+      {batchError ? (
+        <p className="conversation-batch-error" role="alert">
+          {batchError}
+        </p>
+      ) : null}
+      {(manageArchived ? visibleArchived : visibleItems).map((item) => (
         <div
           key={item.id}
           className={
@@ -3100,28 +3289,68 @@ export function ConversationList({
           data-active={activeConversationId === item.id || undefined}
           data-menu-open={openMenuId === item.id || undefined}
           data-pinned={item.isPinned}
+          data-selected={selectedIds.includes(item.id) || undefined}
+          data-selection-mode={
+            selectionMode && !manageArchived ? "true" : undefined
+          }
         >
-          <button
-            type="button"
-            className="conversation-list-select"
-            aria-current={activeConversationId === item.id ? "page" : undefined}
-            onClick={() => void select(item.id)}
-          >
-            {item.isPinned ? "★ " : ""}
-            {item.title}
-          </button>
-          <ConversationActionMenu
-            item={item}
-            open={openMenuId === item.id}
-            onOpenChange={(open) => setOpenMenuId(open ? item.id : null)}
-            onPin={() => void pin(item)}
-            onRename={() => {
-              setRenamingId(item.id);
-              setRenameValue(item.title);
-            }}
-            onArchive={() => void archive(item)}
-            onRemove={() => remove(item)}
-          />
+          {selectionMode && !manageArchived ? (
+            <input
+              type="checkbox"
+              className="conversation-list-checkbox"
+              checked={selectedIds.includes(item.id)}
+              disabled={batchInFlight}
+              aria-label={`Selecionar ${item.title}`}
+              onChange={() => toggleSelection(item.id)}
+            />
+          ) : null}
+          {manageArchived ? (
+            <span
+              className="conversation-list-select conversation-list-title"
+              aria-current={
+                activeConversationId === item.id ? "page" : undefined
+              }
+            >
+              {item.isPinned ? "★ " : ""}
+              {item.title}
+            </span>
+          ) : (
+            <button
+              type="button"
+              className="conversation-list-select"
+              aria-current={
+                activeConversationId === item.id ? "page" : undefined
+              }
+              onClick={() =>
+                selectionMode ? toggleSelection(item.id) : void select(item.id)
+              }
+            >
+              {item.isPinned ? "★ " : ""}
+              {item.title}
+            </button>
+          )}
+          {manageArchived ? (
+            <button
+              type="button"
+              className="conversation-list-action"
+              onClick={() => void restore(item)}
+            >
+              Restaurar
+            </button>
+          ) : selectionMode ? null : (
+            <ConversationActionMenu
+              item={item}
+              open={openMenuId === item.id}
+              onOpenChange={(open) => setOpenMenuId(open ? item.id : null)}
+              onPin={() => void pin(item)}
+              onRename={() => {
+                setRenamingId(item.id);
+                setRenameValue(item.title);
+              }}
+              onArchive={() => void archive(item)}
+              onRemove={() => remove(item)}
+            />
+          )}
           {renamingId === item.id ? (
             <form
               className="conversation-rename"
@@ -3150,35 +3379,10 @@ export function ConversationList({
           ) : null}
         </div>
       ))}
-      <button
-        type="button"
-        className="conversation-archive-management"
-        onClick={() => {
-          setManageArchived((value) => !value);
-          if (!manageArchived) void loadArchived();
-        }}
-      >
-        {manageArchived ? "Fechar arquivadas" : "Gerenciar arquivadas"}
-      </button>
-      {manageArchived ? (
-        <div className="conversation-list-archived">
-          <strong>Conversas arquivadas</strong>
-          {archived.length === 0 ? (
-            <span>Nenhuma conversa arquivada.</span>
-          ) : null}
-          {archived.map((item) => (
-            <div key={item.id} className="conversation-list-item">
-              <span className="conversation-list-title">{item.title}</span>
-              <button
-                type="button"
-                className="conversation-list-action"
-                onClick={() => void restore(item)}
-              >
-                Restaurar
-              </button>
-            </div>
-          ))}
-        </div>
+      {manageArchived && visibleArchived.length === 0 ? (
+        <span className="conversation-list-empty">
+          Nenhuma conversa arquivada.
+        </span>
       ) : null}
       {pendingRemoval ? (
         <ConfirmDialog
@@ -3187,6 +3391,25 @@ export function ConversationList({
           confirmLabel="Excluir conversa"
           onCancel={() => setPendingRemoval(null)}
           onConfirm={() => void confirmRemoval()}
+        />
+      ) : null}
+      {pendingBatch ? (
+        <ConfirmDialog
+          title={batchLabel}
+          description={
+            pendingBatch.action === "delete"
+              ? "As mensagens e memórias exclusivas destas conversas também serão removidas."
+              : "A ação será aplicada a todas as conversas selecionadas."
+          }
+          confirmLabel={
+            pendingBatch.action === "delete"
+              ? "Excluir conversas"
+              : pendingBatch.action === "archive"
+                ? "Arquivar conversas"
+                : "Fixar conversas"
+          }
+          onCancel={() => setPendingBatch(null)}
+          onConfirm={() => void runBatch(pendingBatch.action, pendingBatch.ids)}
         />
       ) : null}
     </div>
@@ -10540,9 +10763,8 @@ function SettingsModelsPanel({
     <section className="settings-card settings-models-panel">
       <h2>Modelos e roteamento</h2>
       <p className="readable-helper">
-        Modelos conhecidos pelo snapshot do provedor local. Preferências salvas
-        neste computador orientam o roteamento Auto, qualidade e velocidade; não
-        instalam, removem ou carregam modelos.
+        Escolha o modelo preferido e como o modo Automático deve alternar entre
+        eles.
       </p>
       <div className="settings-model-policy">
         <AipSelect
@@ -10560,8 +10782,7 @@ function SettingsModelsPanel({
           }}
         />
         <p className="readable-helper" role="status">
-          Estado do provedor: {providerStateLabels[providerState]}.
-          {provider?.detailCode ? ` Código: ${provider.detailCode}.` : ""}
+          Provedor local: {providerStateLabels[providerState]}.
         </p>
       </div>
       {models.length === 0 ? (
@@ -10600,48 +10821,51 @@ function SettingsModelsPanel({
                     ) : null}
                   </div>
                 </header>
-                <dl>
-                  <div>
-                    <dt>Ref. do modelo</dt>
-                    <dd>{model.ref}</dd>
-                  </div>
-                  <div>
-                    <dt>Ref. no provedor</dt>
-                    <dd>{model.providerModelId}</dd>
-                  </div>
-                  <div>
-                    <dt>Disponibilidade</dt>
-                    <dd>{providerStateLabels[providerState]}</dd>
-                  </div>
-                  <div>
-                    <dt>Carga</dt>
-                    <dd>Não informada pelo snapshot do provedor</dd>
-                  </div>
-                  {model.family ? (
+                <details className="settings-model-details">
+                  <summary>Detalhes técnicos</summary>
+                  <dl>
                     <div>
-                      <dt>Família</dt>
-                      <dd>{model.family}</dd>
+                      <dt>Ref. do modelo</dt>
+                      <dd>{model.ref}</dd>
                     </div>
-                  ) : null}
-                  {model.parameterSize ? (
                     <div>
-                      <dt>Parâmetros</dt>
-                      <dd>{model.parameterSize}</dd>
+                      <dt>Ref. no provedor</dt>
+                      <dd>{model.providerModelId}</dd>
                     </div>
-                  ) : null}
-                  {model.quantization ? (
                     <div>
-                      <dt>Quantização</dt>
-                      <dd>{model.quantization}</dd>
+                      <dt>Disponibilidade</dt>
+                      <dd>{providerStateLabels[providerState]}</dd>
                     </div>
-                  ) : null}
-                  {model.size > 0 ? (
                     <div>
-                      <dt>Tamanho</dt>
-                      <dd>{modelSizeLabel(model.size)}</dd>
+                      <dt>Carga</dt>
+                      <dd>Não informada pelo snapshot do provedor</dd>
                     </div>
-                  ) : null}
-                </dl>
+                    {model.family ? (
+                      <div>
+                        <dt>Família</dt>
+                        <dd>{model.family}</dd>
+                      </div>
+                    ) : null}
+                    {model.parameterSize ? (
+                      <div>
+                        <dt>Parâmetros</dt>
+                        <dd>{model.parameterSize}</dd>
+                      </div>
+                    ) : null}
+                    {model.quantization ? (
+                      <div>
+                        <dt>Quantização</dt>
+                        <dd>{model.quantization}</dd>
+                      </div>
+                    ) : null}
+                    {model.size > 0 ? (
+                      <div>
+                        <dt>Tamanho</dt>
+                        <dd>{modelSizeLabel(model.size)}</dd>
+                      </div>
+                    ) : null}
+                  </dl>
+                </details>
                 <div className="settings-model-actions">
                   <label>
                     <input
@@ -10725,6 +10949,80 @@ function SettingsModelsPanel({
   );
 }
 
+const OLLAMA_AUTO_START_STORAGE_KEY = "aip.runtime.ollama-auto-start";
+
+function OllamaAutoStartControl({ safeMode }: { safeMode: boolean }) {
+  const [enabled, setEnabled] = useState(() => {
+    try {
+      return (
+        window.localStorage.getItem(OLLAMA_AUTO_START_STORAGE_KEY) === "true"
+      );
+    } catch {
+      return false;
+    }
+  });
+  const [status, setStatus] = useState<string | null>(null);
+  useEffect(() => {
+    void invoke<boolean>("get_ollama_auto_start")
+      .then((value) => {
+        if (typeof value === "boolean") setEnabled(value);
+      })
+      .catch(() => undefined);
+  }, []);
+  async function toggle(next: boolean) {
+    try {
+      await invoke("set_ollama_auto_start", { enabled: next });
+      setEnabled(next);
+      try {
+        window.localStorage.setItem(
+          OLLAMA_AUTO_START_STORAGE_KEY,
+          String(next),
+        );
+      } catch {
+        // Local storage is optional; runtime remains authoritative.
+      }
+      setStatus(
+        next
+          ? "Ativação automática ligada para a próxima inicialização."
+          : "Ativação automática desligada.",
+      );
+    } catch {
+      try {
+        const value = await invoke<boolean>("get_ollama_auto_start");
+        if (typeof value === "boolean") {
+          setEnabled(value);
+          window.localStorage.setItem(
+            OLLAMA_AUTO_START_STORAGE_KEY,
+            String(value),
+          );
+        }
+      } catch {
+        // Keep the last known value when the recovery read is unavailable.
+      }
+      setStatus("Não foi possível atualizar agora.");
+    }
+  }
+  return (
+    <div className="settings-runtime-toggle">
+      <label>
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={safeMode && !enabled}
+          onChange={(event) => void toggle(event.target.checked)}
+        />
+        Iniciar Ollama automaticamente
+      </label>
+      <small className="readable-helper" role="status">
+        {safeMode
+          ? "Desativado no modo seguro."
+          : (status ??
+            "Usa primeiro um serviço local já ativo; só inicia um processo descoberto com segurança.")}
+      </small>
+    </div>
+  );
+}
+
 export function SettingsSurface({
   snapshot,
   changingMode,
@@ -10792,6 +11090,7 @@ export function SettingsSurface({
                 ainda não estão disponíveis.
               </p>
               <ThemeControls />
+              <OllamaAutoStartControl safeMode={snapshot?.safeMode ?? true} />
             </section>
           ) : null}
           {activeSection === "Perfil do Owner" ? (
@@ -11757,6 +12056,25 @@ function App() {
   const [conversationDraftRevision, setConversationDraftRevision] = useState(0);
   const [temporaryChat, setTemporaryChat] = useState(false);
   const [workspace, setWorkspace] = useState<DesktopWorkspace>("chat");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem("aip.ui.sidebar-collapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [conversationSearch, setConversationSearch] = useState("");
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        "aip.ui.sidebar-collapsed",
+        String(sidebarCollapsed),
+      );
+    } catch {
+      // Sidebar preference is optional.
+    }
+  }, [sidebarCollapsed]);
 
   const loadSnapshot = useCallback(async () => {
     const next = await invoke<AppSnapshot>("get_app_snapshot");
@@ -11894,57 +12212,98 @@ function App() {
   }
 
   return (
-    <div className="app-shell conversation-layout">
-      <aside className="sidebar" aria-label="Navegação principal">
-        <button
-          className="brand-mark"
-          type="button"
-          aria-label="Abrir configurações"
-          onClick={() => void openWorkspace("settings")}
-        >
-          <img className="brand-logo" src="/icon.ico" alt="" />
-          <div>
-            <strong>A.I.P.</strong>
-            <small>Conversa local</small>
+    <div
+      className={
+        sidebarCollapsed
+          ? "app-shell conversation-layout sidebar-is-collapsed"
+          : "app-shell conversation-layout"
+      }
+    >
+      {!sidebarCollapsed ? (
+        <aside className="sidebar" aria-label="Navegação principal">
+          <button
+            className="brand-mark"
+            type="button"
+            aria-label="Abrir configurações"
+            onClick={() => void openWorkspace("settings")}
+          >
+            <img className="brand-logo" src="/icon.ico" alt="" />
+            <div>
+              <strong>A.I.P.</strong>
+              <small>Conversa local</small>
+            </div>
+          </button>
+          <div className="sidebar-topbar">
+            <label className="sidebar-search">
+              <span className="visually-hidden">Buscar conversas</span>
+              <input
+                type="search"
+                value={conversationSearch}
+                placeholder="Buscar conversas"
+                aria-label="Buscar conversas"
+                onChange={(event) => setConversationSearch(event.target.value)}
+              />
+            </label>
+            <button
+              type="button"
+              className="sidebar-collapse"
+              aria-label="Recolher barra lateral"
+              title="Recolher barra lateral"
+              onClick={() => setSidebarCollapsed(true)}
+            >
+              «
+            </button>
           </div>
-        </button>
-        <SidebarNavigation
-          agents={snapshot?.agents ?? []}
-          activeAgentId={activeAgentId}
-          workspace={workspace}
-          onSelectAgent={(agentId) => void selectAgent(agentId)}
-          onWorkspace={(next) => void openWorkspace(next)}
-          onProfile={(agentId) => void openProfile(agentId)}
-        />
-        {activeAgentId ? (
-          <ConversationList
-            key={activeAgentId}
-            agentId={activeAgentId}
-            refreshRevision={conversationListRevision}
-            activeConversationId={activeConversationId}
-            onNewDraft={openConversationDraft}
-            onSelectExisting={(conversationId) => {
-              setActiveConversationId(conversationId);
-              setConversationDraftAgentId(null);
-            }}
-            changed={() => {
-              void leaveTemporaryChat().then(() => {
-                setConversationDraftAgentId(null);
-                setConversationRevision((value) => value + 1);
-                setEditingAgentId(null);
-                setWorkspace("chat");
-              });
-            }}
+          <SidebarNavigation
+            agents={snapshot?.agents ?? []}
+            activeAgentId={activeAgentId}
+            workspace={workspace}
+            onSelectAgent={(agentId) => void selectAgent(agentId)}
+            onWorkspace={(next) => void openWorkspace(next)}
+            onProfile={(agentId) => void openProfile(agentId)}
           />
-        ) : null}
-        <div className="sidebar-footer">
-          <span className="local-dot" aria-hidden="true" />
-          {snapshot
-            ? runtimeLabels[snapshot.runtime.state]
-            : "Verificando runtime"}
-        </div>
-      </aside>
+          {activeAgentId ? (
+            <ConversationList
+              key={activeAgentId}
+              agentId={activeAgentId}
+              refreshRevision={conversationListRevision}
+              activeConversationId={activeConversationId}
+              onNewDraft={openConversationDraft}
+              searchQuery={conversationSearch}
+              onSelectExisting={(conversationId) => {
+                setActiveConversationId(conversationId);
+                setConversationDraftAgentId(null);
+              }}
+              changed={() => {
+                void leaveTemporaryChat().then(() => {
+                  setConversationDraftAgentId(null);
+                  setConversationRevision((value) => value + 1);
+                  setEditingAgentId(null);
+                  setWorkspace("chat");
+                });
+              }}
+            />
+          ) : null}
+          <div className="sidebar-footer">
+            <span className="local-dot" aria-hidden="true" />
+            {snapshot
+              ? runtimeLabels[snapshot.runtime.state]
+              : "Verificando runtime"}
+          </div>
+        </aside>
+      ) : null}
       <main className="conversation-main">
+        {sidebarCollapsed ? (
+          <button
+            type="button"
+            className="sidebar-reopen"
+            aria-label="Reabrir barra lateral"
+            title="Reabrir barra lateral"
+            onClick={() => setSidebarCollapsed(false)}
+          >
+            »
+          </button>
+        ) : null}
         {snapshot?.runtime.state === "unavailable" ||
         snapshot?.runtime.state === "crashed" ? (
           <div className="runtime-banner" role="status">

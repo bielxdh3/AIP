@@ -32,12 +32,13 @@ validation reservations are recorded in
 ## Ollama startup
 
 - AIP first reuses a healthy external Ollama service on the validated loopback endpoint.
-- If that probe fails, AIP starts Ollama only when the Owner has supplied an explicit
-  `AIP_OLLAMA_EXECUTABLE` path or a bounded `AIP_OLLAMA_CONFIG` file containing one.
-- No executable is guessed, downloaded, or started implicitly. Remote endpoints are rejected;
-  wildcard inputs (`0.0.0.0` and `[::]`) are normalized to `127.0.0.1` before probing or child
-  launch, so traffic remains on loopback. Without an external service or explicit managed
-  executable, the provider remains unavailable and the UI stays usable.
+- When that probe fails, an explicit `AIP_OLLAMA_EXECUTABLE` path or bounded
+  `AIP_OLLAMA_CONFIG` file containing one is an intentional managed-start path. If no explicit
+  path is supplied, the Owner can enable auto-start to discover a validated executable from
+  standard Windows installation roots. No executable is downloaded or guessed. Remote endpoints
+  are rejected; wildcard inputs (`0.0.0.0` and `[::]`) are normalized to `127.0.0.1` before
+  probing or child launch, so traffic remains on loopback. Without an external service or an
+  allowed managed executable, the provider remains unavailable and the UI stays usable.
 
 ## Phase 8 voice checkpoint
 

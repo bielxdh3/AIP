@@ -88,6 +88,40 @@ describe("App.css semantic foreground contract", () => {
     );
   });
 
+  it("keeps the mobile conversation list bounded and scrollable", () => {
+    const mobileStart = appCss.lastIndexOf("@media (max-width: 600px)");
+    expect(mobileStart).toBeGreaterThanOrEqual(0);
+    const mobileCascade = appCss.slice(mobileStart);
+    const conversationRule = mobileCascade.match(
+      /\.conversation-list\s*\{([\s\S]*?)\}/,
+    )?.[1];
+    expect(conversationRule).toMatch(/max-height:\s*min\(220px, 35vh\)/);
+    expect(conversationRule).toMatch(/overflow-y:\s*auto/);
+    expect(conversationRule).not.toMatch(/max-height:\s*none/);
+  });
+
+  it("reserves the collapsed sidebar control space before every workspace header", () => {
+    const collapsedMainRule = rulesForSelector(
+      ".conversation-layout.sidebar-is-collapsed .conversation-main",
+    ).at(-1);
+    expect(collapsedMainRule?.body).toMatch(/position:\s*relative/);
+    expect(collapsedMainRule?.body).toMatch(/padding-inline-start:\s*56px/);
+
+    const reopenCss = rulesForSelector(".sidebar-reopen")
+      .map((rule) => rule.body)
+      .join("\n");
+    expect(reopenCss).toMatch(/position:\s*absolute/);
+    expect(reopenCss).toMatch(/left:\s*14px/);
+    expect(reopenCss).toMatch(/width:\s*34px/);
+
+    const reservedStart = Number(
+      collapsedMainRule?.body.match(/padding-inline-start:\s*(\d+)px/)?.[1],
+    );
+    const reopenLeft = Number(reopenCss.match(/left:\s*(\d+)px/)?.[1]);
+    const reopenWidth = Number(reopenCss.match(/width:\s*(\d+)px/)?.[1]);
+    expect(reservedStart).toBeGreaterThanOrEqual(reopenLeft + reopenWidth + 8);
+  });
+
   it("keeps neutral hover states readable and primary fills intentional", () => {
     const neutralSelectors = [
       ".memory-card-actions button:hover",

@@ -5,9 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import {
   THEME_STORAGE_KEY,
+  THEME_PRESETS,
   ThemeControls,
   ThemeProvider,
   contrastRatio,
+  hasReadableTextContrast,
+  nativeColorScheme,
   normalizeThemePreferences,
   readableForeground,
   useTheme,
@@ -114,10 +117,55 @@ describe("theme foundations", () => {
     expect(document.documentElement.dataset.theme).toBe("paper");
     expect(
       document.documentElement.style.getPropertyValue("--color-surface"),
-    ).toBe("#f2ebe0");
-    expect(contrastRatio("#f2ebe0", "#302820")).toBeGreaterThanOrEqual(4.5);
+    ).toBe("#d7c7b3");
+    expect(contrastRatio("#d7c7b3", "#2d241b")).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio("#564333", "#cfbea8")).toBeGreaterThanOrEqual(4.5);
+    const surfaceKeys = [
+      "canvas",
+      "surface",
+      "raised",
+      "soft",
+      "mutedSurface",
+    ] as const;
+    for (const mode of [
+      "dark",
+      "paper",
+      "graphite",
+      "night",
+      "sepia",
+    ] as const) {
+      for (const statusColor of [
+        THEME_PRESETS[mode].success,
+        THEME_PRESETS[mode].warning,
+        THEME_PRESETS[mode].danger,
+      ]) {
+        for (const surfaceKey of surfaceKeys)
+          expect(
+            contrastRatio(statusColor, THEME_PRESETS[mode][surfaceKey]),
+          ).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+    expect(nativeColorScheme(THEME_PRESETS.dark)).toBe("dark");
+    expect(nativeColorScheme(THEME_PRESETS.paper)).toBe("light");
+    for (const mode of ["dark", "paper", "graphite", "night", "sepia"] as const)
+      expect(hasReadableTextContrast(THEME_PRESETS[mode])).toBe(true);
     await chooseOption(container, "theme-mode", "dark");
     expect(document.documentElement.dataset.theme).toBe("dark");
+  });
+
+  it("seeds custom colors from the active preset for coordinated edits", async () => {
+    render(<ThemeControls />);
+    if (container === undefined) throw new Error("Missing theme container");
+    await chooseOption(container, "theme-mode", "paper");
+    await chooseOption(container, "theme-mode", "custom");
+    expect(document.documentElement.dataset.theme).toBe("custom");
+    expect(document.documentElement.style.colorScheme).toBe("light");
+    expect(
+      document.documentElement.style.getPropertyValue("--color-surface"),
+    ).toBe(THEME_PRESETS.paper.surface);
+    expect(
+      document.documentElement.style.getPropertyValue("--color-text"),
+    ).toBe(THEME_PRESETS.paper.text);
   });
 
   it("starts with the safe Times New Roman foundation", () => {
@@ -131,6 +179,26 @@ describe("theme foundations", () => {
     expect(
       document.documentElement.style.getPropertyValue("--color-surface-soft"),
     ).toBe("#292b2f");
+  });
+
+  it("rejects palette overrides that would make text unreadable", async () => {
+    expect(
+      hasReadableTextContrast({ ...THEME_PRESETS.dark, surface: "#ffffff" }),
+    ).toBe(false);
+    render(<ThemeControls />);
+    if (container === undefined) throw new Error("Missing theme container");
+    await chooseOption(container, "theme-mode", "custom");
+    const surface = Array.from(
+      container.querySelectorAll<HTMLInputElement>('input[type="color"]'),
+    ).find((input) => input.getAttribute("aria-label") === "Superfície");
+    if (surface === undefined) throw new Error("Missing surface color input");
+    await act(async () => changeColor(surface, "#ffffff"));
+    expect(
+      document.documentElement.style.getPropertyValue("--color-surface"),
+    ).toBe("#1a1b1d");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "4,5:1",
+    );
   });
 
   it("migrates legacy appearance values and keeps readable custom colors", async () => {

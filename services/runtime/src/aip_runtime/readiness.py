@@ -84,6 +84,8 @@ class OllamaRuntimeManager:
             self._forget_process()
 
         config = _load_config(self._environ)
+        if config is None and _auto_start_allowed(self._environ):
+            config = _discover_executable(self._environ)
         if config is None:
             raise first_error
         _ollama_endpoint(self._environ.get("OLLAMA_HOST", ""))
@@ -197,6 +199,32 @@ def _load_config(environ: Mapping[str, str]) -> Path | None:
     if not isinstance(executable, str):
         raise ProviderError("provider_config_invalid")
     return _validate_executable(executable)
+
+
+def _auto_start_allowed(environ: Mapping[str, str]) -> bool:
+    value = environ.get("AIP_OLLAMA_AUTO_START", "0").strip().casefold()
+    if environ.get("AIP_SAFE_MODE", "0").strip().casefold() in {"1", "true", "yes", "on"}:
+        return False
+    return value in {"1", "true", "yes", "on"}
+
+
+def _discover_executable(environ: Mapping[str, str]) -> Path | None:
+    """Find only the standard per-user/system Ollama executable locations."""
+    candidates: list[Path] = []
+    local_app_data = environ.get("LOCALAPPDATA")
+    program_files = environ.get("ProgramFiles") or environ.get("PROGRAMFILES")
+    program_w6432 = environ.get("ProgramW6432") or environ.get("PROGRAMW6432")
+    if local_app_data:
+        candidates.append(Path(local_app_data) / "Programs" / "Ollama" / "ollama.exe")
+    for root in (program_files, program_w6432):
+        if root:
+            candidates.append(Path(root) / "Ollama" / "ollama.exe")
+    for candidate in candidates:
+        try:
+            return _validate_executable(str(candidate))
+        except ProviderError:
+            continue
+    return None
 
 
 def _validate_executable(value: str) -> Path:
