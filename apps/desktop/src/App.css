@@ -6525,6 +6525,10 @@ input[type="radio"] {
 .conversation-layout.sidebar-is-collapsed {
   grid-template-columns: minmax(0, 1fr);
 }
+.conversation-layout.sidebar-is-collapsed .conversation-main {
+  position: relative;
+  padding-inline-start: 56px;
+}
 .sidebar {
   display: flex;
   flex-direction: column;
