@@ -33,7 +33,7 @@ AIP is a Windows desktop platform for running expressive local agents without tu
                          │ mood · conversations │
                          └──────────┬───────────┘
                                     │ Tauri commands
-                    ┌───────────────▼────────────────┐
+                    ┌───────────────▼─────────────────┐
                     │         Rust desktop core       │
                     │ lifecycle · permissions · state │
                     │ queue · migrations · processes  │
@@ -41,10 +41,10 @@ AIP is a Windows desktop platform for running expressive local agents without tu
                                 │           │
                      persistent │           │ managed NDJSON
                                 │           │
-                    ┌───────────▼──────┐ ┌──▼─────────────────┐
+                    ┌───────────▼──────┐ ┌──▼──────────────────┐
                     │ SQLite database  │ │ Python runtime      │
                     │ agents · memory  │ │ replaceable backend │
-                    │ chats · settings │ └──┬─────────────────┘
+                    │ chats · settings │ └──┬──────────────────┘
                     └──────────────────┘    │ loopback only
                                            ▼
                                   ┌───────────────────┐
