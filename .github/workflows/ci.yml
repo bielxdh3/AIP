@@ -157,7 +157,7 @@ jobs:
         with:
           fetch-depth: 1
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: aip-windows-0.2.4.1-${{ github.event.pull_request.head.sha || github.sha }}
           path: artifacts\windows
