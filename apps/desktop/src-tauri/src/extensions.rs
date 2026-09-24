@@ -4,12 +4,22 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::sync::{Mutex, OnceLock};
 use uuid::Uuid;
 
 use crate::database::{now_millis, Database, DatabaseError, OWNER_ID};
 
 pub const AIP_EXTENSION_SDK_VERSION: &str = "aip-extension-sdk/v1";
+
+fn sha256_hex(payload: impl AsRef<[u8]>) -> String {
+    let digest = Sha256::digest(payload);
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest.iter() {
+        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    output
+}
 const EXTENSION_MANIFEST_VERSION: i64 = 1;
 const MAX_EXTENSION_ID_BYTES: usize = 96;
 const MAX_EXTENSION_CAPABILITIES: usize = 8;
@@ -204,7 +214,7 @@ pub fn extension_package_hash(package: &ExtensionPackage) -> Result<String, Data
         .ok_or(DatabaseError::Cognitive("extension_package_invalid"))?
         .remove("integritySha256");
     let payload = serde_json::to_vec(&payload).map_err(|_| DatabaseError::Unavailable)?;
-    Ok(format!("{:x}", Sha256::digest(payload)))
+    Ok(sha256_hex(payload))
 }
 
 fn validate_package(package: &ExtensionPackage) -> Result<(), DatabaseError> {
@@ -1200,7 +1210,7 @@ impl Database {
         let now = now_millis();
         let request_json =
             serde_json::to_string(&request).map_err(|_| DatabaseError::Unavailable)?;
-        let request_hash = format!("{:x}", Sha256::digest(request_json.as_bytes()));
+        let request_hash = sha256_hex(request_json.as_bytes());
         if let Some((old_hash, old_result)) = transaction
             .query_row("SELECT request_hash,result_json FROM extension_execution_idempotency WHERE owner_user_id=?1 AND idempotency_key=?2", params![OWNER_ID, request.idempotency_key], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
             .optional()?
