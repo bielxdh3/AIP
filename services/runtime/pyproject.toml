@@ -11,8 +11,8 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = [
-  "mypy==2.3.0",
-  "ruff==0.15.22",
+  "mypy==2.3.1",
+  "ruff==0.16.8",
 ]
 
 [tool.setuptools]
