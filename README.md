@@ -8,6 +8,7 @@ Local-first 2D agents with their own identity, memory, conversations, model, and
 
 [![Status](https://img.shields.io/badge/status-active%20development-orange)](#project-status)
 [![Version](https://img.shields.io/badge/stable%20baseline-v0.1.0-blue)](#project-status)
+[![CI](https://github.com/bielxdh3/AIP/actions/workflows/ci.yml/badge.svg)](https://github.com/bielxdh3/AIP/actions/workflows/ci.yml)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D4)](#requirements)
 [![Desktop](https://img.shields.io/badge/desktop-Tauri%202-FFC131)](#technology)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
@@ -171,7 +172,13 @@ AIP/
 ├── benchmarks/              Performance and evaluation material
 ├── scripts/                 Validation and repository tooling
 ├── docs/                    Product, architecture, security, and setup docs
+├── CONTRIBUTING.md          Contribution workflow
+├── CODE_OF_CONDUCT.md       Community conduct standards
+├── GOVERNANCE.md            Project decision model
+├── SUPPORT.md               Support and triage guidance
 ├── SECURITY.md              Vulnerability reporting policy
+├── LICENSE                  Apache License 2.0
+├── NOTICE                   Attribution notice
 └── README.md
 ```
 
@@ -251,10 +258,17 @@ The evidence boundary is documented in [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LI
 - [Roadmap](docs/ROADMAP.md)
 - [Windows setup](docs/WINDOWS_SETUP.md)
 - [Cognitive-core specification](docs/COGNITIVE_CORE_SPEC.md)
+- [Contributing](CONTRIBUTING.md)
+- [Support](SUPPORT.md)
+- [Governance](GOVERNANCE.md)
 
 ## License
 
 Licensed under the [Apache License 2.0](LICENSE).
+
+Redistributions must preserve applicable license, copyright, and attribution notices, including the project [NOTICE](NOTICE) where required.
+
+**Copyright 2026 bielxdh3.**
 
 ## Disclaimer
 
