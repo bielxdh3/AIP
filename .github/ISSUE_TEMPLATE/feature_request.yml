@@ -1,0 +1,46 @@
+name: Feature request
+description: Propose an improvement to AIP
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem or limitation are you trying to solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you would like to see.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Agent identity and UI
+        - Conversations
+        - Memory and context
+        - Local model runtime
+        - Desktop / Tauri
+        - Android
+        - Permissions / tools
+        - Packaging / release
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: Boundary impact
+      options:
+        - label: This may affect persistence, privacy, permissions, networking, or execution boundaries.

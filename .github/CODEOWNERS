@@ -1,0 +1,11 @@
+# Default ownership
+* @bielxdh3
+
+# Security, persistence, runtime, release, and platform-sensitive areas
+/SECURITY.md @bielxdh3
+/docs/SECURITY_AND_PERMISSIONS.md @bielxdh3
+/apps/desktop/src-tauri/ @bielxdh3
+/services/runtime/ @bielxdh3
+/android/ @bielxdh3
+/.github/workflows/ @bielxdh3
+/scripts/ @bielxdh3
