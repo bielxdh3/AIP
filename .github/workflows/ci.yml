@@ -22,7 +22,7 @@ jobs:
       - name: Android validation
         working-directory: android
         run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           {
             name: aip-android-debug,
@@ -141,7 +141,7 @@ jobs:
           if ($bundles.Count -lt 2) { throw "Expected NSIS and MSI artifacts for $env:GITHUB_SHA" }
           $bundles | ForEach-Object { Write-Output "$($_.Name) $($_.Length) $((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)" }
       - name: Upload Windows installers
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: aip-windows-0.2.4.1-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
