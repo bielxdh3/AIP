@@ -52,9 +52,18 @@ AIP is a Windows desktop platform for running expressive local agents without tu
                                   │ Local model host  │
                                   │      Ollama       │
                                   └───────────────────┘
+
+   Separate post-v0.1 development checkpoints (NOT stable v0.1.0):
+
+   Android debug companion ── authenticated local/private protocol ──► Rust
+   Opt-in gateway TCP ─────── authenticated loopback transport ──────► Rust
+                                  aip-gateway-v1                       │
+                                                              SQLite authority
 ```
 
-The desktop core owns application state and persistence. The Python service is a managed, replaceable inference boundary rather than the owner of the primary database.
+Rust/Tauri owns agent state, permissions, SQLite persistence, and managed process lifecycles. The UI sends bounded Tauri commands; the replaceable Python inference runtime communicates via managed **NDJSON stdin/stdout** and uses the local Ollama service over loopback. It does not own primary data or expose a public listener.
+
+The Android debug-companion and opt-in gateway are **separate post-v0.1 checkpoints**, with Rust/SQLite authorization. The Android client has no released physical-device/private-LAN acceptance; the gateway has loopback validation only. Neither creates a public relay or BielOS integration. See [Android scope](docs/PHASE_12_ANDROID_SPEC.md) and [gateway scope](docs/PHASE_13_GATEWAY_SPEC.md).
 
 ## Why AIP exists
 
@@ -109,7 +118,7 @@ The long-term context and memory target is defined in [docs/CONTEXT_MEMORY_ARCHI
 - Python 3.11 or newer;
 - Ollama for the current local-model workflow.
 
-Linux, macOS, and iOS are not supported by the current stable release. Phase 12 provides a functional Android APK with authenticated local/private explicit-connect transport and deterministic loopback coverage; Phase 13 provides a functional authenticated local/private `aip-gateway-v1` TCP checkpoint with Rust/SQLite authority and loopback validation. Physical-device/private-LAN, manual recovery/permission, remote CI, Cloudflare/BielOS and release-signing checks remain reserved; neither phase claims a stable release.
+The stable v0.1.0 release targets **Windows x64 only**; Linux, macOS, iOS, and Android are not supported stable platforms. Post-v0.1 Android and gateway experiments are documented separately in [Known limitations](docs/KNOWN_LIMITATIONS.md) and the [Roadmap](docs/ROADMAP.md).
 
 ## Install
 
@@ -229,7 +238,7 @@ See [SECURITY.md](SECURITY.md) and [docs/SECURITY_AND_PERMISSIONS.md](docs/SECUR
 - installers are unsigned;
 - the visual design is still being refined;
 - no production model is downloaded automatically;
-- screen vision now has a bounded on-demand Windows capture/provider checkpoint; local model installation and packaged/manual visual validation remain prerequisites; BielOS integration remains future work; Phase 10 extensions are now limited closed declarative packages with explicit Owner review;
+- supervised screen capture, closed declarative extensions, voice, and external-tool checkpoints remain outside the stable v0.1.0 release; their prerequisites, permission gates, and validation limits are detailed in [Known limitations](docs/KNOWN_LIMITATIONS.md);
 - Android and other desktop operating systems are not part of the stable baseline.
 
 The evidence boundary is documented in [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) and [docs/V0_1_MANUAL_VALIDATION.md](docs/V0_1_MANUAL_VALIDATION.md).
@@ -238,11 +247,11 @@ The evidence boundary is documented in [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LI
 
 - [ ] Refine the visual identity and pixel-art agent system
 - [ ] Improve local model discovery and lifecycle management
-- [ ] Add voice input and per-agent voice output
-- [ ] Add supervised screen understanding and external tools
+- [ ] Validate, package, and release the local voice checkpoints
+- [ ] Validate and release supervised screen-vision and external-tool checkpoints
 - [ ] Extend the cognitive core without breaking deterministic boundaries
 - [ ] Implement the bounded semantic context and long-term memory compiler defined in `docs/CONTEXT_MEMORY_ARCHITECTURE.md`
-- [ ] Build the Android companion experience
+- [ ] Complete device validation and release preparation for the Android companion
 - [ ] Define an approved BielOS integration boundary
 - [ ] Produce signed, reproducible Windows installers
 
